@@ -7,7 +7,7 @@ mod submitted_plan;
 
 use serde_json::{Value, json};
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 const MAX_EVENTS: usize = 2_500;
@@ -159,6 +159,20 @@ fn decode_log_bytes(path: &Path) -> Result<Vec<u8>, String> {
     } else {
         Ok(bytes)
     }
+}
+
+fn log_lines(path: &Path) -> Result<std::io::Lines<BufReader<Box<dyn Read>>>, String> {
+    let file = fs::File::open(path).map_err(|error| format!("打开会话日志失败：{error}"))?;
+    let compressed = path.extension().and_then(|extension| extension.to_str()) == Some("zstd");
+    let reader: Box<dyn Read> = if compressed {
+        Box::new(
+            zstd::stream::read::Decoder::new(file)
+                .map_err(|error| format!("解压会话日志失败：{error}"))?,
+        )
+    } else {
+        Box::new(file)
+    };
+    Ok(BufReader::new(reader).lines())
 }
 
 fn looks_like_zstd(bytes: &[u8]) -> bool {
@@ -912,6 +926,119 @@ pub async fn list_local_sessions() -> Result<Value, String> {
 }
 
 fn scan_local_sessions() -> Vec<Value> {
+    let mut sessions = scan_session_projection_cache();
+    // The projection cache is optional. A restarted Host must still discover
+    // durable session.v4 histories before ACP or that cache has seen them.
+    let known = sessions
+        .iter()
+        .filter_map(|session| session["sessionId"].as_str().map(str::to_owned))
+        .collect::<std::collections::HashSet<_>>();
+    let home = dsh_home();
+    sessions.extend(discover_session_logs(&home.join("sessions"), &known));
+    sort_local_sessions(&mut sessions);
+    sessions
+}
+
+fn sort_local_sessions(sessions: &mut [Value]) {
+    sessions.sort_by(|left, right| {
+        let left_ms = left.get("createdAt").and_then(Value::as_u64).unwrap_or(0);
+        let right_ms = right.get("createdAt").and_then(Value::as_u64).unwrap_or(0);
+        right_ms.cmp(&left_ms)
+    });
+}
+
+fn discover_session_logs(root: &Path, known: &std::collections::HashSet<String>) -> Vec<Value> {
+    let mut sessions: Vec<Value> = Vec::new();
+    for workspace in fs::read_dir(root).into_iter().flatten().flatten() {
+        if !workspace.path().is_dir() || workspace.file_name() == "subagents" {
+            continue;
+        }
+        for directory in fs::read_dir(workspace.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let directory = directory.path();
+            let Some(id) = directory
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| {
+                    name.starts_with("session-")
+                        || (name.len() == 36 && name.chars().filter(|ch| *ch == '-').count() == 4)
+                })
+            else {
+                continue;
+            };
+            if known.contains(id) || sessions.iter().any(|session| session["sessionId"] == id) {
+                continue;
+            }
+            let Some(path) = find_log_path(&directory) else {
+                continue;
+            };
+            let Ok(lines) = log_lines(&path) else {
+                continue;
+            };
+            let mut header = None;
+            let mut title = None;
+            let mut fallback = None;
+            for line in lines.map_while(Result::ok) {
+                let Ok(event) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if header.is_none() {
+                    header = Some(event);
+                } else if event["type"] == "session/title" {
+                    title = event["data"]["title"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_owned);
+                } else if fallback.is_none()
+                    && event["type"] == "user/message"
+                    && let Some(prompt) = first_user_prompt_text(&event)
+                {
+                    fallback = Some(fallback_session_title(&prompt));
+                    // A subsequent explicit title is uncommon. It is handled
+                    // on the normal title-enrichment pass after this cheap list.
+                    break;
+                }
+            }
+            let Some(header) = header else {
+                continue;
+            };
+            if header["type"] != "session"
+                || header["id"] != id
+                || header["delegationDepth"]
+                    .as_u64()
+                    .is_some_and(|depth| depth > 0)
+                || header["origin"] == "subagent"
+            {
+                continue;
+            }
+            let Some(cwd) = header["cwd"]
+                .as_str()
+                .map(str::trim)
+                .filter(|cwd| !cwd.is_empty())
+            else {
+                continue;
+            };
+            sessions.push(json!({
+                "sessionId": id,
+                "cwd": cwd,
+                "createdAt": header["createdAt"],
+                "title": title.or(fallback),
+            }));
+        }
+    }
+    sessions.sort_by(|left, right| {
+        let left_ms = left.get("createdAt").and_then(Value::as_u64).unwrap_or(0);
+        let right_ms = right.get("createdAt").and_then(Value::as_u64).unwrap_or(0);
+        right_ms.cmp(&left_ms)
+    });
+    sessions
+}
+
+fn scan_session_projection_cache() -> Vec<Value> {
     let root = dsh_home().join("storages/session_projcache/sessions");
     let Ok(entries) = fs::read_dir(&root) else {
         return Vec::new();
@@ -998,6 +1125,30 @@ mod tests {
         assert!(has_more);
         assert_eq!(page[0]["seq"], 2);
         assert_eq!(page[0]["questionArguments"], arguments);
+    }
+
+    #[test]
+    fn discovers_session_v4_history_without_a_projection_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("dsh");
+        let sessions = home.join("sessions");
+        let cwd = temp.path().to_string_lossy().into_owned();
+        let id = "session-febfbb44-0805-46ab-98f1-7c7c4099ce0a";
+        let directory = sessions.join(project_key(&cwd)).join(id);
+        fs::create_dir_all(&directory).unwrap();
+        let log = [
+            json!({"type":"session","version":4,"id":id,"createdAt":1234,"cwd":cwd}),
+            json!({"type":"user/message","data":{"content":[{"type":"text","text":"打开 KWork"}]}}),
+        ]
+        .map(|row| row.to_string())
+        .join("\n");
+        let encoded = zstd::stream::encode_all(log.as_bytes(), 0).unwrap();
+        fs::write(directory.join("session.v4.jsonl.zstd"), encoded).unwrap();
+        let rows = discover_session_logs(&sessions, &std::collections::HashSet::new());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["sessionId"], id);
+        assert_eq!(rows[0]["createdAt"], 1234);
+        assert_eq!(rows[0]["title"], "打开 KWork");
     }
 
     #[test]

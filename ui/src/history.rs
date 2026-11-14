@@ -16,10 +16,57 @@ pub(crate) mod turn_process;
 #[cfg(any(target_family = "wasm", test))]
 pub(crate) mod turn_tails;
 
+/// Latest inherited-history cut, anchored to its adjacent visible rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InheritedHistory {
+    pub seq: u64,
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+/// Locate the inherited divider among rows that are actually rendered.
+pub fn inherited_history_index(
+    entries: &[&ChatEntry],
+    inherited: Option<&InheritedHistory>,
+) -> Option<usize> {
+    let inherited = inherited?;
+    if let Some(key) = &inherited.before {
+        return entries.iter().position(|entry| entry.key == *key);
+    }
+    inherited
+        .after
+        .as_ref()
+        .and_then(|key| entries.iter().rposition(|entry| entry.key == *key))
+        .map(|index| index + 1)
+        .or_else(|| inherited.after.is_none().then_some(entries.len()))
+}
+
+/// An older page may supply a cut whose following row is already loaded.
+pub fn merge_inherited_history(
+    current: &mut Option<InheritedHistory>,
+    older: Option<InheritedHistory>,
+    recent: &[ChatEntry],
+) {
+    let Some(mut incoming) = older else {
+        return;
+    };
+    if current
+        .as_ref()
+        .is_some_and(|current| current.seq > incoming.seq)
+    {
+        return;
+    }
+    if incoming.before.is_none() {
+        incoming.before = recent.first().map(|entry| entry.key.clone());
+    }
+    *current = Some(incoming);
+}
+
 /// Visible transcript reconstructed from a session log.
 #[derive(Clone, Debug, Default)]
 pub struct HistoryProjection {
     pub entries: Vec<ChatEntry>,
+    pub inherited_history: Option<InheritedHistory>,
     pub usage: Option<(u64, u64)>,
     /// Whole-log billed buckets (official StatsPills / tokenUsage).
     pub uncached_input_tokens: u64,
@@ -75,6 +122,10 @@ fn known_event_type(kind: &str) -> bool {
             | "tool/result"
             | "tool/ptc-dispatch"
             | "tool/ptc-dispatch-start"
+            | "tool-workflow/run-start"
+            | "tool-workflow/agent-start"
+            | "tool-workflow/agent-end"
+            | "tool-workflow/run-end"
             | "turn/start"
             | "turn/end"
             | "step/start"
@@ -111,6 +162,10 @@ fn known_event_type(kind: &str) -> bool {
             | "approval/asked"
             | "approval/decided"
             | "team/mode"
+            | "team/task"
+            | "team/member"
+            | "team/message/queued"
+            | "team/message/delivered"
     )
 }
 
@@ -246,6 +301,9 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
     let mut inbox: std::collections::HashMap<&'static str, Vec<String>> =
         std::collections::HashMap::new();
     let mut claimed_inputs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // The entry vector is append-only, so this index remains the first visible
+    // row after the latest inherited marker even when later events render nothing.
+    let mut inherited_cut: Option<(u64, usize)> = None;
 
     for event in events {
         if let Some(seq) = event.get("seq").and_then(Value::as_u64) {
@@ -296,6 +354,10 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
         }
         if matches!(kind, "tool/ptc-dispatch" | "tool/ptc-dispatch-start") {
             crate::tool_calls::apply_dispatch(&mut out.entries, event);
+        }
+        if kind.starts_with("tool-workflow/") {
+            crate::workflow_runs::apply(&mut out.entries, event, at_ms);
+            continue;
         }
         if kind != "tool/result"
             && let Some(reply) =
@@ -458,6 +520,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                                     String::new()
                                 },
                                 tool: None,
+                                presentation: None,
                                 at_ms,
                             });
                         }
@@ -593,6 +656,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                     input,
                     status: detail.to_owned(),
                     tool: None,
+                    presentation: None,
                     at_ms,
                 });
                 if let Some(seq) = event.get("seq").and_then(Value::as_u64) {
@@ -628,6 +692,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                     input: String::new(),
                     status: String::new(),
                     tool: None,
+                    presentation: None,
                     at_ms,
                 });
             }
@@ -738,6 +803,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                         input: String::new(),
                         status: String::new(),
                         tool: None,
+                        presentation: None,
                         at_ms,
                     });
                 }
@@ -755,6 +821,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                         input: String::new(),
                         status: String::new(),
                         tool: None,
+                        presentation: None,
                         at_ms,
                     });
                 }
@@ -794,6 +861,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                     let entry = &mut out.entries[index];
                     entry.tool = Some(crate::tool_calls::ToolCall::root(name));
                     entry.title = title;
+                    entry.presentation = None;
                     entry.input = arguments;
                     entry.at_ms = at_ms.or(entry.at_ms);
                     continue;
@@ -808,6 +876,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                     input: arguments,
                     status: "in_progress".to_string(),
                     tool: Some(crate::tool_calls::ToolCall::root(name)),
+                    presentation: None,
                     at_ms,
                 });
             }
@@ -822,6 +891,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                     continue;
                 }
                 let output = crate::tool_calls::result_text(&data["message"]);
+                let result = crate::tool_presentation::result_projection(&data);
                 let status = crate::tool_calls::result_status(&data, &data["message"]);
                 if status != "failed"
                     && let Some(path) = mutation_calls.remove(&call_id)
@@ -832,6 +902,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                 if let Some(&index) = tool_index.get(&call_id) {
                     let entry = &mut out.entries[index];
                     entry.text = crate::tool_output::display(&output);
+                    entry.presentation = result.presentation.clone();
                     entry.status = status.to_owned();
                 } else {
                     let arguments = event.get("questionArguments");
@@ -855,6 +926,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                         role: EntryRole::Tool,
                         title,
                         text: output,
+                        presentation: result.presentation.clone(),
                         input,
                         status: status.to_owned(),
                         tool,
@@ -934,6 +1006,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                         input: delay_ms.to_string(),
                         status: status.to_string(),
                         tool: None,
+                        presentation: None,
                         at_ms,
                     });
                 }
@@ -977,6 +1050,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                             "running".to_owned()
                         },
                         tool: None,
+                        presentation: None,
                         at_ms: data
                             .get("startedAt")
                             .and_then(Value::as_f64)
@@ -1041,6 +1115,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                                 .to_owned()
                         },
                         tool: None,
+                        presentation: None,
                         at_ms,
                     });
                 }
@@ -1078,6 +1153,9 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                     "error" => "",
                     _ => "",
                 };
+                if crate::workflow_runs::interrupted(reason) {
+                    crate::workflow_runs::interrupt(&mut out.entries);
+                }
                 if !text.is_empty() {
                     out.entries.push(ChatEntry {
                         key: format!("hist-turn-end-{}", out.entries.len()),
@@ -1088,6 +1166,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                         input: String::new(),
                         status: reason.to_string(),
                         tool: None,
+                        presentation: None,
                         at_ms,
                     });
                 }
@@ -1136,6 +1215,11 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                     out.usage = Some((used.min(window), window));
                 }
             }
+            "session/end-seed" if data.get("inherited") == Some(&Value::Bool(true)) => {
+                if let Some(seq) = event.get("seq").and_then(Value::as_u64) {
+                    inherited_cut = Some((seq, out.entries.len()));
+                }
+            }
             _ => {}
         }
     }
@@ -1145,6 +1229,14 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
         out.entries
             .push(crate::state::deliverable_entry(&files, None));
     }
+    out.inherited_history = inherited_cut.map(|(seq, index)| InheritedHistory {
+        seq,
+        before: out.entries.get(index).map(|entry| entry.key.clone()),
+        after: index
+            .checked_sub(1)
+            .and_then(|index| out.entries.get(index))
+            .map(|entry| entry.key.clone()),
+    });
     out.turns = if seen_turns.is_empty() {
         out.entries
             .iter()
@@ -1161,6 +1253,95 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn history_input(seq: u64, id: &str) -> Value {
+        json!({
+            "type":"user/message", "seq":seq, "surfaceOp":"append",
+            "data":{"id":id,"source":{"kind":"user"},"content":[{"type":"text","text":id}]}
+        })
+    }
+
+    fn history_seed(seq: u64, inherited: bool) -> Value {
+        json!({"type":"session/end-seed","seq":seq,"data":{"inherited":inherited}})
+    }
+
+    #[test]
+    fn inherited_history_uses_the_latest_marker_and_next_visible_row() {
+        let projected = project_session_events(&[
+            history_seed(0, true),
+            history_input(1, "parent"),
+            history_seed(2, true),
+            history_seed(3, false),
+            history_input(4, "child"),
+        ]);
+        let cut = projected.inherited_history.as_ref().unwrap();
+        assert_eq!(cut.seq, 2);
+        assert_eq!(cut.before.as_deref(), Some("child"));
+        assert_eq!(cut.after.as_deref(), Some("parent"));
+        let rows = projected.entries.iter().collect::<Vec<_>>();
+        assert_eq!(inherited_history_index(&rows, Some(cut)), Some(1));
+    }
+
+    #[test]
+    fn inherited_history_ignores_plain_seeds_and_invisible_events() {
+        let plain = project_session_events(&[history_seed(0, false), history_input(1, "own")]);
+        assert_eq!(plain.inherited_history, None);
+        let inherited = project_session_events(&[
+            history_seed(0, true),
+            json!({"type":"turn/start","seq":1,"data":{"turn":1}}),
+            json!({"type":"step/start","seq":2,"data":{"turn":1,"step":1}}),
+            history_input(3, "child"),
+        ]);
+        assert_eq!(
+            inherited.inherited_history.unwrap().before.as_deref(),
+            Some("child")
+        );
+    }
+
+    #[test]
+    fn inherited_history_prepend_keeps_the_newest_cut_and_connects_pages() {
+        let recent = project_session_events(&[history_seed(4, true), history_input(5, "child")]);
+        let older = project_session_events(&[
+            history_input(1, "parent"),
+            history_seed(2, true),
+            json!({"type":"turn/end","seq":3,"data":{"turn":1}}),
+        ]);
+        let mut current = recent.inherited_history.clone();
+        merge_inherited_history(
+            &mut current,
+            older.inherited_history.clone(),
+            &recent.entries,
+        );
+        assert_eq!(current.unwrap().seq, 4);
+
+        current = None;
+        merge_inherited_history(&mut current, older.inherited_history, &recent.entries);
+        let cut = current.unwrap();
+        assert_eq!(cut.before.as_deref(), Some("child"));
+        assert_eq!(cut.after.as_deref(), Some("parent"));
+    }
+
+    #[test]
+    fn inherited_history_can_split_a_turn_process() {
+        let projected = project_session_events(&[
+            history_input(1, "parent"),
+            json!({"type":"assistant/message","seq":2,"data":{"turn":1,"step":1,"message":{"id":"reasoning","content":[{"type":"reasoning","text":"thinking"}]}}}),
+            history_seed(3, true),
+            json!({"type":"assistant/message","seq":4,"data":{"turn":1,"step":1,"message":{"id":"answer","content":[{"type":"text","text":"continued"}]}}}),
+            json!({"type":"turn/end","seq":5,"data":{"turn":1,"reason":{"kind":"forked"}}}),
+        ]);
+        let cut = projected.inherited_history.as_ref().unwrap();
+        assert_eq!(cut.after.as_deref(), Some("hist-thought-reasoning"));
+        assert_eq!(cut.before.as_deref(), Some("hist-assistant-answer"));
+        let rows = projected.entries.iter().collect::<Vec<_>>();
+        assert_eq!(inherited_history_index(&rows, Some(cut)), Some(2));
+        let tail = project_session_events(&[history_input(1, "parent"), history_seed(2, true)]);
+        let rows = tail.entries.iter().collect::<Vec<_>>();
+        assert_eq!(
+            inherited_history_index(&rows, tail.inherited_history.as_ref()),
+            Some(1)
+        );
+    }
 
     #[test]
     fn historical_question_replies_follow_question_order_and_keep_skips() {
@@ -1585,6 +1766,7 @@ mod tests {
         assert!(!projected.entries[0].input.contains("[图片]"));
     }
 
+    #[test]
     fn a_replayed_todo_row_keeps_the_live_summary() {
         // A reopened session must show the same todo summary a live turn showed,
         // not the bare tool name.

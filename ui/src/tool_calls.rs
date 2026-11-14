@@ -17,6 +17,19 @@ pub(crate) struct ParentCall {
     root: String,
 }
 
+pub(crate) fn tool_call(name: &str, parent: Option<&str>, root: Option<&str>) -> ToolCall {
+    ToolCall {
+        name: name.to_owned(),
+        parent: parent
+            .zip(root)
+            .filter(|(parent, root)| !parent.is_empty() && !root.is_empty())
+            .map(|(id, root)| ParentCall {
+                id: id.to_owned(),
+                root: root.to_owned(),
+            }),
+    }
+}
+
 impl ToolCall {
     pub(crate) fn root(name: String) -> Self {
         Self { name, parent: None }
@@ -37,8 +50,24 @@ impl ChatEntry {
         self.role == EntryRole::Tool
             && matches!(
                 self.status.as_str(),
-                "in_progress" | "pending" | "preparing" | "approval"
+                "in_progress" | "pending" | "preparing" | "approval" | ""
             )
+    }
+
+    #[cfg(any(target_family = "wasm", test))]
+    pub(crate) fn cards(
+        &self,
+    ) -> (
+        Option<crate::tool_presentation::DiffCard>,
+        Option<crate::tool_presentation::ImageCard>,
+    ) {
+        crate::tool_presentation::cards(
+            self.tool_name(),
+            &self.input,
+            &self.status,
+            self.is_subcall(),
+            self.presentation.as_deref(),
+        )
     }
 }
 
@@ -108,6 +137,7 @@ pub(crate) fn apply_dispatch(entries: &mut Vec<ChatEntry>, event: &Value) {
     if ended {
         entry.status = result_status(data, data).to_owned();
         entry.text = result_text(data);
+        entry.presentation = crate::tool_presentation::result_projection(data).presentation;
         if entry.text.is_empty()
             && let Some(reason) = data.pointer("/error/reason").and_then(Value::as_str)
         {
@@ -152,6 +182,7 @@ pub(crate) fn merge_tool_observation(original: &mut ChatEntry, recent: ChatEntry
     if !recent.is_running_tool() || original.is_running_tool() {
         original.status = recent.status;
         original.text = recent.text;
+        original.presentation = recent.presentation;
     }
 }
 

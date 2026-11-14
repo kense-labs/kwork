@@ -153,12 +153,21 @@ impl DshApp {
             return;
         };
         let id = checkpoint.id.clone();
+        let agent = self
+            .sidebar
+            .terminals
+            .get(&edit.key)
+            .is_some_and(|tab| tab.agent.is_some());
         let key = edit.key;
         cx.spawn_in(w, async move |this, cx| {
             let result = bridge::invoke(
-                "rename_terminal",
+                if agent {
+                    "agent_terminal_rename"
+                } else {
+                    "rename_terminal"
+                },
                 json!({
-                    "terminalId": id, "session": owner, "title": title,
+                    "terminalId": id, "sessionId": owner, "session": owner, "title": title,
                 }),
             )
             .await;

@@ -3,9 +3,99 @@
 use super::workspace::{composer_bg, menu_bg, path_name};
 use super::*;
 use crate::theme_preference::ThemePreference;
+use crate::workspace_tree::clear_workspace_watermarks;
+pub(super) use crate::workspace_tree::{WorkspaceGroup, WorkspaceTree, owning_parent_folder};
 use gpui::{Transformation, svg};
 
 impl DshApp {
+    pub(super) fn render_workspace_group(
+        &mut self,
+        group: WorkspaceGroup,
+        depth: usize,
+        w: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let cwd = group.cwd.clone();
+        let expanded = !self.collapsed_workspaces.contains(&cwd);
+        let active = self
+            .sessions
+            .iter()
+            .find(|session| Some(session.id.as_str()) == self.active_session.as_deref())
+            .is_some_and(|session| session.cwd == cwd);
+        let descendants = vec![cwd.clone()];
+        let mut rendered = column()
+            .relative()
+            .w_full()
+            .gap(px(2.))
+            .when(!cwd.is_empty(), |rendered| {
+                rendered.child(self.workspace_row_geometry.measure(cwd.clone()))
+            })
+            .child(self.render_workspace_heading(&cwd, depth, expanded, active, descendants, cx));
+        if expanded {
+            rendered = rendered.child(self.render_workspace_sessions(group, depth, w, cx));
+        }
+        rendered
+    }
+
+    pub(super) fn render_workspace_tree_group(
+        &mut self,
+        groups: &mut [WorkspaceGroup],
+        tree: &WorkspaceTree,
+        index: usize,
+        depth: usize,
+        w: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let cwd = groups[index].cwd.clone();
+        let expanded = !self.collapsed_workspaces.contains(&cwd);
+        let active_index = self
+            .sessions
+            .iter()
+            .find(|session| Some(session.id.as_str()) == self.active_session.as_deref())
+            .and_then(|session| groups.iter().position(|group| group.cwd == session.cwd));
+        let active = active_index.is_some_and(|current| {
+            (current != index && tree.contains(index, current)) || (expanded && current == index)
+        });
+        let descendants = tree.descendants(index, groups);
+        let mut rendered = column()
+            .relative()
+            .w_full()
+            .gap(px(2.))
+            .when(!cwd.is_empty(), |rendered| {
+                rendered.child(self.workspace_row_geometry.measure(cwd.clone()))
+            })
+            .child(self.render_workspace_heading(&cwd, depth, expanded, active, descendants, cx));
+        if expanded {
+            if !tree.children[index].is_empty() {
+                let mut children = column().w_full();
+                for child in &tree.children[index] {
+                    children = children.child(self.render_workspace_tree_group(
+                        groups,
+                        tree,
+                        *child,
+                        depth + 1,
+                        w,
+                        cx,
+                    ));
+                }
+                rendered = rendered.child(
+                    div()
+                        .id(gpui::ElementId::Name(
+                            format!("workspace-children-{cwd}").into(),
+                        ))
+                        .role(gpui::Role::Group)
+                        .child(children),
+                );
+            }
+            let group = WorkspaceGroup {
+                cwd,
+                sessions: std::mem::take(&mut groups[index].sessions),
+            };
+            rendered = rendered.child(self.render_workspace_sessions(group, depth, w, cx));
+        }
+        rendered
+    }
+
     pub(super) fn workspace_name(&self, cwd: &str) -> String {
         self.workspace_aliases.get(cwd).cloned().unwrap_or_else(|| {
             if cwd.is_empty() {
@@ -68,6 +158,14 @@ impl DshApp {
             .filter(|path| !path.is_empty())
             .map(str::to_owned)
             .collect();
+        self.workspace_order = reply["workspaceOrder"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+            .collect();
         self.collapsed_workspaces = string_set(reply.get("collapsed"));
         if let Some(collapsed) = reply.get("sidebarCollapsed").and_then(Value::as_bool) {
             self.sidebar_collapsed = collapsed;
@@ -96,6 +194,23 @@ impl DshApp {
                 "updated" => WorkspaceOrderBy::Updated,
                 _ => self.workspace_order_by,
             };
+        }
+        if let Some(orders) = reply
+            .get("sessionOrderByAccount")
+            .and_then(Value::as_object)
+        {
+            self.session_order_by_account = orders
+                .into_iter()
+                .filter_map(|(account, order)| {
+                    let order = order
+                        .as_array()?
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect();
+                    Some((account.clone(), order))
+                })
+                .collect();
         }
         if let Some(archived) = reply.get("archivedFilter").and_then(Value::as_str) {
             self.workspace_archived_filter = match archived {
@@ -229,6 +344,7 @@ impl DshApp {
                     "aliases": self.workspace_aliases,
                     "hidden": hidden,
                     "addedWorkspaces": self.added_workspaces,
+                    "workspaceOrder": self.workspace_order,
                     "collapsed": collapsed,
                     "sidebarCollapsed": self.sidebar_collapsed,
                     "sidebarWidth": self.sidebar_width,
@@ -241,6 +357,7 @@ impl DshApp {
                         WorkspaceOrderBy::Manual => "manual",
                         WorkspaceOrderBy::Updated => "updated",
                     },
+                    "sessionOrderByAccount": self.session_order_by_account,
                     "archivedFilter": match self.workspace_archived_filter {
                         WorkspaceArchivedFilter::Hide => "hide",
                         WorkspaceArchivedFilter::Show => "show",
@@ -269,291 +386,308 @@ impl DshApp {
         );
     }
 
-    pub(super) fn render_workspace_group(
+    fn render_workspace_heading(
         &mut self,
-        cwd: String,
-        sessions: Vec<SessionSummary>,
-        w: &Window,
+        cwd: &str,
+        depth: usize,
+        expanded: bool,
+        active: bool,
+        descendants: Vec<String>,
         cx: &mut Context<Self>,
-    ) -> gpui::Div {
+    ) -> gpui::Stateful<gpui::Div> {
         let p = dsh(cx);
-        let expanded = !self.collapsed_workspaces.contains(&cwd);
-        let hovered = self.hovered_workspace.as_deref() == Some(cwd.as_str());
+        let hovered = self.hovered_workspace.as_deref() == Some(cwd);
         let menu_open = self
             .workspace_context_menu
             .as_ref()
-            .is_some_and(|(path, _)| path == &cwd);
+            .is_some_and(|(path, _)| path == cwd);
         // 官方：工作区操作只在展开时显示；无 hover 的设备上展开行常显。
         let revealed = expanded && (hovered || menu_open || !bridge::has_pointer_hover());
-        let active = self
-            .sessions
-            .iter()
-            .find(|session| Some(session.id.as_str()) == self.active_session.as_deref())
-            .is_some_and(|session| session.cwd == cwd);
-        let label = self.workspace_name(&cwd);
-        let for_hover = cwd.clone();
-        let for_toggle = cwd.clone();
-        let for_menu = cwd.clone();
-        let for_create = cwd.clone();
+        let label = self.workspace_name(cwd);
+        let for_hover = cwd.to_owned();
+        let for_toggle = cwd.to_owned();
+        let for_menu = cwd.to_owned();
+        let for_create = cwd.to_owned();
+        let for_drag = cwd.to_owned();
         let enabled = self.connected() && !self.creating_session;
         let folder_color = if active {
             p.state_business_primary
         } else {
             p.faint
         };
-        let mut group = column().w_full().gap(px(2.)).child(
-            row()
-                .id(gpui::ElementId::Name(
-                    format!("workspace-group-{cwd}").into(),
-                ))
-                .role(gpui::Role::Button)
-                .aria_label(label.clone())
-                .aria_expanded(expanded)
-                .tab_index(0)
-                .w_full()
-                .h(px(32.))
-                .flex_none()
-                .px(px(8.))
-                .gap(px(6.))
-                .rounded(px(8.))
-                .cursor_pointer()
-                .when(revealed, |element| element.bg(p.hover))
-                .hover(|style| style.bg(p.hover))
-                .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
-                    let next = inside.then_some(for_hover.clone());
-                    if this.hovered_workspace != next {
-                        this.hovered_workspace = next;
-                        cx.notify();
-                    }
-                }))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.workspace_context_menu = None;
-                    if !this.collapsed_workspaces.remove(&for_toggle) {
-                        this.collapsed_workspaces.insert(for_toggle.clone());
-                        // 官方：折叠 Workspace 会重置它的水位线。
-                        this.workspace_watermarks.remove(&for_toggle);
-                    }
-                    this.save_workspace_preferences(cx);
+        row()
+            .id(gpui::ElementId::Name(
+                format!("workspace-group-{cwd}").into(),
+            ))
+            .relative()
+            .role(gpui::Role::Button)
+            .aria_label(label.clone())
+            .aria_expanded(expanded)
+            .tab_index(0)
+            .w_full()
+            .h(px(32.))
+            .flex_none()
+            .pl(px(8. + depth as f32 * 12.))
+            .pr(px(8.))
+            .gap(px(6.))
+            .rounded(px(8.))
+            .cursor_pointer()
+            .when(self.is_dragged_workspace(cwd), |row| row.opacity(0.45))
+            .when(revealed, |element| element.bg(p.hover))
+            .hover(|style| style.bg(p.hover))
+            .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                let next = inside.then_some(for_hover.clone());
+                if this.hovered_workspace != next {
+                    this.hovered_workspace = next;
                     cx.notify();
-                }))
-                .on_mouse_down(
-                    gpui::MouseButton::Right,
-                    cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
-                        open_workspace_menu(this, &for_menu, event.position.y.into(), cx);
-                    }),
-                )
-                .child(
-                    div()
-                        .size(px(16.))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(if revealed {
-                            svg()
-                                .data(include_bytes!("../../assets/workspace-triangle.svg"))
-                                .size(px(14.))
-                                .text_color(p.secondary)
-                                .with_transformation(Transformation::default().with_rotation(
-                                    gpui::radians(if expanded {
-                                        std::f32::consts::FRAC_PI_2
-                                    } else {
-                                        0.
-                                    }),
-                                ))
-                        } else {
-                            svg()
-                                .data(if expanded {
-                                    include_bytes!("../../assets/workspace-folder-open.svg")
-                                        .as_slice()
-                                } else {
-                                    include_bytes!("../../assets/workspace-folder.svg").as_slice()
-                                })
-                                .size(px(16.))
-                                .text_color(folder_color)
-                        }),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(px(14.))
-                        .line_height(px(20.))
-                        .text_color(p.ink)
-                        .child(label),
-                )
-                .when(revealed, |element| {
-                    let for_more = cwd.clone();
-                    element
-                        .child(
-                            div()
-                                .id(gpui::ElementId::Name(
-                                    format!("workspace-more-{cwd}").into(),
-                                ))
-                                .role(gpui::Role::Button)
-                                .aria_label("工作区更多操作")
-                                .tab_index(0)
-                                .size(px(24.))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(4.))
-                                .cursor_pointer()
-                                .hover(|style| style.text_color(p.ink))
-                                .child(
-                                    svg()
-                                        .data(include_bytes!("../../assets/workspace-ellipsis.svg"))
-                                        .size(px(16.))
-                                        .text_color(p.secondary),
-                                )
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(
-                                        move |this, event: &gpui::MouseDownEvent, _, cx| {
-                                            cx.stop_propagation();
-                                            open_workspace_menu(
-                                                this,
-                                                &for_more,
-                                                event.position.y.into(),
-                                                cx,
-                                            );
-                                        },
-                                    ),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .id(gpui::ElementId::Name(
-                                    format!("workspace-new-session-{cwd}").into(),
-                                ))
-                                .role(gpui::Role::Button)
-                                .aria_label("在此工作区新建会话")
-                                .tab_index(0)
-                                .tab_stop(enabled)
-                                .size(px(24.))
-                                .ml(px(-4.))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(4.))
-                                .when(enabled, |element| {
-                                    element
-                                        .cursor_pointer()
-                                        .hover(|style| style.text_color(p.ink))
-                                })
-                                .when(!enabled, |element| element.opacity(0.4))
-                                .child(
-                                    svg()
-                                        .data(include_bytes!("../../assets/new-chat-outline.svg"))
-                                        .size(px(14.))
-                                        .text_color(p.secondary),
-                                )
-                                .on_click(cx.listener(move |this, _, w, cx| {
-                                    cx.stop_propagation();
-                                    this.workspace_context_menu = None;
-                                    this.collapsed_workspaces.remove(&for_create);
-                                    this.new_session_at(for_create.clone(), None, w, cx);
-                                })),
-                        )
+                }
+            }))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.workspace_context_menu = None;
+                if !this.collapsed_workspaces.remove(&for_toggle) {
+                    this.collapsed_workspaces.insert(for_toggle.clone());
+                    // 官方：折叠 Workspace 会重置它及所有后代的水位线。
+                    clear_workspace_watermarks(&mut this.workspace_watermarks, &descendants);
+                }
+                this.save_workspace_preferences(cx);
+                cx.notify();
+            }))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    this.press_workspace_row(&for_drag, event, cx);
                 }),
-        );
-        if expanded {
-            // 官方水位线：初始 5 行；前 50 条里最后一条正在运行、等待用户、
-            // 未读或在主视图打开的会话把水位线抬到它，之后不自行回落。
-            const WATERMARK_BASE: usize = 5;
-            let total = sessions.len();
-            let active = self.active_session.clone();
-            let mut limit = self
-                .workspace_watermarks
-                .get(&cwd)
-                .copied()
-                .unwrap_or(WATERMARK_BASE)
-                .max(WATERMARK_BASE);
-            for (index, session) in sessions.iter().take(50).enumerate() {
-                let notable = self.session_indicator(&session.id).0
-                    != crate::sessions::SessionIndicator::Idle
-                    || active.as_deref() == Some(session.id.as_str());
-                if notable {
-                    limit = limit.max(index + 1);
-                }
-            }
-            self.workspace_watermarks.insert(cwd.clone(), limit);
-            // 当前选中的空白「新会话」是水位线之外的额外行。
-            let extra_blank = active.as_deref().and_then(|id| {
-                sessions
-                    .iter()
-                    .enumerate()
-                    .find(|(index, session)| session.id == id && session.blank && *index >= limit)
-                    .map(|(index, _)| index)
-            });
-            for (index, session) in sessions.into_iter().enumerate() {
-                if index < limit || Some(index) == extra_blank {
-                    group = group.child(self.render_session_row(session, w, cx));
-                }
-            }
-            let remaining = total.saturating_sub(limit);
-            if remaining > 0 || limit > WATERMARK_BASE {
-                // 剩余五条或更少时一次显示全部；最后一批之后提供「收起」。
-                let expand = remaining > 0;
-                let target = if remaining <= 5 { total } else { limit + 5 };
-                let for_watermark = cwd.clone();
-                group = group.child(
-                    div()
-                        .id(gpui::ElementId::Name(
-                            format!("workspace-watermark-{cwd}").into(),
-                        ))
-                        .role(gpui::Role::Button)
-                        .tab_index(0)
-                        .w_full()
-                        .h(px(28.))
-                        .pl(px(32.))
-                        .flex()
-                        .items_center()
-                        .rounded(px(4.))
-                        .cursor_pointer()
-                        .text_size(px(12.))
-                        .text_color(p.label_tertiary)
-                        .hover(|style| style.text_color(p.label_primary))
-                        .child(if expand {
-                            format!("展开其余（{remaining}）")
-                        } else {
-                            "收起".to_owned()
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if expand {
-                                this.workspace_watermarks
-                                    .insert(for_watermark.clone(), target);
+            )
+            .when_some(self.workspace_drop_half(cwd), |row, half| {
+                let line = div()
+                    .absolute()
+                    .left(px(6.))
+                    .right(px(6.))
+                    .h(px(2.))
+                    .rounded_full()
+                    .bg(p.brand_accent);
+                row.child(match half {
+                    crate::session_order::DropHalf::Before => line.top(px(-1.)),
+                    crate::session_order::DropHalf::After => line.bottom(px(-1.)),
+                })
+            })
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, w, cx| {
+                    w.prevent_default();
+                    open_workspace_menu(this, &for_menu, event.position.y.into(), cx);
+                }),
+            )
+            .child(
+                div()
+                    .size(px(16.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(if revealed {
+                        svg()
+                            .data(include_bytes!("../../assets/workspace-triangle.svg"))
+                            .size(px(14.))
+                            .text_color(p.secondary)
+                            .with_transformation(Transformation::default().with_rotation(
+                                gpui::radians(if expanded {
+                                    std::f32::consts::FRAC_PI_2
+                                } else {
+                                    0.
+                                }),
+                            ))
+                    } else {
+                        svg()
+                            .data(if expanded {
+                                include_bytes!("../../assets/workspace-folder-open.svg").as_slice()
                             } else {
-                                this.workspace_watermarks.remove(&for_watermark);
-                            }
-                            cx.notify();
-                        })),
-                );
+                                include_bytes!("../../assets/workspace-folder.svg").as_slice()
+                            })
+                            .size(px(16.))
+                            .text_color(folder_color)
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(14.))
+                    .line_height(px(20.))
+                    .text_color(p.ink)
+                    .child(label),
+            )
+            .when(revealed, |element| {
+                let for_more = cwd.to_owned();
+                element
+                    .child(
+                        div()
+                            .id(gpui::ElementId::Name(
+                                format!("workspace-more-{cwd}").into(),
+                            ))
+                            .role(gpui::Role::Button)
+                            .aria_label("工作区更多操作")
+                            .tab_index(0)
+                            .size(px(24.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .hover(|style| style.text_color(p.ink))
+                            .child(
+                                svg()
+                                    .data(include_bytes!("../../assets/workspace-ellipsis.svg"))
+                                    .size(px(16.))
+                                    .text_color(p.secondary),
+                            )
+                            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, w, cx| {
+                                if event.is_right_click()
+                                    || super::session_context_menu::mac_control_click(
+                                        event.modifiers(),
+                                    )
+                                {
+                                    return;
+                                }
+                                w.prevent_default();
+                                open_workspace_menu(this, &for_more, event.position().y.into(), cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(gpui::ElementId::Name(
+                                format!("workspace-new-session-{cwd}").into(),
+                            ))
+                            .role(gpui::Role::Button)
+                            .aria_label("在此工作区新建会话")
+                            .tab_index(0)
+                            .tab_stop(enabled)
+                            .size(px(24.))
+                            .ml(px(-4.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(4.))
+                            .when(enabled, |element| {
+                                element
+                                    .cursor_pointer()
+                                    .hover(|style| style.text_color(p.ink))
+                            })
+                            .when(!enabled, |element| element.opacity(0.4))
+                            .child(
+                                svg()
+                                    .data(include_bytes!("../../assets/new-chat-outline.svg"))
+                                    .size(px(14.))
+                                    .text_color(p.secondary),
+                            )
+                            .on_click(cx.listener(move |this, _, w, cx| {
+                                cx.stop_propagation();
+                                this.workspace_context_menu = None;
+                                this.collapsed_workspaces.remove(&for_create);
+                                this.new_session_at(for_create.clone(), None, w, cx);
+                            })),
+                    )
+            })
+    }
+
+    fn render_workspace_sessions(
+        &mut self,
+        group: WorkspaceGroup,
+        depth: usize,
+        w: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let p = dsh(cx);
+        let WorkspaceGroup { cwd, sessions } = group;
+        let mut rendered = column().w_full().gap(px(2.));
+        // 官方水位线：初始 5 行；前 50 条里最后一条正在运行、等待用户、
+        // 未读或在主视图打开的会话把水位线抬到它，之后不自行回落。
+        const WATERMARK_BASE: usize = 5;
+        let total = sessions.len();
+        let active = self.active_session.clone();
+        let mut limit = self
+            .workspace_watermarks
+            .get(&cwd)
+            .copied()
+            .unwrap_or(WATERMARK_BASE)
+            .max(WATERMARK_BASE);
+        for (index, session) in sessions.iter().take(50).enumerate() {
+            let notable = self.session_indicator(&session.id).0
+                != crate::sessions::SessionIndicator::Idle
+                || active.as_deref() == Some(session.id.as_str());
+            if notable {
+                limit = limit.max(index + 1);
             }
         }
-        group
+        self.workspace_watermarks.insert(cwd.clone(), limit);
+        // 当前选中的空白「新会话」是水位线之外的额外行。
+        let extra_blank = active.as_deref().and_then(|id| {
+            sessions
+                .iter()
+                .enumerate()
+                .find(|(index, session)| session.id == id && session.blank && *index >= limit)
+                .map(|(index, _)| index)
+        });
+        for (index, session) in sessions.into_iter().enumerate() {
+            if index < limit || Some(index) == extra_blank {
+                rendered = rendered.child(self.render_session_row(session, depth, w, cx));
+            }
+        }
+        let remaining = total.saturating_sub(limit);
+        if remaining > 0 || limit > WATERMARK_BASE {
+            // 剩余五条或更少时一次显示全部；最后一批之后提供「收起」。
+            let expand = remaining > 0;
+            let target = if remaining <= 5 { total } else { limit + 5 };
+            let for_watermark = cwd.clone();
+            rendered = rendered.child(
+                div()
+                    .id(gpui::ElementId::Name(
+                        format!("workspace-watermark-{cwd}").into(),
+                    ))
+                    .role(gpui::Role::Button)
+                    .tab_index(0)
+                    .w_full()
+                    .h(px(28.))
+                    .pl(px(32. + depth as f32 * 12.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .text_color(p.label_tertiary)
+                    .hover(|style| style.text_color(p.label_primary))
+                    .child(if expand {
+                        format!("展开其余（{remaining}）")
+                    } else {
+                        "收起".to_owned()
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if expand {
+                            this.workspace_watermarks
+                                .insert(for_watermark.clone(), target);
+                        } else {
+                            this.workspace_watermarks.remove(&for_watermark);
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        rendered
     }
 
     pub(super) fn render_workspace_context_menu(
         &self,
         cwd: String,
-        pointer_y: f32,
-        w: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let p = dsh(cx);
         let for_rename = cwd.clone();
         let for_reveal = cwd.clone();
-        let height = f32::from(w.viewport_size().height);
-        let top = (pointer_y - 12.).clamp(52., (height - 142.).max(52.));
         column()
             .id("workspace-context-menu")
-            .absolute()
-            .left(px(self.sidebar_width - 10.))
-            .top(px(top))
             .w(px(216.))
             .gap_0()
             .p(px(4.))
@@ -1027,6 +1161,7 @@ impl DshApp {
         if !self.pinned_sessions.remove(id) {
             self.pinned_sessions.insert(id.to_owned());
         }
+        self.sync_session_pin_order(id);
         self.save_workspace_preferences(cx);
         cx.notify();
     }

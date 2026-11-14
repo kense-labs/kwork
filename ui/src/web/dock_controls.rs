@@ -438,7 +438,6 @@ impl DshApp {
             .child(
                 canvas(
                     move |bounds, w, cx| {
-                        let mut state = measured.state.get();
                         let clipped = bounds.intersect(&w.content_mask().bounds);
                         let bounds = (clipped.size.width > px(0.) && clipped.size.height > px(0.))
                             .then_some(bounds);

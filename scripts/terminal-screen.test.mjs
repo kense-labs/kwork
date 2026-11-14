@@ -80,6 +80,33 @@ test('projects fragmented ANSI, wide characters, alternate screens and scrollbac
   assert.equal(terminalFrame(screen).cursor, null);
 });
 
+test('routes agent input through one sequenced stream with physical-input takeover only', async () => {
+  const commands = [];
+  globalThis.window = { __TAURI__: { core: { invoke: async (name, args) => {
+    await new Promise(resolve => setImmediate(resolve));
+    commands.push([name, args]);
+  } } } };
+  const screen = createTerminal();
+  await writeScreen(screen, 'abc\x1b[6n');
+  bindTerminal(screen, 'agent', 'session');
+  await writeScreen(screen, '\x1b[?1004h');
+  fitTerminal(screen, 12, 4);
+  terminalFocus(screen, true);
+  terminalInput(screen, 'typed');
+  await screen.commands;
+  // A repeated state frame confirms the same stream; it is not a reattach.
+  bindTerminal(screen, 'agent', 'session');
+  terminalInput(screen, '!');
+  await screen.commands;
+  assert.deepEqual(commands, [
+    ['agent_terminal_input', { terminalId: 'agent', sessionId: 'session', sequence: 1, input: { type: 'write', data: '\x1b[1;4R', typed: false } }],
+    ['agent_terminal_input', { terminalId: 'agent', sessionId: 'session', sequence: 2, input: { type: 'resize', cols: 12, rows: 4, typed: false } }],
+    ['agent_terminal_input', { terminalId: 'agent', sessionId: 'session', sequence: 3, input: { type: 'write', data: '\x1b[I', typed: false } }],
+    ['agent_terminal_input', { terminalId: 'agent', sessionId: 'session', sequence: 4, input: { type: 'write', data: 'typed', typed: true } }],
+    ['agent_terminal_input', { terminalId: 'agent', sessionId: 'session', sequence: 5, input: { type: 'write', data: '!', typed: true } }],
+  ]);
+  unbindTerminal(screen);
+});
 test('serializes terminal replies, resize, raw input and bracketed paste', async () => {
   const commands = [];
   globalThis.window = { __TAURI__: { core: { invoke: async (name, args) => {

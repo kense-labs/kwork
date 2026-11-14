@@ -107,14 +107,53 @@ function repairGoGrammar(definitions) {
   });
 }
 
+const languageAliases = new Map([
+  ['typescript', 'typescript'], ['ts', 'typescript'], ['tsx', 'typescript'],
+  ['javascript', 'typescript'], ['js', 'typescript'], ['jsx', 'typescript'],
+  ['shellscript', 'shellscript'], ['bash', 'shellscript'], ['sh', 'shellscript'],
+  ['shell', 'shellscript'], ['zsh', 'shellscript'], ['json', 'json'], ['jsonc', 'json'],
+  ['python', 'python'], ['py', 'python'], ['ruby', 'ruby'], ['rb', 'ruby'],
+  ['rust', 'rust'], ['rs', 'rust'], ['csharp', 'csharp'], ['cs', 'csharp'],
+  ['yaml', 'yaml'], ['yml', 'yaml'], ['markdown', 'markdown'], ['md', 'markdown'],
+  ['bat', 'bat'], ['batch', 'bat'], ['powershell', 'powershell'], ['ps1', 'powershell'], ['ps', 'powershell'],
+  ['properties', 'ini'], ['env', 'dotenv'], ['patch', 'diff'],
+  ['latex', 'latex'], ['tex', 'latex'], ['bibtex', 'bibtex'], ['bib', 'bibtex'],
+  ['asciidoc', 'asciidoc'], ['adoc', 'asciidoc'], ['julia', 'julia'], ['jl', 'julia'],
+  ['clojure', 'clojure'], ['clj', 'clojure'], ['erlang', 'erlang'], ['erl', 'erlang'],
+  ['elixir', 'elixir'], ['ex', 'elixir'], ['exs', 'elixir'], ['haskell', 'haskell'], ['hs', 'haskell'],
+  ['fsharp', 'fsharp'], ['fs', 'fsharp'], ['fsi', 'fsharp'], ['fsx', 'fsharp'], ['vbnet', 'vb'],
+  ['perl', 'perl'], ['pl', 'perl'], ['pm', 'perl'], ['verilog', 'verilog'], ['v', 'verilog'],
+  ['systemverilog', 'system-verilog'], ['sv', 'system-verilog'], ['svh', 'system-verilog'],
+  ['graphql', 'graphql'], ['gql', 'graphql'], ['proto', 'proto'], ['protobuf', 'proto'],
+  ['hcl', 'hcl'], ['tf', 'hcl'], ['tfvars', 'hcl'], ['make', 'make'], ['makefile', 'make'], ['mk', 'make'],
+  ['groovy', 'groovy'], ['gradle', 'groovy'],
+]);
+
+function grammarName(language) {
+  return languageAliases.get(language.toLowerCase()) ?? language.toLowerCase();
+}
+
+function repairPerlGrammar(definitions) {
+  // Keep the official JavaScript-engine match fix for `split /.../m` and list operators.
+  return definitions.map(grammar => {
+    if (grammar.name !== 'perl') return grammar;
+    const begin = '(?<=[\\&({|~]|if|unless|^)\\s*((/))';
+    const words = ['if', 'unless', 'split', 'grep', 'and', 'or', 'not', 'return', 'while', 'until']
+      .flatMap(word => [`[^\\w$@%&>:-]${word}`, `^${word}`]).join('|');
+    return { ...grammar, patterns: grammar.patterns.map(rule => rule.begin === begin
+      ? { ...rule, begin: `(?<=[\\&({|~,!=]|=>|^|${words})\\s*((/))` } : rule) };
+  });
+}
+
 function load(language) {
-  const grammar = language === 'javascript' ? 'typescript' : language;
+  const grammar = grammarName(language);
   if (!pending.has(grammar)) {
     const getGrammar = grammars.get(grammar);
     if (!getGrammar) return undefined;
     pending.set(grammar, Promise.all([highlighter(), getGrammar()]).then(([instance, module]) => {
       if (!instance.getLoadedLanguages().includes(grammar)) {
-        instance.loadLanguageSync(grammar === 'go' ? repairGoGrammar(module.default) : module.default);
+        instance.loadLanguageSync(grammar === 'go' ? repairGoGrammar(module.default)
+          : grammar === 'perl' ? repairPerlGrammar(module.default) : module.default);
       }
       return instance;
     }));
@@ -153,7 +192,7 @@ export class HighlightSession {
       this.#state = undefined;
     }
     const tokenize = text => instance.codeToTokensBase(text, {
-      lang: language === 'javascript' ? 'typescript' : language,
+      lang: grammarName(language),
       theme: 'css-variables',
       tokenizeMaxLineLength: 1000,
       grammarState: this.#state,

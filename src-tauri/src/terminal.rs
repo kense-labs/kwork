@@ -211,7 +211,6 @@ pub async fn start_terminal(
         .into_iter()
         .find(|profile| shell_path.as_ref().is_none_or(|path| path == &profile.path))
         .ok_or("所选 Shell 在当前执行环境中不可用")?;
-
     let size = terminal_size(cols, rows);
     let pair = native_pty_system()
         .openpty(size)

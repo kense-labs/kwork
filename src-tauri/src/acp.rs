@@ -1,11 +1,11 @@
 //! ACP stdio transport and Tauri commands for DeepSeek Harness.
 
 use crate::embedded_script::{cached_module, write_module};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command as StdCommand, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::{AppHandle, Emitter, State};
@@ -15,7 +15,10 @@ use tokio::sync::{Mutex, oneshot};
 
 const EVENT_NAME: &str = "acp-event";
 const SESSION_BRIDGE: &str = include_str!("../../services/acp-session-bridge.mjs");
+const SESSION_READ_STATUS: &str = include_str!("../../services/session-read-status.mjs");
 const ASK_USER_TOOL: &str = include_str!("../../services/vendor/dsh-tool-ask-user/index.mjs");
+const AGENT_TERMINAL_BRIDGE: &str = include_str!("../../services/agent-terminal-bridge.mjs");
+const TERMINAL_INSTALLER: &[u8] = include_bytes!("../../services/install-terminal-controller.mjs");
 const SCHEDULE_RUNTIME: &[u8] = include_bytes!("../../services/vendor/dsh-schedule/index.mjs");
 
 /// Owns the single ACP connection shared by all windows and sessions.
@@ -33,6 +36,7 @@ struct AcpConnection {
     session_bridge: bool,
     // Kept alive for as long as the child may still be reading the module.
     _session_bridge_script: Option<tempfile::NamedTempFile>,
+    _agent_terminal_script: Option<tempfile::NamedTempFile>,
 }
 
 impl AcpConnection {
@@ -44,7 +48,7 @@ impl AcpConnection {
         let built = service_path.join("apps/cli/lib/bin.js");
         let source = service_path.join("apps/cli/src/bin.ts");
         let node = resolve_node();
-        let mut command = Command::new(node);
+        let mut command = Command::new(&node);
         command.current_dir(service_path);
         let (entry, profile) = if built.is_file() {
             (built, service_path.join("apps/cli/lib/profile-boot.js"))
@@ -59,10 +63,19 @@ impl AcpConnection {
         };
         let session_bridge = profile.is_file();
         let mut bridge_script = None;
+        let mut agent_terminal_script = None;
         if session_bridge {
+            let terminal_module = prepare_terminal_module(&node, service_path)?;
             let ask_tool =
                 serde_json::to_string(ASK_USER_TOOL).map_err(|error| error.to_string())?;
-            let bridge = format!("const bundledAskUser = {ask_tool};\n{SESSION_BRIDGE}");
+            let terminal_script =
+                write_module("agent-terminal-bridge", AGENT_TERMINAL_BRIDGE.as_bytes())?;
+            let terminal_import = serde_json::to_string(&terminal_script.path().to_string_lossy())
+                .map_err(|error| error.to_string())?;
+            let bridge = format!(
+                "{SESSION_READ_STATUS}\nconst bundledAskUser = {ask_tool};\n{SESSION_BRIDGE}"
+            )
+            .replace("'./agent-terminal-bridge.mjs'", &terminal_import);
             let script = write_module("acp-session-bridge", bridge.as_bytes())?;
             // With `--eval` the label "dsh-gpui-acp" occupied argv[1] and the
             // bridge read service/profile from process.argv.slice(2). A real
@@ -73,6 +86,19 @@ impl AcpConnection {
                 .arg(service_path)
                 .arg(profile)
                 .env("KWORK_WORKSPACE", workspace)
+                .env("KWORK_TERMINAL_MODULE", &terminal_module)
+                .env(
+                    "KWORK_TERMINAL_RUNTIME",
+                    // <target>/v3/package/lib/index.js -> <target>/v3, the
+                    // generation that owns node_modules for the linked terminal
+                    // packages. Two parents used to stop at `package/`, so the
+                    // bridge looked for `<...>/package/node_modules/...` and
+                    // crashed the whole ACP host on startup.
+                    terminal_module
+                        .ancestors()
+                        .nth(3)
+                        .ok_or("Agent 终端运行时路径无效")?,
+                )
                 .env(
                     "KWORK_WORKSPACE_PREFERENCES",
                     crate::preferences::preferences_path(&app)?,
@@ -90,6 +116,7 @@ impl AcpConnection {
                 }
             }
             bridge_script = Some(script);
+            agent_terminal_script = Some(terminal_script);
         } else {
             command.arg(entry).args(["--profile", "acp"]);
         }
@@ -114,6 +141,7 @@ impl AcpConnection {
             stopping: AtomicBool::new(false),
             session_bridge,
             _session_bridge_script: bridge_script,
+            _agent_terminal_script: agent_terminal_script,
         });
 
         tokio::spawn(read_stdout(connection.clone(), stdout, app.clone()));
@@ -215,6 +243,47 @@ async fn read_stdout(
     }
 }
 
+fn service_digest(service: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(service.to_string_lossy().as_bytes()))[..16].to_owned()
+}
+
+fn prepare_terminal_module(node: &std::ffi::OsStr, service: &Path) -> Result<PathBuf, String> {
+    let home = std::env::var_os("DSH_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".dsh")))
+        .ok_or("无法确定 Harness 主目录，请设置 DSH_HOME")?;
+    let target = home.join("profiles/acp/.kwork-runtime").join(format!(
+        "terminal-controller-{}-0.2.2-rc.3",
+        service_digest(service)
+    ));
+    let adapter = cached_module("agent-terminal-bridge", AGENT_TERMINAL_BRIDGE.as_bytes())?;
+    let contents = String::from_utf8_lossy(TERMINAL_INSTALLER).replace(
+        "'./agent-terminal-bridge.mjs'",
+        &serde_json::to_string(&adapter.to_string_lossy()).map_err(|error| error.to_string())?,
+    ) + "\nconsole.log(await main());\n";
+    let installer = write_module("install-terminal-controller-resolved", contents.as_bytes())?;
+    let output = StdCommand::new(node)
+        .arg(installer.path())
+        .arg(&target)
+        .arg(service)
+        .arg(home)
+        .current_dir(service)
+        .output()
+        .map_err(|error| format!("无法准备 Agent 终端模块：{error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Agent 终端模块准备失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let entry = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
+    let entry = PathBuf::from(entry.trim());
+    if !entry.is_file() {
+        return Err("Agent 终端模块入口不存在。".into());
+    }
+    Ok(entry)
+}
 async fn route_message(connection: &Arc<AcpConnection>, app: &AppHandle, message: Value) {
     let method = message.get("method").and_then(Value::as_str);
     let id = message.get("id").cloned();
@@ -264,6 +333,38 @@ async fn route_message(connection: &Arc<AcpConnection>, app: &AppHandle, message
                 if let Err(error) = app.emit_to("main", EVENT_NAME, params) {
                     eprintln!("dsh-gpui plugin install event emission: {error}");
                 }
+            }
+        }
+        (Some("_dsh/gpui/session-read-changed"), None)
+            if connection.session_bridge && !connection.stopping.load(Ordering::Acquire) =>
+        {
+            if let Some(state) = message.get("params").filter(|value| value.is_object()) {
+                emit(app, "session_read", state.clone());
+            }
+        }
+        (Some("_dsh/gpui/terminal-changed"), None)
+            if connection.session_bridge && !connection.stopping.load(Ordering::Acquire) =>
+        {
+            if let Some(params) = message.get("params").filter(|value| value.is_object())
+                && let Err(error) = app.emit_to(
+                    "main",
+                    EVENT_NAME,
+                    json!({
+                        "kind": "agent_terminals", "sessionId": params["sessionId"],
+                        "terminals": params["terminals"],
+                    }),
+                )
+            {
+                eprintln!("dsh-gpui terminal roster event emission: {error}");
+            }
+        }
+        (Some("_dsh/gpui/terminal-frame"), None)
+            if connection.session_bridge && !connection.stopping.load(Ordering::Acquire) =>
+        {
+            if let Some(params) = message.get("params").filter(|value| value.is_object())
+                && let Err(error) = app.emit_to("main", EVENT_NAME, params)
+            {
+                eprintln!("dsh-gpui terminal frame event emission: {error}");
             }
         }
         (Some("_dsh/gpui/schedule-changed"), None)
@@ -352,6 +453,8 @@ pub struct StartServiceReply {
     pub model_providers: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_archive: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_reading: Option<Value>,
 }
 
 #[tauri::command]
@@ -399,6 +502,15 @@ pub async fn start_service(
     } else {
         None
     };
+    let session_reading = if connection.session_bridge {
+        Some(
+            connection
+                .request("_dsh/gpui/session/read-state", json!({"action":"snapshot"}))
+                .await?,
+        )
+    } else {
+        None
+    };
     emit(
         &app,
         "service",
@@ -411,7 +523,30 @@ pub async fn start_service(
         service_path: service_path.display().to_string(),
         model_providers,
         workspace_archive,
+        session_reading,
     })
+}
+
+#[tauri::command]
+pub(crate) async fn session_read_state(
+    webview: tauri::Webview,
+    session_id: Option<String>,
+    action: Option<Value>,
+    service: State<'_, AcpService>,
+) -> Result<Value, String> {
+    if webview.label() != "main" {
+        return Err("session-status/unavailable".into());
+    }
+    let connection = connection(&service).await?;
+    if !connection.session_bridge {
+        return Err("当前服务不支持会话阅读状态。".into());
+    }
+    connection
+        .request(
+            "_dsh/gpui/session/read-state",
+            json!({"sessionId": session_id, "action": action}),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -685,6 +820,30 @@ pub async fn goal_state(
         .request(
             "_dsh/gpui/session/goal-state",
             json!({"sessionId": session_id}),
+        )
+        .await
+}
+
+/// Read or save root-session Team mode through the Host's agentTeams service.
+#[tauri::command]
+pub async fn team_state(
+    webview: tauri::Webview,
+    session_id: String,
+    enabled: Option<bool>,
+    request: Option<u64>,
+    service: State<'_, AcpService>,
+) -> Result<Value, String> {
+    if webview.label() != "main" || session_id.is_empty() {
+        return Err("team/unavailable".into());
+    }
+    let connection = connection(&service).await?;
+    if !connection.session_bridge {
+        return Ok(json!({"available": false}));
+    }
+    connection
+        .request(
+            "_dsh/gpui/session/team-state",
+            json!({"sessionId": session_id, "enabled": enabled, "request": request}),
         )
         .await
 }
@@ -1303,6 +1462,110 @@ impl SessionFlush {
         }
         Ok(())
     }
+}
+
+#[tauri::command]
+pub(crate) async fn agent_terminal_watch(
+    session_id: String,
+    request: Option<u64>,
+    active: Option<serde_json::Value>,
+    service: State<'_, AcpService>,
+) -> Result<Value, String> {
+    connection(&service)
+        .await?
+        .request(
+            "_dsh/gpui/terminal-watch",
+            json!({"sessionId": session_id, "request": request, "active": active}),
+        )
+        .await
+}
+
+#[tauri::command]
+pub(crate) async fn agent_terminal_attach(
+    session_id: String,
+    terminal_id: String,
+    service: State<'_, AcpService>,
+) -> Result<Value, String> {
+    connection(&service)
+        .await?
+        .request(
+            "_dsh/gpui/terminal-attach",
+            json!({"sessionId": session_id, "terminalId": terminal_id}),
+        )
+        .await
+}
+
+#[tauri::command]
+pub(crate) async fn agent_terminal_detach(
+    session_id: String,
+    terminal_id: String,
+    service: State<'_, AcpService>,
+) -> Result<Value, String> {
+    connection(&service)
+        .await?
+        .request(
+            "_dsh/gpui/terminal-detach",
+            json!({"sessionId": session_id, "terminalId": terminal_id}),
+        )
+        .await
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub(crate) enum AgentTerminalInput {
+    Write { data: String, typed: bool },
+    Resize { cols: u16, rows: u16 },
+}
+
+#[tauri::command]
+pub(crate) async fn agent_terminal_input(
+    session_id: String,
+    terminal_id: String,
+    sequence: u64,
+    input: AgentTerminalInput,
+    service: State<'_, AcpService>,
+) -> Result<Value, String> {
+    let mut params = serde_json::to_value(input).map_err(|error| error.to_string())?;
+    params["sessionId"] = session_id.into();
+    params["terminalId"] = terminal_id.into();
+    params["sequence"] = sequence.into();
+    connection(&service)
+        .await?
+        .request("_dsh/gpui/terminal-input", params)
+        .await
+}
+
+#[tauri::command]
+pub(crate) async fn agent_terminal_rename(
+    session_id: String,
+    terminal_id: String,
+    title: String,
+    service: State<'_, AcpService>,
+) -> Result<Value, String> {
+    connection(&service)
+        .await?
+        .request(
+            "_dsh/gpui/terminal-rename",
+            json!({
+                "sessionId": session_id, "terminalId": terminal_id, "title": title,
+            }),
+        )
+        .await
+}
+
+#[tauri::command]
+pub(crate) async fn agent_terminal_close(
+    session_id: String,
+    terminal_id: String,
+    service: State<'_, AcpService>,
+) -> Result<Value, String> {
+    connection(&service)
+        .await?
+        .request(
+            "_dsh/gpui/terminal-close",
+            json!({"sessionId": session_id, "terminalId": terminal_id}),
+        )
+        .await
 }
 
 async fn connection(service: &AcpService) -> Result<Arc<AcpConnection>, String> {

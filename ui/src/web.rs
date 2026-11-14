@@ -1,6 +1,7 @@
 //! GPUI application, WASM lifecycle, and Tauri event handling.
 
 use crate::{
+    agent_terminals::AgentTerminalInfo,
     anim,
     anim::{FISH_SWIM, menu_in, modal_in, pending_dot},
     bridge,
@@ -11,7 +12,7 @@ use crate::{
     files::{
         FileListing, FileToken, WorkspaceFile, active_file_token, file_mention, replace_token,
     },
-    markdown::{Block, InlinePart, code_spans, inline_parts, parse_markdown},
+    markdown::{Block, InlinePart, inline_parts, parse_markdown, parse_markdown_settled},
     right_dock::{
         DockFrame, DockPaneId, DockSlide, DockSurface, RightPanelTab, TerminalCheckpoint,
     },
@@ -122,9 +123,14 @@ pub fn start() {
             if let Ok(event) = serde_json::from_str::<Value>(&payload) {
                 with_host(|host| {
                     host.app.update(|cx| {
-                        let _ = host.window.update(cx, |app, w, cx| {
-                            app.handle_event(event, w, cx);
-                        });
+                        if let Err(error) = host.window.update(cx, |app, w, cx| {
+                            app.handle_event(event.clone(), w, cx);
+                        }) {
+                            bridge::report_async_error(
+                                "session event window update",
+                                &error.to_string(),
+                            );
+                        }
                     });
                 });
             }
@@ -159,6 +165,8 @@ pub fn start() {
                 host.app.update(|cx| {
                     let _ = host.window.update(cx, |app, _, cx| {
                         app.cancel_dock_tab_drag(cx);
+                        app.cancel_session_drag(cx);
+                        app.cancel_workspace_drag(cx);
                         app.cancel_float_drag(cx);
                         for tab in app.sidebar.documents.values() {
                             tab.selection.cancel_drag();
@@ -259,6 +267,8 @@ pub fn start() {
                 invoke("workspace_applications", json!({}));
             }
             invoke("load_developer_tools", json!({}));
+            // Durable history remains readable when the ACP runtime cannot start.
+            invoke("list_local_sessions", json!({}));
             invoke("start_service", json!({}));
         });
     });
@@ -266,6 +276,29 @@ pub fn start() {
 
 fn with_host<R>(operation: impl FnOnce(&mut Host) -> R) -> Option<R> {
     HOST.with_borrow_mut(|host| host.as_mut().map(operation))
+}
+
+/// Render owns the DshApp entity lease. Promise resolution is scheduled through
+/// the app executor, then a window task, without borrowing Host or the entity.
+fn with_host_after_render(operation: impl FnOnce(&mut gpui::Context<DshApp>) + 'static) {
+    HOST.with_borrow(|host| {
+        if let Some(host) = host.as_ref() {
+            let window = host.window;
+            host.app
+                .spawn(async move |cx| {
+                    let _ = window.update(cx, |_, w, cx| {
+                        w.spawn(cx, async move |cx| {
+                            let view = cx.window_handle().downcast::<DshApp>();
+                            if let Some(view) = view {
+                                let _ = view.update(cx, |_, _, cx| operation(cx));
+                            }
+                        })
+                        .detach();
+                    });
+                })
+                .detach();
+        }
+    });
 }
 
 pub(crate) fn invoke(command: &'static str, args: Value) {
@@ -326,6 +359,7 @@ pub(crate) enum SettingsPage {
     Credentials,
     General,
     Appearance,
+    WebSearch,
     Model,
     Providers,
     Plugins,
@@ -346,6 +380,7 @@ pub(crate) enum ComposerMenu {
     Model,
     ModelChoices,
     ReasoningChoices,
+    Team,
     Permission,
     PermissionChoices,
     CommandModels,
@@ -357,7 +392,7 @@ impl ComposerMenu {
     fn is_model(self) -> bool {
         matches!(
             self,
-            Self::Model | Self::ModelChoices | Self::ReasoningChoices
+            Self::Model | Self::ModelChoices | Self::ReasoningChoices | Self::Team
         )
     }
 
@@ -422,11 +457,11 @@ struct SessionRename {
     error: Option<String>,
 }
 
-/// One embedded PTY tab in the right dock.
 pub(crate) struct TerminalTab {
     id: String,
     title: Option<String>,
     requested_shell: Option<String>,
+    agent: Option<AgentTerminalInfo>,
     connection: TerminalConnection,
     sequence: u64,
     pending: Vec<terminal::TerminalUpdate>,
@@ -450,7 +485,22 @@ enum TerminalConnection {
     },
 }
 
+impl crate::agent_terminals::TerminalIdentity for TerminalTab {
+    fn terminal_id(&self) -> &str {
+        &self.id
+    }
+}
 impl TerminalTab {
+    fn apply_frame(&mut self, frame: terminal::TerminalFrame, cx: &mut App) -> bool {
+        self.apply_update(
+            terminal::TerminalUpdate {
+                sequence: frame.sequence,
+                operation: terminal::TerminalOperation::Output { data: frame.data },
+            },
+            cx,
+        )
+    }
+
     fn apply_update(&mut self, update: terminal::TerminalUpdate, cx: &mut App) -> bool {
         if update.sequence <= self.sequence {
             return false;
@@ -477,6 +527,21 @@ impl TerminalTab {
         self.connection = TerminalConnection::Exited { code };
         self.screen.update(cx, |screen, cx| screen.unbind(cx));
     }
+
+    fn apply_agent_state(&mut self, info: AgentTerminalInfo, writable: bool, cx: &mut App) {
+        self.screen.update(cx, |screen, cx| {
+            screen.observe_grid(info.cols, info.rows, cx)
+        });
+        self.title = Some(info.title.clone());
+        self.agent = Some(info.clone());
+        if info.state != "running" {
+            self.end(info.exit_code, cx);
+        } else if writable && !matches!(self.connection, TerminalConnection::Opening { .. }) {
+            self.connection = TerminalConnection::Connected;
+        } else if !writable {
+            self.screen.update(cx, |screen, cx| screen.unbind(cx));
+        }
+    }
 }
 
 #[derive(Default)]
@@ -489,6 +554,7 @@ struct SessionSidebar {
     plans: HashMap<u64, plan::PlanPreview>,
     tab_strips: HashMap<DockPaneId, dock_strip::DockStrip>,
     terminals: HashMap<u64, TerminalTab>,
+    agent_controlled: std::collections::BTreeSet<String>,
     browsers: HashMap<u64, browser::BrowserTab>,
 }
 
@@ -628,8 +694,11 @@ pub(crate) struct DshApp {
     pub(crate) sessions: Vec<SessionSummary>,
     pub(crate) active_session: Option<String>,
     conversation: Conversation,
+    trajectory: trajectory::TrajectoryView,
     parked_conversations: HashMap<String, Conversation>,
     session_activity: HashMap<String, SessionActivity>,
+    session_reading: crate::session_reading::SessionReading,
+    reading_ack_scheduled: bool,
     running_subagents: HashMap<String, String>,
     /// Read-only child transcript currently open, and the parent to return to.
     subagent_view: Option<subagent_view::SubagentView>,
@@ -741,14 +810,22 @@ pub(crate) struct DshApp {
     /// Full-screen picture opened from a user bubble (official image dialog).
     pub(crate) image_viewer: Option<ImageViewer>,
     confirm_permission: Option<String>,
+    team_disable: Option<team_mode::TeamDisableRequest>,
     pub(crate) full_access_acknowledged: bool,
     pub(crate) stats_dialog: Option<StatsDialog>,
     stats_dialog_bounds: ComposerAnchor,
     pub(crate) workspace_group_by: WorkspaceGroupBy,
     pub(crate) workspace_order_by: WorkspaceOrderBy,
+    session_order_by_account: HashMap<String, Vec<String>>,
+    session_drag_gesture: Option<session_drag::SessionDragGesture>,
+    session_row_geometry: session_drag::SessionRowGeometry,
+    workspace_order: Vec<String>,
+    workspace_drag_gesture: Option<workspace_drag::WorkspaceDragGesture>,
+    workspace_row_geometry: workspace_drag::WorkspaceRowGeometry,
     pub(crate) workspace_archived_filter: WorkspaceArchivedFilter,
     sidebar: SessionSidebar,
     parked_sidebars: HashMap<String, SessionSidebar>,
+    agent_terminal_watch: Option<(String, u64)>,
     right_dock_slide: DockSlide,
     right_dock_frame: DockFrame,
     right_dock_viewport: Option<f32>,
@@ -833,6 +910,7 @@ pub(crate) struct DshApp {
     _model_filter_subscription: Subscription,
     _config_subscriptions: Vec<Subscription>,
     _welcome_subscription: Subscription,
+    _reading_activation_subscription: Subscription,
 }
 
 impl DshApp {
@@ -1068,8 +1146,11 @@ impl DshApp {
             sessions: Vec::new(),
             active_session: None,
             conversation: Conversation::fresh(),
+            trajectory: trajectory::TrajectoryView::new(w, cx),
             parked_conversations: HashMap::new(),
             session_activity: HashMap::new(),
+            session_reading: Default::default(),
+            reading_ack_scheduled: false,
             running_subagents: HashMap::new(),
             subagent_view: None,
             scratch_session: None,
@@ -1165,14 +1246,22 @@ impl DshApp {
             file_open_error: None,
             image_viewer: None,
             confirm_permission: None,
+            team_disable: None,
             full_access_acknowledged: false,
             stats_dialog: None,
             stats_dialog_bounds: ComposerAnchor::default(),
             workspace_group_by: WorkspaceGroupBy::Workspace,
             workspace_order_by: WorkspaceOrderBy::Updated,
+            session_order_by_account: HashMap::new(),
+            session_drag_gesture: None,
+            session_row_geometry: session_drag::SessionRowGeometry::default(),
+            workspace_order: Vec::new(),
+            workspace_drag_gesture: None,
+            workspace_row_geometry: workspace_drag::WorkspaceRowGeometry::default(),
             workspace_archived_filter: WorkspaceArchivedFilter::Hide,
             sidebar: SessionSidebar::default(),
             parked_sidebars: HashMap::new(),
+            agent_terminal_watch: None,
             right_dock_slide: DockSlide::default(),
             right_dock_frame: DockFrame::default(),
             right_dock_viewport: None,
@@ -1238,6 +1327,10 @@ impl DshApp {
             _model_filter_subscription: model_filter_subscription,
             _config_subscriptions: Vec::new(),
             _welcome_subscription: welcome_subscription,
+            _reading_activation_subscription: cx.observe_window_activation(w, |app, w, cx| {
+                app.session_reading.focus_changed();
+                app.schedule_reading_ack(w, cx);
+            }),
         }
     }
 
@@ -1322,6 +1415,7 @@ impl DshApp {
         cx: &mut Context<Self>,
     ) {
         if self.active_session.as_deref() != Some(session.id.as_str()) {
+            trajectory::reset_on_switch(&mut self.trajectory);
             self.command_catalog.clear();
             let next = self
                 .parked_conversations
@@ -1379,10 +1473,11 @@ impl DshApp {
         self.sessions.insert(0, session.clone());
         self.workspace.clone_from(&session.cwd);
         replace(&self.workspace_editor, self.workspace.clone(), w, cx);
-        if let Some(activity) = self.session_activity.get_mut(&session.id) {
-            activity.acknowledge();
-        }
+        self.session_reading.enter(&session.id);
         self.active_session = Some(session.id);
+        if self.connected() {
+            self.watch_agent_terminals(w, cx);
+        }
         self.mount_restored_terminals(w, cx);
         self.start_turn_ticker(cx);
         self.maybe_follow_tail();
@@ -1413,10 +1508,23 @@ impl DshApp {
             strip.suspend();
         }
         if let Some(id) = &previous {
+            invoke(
+                "agent_terminal_watch",
+                json!({"sessionId": id, "active": false}),
+            );
+            self.agent_terminal_watch = None;
+            for tab in sidebar.terminals.values().filter(|tab| tab.agent.is_some()) {
+                invoke(
+                    "agent_terminal_detach",
+                    json!({"sessionId": id, "terminalId": tab.id}),
+                );
+            }
             self.parked_sidebars.insert(id.clone(), sidebar);
         }
         self.right_dock_drag = None;
         self.dock_tab_gesture = None;
+        self.session_drag_gesture = None;
+        self.workspace_drag_gesture = None;
         self.dock_tab_menus = dock_tab_menu::DockTabMenus::default();
         self.dock_controls = dock_controls::DockControls::default();
         self.terminal_shell_menu = terminal_shell_menu::ShellMenuState::default();
@@ -1479,15 +1587,17 @@ impl DshApp {
             .count();
         let baseline = SessionActivity::default();
         let status = self.session_activity.get(id).unwrap_or(&baseline);
-        (status.indicator(running, pending, subagents), subagents)
-    }
-
-    fn observe_local_session_activity(&mut self, id: &str, previous: bool, running: bool) {
-        let selected = self.active_session.as_deref() == Some(id);
-        self.session_activity
-            .entry(id.to_owned())
-            .or_default()
-            .observe_local(previous, running, selected);
+        let viewing = self.active_session.as_deref() == Some(id)
+            && self.conversation.acp_open
+            && self.page == WorkspacePage::Conversation
+            && !self.show_welcome
+            && self.subagent_view.is_none();
+        let unread = self.session_reading.completion_unread(id, viewing);
+        let failed = self.session_reading.completion_failed(id, viewing);
+        (
+            status.indicator(running, pending, subagents, unread, failed),
+            subagents,
+        )
     }
 
     fn observe_host_session_activity(&mut self, id: &str, update: &Value) {
@@ -1503,14 +1613,10 @@ impl DshApp {
             }
             return;
         }
-        let local_running = self
-            .session_conversation(id)
-            .is_some_and(|conversation| conversation.running);
-        let selected = self.active_session.as_deref() == Some(id);
         self.session_activity
             .entry(id.to_owned())
             .or_default()
-            .observe_host(running, local_running, selected);
+            .observe_host(running);
     }
 
     fn record_session_prompt_time(&mut self, id: &str, time: u64) {
@@ -1844,7 +1950,7 @@ impl DshApp {
     }
 
     fn resume(&mut self, session: SessionSummary, w: &mut Window, cx: &mut Context<Self>) {
-        if !self.connected() || self.creating_session {
+        if self.creating_session {
             return;
         }
         // Any ordinary navigation leaves the read-only child record.
@@ -1855,12 +1961,25 @@ impl DshApp {
             return;
         }
         // 官方：选择未归档搜索结果会清空并收起搜索、打开会话，
-        // 分组浏览还按需展开其所属 Workspace。
+        // 分组浏览还按需展开其所属 Workspace 及全部祖先。
         if self.search_expanded {
             self.close_workspace_search(w, cx);
         }
         if self.workspace_group_by != WorkspaceGroupBy::Flat {
             self.collapsed_workspaces.remove(&session.cwd);
+        }
+        if self.workspace_group_by == WorkspaceGroupBy::WorkspaceTree {
+            let paths = self
+                .added_workspaces
+                .iter()
+                .map(String::as_str)
+                .chain(self.sessions.iter().map(|session| session.cwd.as_str()))
+                .collect::<Vec<_>>();
+            let mut cwd = session.cwd.as_str();
+            while let Some(parent) = workspace_rows::owning_parent_folder(cwd, &paths) {
+                cwd = paths[parent];
+                self.collapsed_workspaces.remove(cwd);
+            }
         }
         if self.sidebar_drawer && self.narrow_sidebar_expanded {
             self.set_left_sidebar_collapsed(true, w, cx);
@@ -1876,6 +1995,12 @@ impl DshApp {
             self.rebuild_selectors(w, cx);
             cx.notify();
         } else {
+            if !self.connected() {
+                // Opening durable history does not require an available writer.
+                self.open_conversation(session.clone(), None, true, None, w, cx);
+                self.conversation.error = Some("服务未连接；已载入只读历史。".into());
+                return;
+            }
             self.begin_action(PendingAction::Resume(session), cx);
         }
     }
@@ -1998,6 +2123,7 @@ impl DshApp {
             // the Host Inbox: they outlive the client that submitted them.
             self.request_inbox_state(&id);
             self.request_goal_state(&id);
+            self.request_team_state(&id);
         }
         self.conversation.resumed_session = resumed;
         self.conversation.config_options = reply
@@ -2075,8 +2201,12 @@ impl DshApp {
             (PendingAction::Resume(session), Err(error)) => {
                 // A writer elsewhere can hold the lease while its transcript remains readable.
                 self.opening_session_events.clear();
-                self.open_conversation(session, None, true, None, w, cx);
-                self.conversation.error = Some(if error.contains("already owned") {
+                if !self.conversation.resumed_session {
+                    self.open_conversation(session, None, true, None, w, cx);
+                }
+                self.conversation.error = Some(if !self.connected() {
+                    "服务未连接；已载入只读历史。".into()
+                } else if error.contains("already owned") {
                     "该会话正被另一个实例占用；已载入只读历史，关闭占用实例后可继续对话。".into()
                 } else {
                     error
@@ -2094,25 +2224,34 @@ impl DshApp {
     /// The Harness logs attachment references, not pixels, so each bubble needs
     /// one `read_attachment` round trip before it can show the picture.
     fn request_user_images(&mut self) {
-        for entry in self
-            .conversation
-            .entries
-            .iter()
-            .filter(|entry| entry.role == crate::state::EntryRole::User)
-        {
-            for image in crate::state::user_images(entry) {
-                if image.data_url.is_some()
-                    || !self
-                        .requested_attachments
-                        .insert(image.attachment_id.clone())
-                {
+        for entry in self.conversation.entries.iter().filter(|entry| {
+            entry.role == crate::state::EntryRole::User
+                || entry.role == crate::state::EntryRole::Tool
+        }) {
+            let images = if entry.role == crate::state::EntryRole::User {
+                crate::state::user_images(entry)
+                    .into_iter()
+                    .map(|image| (image.attachment_id, image.media_type, image.data_url))
+                    .collect()
+            } else {
+                entry
+                    .cards()
+                    .1
+                    .into_iter()
+                    .flat_map(|card| card.images)
+                    .map(|image| (image.attachment_id, image.media_type, image.data_url))
+                    .collect::<Vec<_>>()
+            };
+            for (attachment_id, media_type, data_url) in images {
+                if data_url.is_some() || !self.requested_attachments.insert(attachment_id.clone()) {
                     continue;
                 }
                 invoke(
                     "read_attachment",
                     json!({
-                        "attachmentId": image.attachment_id,
-                        "mediaType": image.media_type,
+                        "attachmentId": attachment_id,
+                        "mediaType": media_type,
+                        "failed": false,
                     }),
                 );
             }
@@ -2312,7 +2451,13 @@ impl DshApp {
         cx.notify();
     }
 
-    fn apply_session_history(&mut self, session: &str, reply: &Value, prepend: bool) {
+    fn apply_session_history(
+        &mut self,
+        session: &str,
+        reply: &Value,
+        prepend: bool,
+        cx: &mut Context<Self>,
+    ) {
         let events = reply
             .get("events")
             .and_then(Value::as_array)
@@ -2323,6 +2468,11 @@ impl DshApp {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let mut projected = crate::history::project_session_events_with_more(&events, has_more);
+        let trajectory_offset = prepend.then(|| {
+            let scroll = self.trajectory.scroll.clone();
+            (scroll.clone(), scroll.offset().y, scroll.max_offset().y)
+        });
+        self.conversation.trajectory.apply_page(&events, prepend);
         if let Some(time) = projected.last_prompt_at_ms {
             self.record_session_prompt_time(session, time);
         }
@@ -2349,6 +2499,18 @@ impl DshApp {
         conversation
             .subagents
             .sort_by_key(|row| row.created_at_ms.unwrap_or(u64::MAX));
+        if !conversation.acp_open {
+            conversation.team = crate::subagents::offline_team(session, &events);
+        }
+        if prepend {
+            crate::history::merge_inherited_history(
+                &mut conversation.inherited_history,
+                projected.inherited_history,
+                &conversation.entries,
+            );
+        } else {
+            conversation.inherited_history = projected.inherited_history;
+        }
         if projected.entries.is_empty() {
             return;
         }
@@ -2482,6 +2644,22 @@ impl DshApp {
                 Some(current) if prepend => current.min(oldest),
                 _ => oldest,
             });
+        }
+        if let Some((scroll, old_offset, old_max)) = trajectory_offset {
+            let session = session.to_owned();
+            cx.spawn(async move |this, cx| {
+                this.update(cx, |this, _| {
+                    if this.active_session.as_deref() != Some(session.as_str()) {
+                        return;
+                    }
+                    let growth = scroll.max_offset().y - old_max;
+                    if growth > px(0.) {
+                        scroll.set_offset(gpui::point(px(0.), old_offset - growth));
+                    }
+                })
+                .ok();
+            })
+            .detach();
         }
     }
 
@@ -2909,7 +3087,6 @@ impl DshApp {
         conversation.push_local(EntryRole::User, prompt.display);
         conversation.prompt_inflight = true;
         conversation.begin_turn();
-        self.observe_local_session_activity(session, false, true);
         if self.active_session.as_deref() == Some(session) {
             self.start_turn_ticker(cx);
             self.pin_follow_tail();
@@ -2974,7 +3151,6 @@ impl DshApp {
         let Some(conversation) = self.conversation_mut(session) else {
             return;
         };
-        let previous = conversation.running;
         conversation.finish_turn(end);
         if end == TurnEnd::MaxTokens {
             if let Some(turn) = conversation.last_turn_number() {
@@ -2984,7 +3160,7 @@ impl DshApp {
         // Pending messages belong to the Host Inbox now: it opens the next turn
         // on its own, so the client must not flush anything here. A failed
         // prompt keeps its items queued for the user to review or remove.
-        self.observe_local_session_activity(session, previous, false);
+        // Reading reminders are committed only by the Host's turn/end record.
         if self.active_session.as_deref() == Some(session) {
             self.maybe_follow_tail();
             // The just-closed turn's token buckets are only in the log.
@@ -3295,6 +3471,7 @@ impl DshApp {
                         replace(&self.service_editor, self.service_path.clone(), w, cx);
                         self.error = None;
                         self.apply_archive_snapshot(&reply["workspaceArchive"]);
+                        self.apply_session_reading(&reply["sessionReading"]);
                         self.load_startup_model_providers(&reply, w, cx);
                         self.open_scratch_session(w, cx);
                     }
@@ -3307,8 +3484,15 @@ impl DshApp {
                     }
                 }
             }
+            "session_read_ack" => self.finish_session_read_ack(result, cx),
+            "session_read_state" => {
+                if result.is_err() {
+                    self.push_toast("未能确认阅读状态，请重试", cx);
+                }
+            }
             "inbox_state" => self.finish_inbox_state(owner, result, w, cx),
             "goal_state" | "goal_action" => self.finish_goal_state(owner, result, w, cx),
+            "team_state" => self.finish_team_state(owner, result, w, cx),
             "fork_session" => self.finish_fork(result, w, cx),
             "rename_session" => self.finish_session_rename(result, w, cx),
             "new_session" | "resume_session" => self.finish_session_open(result, w, cx),
@@ -3319,7 +3503,7 @@ impl DshApp {
                     let prepend = std::mem::take(&mut conversation.history_prepend_pending);
                     match result {
                         Ok(reply) => {
-                            self.apply_session_history(session, &reply, prepend);
+                            self.apply_session_history(session, &reply, prepend, cx);
                             self.request_user_images();
                             self.preload_markdown_images();
                             self.request_turn_usage();
@@ -3415,10 +3599,50 @@ impl DshApp {
                             id,
                             data_url,
                         );
+                        for entry in &mut self.conversation.entries {
+                            if entry.role == EntryRole::Tool
+                                && let Some(presentation) = entry.presentation.as_deref()
+                                && let Some(updated) = crate::tool_presentation::set_image_data(
+                                    presentation,
+                                    id,
+                                    data_url,
+                                )
+                            {
+                                entry.presentation = Some(updated);
+                            }
+                        }
                         cx.notify();
                     }
                 }
-                Err(_) => {}
+                Err(_) => {
+                    for entry in &mut self.conversation.entries {
+                        if entry.role != EntryRole::Tool {
+                            continue;
+                        }
+                        let Some(presentation) = entry.presentation.as_deref() else {
+                            continue;
+                        };
+                        let Ok(mut value) = serde_json::from_str::<Value>(presentation) else {
+                            continue;
+                        };
+                        let mut changed = false;
+                        for block in value
+                            .get_mut("content")
+                            .and_then(Value::as_array_mut)
+                            .into_iter()
+                            .flatten()
+                        {
+                            if block["attachment"]["dataUrl"].is_null() {
+                                block["attachment"]["failed"] = Value::Bool(true);
+                                changed = true;
+                            }
+                        }
+                        if changed {
+                            entry.presentation = Some(value.to_string());
+                        }
+                    }
+                    cx.notify();
+                }
             },
             // One Markdown workspace picture finished reading: cache it for the
             // renderer (failure keeps 图片无法预览 without a retry loop).
@@ -3566,6 +3790,9 @@ impl DshApp {
             }
             "stop_service"
             | "open_start_tool"
+            | "agent_terminal_detach"
+            | "agent_terminal_input"
+            | "agent_terminal_close"
             | "write_terminal"
             | "resize_terminal"
             | "stop_terminal"
@@ -3607,6 +3834,15 @@ impl DshApp {
         let update = &event["update"];
         if update["sessionUpdate"] == "gpui_agent_status" {
             self.observe_host_session_activity(session, update);
+            if update["parentSessionId"].as_str() == self.active_session.as_deref()
+                && self
+                    .conversation
+                    .entries
+                    .iter()
+                    .any(|entry| entry.role == EntryRole::WorkflowRun)
+            {
+                cx.notify();
+            }
             return;
         }
         if update["sessionUpdate"] == "gpui_session_activity" {
@@ -3641,6 +3877,15 @@ impl DshApp {
         }
         if update["sessionUpdate"] == "gpui_goal_changed" {
             self.handle_goal_changed(session, update, cx);
+            return;
+        }
+        if update["sessionUpdate"] == "gpui_team_changed" {
+            if self
+                .session_conversation(session)
+                .is_some_and(|conversation| !conversation.team_pending)
+            {
+                self.request_team_state(session);
+            }
             return;
         }
         if update["sessionUpdate"] == "gpui_deliverables" {
@@ -3689,6 +3934,19 @@ impl DshApp {
         }
         if update["sessionUpdate"] == "gpui_plan_mode" {
             conversation.plan_active = update["active"].as_bool();
+            return;
+        }
+        if update["sessionUpdate"] == "gpui_trajectory_event" {
+            conversation
+                .trajectory
+                .apply_page(&[update["event"].clone()], false);
+            if selected
+                && self.trajectory.active == trajectory::ConversationView::Trajectory
+                && self.trajectory_follow_tail()
+            {
+                self.trajectory.scroll.scroll_to_bottom();
+            }
+            cx.notify();
             return;
         }
         if update["sessionUpdate"] == "gpui_tool_preparing" {
@@ -3793,6 +4051,17 @@ impl DshApp {
                 conversation.reconcile_assistant_stream(Some(id), role, &key);
             }
         }
+        if update["sessionUpdate"] == "gpui_turn_tail" && update["type"] == "tool/result" {
+            let result = crate::tool_presentation::result_projection(&update["event"]["data"]);
+            let update = serde_json::json!({
+                "sessionUpdate":"tool_call_update",
+                "toolCallId":update["callId"],
+                "content":[{"content":{"type":"text","text":result.text}}],
+                "status":result.status,
+                "presentation":result.presentation,
+            });
+            apply_update(&mut conversation.entries, &update);
+        }
         if update["sessionUpdate"] == "tool_call"
             && let Some(id) = update["toolCallId"].as_str()
             && let Some(time) = conversation.turn_process.tool_time(id)
@@ -3827,6 +4096,9 @@ impl DshApp {
         if let Some(reason) = effect.turn_ended.as_deref()
             && conversation.running
         {
+            if crate::workflow_runs::interrupted(reason) {
+                crate::workflow_runs::interrupt(&mut conversation.entries);
+            }
             use crate::history::turn_process::EndKind;
             let durable_end = update["turn"]
                 .as_u64()
@@ -3855,9 +4127,7 @@ impl DshApp {
             }
             self.finish_session_turn(session, end, cx);
         }
-        if started {
-            self.observe_local_session_activity(session, false, true);
-        }
+        if started {}
         if effect.turn_triggered
             && let Some(summary) = self
                 .sessions
@@ -3870,6 +4140,7 @@ impl DshApp {
         // read each new absolute destination once so the next paint can show it.
         self.preload_markdown_images();
         if selected {
+            self.request_user_images();
             if options_changed {
                 self.rebuild_selectors(w, cx);
             }
@@ -3891,40 +4162,127 @@ impl DshApp {
             }
             Some("session_log_download_started") => self.session_downloads.started(&event),
             Some("plugin_install") => self.plugin_install_event(&event, w, cx),
+            Some("agent_terminals") => {
+                if let Some(session) = event["sessionId"].as_str() {
+                    let owner = session.to_owned();
+                    let terminals = serde_json::from_value::<Vec<AgentTerminalInfo>>(
+                        event["terminals"].clone(),
+                    )
+                    .unwrap_or_default();
+                    self.apply_agent_terminals(owner, terminals, w, cx);
+                }
+            }
+            Some("agent_terminal_frame" | "agent_terminal_state") => {
+                let Some(owner) = event["sessionId"].as_str().map(str::to_owned) else {
+                    return;
+                };
+                let Some(id) = event["terminalId"].as_str() else {
+                    return;
+                };
+                let Some(sidebar) = self.sidebar_for_session(&owner) else {
+                    return;
+                };
+                let Some((key, tab)) = sidebar
+                    .terminals
+                    .iter_mut()
+                    .find(|(_, tab)| tab.id == id)
+                    .map(|(key, tab)| (*key, tab))
+                else {
+                    return;
+                };
+                let frame = &event["frame"];
+                match frame["type"].as_str() {
+                    Some("output") => {
+                        let Ok(frame) =
+                            serde_json::from_value::<terminal::TerminalFrame>(frame.clone())
+                        else {
+                            return;
+                        };
+                        if matches!(tab.connection, TerminalConnection::Opening { .. }) {
+                            tab.pending.push(terminal::TerminalUpdate {
+                                sequence: frame.sequence,
+                                operation: terminal::TerminalOperation::Output { data: frame.data },
+                            });
+                        } else {
+                            tab.apply_frame(frame, cx);
+                        }
+                    }
+                    Some("state") => {
+                        if let Ok(info) =
+                            serde_json::from_value::<AgentTerminalInfo>(frame["info"].clone())
+                        {
+                            let writable = frame["writable"].as_bool().unwrap_or(false);
+                            tab.apply_agent_state(info, writable, cx);
+                            if writable {
+                                tab.screen
+                                    .update(cx, |screen, cx| screen.bind(id, Some(&owner), cx));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                if let Some(saved) = sidebar.surface.terminals.get_mut(&key) {
+                    saved.title = tab.title.clone();
+                }
+                sidebar.persist(&owner);
+            }
+            Some("agent_terminal_error") => {
+                if let (Some(owner), Some(id)) =
+                    (event["sessionId"].as_str(), event["terminalId"].as_str())
+                    && let Some(tab) = self
+                        .sidebar_for_session(owner)
+                        .and_then(|sidebar| sidebar.terminals.values_mut().find(|tab| tab.id == id))
+                {
+                    tab.connection = TerminalConnection::Failed {
+                        error: event["error"]
+                            .as_str()
+                            .unwrap_or("Agent 终端连接中断")
+                            .to_owned(),
+                        retry_create: false,
+                        has_screen: true,
+                    };
+                    tab.screen.update(cx, |screen, cx| screen.unbind(cx));
+                }
+            }
             Some("schedule_changed") => self.invalidate_automations(cx),
             Some("schedule_session") => {
                 self.apply_local_sessions(&json!({"sessions": [event["session"]]}));
             }
-            Some("service") => match event.get("status").and_then(Value::as_str) {
-                Some("starting") => self.status = ServiceStatus::Starting,
-                Some("running") => self.status = ServiceStatus::Connected,
-                Some("exited") => {
-                    self.status = ServiceStatus::Error;
-                    self.service_starting = false;
-                    self.session_activity.clear();
-                    self.running_subagents.clear();
-                    for conversation in std::iter::once(&mut self.conversation)
-                        .chain(self.parked_conversations.values_mut())
-                    {
-                        conversation.acp_open = false;
-                        conversation.permission = None;
-                        conversation.plan_reviews.clear();
-                        conversation.questions.clear();
-                        conversation.submitted_plans.clear();
-                        conversation.plan_active = None;
-                        conversation.plan_mode_busy = false;
-                        if conversation.running {
-                            conversation.finish_turn(TurnEnd::Failed);
+            Some("session_read") => self.accept_session_reading(&event),
+            Some("service") => {
+                self.session_reading.disconnect();
+                match event.get("status").and_then(Value::as_str) {
+                    Some("starting") => self.status = ServiceStatus::Starting,
+                    Some("running") => self.status = ServiceStatus::Connected,
+                    Some("exited") => {
+                        self.status = ServiceStatus::Error;
+                        self.service_starting = false;
+                        self.session_activity.clear();
+                        self.agent_terminal_watch = None;
+                        self.running_subagents.clear();
+                        for conversation in std::iter::once(&mut self.conversation)
+                            .chain(self.parked_conversations.values_mut())
+                        {
+                            conversation.acp_open = false;
+                            conversation.permission = None;
+                            conversation.plan_reviews.clear();
+                            conversation.questions.clear();
+                            conversation.submitted_plans.clear();
+                            conversation.plan_active = None;
+                            conversation.plan_mode_busy = false;
+                            if conversation.running {
+                                conversation.finish_turn(TurnEnd::Failed);
+                            }
                         }
+                        self.error = event
+                            .get("detail")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                            .or_else(|| Some("dsh-acp 已退出".to_string()));
                     }
-                    self.error = event
-                        .get("detail")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                        .or_else(|| Some("dsh-acp 已退出".to_string()));
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             Some("session_update" | "permission") => self.handle_conversation_event(event, w, cx),
             Some("workspace_directory_changed") => {
                 self.workspace_directory_changed(&event, cx);
@@ -3991,6 +4349,273 @@ impl DshApp {
         cx.notify();
     }
 
+    fn watch_agent_terminals(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        let Some(owner) = self.active_session.clone() else {
+            return;
+        };
+        let request = bridge::monotonic_ms().max(1.) as u64;
+        self.agent_terminal_watch = Some((owner.clone(), request));
+        self.mount_restored_terminals(w, cx);
+        cx.spawn_in(w, async move |this, cx| {
+            let result = bridge::invoke(
+                "agent_terminal_watch",
+                json!({"sessionId": owner, "request": request, "active": true}),
+            )
+            .await;
+            let _ = this.update_in(cx, |app, w, cx| {
+                if app.agent_terminal_watch.as_ref() != Some(&(owner.clone(), request)) {
+                    return;
+                }
+                match result {
+                    Ok(terminals) => {
+                        let terminals = serde_json::from_value::<Vec<AgentTerminalInfo>>(terminals)
+                            .unwrap_or_default();
+                        app.apply_agent_terminals(owner.clone(), terminals, w, cx);
+                    }
+                    Err(error) => {
+                        app.error = Some(format!("Agent 终端状态不可用：{error}"));
+                        app.agent_terminal_watch = None;
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn launch_agent_terminal(
+        &mut self,
+        owner: String,
+        key: u64,
+        info: AgentTerminalInfo,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Roster replies can arrive while a restored tab is already opening.
+        // Only an explicit retry replaces that connection; remounting the dock
+        // must not detach the live stream and discard its pending input.
+        if self.sidebar.terminals.contains_key(&key) {
+            return;
+        }
+        if !self
+            .sidebar
+            .surface
+            .terminals
+            .get(&key)
+            .is_some_and(|checkpoint| checkpoint.id == info.id)
+        {
+            self.sidebar.surface.terminals.insert(
+                key,
+                TerminalCheckpoint {
+                    id: info.id.clone(),
+                    title: Some(info.title.clone()),
+                },
+            );
+            self.sidebar.persist(&owner);
+        }
+        let screen = cx.new(|cx| terminal::TerminalScreen::new(w, cx));
+        self.sidebar.terminals.insert(
+            key,
+            TerminalTab {
+                id: info.id.clone(),
+                title: Some(info.title.clone()),
+                requested_shell: Some(info.shell.clone()),
+                agent: Some(info.clone()),
+                connection: TerminalConnection::Opening {
+                    create: true,
+                    reading_shells: false,
+                },
+                sequence: 0,
+                pending: Vec::new(),
+                screen,
+            },
+        );
+        let terminal_id = info.id.clone();
+        cx.spawn_in(w, async move |this, cx| {
+            let result = bridge::invoke(
+                "agent_terminal_attach",
+                json!({"sessionId": owner, "terminalId": terminal_id}),
+            )
+            .await;
+            let restore = match &result {
+                Ok(reply) => this.update_in(cx, |app, _, cx| {
+                    let tab = app.sidebar_for_session(&owner)?.terminals.get_mut(&key)?;
+                    if tab.id != terminal_id {
+                        return None;
+                    }
+                    let snapshot = terminal::TerminalSnapshot {
+                        title: reply["frame"]["info"]["title"].as_str()?.to_owned(),
+                        cols: reply["frame"]["info"]["cols"].as_u64()? as u16,
+                        rows: reply["frame"]["info"]["rows"].as_u64()? as u16,
+                        sequence: reply["frame"]["sequence"].as_u64()?,
+                        screen: reply["frame"]["screen"].as_str()?.to_owned(),
+                        exit: None,
+                    };
+                    Some((
+                        tab.screen.update(cx, |screen, _| screen.restore(&snapshot)),
+                        snapshot,
+                    ))
+                }),
+                Err(_) => Ok(None),
+            };
+            match restore {
+                Ok(Some((promise, _))) => {
+                    if wasm_bindgen_futures::JsFuture::from(promise).await.is_err() {
+                        return;
+                    }
+                }
+                Ok(None) if result.is_ok() => return,
+                _ => {}
+            }
+            let _ = this.update_in(cx, |app, w, cx| {
+                let Some(sidebar) = app.sidebar_for_session(&owner) else {
+                    return;
+                };
+                let Some(tab) = sidebar
+                    .terminals
+                    .get_mut(&key)
+                    .filter(|tab| tab.id == terminal_id)
+                else {
+                    return;
+                };
+                match result {
+                    Ok(reply) => {
+                        let info = serde_json::from_value::<AgentTerminalInfo>(
+                            reply["frame"]["info"].clone(),
+                        )
+                        .unwrap_or_default();
+                        tab.sequence = reply["frame"]["sequence"].as_u64().unwrap_or_default();
+                        tab.connection = TerminalConnection::Connected;
+                        tab.screen
+                            .update(cx, |screen, cx| screen.restore_finished(cx));
+                        let mut pending = std::mem::take(&mut tab.pending);
+                        pending.sort_by_key(|update| update.sequence);
+                        for update in pending {
+                            tab.apply_update(update, cx);
+                        }
+                        tab.apply_agent_state(
+                            info,
+                            reply["frame"]["writable"].as_bool().unwrap_or(false),
+                            cx,
+                        );
+                        if matches!(tab.connection, TerminalConnection::Connected) {
+                            tab.screen.update(cx, |screen, cx| {
+                                screen.bind(&terminal_id, Some(&owner), cx)
+                            });
+                        }
+                        if app.active_session.as_deref() == Some(owner.as_str()) {
+                            app.focus_terminal(key, w, cx);
+                        }
+                    }
+                    Err(error) => {
+                        tab.connection = TerminalConnection::Failed {
+                            error,
+                            retry_create: false,
+                            has_screen: false,
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn apply_agent_terminals(
+        &mut self,
+        owner: String,
+        terminals: Vec<AgentTerminalInfo>,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let active = self.active_session.as_deref() == Some(&owner);
+        if active {
+            self.mount_restored_terminals(w, cx);
+        }
+        let previous = if active {
+            std::mem::take(&mut self.sidebar)
+        } else {
+            self.parked_sidebars.remove(&owner).unwrap_or_default()
+        };
+        self.sidebar = previous;
+        let agent_origins = self
+            .sidebar
+            .terminals
+            .iter()
+            .filter(|(_, tab)| {
+                tab.agent
+                    .as_ref()
+                    .is_some_and(|info| info.origin == "agent")
+            })
+            .map(|(key, _)| *key)
+            .collect();
+        let mut projection = crate::agent_terminals::project_agent_roster(
+            &mut self.sidebar.surface,
+            &mut self.sidebar.terminals,
+            &agent_origins,
+            &self.sidebar.agent_controlled,
+            terminals,
+            &mut self.next_terminal_tab,
+        );
+        let opened = std::mem::take(&mut projection.opened);
+        self.sidebar.agent_controlled = projection.controlled.clone();
+        for (_, id) in projection.detached {
+            invoke(
+                "agent_terminal_detach",
+                json!({"sessionId": owner, "terminalId": id}),
+            );
+        }
+        for (key, info) in projection.updates {
+            if let Some(tab) = self.sidebar.terminals.get_mut(&key) {
+                let writable = matches!(tab.connection, TerminalConnection::Connected);
+                tab.apply_agent_state(info, writable, cx);
+                if let Some(saved) = self.sidebar.surface.terminals.get_mut(&key) {
+                    saved.title = tab.title.clone();
+                }
+            }
+        }
+        if projection.closed_pane && active {
+            self.sidebar.surface.open = false;
+            self.sidebar.surface.fullscreen = false;
+        }
+        self.sidebar.persist(&owner);
+        let restored = if active {
+            None
+        } else {
+            Some((owner.clone(), std::mem::take(&mut self.sidebar)))
+        };
+        let active_pane = self.sidebar.surface.layout.active_dock_pane();
+        if let Some((owner, sidebar)) = restored {
+            self.parked_sidebars.insert(owner, sidebar);
+        }
+        for (key, info) in opened {
+            if active {
+                self.open_right_tab(active_pane, RightPanelTab::Terminal(key), w, cx);
+            } else {
+                self.sidebar.surface.layout.open(
+                    crate::right_dock::DockPaneId::Primary,
+                    RightPanelTab::Terminal(key),
+                );
+            }
+            self.launch_agent_terminal(owner.clone(), key, info, w, cx);
+        }
+        if active {
+            let holds = self
+                .sidebar
+                .terminals
+                .values()
+                .filter(|tab| tab.agent.is_some())
+                .map(|tab| tab.id.clone())
+                .collect::<Vec<_>>();
+            invoke(
+                "agent_terminal_watch",
+                json!({"sessionId": owner, "active": holds}),
+            );
+        }
+        cx.notify();
+    }
+
     fn connect_terminal(
         &mut self,
         key: u64,
@@ -4018,6 +4643,7 @@ impl DshApp {
                 title: checkpoint.title.clone(),
                 screen,
                 requested_shell: requested_shell.clone(),
+                agent: None,
                 connection: TerminalConnection::Opening {
                     create,
                     reading_shells,
@@ -4033,6 +4659,7 @@ impl DshApp {
                 json!({
                     "terminalId": terminal_id, "session": owner, "cwd": self.sidebar.workspace,
                     "cols": 80, "rows": 24,
+                    "title": checkpoint.title,
                 }),
             )
         } else {
@@ -4128,7 +4755,7 @@ impl DshApp {
                         }
                         if matches!(tab.connection, TerminalConnection::Connected) {
                             tab.screen
-                                .update(cx, |screen, cx| screen.bind(&terminal_id, cx));
+                                .update(cx, |screen, cx| screen.bind(&terminal_id, None, cx));
                         }
                         if let Some(saved) = sidebar.surface.terminals.get_mut(&key) {
                             saved.title = tab.title.clone();
@@ -4160,8 +4787,18 @@ impl DshApp {
 
     fn mount_restored_terminals(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         let keys: Vec<_> = self.sidebar.surface.layout.terminal_keys().collect();
+        let owner = self.active_session.clone();
         for key in keys {
-            self.connect_terminal(key, false, None, w, cx);
+            if let Some(info) = self
+                .sidebar
+                .terminals
+                .get(&key)
+                .and_then(|tab| tab.agent.clone())
+            {
+                self.launch_agent_terminal(owner.clone().unwrap_or_default(), key, info, w, cx);
+            } else {
+                self.connect_terminal(key, false, None, w, cx);
+            }
         }
     }
 
@@ -4223,17 +4860,56 @@ impl DshApp {
             return;
         };
         let shell_path = tab.requested_shell.clone();
-        self.sidebar.terminals.remove(&key);
-        self.connect_terminal(key, create, shell_path, w, cx);
+        if let Some(info) = tab.agent.clone() {
+            if let Some(owner) = self.active_session.clone() {
+                self.launch_agent_terminal(owner, key, info, w, cx);
+            }
+        } else {
+            self.sidebar.terminals.remove(&key);
+            self.connect_terminal(key, create, shell_path, w, cx);
+        }
     }
 
     fn close_terminal(&mut self, key: u64, cx: &mut Context<Self>) {
         self.cancel_closed_terminal_title(key);
+        let agent = self
+            .sidebar
+            .terminals
+            .get(&key)
+            .is_some_and(|tab| tab.agent.is_some());
         if let Some(tab) = self.sidebar.terminals.remove(&key) {
             tab.screen.update(cx, |screen, cx| screen.unbind(cx));
+            if tab.agent.is_some()
+                && let Some(owner) = self.active_session.clone()
+            {
+                invoke(
+                    "agent_terminal_detach",
+                    json!({"sessionId": owner, "terminalId": tab.id}),
+                );
+            }
         }
         if let Some(saved) = self.sidebar.surface.terminals.remove(&key) {
-            invoke("stop_terminal", json!({"terminalId": saved.id}));
+            if agent {
+                if let Some(owner) = self.active_session.clone() {
+                    invoke(
+                        "agent_terminal_close",
+                        json!({"sessionId": owner, "terminalId": saved.id}),
+                    );
+                    let holds = self
+                        .sidebar
+                        .terminals
+                        .values()
+                        .filter(|tab| tab.agent.is_some())
+                        .map(|tab| tab.id.clone())
+                        .collect::<Vec<_>>();
+                    invoke(
+                        "agent_terminal_watch",
+                        json!({"sessionId": owner, "active": holds}),
+                    );
+                }
+            } else {
+                invoke("stop_terminal", json!({"terminalId": saved.id}));
+            }
         }
     }
 
@@ -4419,6 +5095,7 @@ mod document_code;
 pub(crate) mod document_fonts;
 mod document_frontmatter;
 mod document_html;
+mod document_math;
 mod document_selection;
 mod files;
 mod floating_panes;
@@ -4445,23 +5122,28 @@ mod runtime_settings;
 mod session_archive;
 mod session_context_menu;
 mod session_download;
+mod session_drag;
 mod session_feedback;
 mod session_inbox;
 mod session_markdown;
+mod session_reading;
 mod shortcut_settings;
 mod start_panel;
 mod subagent_view;
+mod team_mode;
 mod terminal;
 mod terminal_shell_menu;
 mod terminal_title;
+mod trajectory;
 mod transcript_preferences;
 mod turn_usage;
 mod web_search_settings;
+mod workflow_run;
 mod workspace;
+mod workspace_drag;
 mod workspace_rows;
 mod workspace_search;
 mod workspace_watch;
-
 impl Render for DshApp {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let width = f32::from(w.viewport_size().width);
@@ -4489,6 +5171,7 @@ impl Render for DshApp {
         self.update_header_menu(w, cx);
         self.update_terminal_title(w, cx);
         self.persist_right_sidebar();
+        self.schedule_reading_ack(w, cx);
         self.dock_controls.begin_frame();
         let workspace = self.render_workspace(w, cx);
         self.dock_controls.end_frame();

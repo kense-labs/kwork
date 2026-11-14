@@ -14,12 +14,28 @@ function palette(index) {
   return (channel(Math.floor(value / 36)) << 16) | (channel(Math.floor(value / 6) % 6) << 8) | channel(value % 6);
 }
 
-function queue(screen, command, args) {
-  const id = screen.id;
-  if (id === null) return;
-  // Resize, terminal replies, and keystrokes must reach the same PTY in order.
-  screen.commands = screen.commands.then(() => {
-    if (screen.id === id) return window.__TAURI__.core.invoke(command, { terminalId: id, ...args });
+const TYPED_INPUT_WINDOW_MS = 250;
+const FOCUS_REPORTS = new Set(['\x1b[I', '\x1b[O']);
+
+function queue(screen, command, args, typed = false) {
+  const binding = screen.binding;
+  if (binding === null) return;
+  screen.commands = screen.commands.then(async () => {
+    if (screen.binding !== binding) return;
+    let sequence;
+    if (binding.sessionId !== null) {
+      sequence = ++binding.sequence;
+      binding.commands.add(sequence);
+    }
+    try {
+      const result = await window.__TAURI__.core.invoke(command,
+        { terminalId: binding.id, ...(binding.sessionId === null ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'type')) : { sessionId: binding.sessionId, sequence, input: { ...args, typed } }) });
+      if (result?.refusal) {
+        window.dispatchEvent(new CustomEvent('kwork-runtime-error', { detail: `终端输入未被接受：${result.refusal}` }));
+      }
+    } finally {
+      if (sequence !== undefined) binding.commands.delete(sequence);
+    }
   }).catch(error => {
     console.error('Terminal command failed', error);
     // Surface PTY failures in the GPUI toast layer, not just the console.
@@ -32,7 +48,7 @@ export function createTerminal() {
   const engine = new Terminal({ cols: 80, rows: 24, scrollback: 1000, allowProposedApi: true });
   const selection = new TerminalSelection(engine);
   const screen = {
-    engine, selection, id: null, commands: Promise.resolve(), replies: [],
+    engine, selection, binding: null, commands: Promise.resolve(), replies: [],
     cols: engine.cols, rows: engine.rows, pendingWrites: 0,
     cursorVisible: true, cursorStyle: 0, mouseEvents: 0,
   };
@@ -42,7 +58,11 @@ export function createTerminal() {
   });
   engine.onData(data => {
     if (screen.restoring) return;
-    if (screen.id !== null) queue(screen, 'write_terminal', { data });
+    const binding = screen.binding;
+    if (binding !== null) {
+      queue(screen, binding.sessionId === null ? 'write_terminal' : 'agent_terminal_input', { type: 'write', data },
+        binding.sessionId !== null && performance.now() - binding.gestureAt < TYPED_INPUT_WINDOW_MS && !FOCUS_REPORTS.has(data));
+    }
     else if (screen.replies.length < 64) screen.replies.push(data);
   });
   for (const [final, visible] of [['h', true], ['l', false]]) {
@@ -64,13 +84,18 @@ export function createTerminal() {
   return screen;
 }
 
-export function bindTerminal(screen, id) {
-  screen.id = id;
-  for (const data of screen.replies.splice(0)) queue(screen, 'write_terminal', { data });
+export function bindTerminal(screen, id, sessionId = null) {
+  // State frames repeat writable=true; they must not reset the sequence or
+  // discard the gesture clock while earlier input is still awaiting an ack.
+  if (screen.binding?.id === id && screen.binding.sessionId === sessionId) return;
+  screen.binding = { id, sessionId, gestureAt: Number.NEGATIVE_INFINITY, sequence: 0, commands: new Set() };
+  for (const data of screen.replies.splice(0)) {
+    queue(screen, sessionId === null ? 'write_terminal' : 'agent_terminal_input', { type: 'write', data });
+  }
 }
 
 export function unbindTerminal(screen) {
-  screen.id = null;
+  screen.binding = null;
   screen.replies.length = 0;
 }
 
@@ -112,12 +137,13 @@ export function resizeScreen(screen, cols, rows) {
 export function fitTerminal(screen, cols, rows) {
   if (screen.cols === cols && screen.rows === rows) return Promise.resolve();
   const resized = resizeScreen(screen, cols, rows);
-  queue(screen, 'resize_terminal', { cols, rows });
+  queue(screen, screen.binding?.sessionId === null ? 'resize_terminal' : 'agent_terminal_input', { type: 'resize', cols, rows });
   return resized;
 }
 
 export function terminalInput(screen, data) {
-  if (screen.id !== null) {
+  if (screen.binding !== null) {
+    screen.binding.gestureAt = performance.now();
     screen.selection.clear();
     screen.engine.input(data, true);
   }
@@ -162,8 +188,13 @@ export function terminalFocus(screen, focused) {
   const changed = screen.focused !== focused;
   screen.focused = focused;
   if (changed && screen.engine.modes.sendFocusMode) {
-    queue(screen, 'write_terminal', { data: focused ? '\x1b[I' : '\x1b[O' });
+    queue(screen, screen.binding?.sessionId === null ? 'write_terminal' : 'agent_terminal_input',
+      { type: 'write', data: focused ? '\x1b[I' : '\x1b[O' });
   }
+}
+
+export function terminalMouseGesture(screen) {
+  if (screen.binding !== null) screen.binding.gestureAt = performance.now();
 }
 
 export function terminalMouse(screen, col, row, x, y, button, action, modifiers) {
@@ -177,7 +208,7 @@ export function terminalMouse(screen, col, row, x, y, button, action, modifiers)
 }
 
 export function terminalWheel(screen, col, row, x, y, delta, cellHeight, precise, modifiers) {
-  if (screen.id === null) return false;
+  if (screen.binding === null) return false;
   const mouseWheel = (screen.mouseEvents & 16) !== 0;
   if (!mouseWheel && screen.engine._core._bufferService.buffer.hasScrollback) return false;
   const lines = screen.engine._core.coreMouseService.consumeWheelEvent({

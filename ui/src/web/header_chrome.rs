@@ -133,6 +133,8 @@ pub(super) struct HeaderMenuAppearance {
     pub(super) app_enabled: bool,
     pub(super) pinned: bool,
     pub(super) archived: bool,
+    pub(super) read_unread: bool,
+    pub(super) read_enabled: bool,
     copy_enabled: bool,
     download_enabled: bool,
 }
@@ -471,9 +473,11 @@ impl DshApp {
             .into_iter()
             .chain([
                 SessionContextAction::Rename,
+                SessionContextAction::ToggleRead,
                 SessionContextAction::Fork,
                 SessionContextAction::CopyId,
             ])
+            .filter(|action| !archived || *action != SessionContextAction::ToggleRead)
             .map(|action| (action, cx.focus_handle().tab_stop(true)))
             .chain(
                 menu.open_in
@@ -562,6 +566,11 @@ impl DshApp {
         HeaderMenuAppearance {
             pinned: target.is_some_and(|id| self.pinned_sessions.contains(id)),
             archived: target.is_some_and(|id| self.archived_sessions.contains(id)),
+            read_unread: target.is_some_and(|id| self.session_reading.completion_unread(id, false)),
+            read_enabled: target.is_some_and(|id| {
+                !self.archived_sessions.contains(id)
+                    && self.session_reading.mark(id, false).is_some()
+            }),
             copy_enabled: !self.session_markdown.pending,
             download_enabled: !self.active_download_pending(),
             app_enabled: !self.workspace_open_pending,

@@ -595,7 +595,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn prepare_labels_follow_the_official_strings() {
         assert_eq!(ProcessKind::Read.prepare_label(), "准备读取文件");
         assert_eq!(ProcessKind::Commands.prepare_label(), "准备运行命令");
@@ -611,6 +610,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn activity_maps_official_tool_names() {
         assert_eq!(activity("bash"), ProcessKind::Commands);
         assert_eq!(activity("read"), ProcessKind::Read);

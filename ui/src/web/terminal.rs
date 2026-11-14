@@ -23,7 +23,7 @@ extern "C" {
     #[wasm_bindgen(js_name = createTerminal)]
     fn create_terminal() -> TerminalEngine;
     #[wasm_bindgen(js_name = bindTerminal)]
-    fn bind_terminal(screen: &TerminalEngine, id: &str);
+    fn bind_terminal(screen: &TerminalEngine, id: &str, session_id: Option<String>);
     #[wasm_bindgen(js_name = unbindTerminal)]
     fn unbind_terminal(screen: &TerminalEngine);
     #[wasm_bindgen(js_name = writeScreen)]
@@ -66,6 +66,8 @@ extern "C" {
     fn terminal_copy(screen: &TerminalEngine) -> String;
     #[wasm_bindgen(js_name = terminalMouseActive)]
     fn terminal_mouse_active(screen: &TerminalEngine) -> bool;
+    #[wasm_bindgen(js_name = terminalMouseGesture)]
+    fn terminal_mouse_gesture(screen: &TerminalEngine);
     #[wasm_bindgen(js_name = terminalMouse)]
     fn terminal_mouse(
         screen: &TerminalEngine,
@@ -127,6 +129,13 @@ pub(super) struct TerminalSnapshot {
 #[derive(Deserialize)]
 pub(super) struct TerminalExit {
     pub(super) code: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TerminalFrame {
+    pub(super) sequence: u64,
+    pub(super) data: String,
 }
 
 #[derive(Deserialize)]
@@ -228,8 +237,8 @@ impl TerminalScreen {
         }
     }
 
-    pub(super) fn bind(&mut self, id: &str, cx: &mut Context<Self>) {
-        bind_terminal(&self.engine, id);
+    pub(super) fn bind(&mut self, id: &str, session_id: Option<&str>, cx: &mut Context<Self>) {
+        bind_terminal(&self.engine, id, session_id.map(str::to_owned));
         self.writable = true;
         cx.notify();
     }
@@ -379,6 +388,7 @@ impl TerminalScreen {
             && let Some(button) = mouse_button(event.button)
         {
             self.pointer = Some(PointerGesture::Report(event.button));
+            terminal_mouse_gesture(&self.engine);
             self.report_mouse(event.position, button, 1, event.modifiers);
         } else if event.button == MouseButton::Left
             && let Some((col, row)) = self.selection_cell(event.position)
@@ -541,7 +551,7 @@ impl Render for TerminalScreen {
         let focus = self.focus.clone();
         let focused = focus.is_focused(w) && w.is_window_active();
         let writable = self.writable;
-        let cursor = self.frame.cursor;
+        let cursor = self.frame.cursor.filter(|_| writable);
 
         // The viewport mask stays inside the padded screen, even while the PTY still
         // has the previous grid during a resize. The body owns the rounded backdrop.
@@ -619,7 +629,7 @@ impl Render for TerminalScreen {
             }))
             .children(
                 cursor
-                    .filter(|_| !self.composing.is_empty())
+                    .filter(|_| !self.composing.is_empty() && self.writable)
                     .map(|(col, row, _)| {
                         div()
                             .absolute()

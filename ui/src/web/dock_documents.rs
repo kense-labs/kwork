@@ -1168,6 +1168,13 @@ impl DshApp {
                         self.content_font_delta,
                         Some(&selection),
                         None,
+                        true,
+                        super::conversation::MarkdownCache {
+                            highlights: &self.conversation.markdown_highlights,
+                            math: &self.conversation.markdown_math,
+                            expanded_diffs: &self.conversation.expanded_diffs,
+                        },
+                        self.active_session.as_deref(),
                         cx,
                     ));
                 } else if let Some(code) = code {

@@ -259,6 +259,10 @@ impl DshApp {
             || self.workspace_rename.is_some()
             || self.workspace_delete.is_some()
             || self.session_rename.is_some()
+            || self.image_viewer.is_some()
+            || self.file_open_error.is_some()
+            || self.stats_dialog.is_some()
+            || self.turn_usage_dialog.is_some()
         {
             if command == Command::Close {
                 if self.confirm_permission.is_some() {
@@ -311,6 +315,10 @@ impl DshApp {
                     } else {
                         self.push_toast("请先选择一个会话", cx);
                     }
+                    return true;
+                }
+                Command::ToggleRead => {
+                    self.toggle_active_session_read(embedded, w, cx);
                     return true;
                 }
                 Command::ArchiveSession => {

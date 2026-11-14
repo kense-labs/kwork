@@ -537,6 +537,12 @@ pub fn time_label(ms: f64) -> String {
 }
 
 /// Invoke one Tauri command and normalize its result to JSON.
+/// Keep failures from asynchronous browser work visible during verification.
+/// A failed GPUI window update must not leave a form in its loading state.
+pub(crate) fn report_async_error(context: &str, error: &str) {
+    dshReportAsyncError(context, error);
+}
+
 pub async fn invoke(command: &str, args: Value) -> Result<Value, String> {
     let args = serde_wasm_bindgen::to_value(&args).map_err(|error| error.to_string())?;
     let result = wasm_bindgen_futures::JsFuture::from(invoke_js(command, args)).await;
@@ -577,9 +583,13 @@ export function dshReportPanic(message) {
     if (window.__TAURI_INTERNALS__) window.__TAURI_INTERNALS__.invoke('note_panic', { message });
   } catch (error) {}
 }
+export function dshReportAsyncError(context, message) {
+  console.error(`${context}: ${message}`);
+}
 "#)]
 extern "C" {
     fn dshReportPanic(message: &str);
+    fn dshReportAsyncError(context: &str, message: &str);
 }
 
 /// Send one wasm panic message to the native log before the instance aborts.

@@ -480,12 +480,12 @@ impl RightDock {
             })
     }
 
-    #[cfg(target_family = "wasm")]
+    #[cfg(any(target_family = "wasm", test))]
     pub(crate) fn last_terminal_key(&self) -> u64 {
         self.terminal_keys().max().unwrap_or(0)
     }
 
-    #[cfg(target_family = "wasm")]
+    #[cfg(any(target_family = "wasm", test))]
     pub(crate) fn terminal_keys(&self) -> impl Iterator<Item = u64> + '_ {
         self.all_panes()
             .flat_map(|pane| pane.tabs())

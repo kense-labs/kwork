@@ -4,6 +4,7 @@ use super::{
     dock_controls::{DockControl, traverse_dock_focus},
     dock_strip::{dock_chip, dock_chip_title},
     start_panel::{RIGHT_DOCK_HEADER_HEIGHT, dock_sidebar_glyph, dock_tab_icon},
+    workspace::TurnActionHint,
     *,
 };
 use crate::right_dock::{FloatPane, FloatRect, FloatViewport, SpringAxis, drag_threshold};
@@ -455,6 +456,30 @@ impl DshApp {
                             .text_size(px(font_size))
                             .text_color(p.secondary)
                             .cursor(CursorStyle::OpenHand)
+                            .when_some(
+                                match tab {
+                                    RightPanelTab::Terminal(key) => self
+                                        .sidebar
+                                        .terminals
+                                        .get(&key)
+                                        .and_then(|terminal| terminal.agent.as_ref())
+                                        .and_then(crate::agent_terminals::agent_terminal_badge),
+                                    _ => None,
+                                },
+                                |row, (badge, hint)| {
+                                    row.child(
+                                        div()
+                                            .id("float-terminal-badge")
+                                            .tooltip(move |_, cx| {
+                                                cx.new(|_| TurnActionHint(hint.clone().into()))
+                                                    .into()
+                                            })
+                                            .text_size(px(9.))
+                                            .text_color(p.label_tertiary)
+                                            .child(badge),
+                                    )
+                                },
+                            )
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, event: &gpui::MouseDownEvent, w, cx| {

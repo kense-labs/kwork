@@ -37,6 +37,7 @@ pub(crate) struct WebWindowCallbacks {
 
 pub(crate) struct WebWindowMutableState {
     pub(crate) renderer: WgpuRenderer,
+    pub(crate) background_appearance: WindowBackgroundAppearance,
     pub(crate) bounds: Bounds<Pixels>,
     pub(crate) scale_factor: f32,
     pub(crate) max_texture_dimension: u32,
@@ -161,12 +162,20 @@ impl WebWindow {
         let dpr = browser_window.device_pixel_ratio() as f32;
         let max_texture_dimension = context.device.limits().max_texture_dimension_2d;
         let has_device_pixel_support = check_device_pixel_support();
+        let native_mac_material = document
+            .document_element()
+            .is_some_and(|root| root.has_attribute("data-native-mac-material"));
+        let background_appearance = if native_mac_material {
+            WindowBackgroundAppearance::Blurred
+        } else {
+            WindowBackgroundAppearance::Opaque
+        };
         let renderer_config = WgpuSurfaceConfig {
             size: Size {
                 width: DevicePixels(0),
                 height: DevicePixels(0),
             },
-            transparent: false,
+            transparent: native_mac_material,
             preferred_present_mode: None,
         };
         let renderer = WgpuRenderer::new_from_surface(context, surface, renderer_config)?;
@@ -189,6 +198,7 @@ impl WebWindow {
 
         let mutable_state = WebWindowMutableState {
             renderer,
+            background_appearance,
             bounds: initial_bounds,
             scale_factor: dpr,
             max_texture_dimension,
@@ -892,7 +902,7 @@ impl PlatformWindow for WebWindow {
     }
 
     fn background_appearance(&self) -> WindowBackgroundAppearance {
-        WindowBackgroundAppearance::Opaque
+        self.inner.state.borrow().background_appearance
     }
 
     fn set_title(&mut self, title: &str) {
@@ -902,7 +912,11 @@ impl PlatformWindow for WebWindow {
         }
     }
 
-    fn set_background_appearance(&self, _background: WindowBackgroundAppearance) {}
+    fn set_background_appearance(&self, background: WindowBackgroundAppearance) {
+        let mut state = self.inner.state.borrow_mut();
+        state.background_appearance = background;
+        state.renderer.update_transparency(background != WindowBackgroundAppearance::Opaque);
+    }
 
     fn minimize(&self) {
         log::warn!("WebWindow::minimize is not supported in the browser");

@@ -51,6 +51,84 @@ pub(crate) fn shell_command(tool: &str, arguments: &str) -> Option<ShellCommand>
     })
 }
 
+/// A settled foreground shell result, with its Host-authored exit marker removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ShellResult {
+    pub(crate) output: String,
+    pub(crate) exit: ShellExit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ShellExit {
+    Code(i64),
+    Signal(String),
+    Missing,
+}
+
+impl ShellExit {
+    pub(crate) fn label(&self) -> Option<String> {
+        match self {
+            Self::Code(0) => None,
+            Self::Code(code) => Some(format!("退出码 {code}")),
+            Self::Signal(signal) => Some(format!("信号 {signal}")),
+            Self::Missing => Some("未正常退出".to_string()),
+        }
+    }
+}
+
+/// Recover the same bash/pwsh result markers as the official client.
+pub(crate) fn shell_result(
+    tool: &str,
+    arguments: &str,
+    text: &str,
+    status: &str,
+) -> Option<ShellResult> {
+    if status != "completed" || !matches!(tool, "bash" | "pwsh") {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(arguments).ok()?;
+    let description = value.get("description")?.as_str()?.trim();
+    if description.is_empty()
+        || value
+            .get("run_in_background")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    {
+        return None;
+    }
+    shell_command(tool, arguments)?;
+    let marker = |label: &str| {
+        let (output, tail) = text.rsplit_once("\n[")?;
+        let value = tail.strip_prefix(label)?.strip_suffix(']')?;
+        (!value.is_empty() && !value.contains(['\n', ']'])).then_some((output, value))
+    };
+    if let Some((output, signal)) = marker("killed by signal: ") {
+        return Some(ShellResult {
+            output: output.to_string(),
+            exit: ShellExit::Signal(signal.to_string()),
+        });
+    }
+    if let Some((output, code)) = marker("exit code: ") {
+        if code == "null" {
+            return Some(ShellResult {
+                output: output.to_string(),
+                exit: ShellExit::Missing,
+            });
+        }
+        let digits = code.strip_prefix('-').unwrap_or(code);
+        if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Some(ShellResult {
+                output: output.to_string(),
+                exit: ShellExit::Code(code.parse().ok()?),
+            });
+        }
+    }
+    Some(ShellResult {
+        output: text.to_string(),
+        exit: ShellExit::Code(0),
+    })
+}
+
 /// The numbered lines a read tool result carries, without its footer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ReadLines {
@@ -252,6 +330,59 @@ mod tests {
         assert_eq!(send.command, "npm run dev\n");
         assert!(shell_command("read", &json!({"file_path": "a"}).to_string()).is_none());
         assert!(shell_command("bash", "not json").is_none());
+    }
+
+    #[test]
+    fn shell_results_preserve_signed_codes_signals_and_missing_status() {
+        let args = json!({"command": "run", "description": "Run"}).to_string();
+        for (text, output, exit) in [
+            ("failed\n[exit code: -1]", "failed", ShellExit::Code(-1)),
+            (
+                "timed out\n[exit code: null]",
+                "timed out",
+                ShellExit::Missing,
+            ),
+            (
+                "gone\n[killed by signal: SIGTERM]",
+                "gone",
+                ShellExit::Signal("SIGTERM".into()),
+            ),
+            ("ok", "ok", ShellExit::Code(0)),
+            ("[exit code: 5]", "[exit code: 5]", ShellExit::Code(0)),
+            (
+                "bad\n[exit code: +5]",
+                "bad\n[exit code: +5]",
+                ShellExit::Code(0),
+            ),
+        ] {
+            let result = shell_result("bash", &args, text, "completed").expect("settled shell");
+            assert_eq!(
+                result,
+                ShellResult {
+                    output: output.into(),
+                    exit
+                }
+            );
+        }
+        assert_eq!(ShellExit::Code(-1).label().as_deref(), Some("退出码 -1"));
+        assert_eq!(
+            ShellExit::Signal("SIGTERM".into()).label().as_deref(),
+            Some("信号 SIGTERM")
+        );
+        assert_eq!(ShellExit::Missing.label().as_deref(), Some("未正常退出"));
+        assert_eq!(ShellExit::Code(0).label(), None);
+    }
+
+    #[test]
+    fn shell_status_does_not_invent_a_result_for_other_call_shapes() {
+        let args = json!({"command": "run", "description": "Run"}).to_string();
+        let text = "failed\n[exit code: 7]";
+        assert!(shell_result("bash", &args, text, "in_progress").is_none());
+        assert!(shell_result("terminal_send", &args, text, "completed").is_none());
+        assert!(shell_result("bash", "{}", text, "completed").is_none());
+        let background =
+            json!({"command": "run", "description": "Run", "run_in_background": true}).to_string();
+        assert!(shell_result("bash", &background, text, "completed").is_none());
     }
 
     #[test]

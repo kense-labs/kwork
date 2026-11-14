@@ -80,6 +80,7 @@ pub(crate) enum SessionIndicator {
     PlanReview,
     Question,
     Unread,
+    Failed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,32 +93,12 @@ pub(crate) enum PendingInteraction {
 #[derive(Default)]
 pub(crate) struct SessionActivity {
     host_running: Option<bool>,
-    unread: bool,
     pub(crate) last_prompt_at_ms: Option<u64>,
 }
 
 impl SessionActivity {
-    pub(crate) fn observe_host(&mut self, running: bool, local_running: bool, selected: bool) {
-        let previous = self.host_running.replace(running).unwrap_or(local_running);
-        self.transition(previous, running, selected);
-    }
-
-    pub(crate) fn observe_local(&mut self, previous: bool, running: bool, selected: bool) {
-        if self.host_running.is_none() {
-            self.transition(previous, running, selected);
-        }
-    }
-
-    fn transition(&mut self, previous: bool, running: bool, selected: bool) {
-        if running || selected {
-            self.unread = false;
-        } else if previous {
-            self.unread = true;
-        }
-    }
-
-    pub(crate) fn acknowledge(&mut self) {
-        self.unread = false;
+    pub(crate) fn observe_host(&mut self, running: bool) {
+        self.host_running = Some(running);
     }
 
     pub(crate) fn indicator(
@@ -125,6 +106,8 @@ impl SessionActivity {
         local_running: bool,
         pending: Option<PendingInteraction>,
         subagents: usize,
+        unread: bool,
+        failed: bool,
     ) -> SessionIndicator {
         if let Some(pending) = pending {
             match pending {
@@ -136,7 +119,9 @@ impl SessionActivity {
             SessionIndicator::Running
         } else if subagents > 0 {
             SessionIndicator::Subagents(subagents)
-        } else if self.unread {
+        } else if failed && unread {
+            SessionIndicator::Failed
+        } else if unread {
             SessionIndicator::Unread
         } else {
             SessionIndicator::Idle
@@ -281,42 +266,37 @@ mod tests {
     }
 
     #[test]
-    fn unread_tracks_host_activity_and_yields_to_pending_work() {
+    fn reading_reminders_yield_to_host_activity_and_pending_work() {
         use SessionIndicator::*;
         let mut status = SessionActivity::default();
-        status.observe_host(false, false, false);
-        assert_eq!(status.indicator(false, None, 0), Idle);
-        status.observe_host(true, false, false);
-        assert_eq!(status.indicator(false, None, 0), Running);
+        assert_eq!(status.indicator(false, None, 0, false, false), Idle);
+        status.observe_host(true);
+        assert_eq!(status.indicator(false, None, 0, true, true), Running);
         assert_eq!(
-            status.indicator(false, Some(PendingInteraction::Approval), 1),
+            status.indicator(false, Some(PendingInteraction::Approval), 1, true, false),
             Approval
         );
         assert_eq!(
-            status.indicator(false, Some(PendingInteraction::PlanReview), 1),
+            status.indicator(false, Some(PendingInteraction::PlanReview), 1, true, false),
             PlanReview
         );
-        status.observe_host(false, true, false);
-        assert_eq!(status.indicator(true, None, 2), Subagents(2));
-        assert_eq!(status.indicator(true, None, 0), Unread);
-        status.acknowledge();
-        assert_eq!(status.indicator(false, None, 0), Idle);
-        status.observe_host(true, false, true);
-        status.observe_host(false, true, true);
-        assert_eq!(status.indicator(false, None, 0), Idle);
+        assert_eq!(
+            status.indicator(false, Some(PendingInteraction::Question), 1, true, false),
+            Question
+        );
+        status.observe_host(false);
+        assert_eq!(status.indicator(true, None, 2, true, false), Subagents(2));
+        assert_eq!(status.indicator(false, None, 0, true, false), Unread);
+        assert_eq!(status.indicator(false, None, 0, true, true), Failed);
     }
 
     #[test]
-    fn local_completion_is_only_a_fallback_for_an_unobserved_agent() {
+    fn host_running_overrides_local_fallback_without_owning_reading() {
         use SessionIndicator::*;
         let mut status = SessionActivity::default();
-        status.observe_local(true, false, false);
-        assert_eq!(status.indicator(false, None, 0), Unread);
-        status.observe_local(false, true, false);
-        assert_eq!(status.indicator(true, None, 0), Running);
-        status.observe_host(true, true, false);
-        status.observe_local(true, false, false);
-        assert_eq!(status.indicator(false, None, 0), Running);
+        assert_eq!(status.indicator(true, None, 0, true, false), Running);
+        status.observe_host(false);
+        assert_eq!(status.indicator(true, None, 0, true, false), Unread);
     }
 
     #[test]

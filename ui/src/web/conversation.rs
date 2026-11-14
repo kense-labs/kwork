@@ -2,6 +2,144 @@
 
 use super::*;
 
+#[derive(Clone, Copy)]
+pub(super) struct MarkdownCache<'a> {
+    pub(super) highlights:
+        &'a std::cell::RefCell<HashMap<String, super::document_code::MarkdownHighlight>>,
+    pub(super) math: &'a std::cell::RefCell<HashMap<String, super::document_math::MathCacheEntry>>,
+    pub(super) expanded_diffs: &'a std::cell::RefCell<std::collections::HashSet<String>>,
+}
+
+pub(super) fn highlight_markdown(
+    cache: MarkdownCache<'_>,
+    session: Option<&str>,
+    key: &str,
+    source: &str,
+    language: &str,
+) -> (
+    Vec<Vec<super::document_code::CodeSpan>>,
+    Option<HighlightRequest>,
+) {
+    let Some(session) = session.map(str::to_owned) else {
+        return (Vec::new(), None);
+    };
+    let now = bridge::monotonic_ms();
+    let (tokens, request) = {
+        let mut cache = cache.highlights.borrow_mut();
+        if cache.len() > 256 {
+            cache.retain(|_, entry| {
+                std::rc::Rc::strong_count(&entry.session) > 1 || now - entry.last_used_ms < 30_000.
+            });
+        }
+        let entry = cache.entry(key.to_owned()).or_insert_with(|| {
+            super::document_code::MarkdownHighlight {
+                source: String::new(),
+                language: String::new(),
+                tokens: Vec::new(),
+                session: std::rc::Rc::new(super::document_code::HighlightSession::new()),
+                requested: false,
+                retry_at_ms: None,
+                last_used_ms: now,
+            }
+        });
+        entry.last_used_ms = now;
+        if entry.source == source
+            && entry.language == language
+            && (entry.requested || entry.retry_at_ms.is_some_and(|retry| now < retry))
+        {
+            return (entry.tokens.clone(), None);
+        }
+        let tokens = entry.tokens.clone();
+        entry.source = source.to_owned();
+        entry.language = language.to_owned();
+        entry.requested = true;
+        entry.retry_at_ms = None;
+        let highlighter = entry.session.clone();
+        (
+            tokens,
+            Some((highlighter.highlight(source, language), highlighter)),
+        )
+    };
+    let Some((request, highlighter)) = request else {
+        return (tokens, None);
+    };
+    (
+        tokens,
+        Some(HighlightRequest {
+            request,
+            highlighter,
+            session,
+            key: key.to_owned(),
+            source: source.to_owned(),
+            language: language.to_owned(),
+        }),
+    )
+}
+
+pub(super) struct HighlightRequest {
+    request: js_sys::Promise,
+    highlighter: std::rc::Rc<super::document_code::HighlightSession>,
+    session: String,
+    key: String,
+    source: String,
+    language: String,
+}
+
+pub(super) fn resolve_highlight(request: HighlightRequest) {
+    super::with_host_after_render(move |cx| start_highlight(request, cx));
+}
+
+fn start_highlight(request: HighlightRequest, cx: &mut Context<DshApp>) {
+    let HighlightRequest {
+        request,
+        highlighter,
+        session,
+        key,
+        source,
+        language,
+    } = request;
+    cx.spawn(async move |this, cx| {
+        let result = wasm_bindgen_futures::JsFuture::from(request).await;
+        let _ = this.update(cx, |this, cx| {
+            if this.active_session.as_deref() != Some(session.as_str()) {
+                return;
+            }
+            let mut cache = this.conversation.markdown_highlights.borrow_mut();
+            let Some(entry) = cache.get_mut(&key).filter(|entry| {
+                entry.source == source
+                    && entry.language == language
+                    && std::rc::Rc::ptr_eq(&entry.session, &highlighter)
+            }) else {
+                return;
+            };
+            entry.requested = false;
+            let retry = match result.and_then(|value| {
+                serde_wasm_bindgen::from_value(value).map_err(|error| error.into())
+            }) {
+                Ok(tokens) => {
+                    entry.tokens = tokens;
+                    entry.retry_at_ms = None;
+                    false
+                }
+                Err(_) => {
+                    entry.retry_at_ms = Some(bridge::monotonic_ms() + 2000.);
+                    true
+                }
+            };
+            drop(cache);
+            if retry {
+                cx.spawn(async move |this, cx| {
+                    gloo_timers::future::TimeoutFuture::new(2000).await;
+                    let _ = this.update(cx, |_, cx| cx.notify());
+                })
+                .detach();
+            }
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
 #[derive(Default)]
 pub(super) struct Conversation {
     pub(super) acp_open: bool,
@@ -28,16 +166,30 @@ pub(super) struct Conversation {
     pub(super) subagents: Vec<crate::subagents::SubagentRow>,
     /// Whether the composer's subagent list is expanded.
     pub(super) subagents_expanded: bool,
+    /// Root-only Team selection and shared tasks from the Cordis agentTeam projection.
+    pub(super) team: Option<crate::subagents::TeamState>,
+    /// One Team save in flight; no optimistic change of the saved selection.
+    pub(super) team_pending: bool,
+    /// Latest issued request; projection events may not overtake a pending save.
+    pub(super) team_request: u64,
+    /// A save failed, so its next reply is only an authoritative reread.
+    pub(super) team_rereading: bool,
     /// Turn rail mark under the pointer (index into the rail items).
     pub(super) turn_rail_hover: Option<usize>,
     /// 待投递列表的本地单调序号；用于忽略比某一行更早请求的 Host 快照。
     pub(super) inbox_seq: u64,
     pub(super) wrapped_code: std::collections::HashSet<String>,
+    pub(super) markdown_highlights:
+        std::cell::RefCell<HashMap<String, super::document_code::MarkdownHighlight>>,
+    pub(super) markdown_math:
+        std::cell::RefCell<HashMap<String, super::document_math::MathCacheEntry>>,
     pub(super) turn_process: crate::history::turn_process::TurnProcess,
     pub(super) turn_disclosures: HashMap<u64, (u64, bool)>,
     pub(super) turn_tails: crate::history::turn_tails::TurnTails,
     pub(super) resumed_session: bool,
     pub(super) entries: Vec<ChatEntry>,
+    pub(super) trajectory: crate::trajectory::State,
+    pub(super) inherited_history: Option<crate::history::InheritedHistory>,
     pub(super) assistant_stream: crate::assistant_stream::AssistantStream,
     /// Tool name whose arguments are still streaming (`Some("")` when the name is
     /// not known yet); drives the official 准备X live label.
@@ -67,6 +219,7 @@ pub(super) struct Conversation {
     pub(super) last_turn_settled: Option<f64>,
     pub(super) process_viewports: HashMap<String, super::process_scroll::ProcessViewport>,
     pub(super) expanded_entries: std::collections::HashSet<String>,
+    pub(super) expanded_diffs: std::cell::RefCell<std::collections::HashSet<String>>,
     pub(super) decode_tokens: u64,
     pub(super) decode_ms: f64,
     pub(super) uncached_input_tokens: u64,

@@ -386,6 +386,9 @@ impl DshApp {
             self.shortcuts.held.release(code);
             return self.shortcuts.consumed.remove(code);
         }
+        if self.team_disable.is_some() {
+            return false;
+        }
         if repeat && combo == "Escape" && self.show_settings {
             return true;
         }

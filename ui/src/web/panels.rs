@@ -58,7 +58,7 @@ impl DshApp {
                             "当前为浅色主题"
                         },
                         Glyph::Sun,
-                        SettingsPage::General,
+                        SettingsPage::Appearance,
                         cx,
                     )),
             )

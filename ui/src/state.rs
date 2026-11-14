@@ -78,6 +78,8 @@ pub enum EntryRole {
     ChangedFiles,
     /// 官方 `message.unknownBlock`：助手消息里未知的内容块，按 JSON 块展示。
     UnknownBlock,
+    /// 官方 WorkflowRunPanel：按阶段聚合的子 Agent 工作流。
+    WorkflowRun,
     /// 官方 `message.unknownSurface`：本版本不认识的会话事件类型。
     UnknownSurface,
 }
@@ -93,6 +95,8 @@ pub struct ChatEntry {
     pub input: String,
     pub status: String,
     pub(crate) tool: Option<crate::tool_calls::ToolCall>,
+    /// Durable result metadata and image references; display-only, never model input.
+    pub presentation: Option<String>,
     /// Wall-clock epoch milliseconds when the row appeared (user hover time).
     pub at_ms: Option<f64>,
 }
@@ -108,6 +112,7 @@ impl ChatEntry {
             input: String::new(),
             status: String::new(),
             tool: None,
+            presentation: None,
             at_ms: None,
         }
     }
@@ -152,6 +157,11 @@ pub fn apply_update(entries: &mut Vec<ChatEntry>, update: &Value) -> UpdateEffec
                 Some("tool/ptc-dispatch" | "tool/ptc-dispatch-start")
             ) {
                 crate::tool_calls::apply_dispatch(entries, event);
+            } else if event["type"]
+                .as_str()
+                .is_some_and(|kind| kind.starts_with("tool-workflow/"))
+            {
+                crate::workflow_runs::apply(entries, event, None);
             } else {
                 crate::questions::apply_question_call_event(entries, event);
             }
@@ -204,6 +214,7 @@ pub fn apply_update(entries: &mut Vec<ChatEntry>, update: &Value) -> UpdateEffec
                     input,
                     status,
                     tool,
+                    presentation: None,
                     at_ms,
                 });
             }
@@ -228,6 +239,9 @@ pub fn apply_update(entries: &mut Vec<ChatEntry>, update: &Value) -> UpdateEffec
                     && !entry.is_subcall()
                     && entry.external_id.as_deref() == Some(id.as_str())
             }) {
+                if let Some(presentation) = update.get("presentation") {
+                    entry.presentation = presentation.as_str().map(str::to_owned);
+                }
                 if update.get("content").is_some() {
                     // The read/write tools wrap their payload in a wire envelope;
                     // the row shows the payload, never `<path>…`.
@@ -333,6 +347,7 @@ pub fn apply_update(entries: &mut Vec<ChatEntry>, update: &Value) -> UpdateEffec
                     input: String::new(),
                     status: detail,
                     tool: None,
+                    presentation: None,
                     at_ms: update.get("time").and_then(Value::as_f64),
                 });
             }
@@ -400,6 +415,7 @@ pub fn apply_update(entries: &mut Vec<ChatEntry>, update: &Value) -> UpdateEffec
                     input: delay_ms.to_string(),
                     status,
                     tool: None,
+                    presentation: None,
                     at_ms: None,
                 });
             }
@@ -444,6 +460,7 @@ pub fn apply_update(entries: &mut Vec<ChatEntry>, update: &Value) -> UpdateEffec
                         "running".to_owned()
                     },
                     tool: None,
+                    presentation: None,
                     at_ms,
                 });
             }
@@ -499,6 +516,7 @@ pub fn apply_update(entries: &mut Vec<ChatEntry>, update: &Value) -> UpdateEffec
                 input: String::new(),
                 status: String::new(),
                 tool: None,
+                presentation: None,
                 at_ms: update.get("time").and_then(Value::as_f64),
             });
         }
@@ -554,6 +572,7 @@ pub fn apply_update(entries: &mut Vec<ChatEntry>, update: &Value) -> UpdateEffec
                         string_field(update, "kind")
                     },
                     tool: None,
+                    presentation: None,
                     at_ms,
                 });
             }
@@ -609,6 +628,7 @@ fn merge_content(entries: &mut Vec<ChatEntry>, update: &Value, role: EntryRole) 
             input: String::new(),
             status: String::new(),
             tool: None,
+            presentation: None,
             at_ms: None,
         });
     }
@@ -1199,6 +1219,7 @@ fn apply_context_injection(entries: &mut Vec<ChatEntry>, update: &Value) {
         input: payload,
         status,
         tool: None,
+        presentation: None,
         at_ms: update.get("time").and_then(Value::as_f64),
     });
 }
@@ -1223,6 +1244,7 @@ fn role_name(role: EntryRole) -> &'static str {
         EntryRole::Compaction => "compaction",
         EntryRole::Deliverable => "deliverable",
         EntryRole::ChangedFiles => "changed-files",
+        EntryRole::WorkflowRun => "workflow-run",
         EntryRole::UnknownBlock => "unknown-block",
         EntryRole::UnknownSurface => "unknown-surface",
     }
@@ -1335,6 +1357,7 @@ pub fn turn_failure_entry(turn: u64, reason: &Value, at_ms: Option<f64>) -> Opti
         input: String::new(),
         status: failure.code.unwrap_or_default(),
         tool: None,
+        presentation: None,
         at_ms,
     })
 }
@@ -1352,6 +1375,7 @@ pub fn turn_max_tokens_entry(turn: u64, at_ms: Option<f64>) -> ChatEntry {
         input: String::new(),
         status: String::new(),
         tool: None,
+        presentation: None,
         at_ms,
     }
 }
@@ -1432,6 +1456,7 @@ pub fn tool_change_entry(id: &str, changes: &[ToolChange], at_ms: Option<f64>) -
         input: String::new(),
         status,
         tool: None,
+        presentation: None,
         at_ms,
     }
 }
@@ -1518,6 +1543,7 @@ pub fn compaction_entry(
         input: String::new(),
         status,
         tool: None,
+        presentation: None,
         at_ms,
     }
 }
@@ -1723,6 +1749,7 @@ pub fn deliverable_entry(files: &[Value], at_ms: Option<f64>) -> ChatEntry {
         input: Value::Array(files).to_string(),
         status: String::new(),
         tool: None,
+        presentation: None,
         at_ms,
     }
 }
@@ -1752,6 +1779,7 @@ pub fn changed_files_entry(paths: &[String], at_ms: Option<f64>) -> ChatEntry {
         input: Value::Array(files).to_string(),
         status: String::new(),
         tool: None,
+        presentation: None,
         at_ms,
     }
 }
@@ -1784,6 +1812,7 @@ pub fn unknown_block_entry(block: &Value, ordinal: usize, at_ms: Option<f64>) ->
         input: serde_json::to_string_pretty(block).unwrap_or_else(|_| block.to_string()),
         status: String::new(),
         tool: None,
+        presentation: None,
         at_ms,
     }
 }
@@ -1808,6 +1837,7 @@ pub fn unknown_surface_entry(
         input: serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string()),
         status: String::new(),
         tool: None,
+        presentation: None,
         at_ms,
     }
 }

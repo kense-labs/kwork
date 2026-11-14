@@ -45,6 +45,12 @@ pub(crate) enum Block {
     Rule,
     /// 0 = 无序列表项；>0 = 有序序号。
     ListItem(u32, String),
+    /// Display TeX, typeset only after the containing message settles.
+    Math {
+        text: String,
+        raw: String,
+        display: bool,
+    },
     Code {
         lang: String,
         text: String,
@@ -92,6 +98,11 @@ pub(crate) enum InlinePart {
         bold: bool,
         code: bool,
     },
+    Math {
+        source: String,
+        raw: String,
+        display: bool,
+    },
     Link {
         label: String,
         url: String,
@@ -102,6 +113,15 @@ pub(crate) enum InlinePart {
 
 /// Parse assistant markdown into renderable blocks.
 pub(crate) fn parse_markdown(source: &str) -> Vec<Block> {
+    parse_markdown_mode(source, false)
+}
+
+/// Parse settled Markdown with Harness's TeX delimiters.
+pub(crate) fn parse_markdown_settled(source: &str) -> Vec<Block> {
+    parse_markdown_mode(source, true)
+}
+
+fn parse_markdown_mode(source: &str, settled: bool) -> Vec<Block> {
     let mut blocks: Vec<Block> = Vec::new();
     let mut paragraph: Vec<String> = Vec::new();
     let mut ordered_index = 0u32;
@@ -117,6 +137,37 @@ pub(crate) fn parse_markdown(source: &str) -> Vec<Block> {
     let mut i = 0usize;
     while i < lines.len() {
         let line = lines[i].trim_end();
+        if settled && matches!(line.trim_start(), "$$" | "\\[") {
+            let close = if line.trim_start() == "$$" {
+                "$$"
+            } else {
+                "\\]"
+            };
+            let mut math = Vec::new();
+            i += 1;
+            let mut closed = false;
+            while i < lines.len() {
+                if lines[i].trim_start() == close {
+                    closed = true;
+                    i += 1;
+                    break;
+                }
+                math.push(lines[i]);
+                i += 1;
+            }
+            if closed {
+                flush(&mut blocks, &mut paragraph);
+                ordered_index = 0;
+                blocks.push(Block::Math {
+                    text: math.join("\n"),
+                    raw: format!("{line}\n{}\n{close}", math.join("\n")),
+                    display: true,
+                });
+            } else {
+                paragraph.push(format!("{line}\n{}", math.join("\n")));
+            }
+            continue;
+        }
         if let Some(rest) = line.trim_start().strip_prefix("```") {
             flush(&mut blocks, &mut paragraph);
             ordered_index = 0;
@@ -308,8 +359,6 @@ fn ordered_item(trimmed: &str) -> Option<&str> {
 }
 
 /// Whether a fence language is a display-TeX fence.
-///
-/// The official client typesets these with KaTeX; this UI shows the source.
 pub(crate) fn is_math_fence(lang: &str) -> bool {
     matches!(
         lang.trim().to_lowercase().as_str(),
@@ -368,6 +417,14 @@ pub(crate) fn inline_spans(text: &str) -> Vec<InlineSpan> {
 
 /// 将行内 Markdown 拆成可渲染片段（链接独立成段）。
 pub(crate) fn inline_parts(text: &str) -> Vec<InlinePart> {
+    inline_parts_mode(text, false)
+}
+
+pub(crate) fn inline_parts_settled(text: &str) -> Vec<InlinePart> {
+    inline_parts_mode(text, true)
+}
+
+fn inline_parts_mode(text: &str, settled: bool) -> Vec<InlinePart> {
     let mut parts = Vec::new();
     let mut cursor = 0usize;
     let mut plain = String::new();
@@ -376,6 +433,28 @@ pub(crate) fn inline_parts(text: &str) -> Vec<InlinePart> {
     let mut bold_open = false;
 
     while cursor < text.len() {
+        if text[cursor..].starts_with('`') {
+            if let Some(end) = text[cursor + 1..].find('`') {
+                let end = cursor + end + 1;
+                plain.push_str(&text[cursor..=end]);
+                cursor = end + 1;
+            } else {
+                plain.push_str(&text[cursor..]);
+                break;
+            }
+            continue;
+        }
+        if settled && let Some((length, source, display)) = inline_math(&text[cursor..]) {
+            flush_plain(&mut plain, &mut parts);
+            parts.push(InlinePart::Math {
+                raw: text[cursor..cursor + length].to_owned(),
+                source,
+                display,
+            });
+            bold_open = false;
+            cursor += length;
+            continue;
+        }
         if text[cursor..].starts_with('[')
             && let Some((label_end, url_end)) = link_bounds(&text[cursor..])
         {
@@ -408,6 +487,46 @@ pub(crate) fn inline_parts(text: &str) -> Vec<InlinePart> {
     }
     flush_plain(&mut plain, &mut parts);
     parts
+}
+
+/// Recognize closed dollar and TeX delimiters. Escaped dollars, code spans,
+/// and unclosed delimiters stay in the ordinary Markdown runs.
+fn inline_math(slice: &str) -> Option<(usize, String, bool)> {
+    let (open, close, display) = if slice.starts_with("\\(") {
+        ("\\(", "\\)", false)
+    } else if slice.starts_with("$$") {
+        ("$$", "$$", true)
+    } else if slice.starts_with('$') {
+        ("$", "$", false)
+    } else {
+        return None;
+    };
+    let body = &slice[open.len()..];
+    if open == "\\(" {
+        let end = body.find("\\)")?;
+        let source = &body[..end];
+        return (!source.is_empty()).then(|| (open.len() + end + 2, source.to_owned(), display));
+    }
+    let mut escaped = false;
+    for (index, ch) in body.char_indices() {
+        if ch == '\\' {
+            escaped = !escaped;
+            continue;
+        }
+        if !escaped && slice[open.len() + index..].starts_with(close) {
+            let source = &body[..index];
+            let valid = if display || open.len() > 1 {
+                !source.is_empty()
+            } else {
+                !source.trim().is_empty()
+                    && !source.chars().next().is_some_and(char::is_whitespace)
+                    && !source.chars().last().is_some_and(char::is_whitespace)
+            };
+            return valid.then(|| (open.len() + index + close.len(), source.to_owned(), display));
+        }
+        escaped = false;
+    }
+    None
 }
 
 /// Flush one plain run into renderable pieces.
@@ -689,7 +808,7 @@ pub(crate) fn code_spans(code: &str, lang: &str) -> Vec<CodeSpan> {
 mod tests {
     use super::{
         Block, CodeToken, InlinePart, code_spans, frontmatter_bounds, image_destinations,
-        inline_parts, parse_markdown,
+        inline_parts, inline_parts_settled, parse_markdown, parse_markdown_settled,
     };
 
     #[test]
@@ -724,6 +843,78 @@ mod tests {
     }
 
     #[test]
+    fn settled_math_uses_harness_delimiters_and_streaming_stays_literal() {
+        assert_eq!(
+            parse_markdown_settled("前后\n\n$$\nx^2\n$$\n\n\\[\nE=mc^2\n\\]"),
+            vec![
+                Block::Paragraph("前后".into()),
+                Block::Math {
+                    text: "x^2".into(),
+                    raw: "$$\nx^2\n$$".into(),
+                    display: true
+                },
+                Block::Math {
+                    text: "E=mc^2".into(),
+                    raw: "\\[\nE=mc^2\n\\]".into(),
+                    display: true
+                },
+            ]
+        );
+        assert_eq!(
+            parse_markdown("$$\nx^2\n$$"),
+            vec![Block::Paragraph("$$\nx^2\n$$".into())]
+        );
+        assert_eq!(
+            inline_parts_settled("能量 $E=mc^2$、\\(\\alpha+\\beta\\) 与 $$x^2$$。"),
+            vec![
+                InlinePart::Text {
+                    text: "能量 ".into(),
+                    bold: false,
+                    code: false
+                },
+                InlinePart::Math {
+                    source: "E=mc^2".into(),
+                    raw: "$E=mc^2$".into(),
+                    display: false
+                },
+                InlinePart::Text {
+                    text: "、".into(),
+                    bold: false,
+                    code: false
+                },
+                InlinePart::Math {
+                    source: "\\alpha+\\beta".into(),
+                    raw: "\\(\\alpha+\\beta\\)".into(),
+                    display: false
+                },
+                InlinePart::Text {
+                    text: " 与 ".into(),
+                    bold: false,
+                    code: false
+                },
+                InlinePart::Math {
+                    source: "x^2".into(),
+                    raw: "$$x^2$$".into(),
+                    display: true
+                },
+                InlinePart::Text {
+                    text: "。".into(),
+                    bold: false,
+                    code: false
+                },
+            ]
+        );
+        for source in ["价格是 $12 和 $13", "$ 未闭合", "`$code$`"] {
+            assert!(
+                inline_parts_settled(source)
+                    .iter()
+                    .all(|part| !matches!(part, InlinePart::Math { .. })),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
     fn unmatched_emphasis_and_code_markers_terminate_as_text() {
         // Each of these used to stop advancing the cursor in split_emphasis.
         for text in ["**未闭合", "`未闭合", "a ** b ` c"] {
@@ -733,6 +924,7 @@ mod tests {
                 .map(|part| match part {
                     InlinePart::Text { text, .. } => text.clone(),
                     InlinePart::Link { label, .. } => label.clone(),
+                    InlinePart::Math { source, .. } => source.clone(),
                 })
                 .collect();
             assert_eq!(joined, text, "{text:?} round-trips as plain text");

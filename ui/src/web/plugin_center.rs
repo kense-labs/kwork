@@ -99,7 +99,7 @@ impl Entry {
 
     fn status(&self) -> &'static str {
         match self.fiber_phase.as_deref() {
-            Some("active") => "运行中",
+            Some("active") if self.enabled => "运行中",
             Some("failed") => "异常",
             Some("loading") => "加载中",
             Some("pending") => "等待依赖",
@@ -130,6 +130,8 @@ struct Bundle {
     description: Option<String>,
     installed: bool,
     official: bool,
+    #[serde(default)]
+    experimental: bool,
     enabled: bool,
     removable: bool,
     availability: String,
@@ -161,6 +163,30 @@ impl Bundle {
             }
         })
     }
+
+    fn badges(&self, status: Option<&'static str>, update: bool) -> Vec<(&'static str, bool)> {
+        let mut badges = Vec::new();
+        if self.experimental {
+            badges.push(("实验性", false));
+        }
+        if let Some(status) = status {
+            badges.push((status, true));
+        }
+        if self.availability == "missing" {
+            badges.push((
+                if self.installed {
+                    "文件缺失"
+                } else {
+                    "未安装"
+                },
+                false,
+            ));
+        }
+        if update {
+            badges.push(("有更新", false));
+        }
+        badges
+    }
 }
 
 #[derive(Deserialize)]
@@ -186,6 +212,62 @@ impl Snapshot {
     fn entry(&self, row: &BundleRow) -> Option<&Entry> {
         let id = row.entry_id.as_deref()?;
         self.entries.iter().find(|entry| entry.entry_id == id)
+    }
+
+    fn package_status(&self, bundle: &Bundle) -> Option<&'static str> {
+        if bundle.enabled
+            && bundle.error.is_some()
+            && bundle.rows.iter().all(|row| self.entry(row).is_none())
+        {
+            return Some("未运行");
+        }
+        if bundle.error.is_some()
+            || (bundle.enabled
+                && bundle.rows.iter().any(|row| {
+                    self.entry(row)
+                        .is_some_and(|entry| entry.fiber_phase.as_deref() == Some("failed"))
+                }))
+        {
+            Some("异常")
+        } else {
+            None
+        }
+    }
+
+    fn component_summary(&self, bundle: &Bundle) -> String {
+        let running = bundle
+            .rows
+            .iter()
+            .filter(|row| {
+                self.entry(row).is_some_and(|entry| {
+                    entry.enabled && entry.fiber_phase.as_deref() == Some("active")
+                })
+            })
+            .count();
+        let off = bundle
+            .rows
+            .iter()
+            .filter(|row| self.entry(row).is_some_and(|entry| !entry.enabled))
+            .count();
+        let failed = bundle
+            .rows
+            .iter()
+            .filter(|row| {
+                self.entry(row)
+                    .is_some_and(|entry| entry.fiber_phase.as_deref() == Some("failed"))
+            })
+            .count();
+        let mut summary = vec![format!("共 {} 个", bundle.rows.len())];
+        if running > 0 {
+            summary.push(format!("{running} 个运行中"));
+        }
+        if off > 0 {
+            summary.push(format!("{off} 个已关闭"));
+        }
+        if failed > 0 {
+            summary.push(format!("{failed} 个异常"));
+        }
+        summary.join(" · ")
     }
 }
 
@@ -237,6 +319,54 @@ impl Operation {
             Self::Remove { .. } => None,
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn package_badges_and_component_counts_follow_the_official_rules() {
+    let snapshot: Snapshot = serde_json::from_value(serde_json::json!({
+        configs: [], managementAvailable: true,
+        entries: [
+            { entryId: "active", moduleName: "a", enabled: true, fiberPhase: "active" },
+            { entryId: "off", moduleName: "b", enabled: false, fiberPhase: "active" },
+            { entryId: "failed", moduleName: "c", enabled: true, fiberPhase: "failed" },
+        ],
+        bundles: [{
+            name: "bundle", installed: true, official: true, experimental: true,
+            enabled: true, removable: false, availability: "missing", moreOnly: false, rank: 0,
+            rows: [
+                { rowId: "a", moduleName: "a", entryId: "active" },
+                { rowId: "b", moduleName: "b", entryId: "off" },
+                { rowId: "c", moduleName: "c", entryId: "failed" },
+            ],
+        }],
+    }))
+    .unwrap();
+    let bundle = &snapshot.bundles[0];
+    assert_eq!(snapshot.package_status(bundle), Some("异常"));
+    assert_eq!(
+        bundle.badges(snapshot.package_status(bundle), true),
+        vec![
+            ("实验性", false),
+            ("异常", true),
+            ("文件缺失", false),
+            ("有更新", false),
+        ]
+    );
+    assert_eq!(
+        snapshot.component_summary(bundle),
+        "共 3 个 · 1 个运行中 · 1 个已关闭 · 1 个异常"
+    );
+    let missing = Bundle {
+        error: Some("unsupported-platform".into()),
+        ..serde_json::from_value(serde_json::json!({
+            name: "missing", installed: true, official: true, enabled: true, removable: false,
+            availability: "installed", moreOnly: false, rank: 0, rows: [],
+        }))
+        .unwrap()
+    };
+    assert_eq!(snapshot.package_status(&missing), Some("未运行"));
+    assert_eq!(snapshot.entry(&bundle.rows[1]).unwrap().status(), "已关闭");
 }
 
 #[derive(Deserialize)]
@@ -324,6 +454,10 @@ impl PluginCenter {
 
     fn snapshot(&self) -> Option<&Snapshot> {
         self.inventory.as_ref()
+    }
+
+    pub(super) fn has_detail(&self) -> bool {
+        self.detail.is_some()
     }
 }
 
@@ -505,7 +639,9 @@ impl DshApp {
                 let (_, title, summary, artwork) = config.info();
                 let fields = match config {
                     Config::WebSearch => {
-                        self.prepare_web_search_settings(w, cx);
+                        if self.web_search_settings.is_none() {
+                            self.prepare_web_search_settings(w, cx);
+                        }
                         self.render_web_search_settings(w, cx)
                     }
                     config => {
@@ -519,8 +655,15 @@ impl DshApp {
                         self.render_runtime_settings(w, cx)
                     }
                 };
-                body.child(self.plugin_detail_heading(title, summary, artwork, None, cx))
-                    .child(fields)
+                body.child(self.plugin_detail_heading(
+                    title,
+                    summary,
+                    artwork,
+                    None,
+                    Vec::new(),
+                    cx,
+                ))
+                .child(fields)
             }
             Some(Detail::Bundle(name)) => {
                 let installed = self
@@ -582,6 +725,7 @@ impl DshApp {
                                         artwork,
                                         Detail::Config(config),
                                         None,
+                                        Vec::new(),
                                         cx,
                                     )
                                 }))),
@@ -707,6 +851,11 @@ impl DshApp {
                             Artwork::Default,
                             Detail::Bundle(bundle.name.clone()),
                             Some(switch),
+                            bundle.badges(
+                                snapshot.package_status(bundle),
+                                self.latest_plugin_update(&bundle.name, bundle.title())
+                                    .is_some(),
+                            ),
                             cx,
                         )
                     })),
@@ -727,6 +876,7 @@ impl DshApp {
                 "当前清单中找不到这个插件包。",
                 Artwork::Default,
                 None,
+                Vec::new(),
                 cx,
             );
         };
@@ -828,7 +978,7 @@ impl DshApp {
                 row()
                     .gap(px(8.))
                     .child(plugin_heading("包含的组件", 14.))
-                    .child(note(format!("共 {} 个", bundle.rows.len()), cx)),
+                    .child(note(snapshot.component_summary(bundle), cx)),
             );
         if bundle.rows.is_empty() {
             content = content.child(note("这个插件包不包含任何组件。", cx));
@@ -852,6 +1002,16 @@ impl DshApp {
                 enabled: !enabled,
             };
             let status = entry.map_or("已关闭", Entry::status);
+            let dot_color = match entry {
+                Some(entry) if entry.fiber_phase.as_deref() == Some("failed") => {
+                    p.state_error_primary
+                }
+                Some(entry) if !entry.enabled => p.label_tertiary,
+                Some(entry) if entry.fiber_phase.as_deref() == Some("active") => {
+                    p.state_success_primary
+                }
+                _ => p.label_tertiary,
+            };
             content = content.child(
                 row()
                     .w_full()
@@ -888,20 +1048,32 @@ impl DshApp {
                                 },
                             ),
                     )
-                    .child(note(status, cx))
+                    .child(
+                        row()
+                            .gap(px(5.))
+                            .child(div().size(px(6.)).mt(px(6.)).rounded_full().bg(dot_color))
+                            .child(note(status, cx)),
+                    )
                     .child(self.plugin_switch(action, title, enabled, lock, w, cx)),
             );
         }
         column()
             .w_full()
             .gap(px(32.))
-            .child(self.plugin_detail_heading(
-                bundle.title(),
-                bundle.description.as_deref().unwrap_or(""),
-                Artwork::Default,
-                Some(actions),
-                cx,
-            ))
+            .child(
+                self.plugin_detail_heading(
+                    bundle.title(),
+                    bundle.description.as_deref().unwrap_or(""),
+                    Artwork::Default,
+                    Some(actions),
+                    bundle.badges(
+                        snapshot.package_status(bundle),
+                        self.latest_plugin_update(&bundle.name, bundle.title())
+                            .is_some(),
+                    ),
+                    cx,
+                ),
+            )
             .child(content)
     }
 
@@ -1086,6 +1258,7 @@ impl DshApp {
         artwork: Artwork,
         detail: Detail,
         end: Option<Div>,
+        badges: Vec<(&'static str, bool)>,
         cx: &mut Context<Self>,
     ) -> Div {
         let p = dsh(cx);
@@ -1108,7 +1281,12 @@ impl DshApp {
                         .flex_1()
                         .min_w_0()
                         .gap(px(4.))
-                        .child(plugin_heading(title, 14.).truncate())
+                        .child(
+                            row()
+                                .gap(px(6.))
+                                .child(plugin_heading(title, 14.).truncate())
+                                .children(plugin_badges(badges, cx)),
+                        )
                         .child(
                             div()
                                 .truncate()
@@ -1179,6 +1357,7 @@ impl DshApp {
         summary: &str,
         artwork: Artwork,
         actions: Option<Div>,
+        badges: Vec<(&'static str, bool)>,
         cx: &mut Context<Self>,
     ) -> Div {
         let p = dsh(cx);
@@ -1200,7 +1379,13 @@ impl DshApp {
                     .child(plugin_artwork(artwork, cx))
                     .children(actions),
             )
-            .child(plugin_heading(title, 20.).mt(px(20.)))
+            .child(
+                row()
+                    .gap(px(8.))
+                    .mt(px(20.))
+                    .child(plugin_heading(title, 20.))
+                    .children(plugin_badges(badges, cx)),
+            )
             .child(
                 div()
                     .mt(px(8.))
@@ -1435,7 +1620,7 @@ impl DshApp {
         let open = self.plugin_center.expanded_entry.as_ref() == Some(&key);
         let status_color = match entry.fiber_phase.as_deref() {
             Some("failed") => p.state_error_primary,
-            Some("active") => p.state_business_primary,
+            Some("active") if entry.enabled => p.state_business_primary,
             _ => p.label_tertiary,
         };
         let id = entry
@@ -1552,6 +1737,33 @@ impl DshApp {
                 )
             })
     }
+}
+
+fn plugin_badges(badges: Vec<(&'static str, bool)>, cx: &App) -> Vec<Div> {
+    let p = dsh(cx);
+    badges
+        .into_iter()
+        .map(|(label, danger)| {
+            div()
+                .px(px(6.))
+                .py(px(2.))
+                .rounded(px(6.))
+                .text_size(px(11.))
+                .line_height(px(16.))
+                .flex_none()
+                .text_color(if danger {
+                    p.state_error_primary
+                } else {
+                    p.label_secondary
+                })
+                .bg(if danger {
+                    p.state_error_primary.alpha(0.08)
+                } else {
+                    p.md_tag
+                })
+                .child(label)
+        })
+        .collect()
 }
 
 fn plugin_heading(text: &str, size: f32) -> Div {

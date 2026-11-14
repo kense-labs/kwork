@@ -41,6 +41,7 @@ pub enum Command {
     ToggleSidebar,
     SearchSessions,
     RenameSession,
+    ToggleRead,
     ForkSession,
     ArchiveSession,
     Settings,
@@ -121,6 +122,14 @@ pub const COMMANDS: &[Definition] = &[
         "rename session",
         "KeyG",
         ALT
+    ),
+    command!(
+        ToggleRead,
+        "session.toggleRead",
+        "切换已读状态",
+        "mark as read mark as unread toggle unread",
+        "KeyU",
+        SHIFT
     ),
     command!(
         ForkSession,

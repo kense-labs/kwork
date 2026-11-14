@@ -3,7 +3,7 @@
 use super::dock_controls::{DockControl, traverse_dock_focus};
 use super::dock_drag::{DockGeometry, dock_tab_separator};
 use super::dock_strip::{dock_chip, dock_chip_title};
-use super::workspace::{begin_window_drag, conversation_bg, dark};
+use super::workspace::{TurnActionHint, begin_window_drag, conversation_bg, dark};
 use super::*;
 use crate::right_dock::{
     DockPane, auto_fullscreen, clamp_dock_preference, default_dock_width, dock_width,
@@ -426,6 +426,14 @@ impl DshApp {
             }
             let quiet = !self.sidebar.surface.layout.can_close(id, tab);
             let label = self.dock_tab_label(tab);
+            let agent_terminal = match tab {
+                RightPanelTab::Terminal(key) => self
+                    .sidebar
+                    .terminals
+                    .get(&key)
+                    .and_then(|terminal| terminal.agent.as_ref()),
+                _ => None,
+            };
             let title_editor = self.render_terminal_title_editor(id, tab, cx);
             let title_color = if active || quiet { p.ink } else { p.secondary };
             let chip_id = format!("right-tab-{id:?}-{tab:?}").into();
@@ -439,6 +447,25 @@ impl DshApp {
                 .track_focus(&focus)
                 .role(gpui::Role::Tab)
                 .aria_label(label.clone())
+                .when_some(
+                    agent_terminal
+                        .clone()
+                        .and_then(|info| crate::agent_terminals::agent_terminal_badge(&info)),
+                    |chip, (badge, hint)| {
+                        chip.aria_label(format!("{label}，{hint}"))
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| TurnActionHint(hint.clone().into())).into()
+                            })
+                            .child(
+                                row()
+                                    .gap(px(3.))
+                                    .flex_none()
+                                    .text_size(px(9.))
+                                    .text_color(p.label_tertiary)
+                                    .child(badge),
+                            )
+                    },
+                )
                 .aria_selected(active)
                 .rounded(px(8.))
                 .text_size(px(font_size))

@@ -268,6 +268,15 @@ impl TurnProcess {
         Some(self.turns.get(&turn)?.end.as_ref()?.kind)
     }
 
+    /// Latest durable completion actually received by this conversation view.
+    pub(crate) fn received_turn(&self) -> u64 {
+        self.turns
+            .iter()
+            .rev()
+            .find_map(|(turn, state)| state.end.as_ref().map(|_| *turn))
+            .unwrap_or(0)
+    }
+
     pub(crate) fn tool_time(&self, id: &str) -> Option<u64> {
         self.tools.get(id)?.time
     }
@@ -637,6 +646,7 @@ mod tests {
         );
         assert_eq!(process.tool_time("read"), Some(10480));
         assert_eq!(process.end_kind(1), Some(EndKind::Completed));
+        assert_eq!(process.received_turn(), 1);
         assert_eq!(layout.turn(0), Some(1));
         assert_eq!(layout.controls[&0].answer_step, 2);
         assert!(layout.hidden(0) && !layout.hidden(1));

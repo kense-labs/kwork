@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { PassThrough } from 'node:stream';
+import { AgentTerminalAttachment, prepareTerminalProfile, terminalInfo } from './agent-terminal-bridge.mjs';
 import { pathToFileURL } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
 
@@ -18,20 +19,62 @@ const { loadLayeredEnv, StartupError, getDshRuntimeVersion } =
 const { runProfile } = await import(pathToFileURL(profileEntry).href);
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
 const acpInput = new PassThrough();
+// Register before an early ACP client can write. Mixing this Interface's line
+// events with a later async iterator leaves its already-buffered first line
+// undelivered, so the bridge uses one FIFO from the beginning.
+const inputLines = [];
+let inputWake;
+let inputEnded = false;
+input.on('line', line => {
+  inputLines.push(line);
+  inputWake?.();
+});
+input.once('close', () => {
+  inputEnded = true;
+  inputWake?.();
+});
 
 // The official ACP transport still consumes the normal process stdin stream.
 // GPUI's reserved frames are removed before they reach the SDK's ACP parser.
 Object.defineProperty(process, 'stdin', { value: acpInput, configurable: true });
 
+const { resolveDshHome } = await import(pathToFileURL(
+  require.resolve('@deepseek-ai/dsh-home-paths'),
+).href);
+if (process.env.KWORK_TERMINAL_MODULE) {
+  try {
+    await prepareTerminalProfile({
+      service,
+      module: process.env.KWORK_TERMINAL_MODULE,
+      home: resolveDshHome(),
+      runtime: process.env.KWORK_TERMINAL_RUNTIME,
+    });
+  } catch (error) {
+    // The agent-terminal integration is optional: a missing or mismatched
+    // runtime must not take down the ACP host and every conversation with it.
+    console.error(`KWork: Agent 终端不可用：${error?.message ?? error}`);
+    delete process.env.KWORK_TERMINAL_MODULE;
+  }
+}
 const ready = runProfile({
-  environment: loadLayeredEnv('dsh'),
+  environment: loadLayeredEnv('dsh', service),
   profile: 'acp',
   patchFiles,
   args: [],
 }).then(async runtime => {
+  startSessionReadStatus(runtime.ctx);
   observeSessionUpdates(runtime.ctx);
   observeModelProviders(runtime.ctx);
   observePluginInstall(runtime.ctx);
+  // KWork registers its linked terminal packages before the first launch. ACP
+  // computes its interception map before reading them, so publish that public
+  // mapping again before resolving imports from the linked package roots.
+  if (process.env.KWORK_TERMINAL_MODULE) await runtime.ctx.get('pluginPackages')?.refresh();
+  try {
+    await startTerminalController(runtime.ctx);
+  } catch (error) {
+    console.error(`KWork: Agent 终端不可用：${error?.message ?? error}`);
+  }
   await startSchedule(runtime.ctx);
   return runtime;
 });
@@ -52,6 +95,7 @@ const pluginInstallMethod = '_dsh/gpui/plugin-install';
 const scheduleMethod = '_dsh/gpui/schedule';
 const openHostSessionMethod = '_dsh/gpui/session/open';
 const sessionArchiveMethod = '_dsh/gpui/session/archive';
+const sessionReadStateMethod = '_dsh/gpui/session/read-state';
 const modelProviderMethods = new Set([
   '_dsh/gpui/providers/list', '_dsh/gpui/providers/save',
   '_dsh/gpui/providers/remove', '_dsh/gpui/providers/discover',
@@ -69,6 +113,17 @@ const inboxActionMethod = '_dsh/gpui/session/inbox-action';
 // projects, and its pause/resume/clear verbs are the goal service's own.
 const goalStateMethod = '_dsh/gpui/session/goal-state';
 const goalActionMethod = '_dsh/gpui/session/goal-action';
+const teamStateMethod = '_dsh/gpui/session/team-state';
+const terminalWatchMethod = '_dsh/gpui/terminal-watch';
+const terminalInputMethod = '_dsh/gpui/terminal-input';
+const terminalAttachMethod = '_dsh/gpui/terminal-attach';
+const terminalDetachMethod = '_dsh/gpui/terminal-detach';
+const terminalCloseMethod = '_dsh/gpui/terminal-close';
+const terminalRenameMethod = '_dsh/gpui/terminal-rename';
+const terminalWatches = new Map();
+const terminalAttachments = new Map();
+let loadingTerminalController;
+let terminalTools;
 // Non-human messages either wake a Turn (official TurnTriggerNodeView) or are
 // injected into model history (official ContextInjectionRow). Only the waking
 // producers get a trigger card; the rest are collapsed context rows, exactly
@@ -96,7 +151,11 @@ const extensionMethods = [
   permissionModeMethod, sessionCommandsMethod, executeSessionCommandMethod,
   runtimeSettingsMethod, webSettingsMethod, pluginCenterMethod, pluginInstallMethod,
   questionStateMethod, questionDecisionMethod, scheduleMethod, openHostSessionMethod, sessionArchiveMethod,
+  sessionReadStateMethod,
   queuePromptMethod, inboxStateMethod, inboxActionMethod, goalStateMethod, goalActionMethod,
+  teamStateMethod,
+  terminalWatchMethod, terminalInputMethod, terminalAttachMethod, terminalDetachMethod,
+  terminalCloseMethod, terminalRenameMethod,
   ...modelProviderMethods, ...messageMethods.keys(),
 ];
 
@@ -121,6 +180,94 @@ class SessionOperationError extends Error {
     super(message);
     this.code = code;
   }
+}
+
+/** Load the private rc.3 terminal plugins into the ACP runtime's Cordis tree. */
+async function startTerminalController(ctx) {
+  if (ctx.get('terminalController')) return;
+  await (loadingTerminalController ??= (async () => {
+    if (!process.env.KWORK_TERMINAL_MODULE) {
+      throw new Error('KWork 未提供与 ACP 版本匹配的 Agent 终端模块。');
+    }
+    const manifest = JSON.parse(await readFile(join(dirname(process.env.KWORK_TERMINAL_MODULE), '../package.json'), 'utf8'));
+    await prepareTerminalProfile({
+      service,
+      module: process.env.KWORK_TERMINAL_MODULE,
+      home: resolveDshHome(),
+      runtime: process.env.KWORK_TERMINAL_RUNTIME,
+    });
+    const controllerPackage = ctx.get('pluginPackages')?.packageOf(
+      '@deepseek-ai/dsh-api-terminal-controller',
+      pathToFileURL(join(resolveDshHome(), 'profiles/acp/package.json')).href,
+    );
+    if (!controllerPackage) throw new Error('ACP 未注册 Agent 终端运行时。');
+    const { default: TerminalController } = await import(
+      pathToFileURL(join(controllerPackage.dir, 'lib/index.js')).href,
+    );
+    await ctx.plugin(TerminalController, {});
+    // ACP rc.1 predates these two official section ids. Supply their rc.3
+    // numeric order while preserving every existing section's position.
+    const prompt = ctx.get('systemPrompt');
+    const sectionOrder = prompt.getSectionOrder.bind(prompt);
+    prompt.getSectionOrder = name => sectionOrder(name) ??
+      ({ TOOL_PTY: 1700, TOOL_PTY_PANEL: 1710 })[name];
+    if (!ctx.get('terminals')) {
+      const registryPackage = ctx.get('pluginPackages')?.packageOf(
+        '@deepseek-ai/dsh-terminal',
+        pathToFileURL(join(resolveDshHome(), 'profiles/acp/package.json')).href,
+      );
+      if (!registryPackage) throw new Error('ACP 未注册终端会话注册表。');
+      const { TerminalSessionService } = await import(pathToFileURL(join(registryPackage.dir, 'lib/index.js')).href);
+      await ctx.plugin(TerminalSessionService, {});
+      const panelPackage = ctx.get('pluginPackages')?.packageOf(
+        '@deepseek-ai/dsh-terminal-panel',
+        pathToFileURL(join(resolveDshHome(), 'profiles/acp/package.json')).href,
+      );
+      if (!panelPackage) throw new Error('ACP 未注册 Agent 终端工具适配器。');
+      const panel = await import(pathToFileURL(join(panelPackage.dir, 'lib/index.js')).href);
+      await ctx.plugin(panel, {});
+    }
+    if (!terminalTools || !ctx.registry.has(terminalTools)) {
+      const toolPackage = ctx.get('pluginPackages')?.packageOf(
+        '@deepseek-ai/dsh-tool-terminal',
+        pathToFileURL(join(resolveDshHome(), 'profiles/acp/package.json')).href,
+      );
+      if (!toolPackage) throw new Error('ACP 未注册模型终端工具。');
+      const tools = await import(pathToFileURL(join(toolPackage.dir, 'lib/index.js')).href);
+      await ctx.plugin(tools.apply ? tools : tools.default, {});
+      terminalTools = tools;
+    }
+  })());
+}
+
+function startSessionReadStatus(ctx) {
+  if (ctx.get('sessionStatus') || !ctx.get('sessions') || !ctx.get('sessionPersistence')) return;
+  const status = new SessionReadStatus(ctx, record => {
+    process.stdout.write(JSON.stringify({
+      jsonrpc: '2.0', method: '_dsh/gpui/session-read-changed', params: record,
+    }) + '\n');
+  });
+  ctx.provide('sessionStatus', status);
+}
+
+async function sessionReadState(ctx, params = {}) {
+  const status = ctx.get('sessionStatus');
+  if (params.action === 'snapshot') {
+    return { available: status !== undefined, items: status?.snapshot() ?? [] };
+  }
+  if (!status) throw new SessionOperationError('session-status/unavailable', '当前服务不支持会话阅读状态。');
+  if (typeof params.sessionId !== 'string' || !params.sessionId) {
+    throw new SessionOperationError('session-status/session-id', '缺少会话 ID。');
+  }
+  try {
+    await status.mark(params.sessionId, params.action);
+  } catch (error) {
+    if (typeof error?.code === 'string' && error.code.startsWith('session-status/')) {
+      throw new SessionOperationError(error.code, error.message);
+    }
+    throw error;
+  }
+  return {};
 }
 
 async function startSchedule(ctx) {
@@ -408,6 +555,7 @@ async function pluginCenter(ctx) {
       const last = moreOrder.indexOf(name);
       return {
         name, version, enabled, installed, official, removable, availability, readOnlyReason, error: error?.code,
+        experimental: catalog.EXPERIMENTAL_BUNDLES?.has(name) ?? false,
         catalogVersion: installTarget?.version,
         catalogUpdate: catalogUpdateAvailable(bundle),
         updatable: updatable === true && typeof manager.listVersions === 'function' &&
@@ -806,8 +954,17 @@ async function webSettingsSnapshot(ctx) {
       if (info) credential = { ref, configured: info.configured, writable: info.writable };
     } catch { /* Invalid or unavailable references cannot be edited here. */ }
   }
+  const billing = capability => {
+    const field = entries.get('web-deepseek-api')?.value[capability + 'Billing'];
+    if (!['auto', 'account', 'api-key'].includes(field)) return;
+    const advancedOverride = [`${capability}BaseURL`, `${capability}ApiKeyEnv`]
+      .filter(name => entries.get('web-deepseek-api')?.value[name])
+      .map(name => name === `${capability}BaseURL` ? 'Base URL' : 'API Key 引用');
+    return { value: field, advancedOverride };
+  };
   return {
     search: selection('search'), fetch: selection('fetch'), fields, credential,
+    searchBilling: billing('search'), fetchBilling: billing('fetch'),
     writable: settings.writable, providersFailed: !providers,
     revisions: Object.fromEntries([...entries].map(([ns, entry]) => [ns, entry.revision])),
   };
@@ -839,10 +996,6 @@ async function saveWebSettings(ctx, change) {
     if (!sections.has(namespace)) sections.set(namespace, []);
     sections.get(namespace).push(edit);
   };
-  for (const [name, edit] of Object.entries(change.fields ?? {})) {
-    if (!Object.hasOwn(webFieldSections, name)) throw webSettingsError('该字段无法在此页面编辑。');
-    add(webFieldSections[name], webFieldEdit(name, edit));
-  }
   let search = web.value.searchProvider;
   if (change.search !== undefined || change.fetch !== undefined) {
     const providers = runtime.listProviders();
@@ -859,6 +1012,26 @@ async function saveWebSettings(ctx, change) {
       add('web', id === '' || id === base ? { op: 'unset', path: [name] } :
         { op: 'set', path: [name], value: id });
     }
+  }
+  for (const capability of ['search', 'fetch']) {
+    const value = change[capability + 'Billing'];
+    if (value === undefined) continue;
+    if (!['auto', 'account', 'api-key'].includes(value)) {
+      throw webSettingsError('计费方式无效，请重新选择。');
+    }
+    const api = entries.get('web-deepseek-api');
+    const provider = capability === 'search' ? search : change.fetch ?? web.value.fetchProvider;
+    if (provider !== `deepseek-${capability}-api` || !api || api.value[capability + 'Billing'] === undefined ||
+        api.value[capability + 'BaseURL'] || api.value[capability + 'ApiKeyEnv']) {
+      throw webSettingsError('该提供方的计费方式当前不可编辑。');
+    }
+    add('web-deepseek-api', value === api.base[capability + 'Billing']
+      ? { op: 'unset', path: [capability + 'Billing'] }
+      : { op: 'set', path: [capability + 'Billing'], value });
+  }
+  for (const [name, edit] of Object.entries(change.fields ?? {})) {
+    if (!Object.hasOwn(webFieldSections, name)) throw webSettingsError('该字段无法在此页面编辑。');
+    add(webFieldSections[name], webFieldEdit(name, edit));
   }
   const credentials = ctx.get('credentials');
   const credential = change.credential;
@@ -1693,6 +1866,159 @@ async function queuePromptContent(ctx, agent, blocks) {
   return content;
 }
 
+async function watchTerminals(ctx, { sessionId, request, active = true }) {
+  if (!active) {
+    terminalWatches.get(sessionId)?.controller.abort();
+    terminalWatches.delete(sessionId);
+    return [];
+  }
+  if (active !== true) {
+    const watch = terminalWatches.get(sessionId);
+    if (!watch) throw new SessionOperationError('terminal/unavailable', 'Agent 终端清单尚未连接。');
+    watch.holds = Array.isArray(active)
+      ? [...new Set(active.filter(id => typeof id === 'string'))]
+      : [];
+    watch.syncHolds();
+    return watch.result;
+  }
+  const previous = terminalWatches.get(sessionId);
+  if (previous?.request === request) return previous.result;
+  previous?.controller.abort();
+  const controller = new AbortController();
+  const record = { request, controller, result: [], retained: new Map(), holds: [] };
+  terminalWatches.set(sessionId, record);
+  const terminals = ctx.get('terminalController');
+  if (!terminals) {
+    terminalWatches.delete(sessionId);
+    throw new SessionOperationError('terminal/unavailable', '当前 ACP 服务未启用 Agent 终端。');
+  }
+  // The current controller publishes the authoritative roster as a stream.
+  // Retain only terminals represented by open sidebar tabs, independently of
+  // their output attachments; detach never releases that window hold.
+  let iterator;
+  try {
+    const inventory = terminals.watch(sessionId, controller.signal);
+    iterator = inventory[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    if (first.done) throw new SessionOperationError('terminal/unavailable', 'Agent 终端清单已关闭。');
+    record.result = first.value.map(terminalInfo);
+  } catch (error) {
+    if (terminalWatches.get(sessionId) === record) terminalWatches.delete(sessionId);
+    controller.abort();
+    void iterator?.return?.().catch(() => {});
+    throw error;
+  }
+  const syncHolds = () => {
+    const ids = new Set(record.holds);
+    for (const [id, hold] of record.retained) {
+      if (!ids.has(id)) {
+        hold.abort();
+        record.retained.delete(id);
+      }
+    }
+    for (const id of ids) {
+      if (record.retained.has(id)) continue;
+      const hold = new AbortController();
+      record.retained.set(id, hold);
+      void (async () => {
+        try {
+          for await (const _frame of terminals.retain(sessionId, id, hold.signal)) {
+            // The acknowledgement and stream lifetime are the window hold.
+          }
+        } catch {
+          // Roster removal is authoritative; a stale hold must not reopen a tab.
+        } finally {
+          if (record.retained.get(id) === hold) record.retained.delete(id);
+        }
+      })();
+    }
+  };
+  record.syncHolds = syncHolds;
+  void (async () => {
+    try {
+      for (;;) {
+        const next = await iterator.next();
+        if (next.done || terminalWatches.get(sessionId) !== record) break;
+        record.result = next.value.map(terminalInfo);
+        syncHolds();
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: '_dsh/gpui/terminal-changed',
+          params: { sessionId, terminals: record.result } }) + '\n');
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        process.stderr.write(`Agent terminal roster: ${error instanceof Error ? error.message : String(error)}\n`);
+      }
+    } finally {
+      if (terminalWatches.get(sessionId) === record) terminalWatches.delete(sessionId);
+      controller.abort();
+      for (const hold of record.retained.values()) hold.abort();
+      record.retained.clear();
+    }
+  })();
+  return record.result;
+}
+
+function terminalAttachmentKey(sessionId, terminalId) {
+  return `${sessionId}\0${terminalId}`;
+}
+
+function terminalAttachment(ctx, sessionId, terminalId) {
+  const attachment = terminalAttachments.get(terminalAttachmentKey(sessionId, terminalId));
+  if (!attachment) throw new SessionOperationError('terminal/unavailable', '终端尚未连接或已关闭。');
+  return attachment;
+}
+
+async function attachTerminal(ctx, { sessionId, terminalId }) {
+  const key = terminalAttachmentKey(sessionId, terminalId);
+  if (terminalAttachments.has(key)) throw new SessionOperationError('terminal/already-attached', '终端已连接。');
+  const controller = ctx.get('terminalController');
+  if (!controller) throw new SessionOperationError('terminal/unavailable', 'Agent 终端不可用。');
+  const attachment = new AgentTerminalAttachment(controller, liveAgent(ctx, sessionId), terminalId, event => {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: '_dsh/gpui/terminal-frame', params: event }) + '\n');
+  });
+  terminalAttachments.set(key, attachment);
+  try {
+    const reply = await attachment.start();
+    void attachment.pump().finally(() => {
+      if (terminalAttachments.get(key) === attachment) terminalAttachments.delete(key);
+    });
+    return reply;
+  } catch (error) {
+    terminalAttachments.delete(key);
+    await attachment.close();
+    throw error;
+  }
+}
+
+async function terminalInput(ctx, { sessionId, terminalId, ...command }) {
+  return terminalAttachment(ctx, sessionId, terminalId).command(command);
+}
+
+async function detachTerminal(ctx, { sessionId, terminalId }) {
+  const key = terminalAttachmentKey(sessionId, terminalId);
+  const attachment = terminalAttachments.get(key);
+  terminalAttachments.delete(key);
+  await attachment?.close();
+  return { detached: true };
+}
+
+async function closeTerminal(ctx, { sessionId, terminalId }) {
+  const controller = ctx.get('terminalController');
+  if (!controller) throw new SessionOperationError('terminal/unavailable', 'Agent 终端不可用。');
+  await detachTerminal(ctx, { sessionId, terminalId });
+  await controller.close(liveAgent(ctx, sessionId), terminalId);
+  terminalWatches.get(sessionId)?.syncHolds();
+  return { closed: true };
+}
+
+async function renameTerminal(ctx, { sessionId, terminalId, title }) {
+  const controller = ctx.get('terminalController');
+  if (!controller) throw new SessionOperationError('terminal/unavailable', 'Agent 终端不可用。');
+  await controller.rename(liveAgent(ctx, sessionId), terminalId, title);
+  terminalWatches.get(sessionId)?.syncHolds();
+  return { title };
+}
+
 /** Resolve one live agent for an extension request. */
 function liveAgent(ctx, sessionId) {
   const agent = ctx.get('agents')?.get(sessionId);
@@ -1817,8 +2143,42 @@ function goalAction(ctx, params) {
   return { goal: currentGoalView(ctx, agent) };
 }
 
+/** Read or save Team mode through the root Session's actual Cordis services. */
+async function teamState(ctx, params) {
+  const request = Number.isSafeInteger(params.request) ? params.request : null;
+  const reply = (result) => ({ ...result, request });
+  const agent = liveAgent(ctx, params.sessionId);
+  const projections = ctx.get('sessionProjections');
+  if (agent.session.header.origin === 'subagent' || !ctx.get('agentTeams') || !projections) {
+    return reply({ available: false });
+  }
+  const read = () => {
+    const { values } = projections.snapshot(agent.session, ['agentTeam', 'modelSelection']);
+    return values.agentTeam === undefined ? null : {
+      ...values.agentTeam,
+      hasUsedModel: values.modelSelection === undefined ? null : values.modelSelection.lastUsed !== null,
+    };
+  };
+  if (params.enabled === undefined) return reply({ available: true, team: read() });
+  if (typeof params.enabled !== 'boolean') {
+    throw new SessionOperationError('team/invalid-selection', '智能体团队协作设置无效。');
+  }
+  // setEnabled enforces root ownership, appends the durable team/mode event and
+  // flushes the owning Session. A successful flush can still change the view
+  // synchronously before this reply, so always return a fresh authoritative cut.
+  await ctx.get('agentTeams').setEnabled(agent, params.enabled);
+  return reply({ available: true, team: read() });
+}
+
 function observeSessionUpdates(ctx) {
   observePlanReviews(ctx);
+  // The registered Cordis projection is authoritative for both saved mode and
+  // task readiness. Never approximate its graph or persistence checks here.
+  ctx.get('sessionProjections')?.onChanged((session, key, value) => {
+    if (key === 'agentTeam' || key === 'modelSelection') {
+      notify(session.id, { sessionUpdate: 'gpui_team_changed' });
+    }
+  });
   const notifyAgentStatus = (agent, running) => {
     const { origin, parentSession } = agent.session.header;
     notify(agent.id, {
@@ -1868,7 +2228,8 @@ function observeSessionUpdates(ctx) {
     }
   }, { global: true });
   ctx.on('session/event', (session, event) => {
-    if (event.type === 'tool/ptc-dispatch-start' || event.type === 'tool/ptc-dispatch') {
+    if (event.type === 'tool/ptc-dispatch-start' || event.type === 'tool/ptc-dispatch'
+      || event.type.startsWith('tool-workflow/')) {
       notify(session.id, { sessionUpdate: 'gpui_ptc_dispatch', event });
     }
   }, { global: true });
@@ -2092,9 +2453,12 @@ function observeSessionUpdates(ctx) {
       });
       return;
     }
-    const relevant = ['session/title', 'turn/start', 'step/start', 'turn/end', 'llm/retry', 'tool/call'].includes(type)
-      || ((type === 'assistant/message' || type === 'tool/result') && surfaceOp === 'append');
+    const relevant = ['session/title', 'turn/start', 'step/start', 'step/end', 'turn/end', 'llm/retry',
+      'request/header', 'request/context', 'assistant/attempt', 'tool/ptc-dispatch-start', 'tool/ptc-dispatch',
+      'compaction/start', 'compaction/end', 'compaction/summary', 'developer/message', 'system/message'].includes(type)
+      || ((type === 'assistant/message' || type === 'tool/result' || type === 'user/message') && surfaceOp === 'append');
     if (!relevant) return;
+    notify(session.id, { sessionUpdate: 'gpui_trajectory_event', event });
     const update = type === 'session/title' ? {
       sessionUpdate: 'gpui_session_title', seq: event.seq, title: data.title,
     } : {
@@ -2106,7 +2470,16 @@ function observeSessionUpdates(ctx) {
         title: data.name, rawInput: data.arguments, status: 'in_progress', time: event.time,
       };
     }
-    if (type === 'tool/result') update.callId = data.message.source?.callId ?? data.message.toolCallId;
+    if (type === 'tool/result') {
+      update.callId = data.message.source?.callId ?? data.message.toolCallId;
+      // The same metadata and attachment references are in session.v4; preserve
+      // them so live and replayed diff/image cards are identical.
+      if (data.meta !== undefined) update.meta = data.meta;
+      if (Array.isArray(data.message.content)
+        && data.message.content.some(block => block?.type === 'image')) {
+        update.toolContent = data.message.content;
+      }
+    }
     if (type === 'llm/retry' || type === 'llm/retry-started') {
       // The retry row shows the attempt, the countdown and (expanded) the delay
       // and failure, so the facts travel with the update instead of only the id.
@@ -2163,6 +2536,8 @@ async function extension({ id, method, params }) {
       }
     } else if (method === sessionArchiveMethod) {
       response = { result: await sessionArchive(ctx, params) };
+    } else if (method === sessionReadStateMethod) {
+      response = { result: await sessionReadState(ctx, params) };
     } else if (method === scheduleMethod) {
       response = { result: await scheduleRequest(ctx, params?.operation) };
     } else if (method === runtimeSettingsMethod) {
@@ -2183,6 +2558,18 @@ async function extension({ id, method, params }) {
       response = { result: rows };
     } else if (typeof params?.sessionId !== 'string' || params.sessionId.length === 0) {
       response = { error: { code: -32602, message: 'Invalid session id' } };
+    } else if (method === terminalWatchMethod) {
+      response = { result: await watchTerminals(ctx, params) };
+    } else if (method === terminalInputMethod) {
+      response = { result: await terminalInput(ctx, params) };
+    } else if (method === terminalAttachMethod) {
+      response = { result: await attachTerminal(ctx, params) };
+    } else if (method === terminalDetachMethod) {
+      response = { result: await detachTerminal(ctx, params) };
+    } else if (method === terminalCloseMethod) {
+      response = { result: await closeTerminal(ctx, params) };
+    } else if (method === terminalRenameMethod) {
+      response = { result: await renameTerminal(ctx, params) };
     } else if (method === queuePromptMethod) {
       response = { result: await queuePrompt(ctx, params) };
     } else if (method === inboxStateMethod) {
@@ -2193,6 +2580,8 @@ async function extension({ id, method, params }) {
       response = { result: goalState(ctx, params) };
     } else if (method === goalActionMethod) {
       response = { result: goalAction(ctx, params) };
+    } else if (method === teamStateMethod) {
+      response = { result: await teamState(ctx, params) };
     } else if (method === recordMethod) {
       const feedback = ctx.get('sessionFeedback');
       response = feedback
@@ -2229,14 +2618,19 @@ async function extension({ id, method, params }) {
   } catch (error) {
     response = { error: error instanceof SessionOperationError
       ? { code: -32602, message: error.message, ...(error.message === error.code ? {} : { data: error.code }) }
-      : { code: -32603, message: 'Session operation failed' } };
+      : { code: -32603, message: 'Session operation failed', data: error instanceof Error ? error.message : String(error) } };
   }
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, ...response }) + '\n');
 }
 
 async function forward() {
   try {
-    for await (const line of input) {
+    for (;;) {
+      const line = inputLines.length ? inputLines.shift() : inputEnded ? undefined : await new Promise(resolve => {
+        inputWake = () => resolve(inputLines.shift());
+      });
+      inputWake = undefined;
+      if (line === undefined) break;
       if (extensionMethods.some(method => line.includes(method))) {
         let request;
         try { request = JSON.parse(line); } catch { /* ACP owns ordinary protocol errors. */ }
@@ -2253,7 +2647,11 @@ async function forward() {
 }
 
 try {
-  await Promise.all([ready, forward()]);
+  // Start consuming before awaiting the profile. An early `initialize` must be
+  // forwarded to the ACP transport rather than left in a dormant iterator.
+  const forwarding = forward();
+  await ready;
+  await forwarding;
 } catch (error) {
   if (error instanceof StartupError) {
     const extension = profileEntry.endsWith('.ts') ? 'ts' : 'js';

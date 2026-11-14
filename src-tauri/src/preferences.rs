@@ -11,11 +11,15 @@ pub struct WorkspacePreferences {
     pub aliases: HashMap<String, String>,
     pub hidden: Vec<String>,
     pub added_workspaces: Vec<String>,
+    /// Browser-local Workspace display order, including hidden groups.
+    pub workspace_order: Vec<String>,
     pub collapsed: Vec<String>,
     pub sidebar_collapsed: Option<bool>,
     pub sidebar_width: Option<f32>,
     pub group_by: Option<String>,
     pub order_by: Option<String>,
+    /// Browser-local Session order for each Workspace and the flat-list account.
+    pub session_order_by_account: HashMap<String, Vec<String>>,
     pub archived_filter: Option<String>,
     /// 置顶的会话 ID（排序时置顶组内最前）。
     pub pinned: Vec<String>,
@@ -193,6 +197,48 @@ mod tests {
         let older: WorkspacePreferences =
             serde_json::from_str(r#"{"aliases":{}}"#).expect("older file");
         assert!(older.files_search.is_empty());
+    }
+
+    #[test]
+    fn session_order_round_trips_and_old_files_default_to_empty() {
+        let mut preferences = WorkspacePreferences::default();
+        preferences.session_order_by_account.insert(
+            "__flat_session_order__".to_string(),
+            vec!["session-b".to_string(), "session-a".to_string()],
+        );
+        let encoded = serde_json::to_value(&preferences).expect("serialize session order");
+        assert_eq!(
+            encoded["sessionOrderByAccount"]["__flat_session_order__"],
+            serde_json::json!(["session-b", "session-a"])
+        );
+        let decoded: WorkspacePreferences =
+            serde_json::from_value(encoded).expect("deserialize session order");
+        assert_eq!(
+            decoded.session_order_by_account,
+            preferences.session_order_by_account
+        );
+        let older: WorkspacePreferences =
+            serde_json::from_str(r#"{"orderBy":"updated"}"#).expect("older file");
+        assert!(older.session_order_by_account.is_empty());
+    }
+
+    #[test]
+    fn workspace_order_round_trips_and_old_files_default_to_empty() {
+        let preferences = WorkspacePreferences {
+            workspace_order: vec!["/work/b".to_string(), "/work/a".to_string()],
+            ..WorkspacePreferences::default()
+        };
+        let encoded = serde_json::to_value(&preferences).expect("serialize workspace order");
+        assert_eq!(
+            encoded["workspaceOrder"],
+            serde_json::json!(["/work/b", "/work/a"])
+        );
+        let decoded: WorkspacePreferences =
+            serde_json::from_value(encoded).expect("deserialize workspace order");
+        assert_eq!(decoded.workspace_order, preferences.workspace_order);
+        let older: WorkspacePreferences =
+            serde_json::from_str(r#"{"addedWorkspaces":[]}"#).expect("older file");
+        assert!(older.workspace_order.is_empty());
     }
 
     #[test]

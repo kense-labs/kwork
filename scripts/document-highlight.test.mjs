@@ -16,6 +16,15 @@ test('maps TextMate runs after non-ASCII text to UTF-8 byte ranges', async () =>
   assert.deepEqual(coloredText(source, line, 'constant'), ['42']);
 });
 
+test('normalizes Markdown fence aliases and keeps unknown languages plain', async () => {
+  const source = 'let value = 42;';
+  const [line] = await new HighlightSession().highlight(source, 'rs');
+  assert.equal(coloredText(source, line, 'keyword').includes('let'), true);
+  assert.deepEqual(await new HighlightSession().highlight(source, 'not-a-language'), []);
+  const [js] = await new HighlightSession().highlight('const value = 42;', 'js');
+  assert.equal(coloredText('const value = 42;', js, 'keyword').includes('const'), true);
+});
+
 test('continues multiline syntax across pages and resets after a replacement', async () => {
   const session = new HighlightSession();
   const first = 'fn main() {\n    /* open';

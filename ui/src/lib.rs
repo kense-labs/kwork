@@ -1,6 +1,8 @@
 //! KUI/GPUI frontend for KWork.
 
 #[cfg(any(target_family = "wasm", test))]
+mod agent_terminals;
+#[cfg(any(target_family = "wasm", test))]
 pub mod anim;
 #[cfg(any(target_family = "wasm", test))]
 pub mod approval_command;
@@ -29,6 +31,10 @@ mod questions;
 mod right_dock;
 pub mod search_rules;
 #[cfg(any(target_family = "wasm", test))]
+mod session_order;
+#[cfg(any(target_family = "wasm", test))]
+mod session_reading;
+#[cfg(any(target_family = "wasm", test))]
 mod sessions;
 #[cfg(any(target_family = "wasm", test))]
 mod shortcuts;
@@ -39,6 +45,7 @@ pub mod submit;
 mod submitted_plan;
 #[cfg(any(target_family = "wasm", test))]
 mod terminal_keys;
+mod text_search;
 pub mod theme_preference;
 #[cfg(any(target_family = "wasm", test))]
 pub mod tokens;
@@ -46,8 +53,14 @@ mod tool_calls;
 pub mod tool_cards;
 pub mod tool_detail;
 pub mod tool_output;
+pub mod tool_presentation;
+#[cfg(any(target_family = "wasm", test))]
+pub(crate) mod trajectory;
 pub mod turns;
 pub mod validation;
+mod workflow_runs;
+#[cfg(any(target_family = "wasm", test))]
+mod workspace_tree;
 
 #[cfg(target_family = "wasm")]
 mod brand;

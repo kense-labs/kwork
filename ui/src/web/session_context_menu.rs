@@ -61,6 +61,7 @@ pub(super) struct SessionContext {
 pub(super) enum SessionContextAction {
     Pin,
     Rename,
+    ToggleRead,
     Fork,
     CopyId,
     OpenIn,
@@ -76,16 +77,16 @@ struct Presentation {
 }
 
 impl SessionContextAction {
-    fn presentation(self, pinned: bool, archived: bool) -> Presentation {
+    fn presentation(self, appearance: HeaderMenuAppearance) -> Presentation {
         let (id, label, icon, shortcut, separator): (_, _, &'static [u8], _, _) = match self {
             Self::Pin => (
                 "pin",
-                if pinned {
+                if appearance.pinned {
                     "取消置顶"
                 } else {
                     "置顶会话"
                 },
-                if pinned {
+                if appearance.pinned {
                     include_bytes!("../../assets/session-pin-fill.svg")
                 } else {
                     include_bytes!("../../assets/session-pin-outline.svg")
@@ -98,6 +99,21 @@ impl SessionContextAction {
                 "重命名",
                 include_bytes!("../../assets/workspace-edit.svg"),
                 Some(Command::RenameSession),
+                false,
+            ),
+            Self::ToggleRead => (
+                "toggle-read",
+                if appearance.read_unread {
+                    "标为已读"
+                } else {
+                    "标为未读"
+                },
+                if appearance.read_unread {
+                    include_bytes!("../../assets/session-read.svg")
+                } else {
+                    include_bytes!("../../assets/session-unread.svg")
+                },
+                Some(Command::ToggleRead),
                 false,
             ),
             Self::Fork => (
@@ -116,17 +132,17 @@ impl SessionContextAction {
             ),
             Self::Archive => (
                 "archive",
-                if archived {
+                if appearance.archived {
                     "取消归档"
                 } else {
                     "归档会话"
                 },
-                if archived {
+                if appearance.archived {
                     include_bytes!("../../assets/workspace-show-archived.svg")
                 } else {
                     include_bytes!("../../assets/workspace-hide-archived.svg")
                 },
-                (!archived).then_some(Command::ArchiveSession),
+                (!appearance.archived).then_some(Command::ArchiveSession),
                 true,
             ),
             Self::OpenIn => unreachable!("the application submenu renders its own trigger"),
@@ -164,12 +180,14 @@ impl DshApp {
                 ));
                 continue;
             }
-            let spec = action.presentation(appearance.pinned, appearance.archived);
+            let spec = action.presentation(appearance);
             if spec.separator {
                 card = card.child(menu_separator(p));
             }
-            let item = header_menu_row(p, spec.id, interactive.then_some(focus), true, true)
-                .when(interactive, |item| item.aria_label(spec.label))
+            let enabled = interactive
+                && (action != SessionContextAction::ToggleRead || appearance.read_enabled);
+            let item = header_menu_row(p, spec.id, enabled.then_some(focus), true, enabled)
+                .when(enabled, |item| item.aria_label(spec.label))
                 .child(
                     svg()
                         .data(spec.icon)
@@ -178,7 +196,7 @@ impl DshApp {
                         .text_color(p.label_secondary),
                 )
                 .child(div().flex_1().min_w_0().truncate().child(spec.label))
-                .when(interactive, |item| {
+                .when(enabled, |item| {
                     item.on_hover(cx.listener(Self::leave_header_submenu))
                 });
             let item = item.when_some(spec.shortcut, |item, command| {
@@ -201,12 +219,13 @@ impl DshApp {
             let id = context.session_id.clone();
             card = card.child(header_menu_action(
                 item,
-                interactive,
+                enabled,
                 cx.listener(move |app, _, w, cx| {
                     app.dismiss_header_menu(true, w, cx);
                     match action {
                         SessionContextAction::Pin => app.toggle_session_pin(&id, cx),
                         SessionContextAction::Rename => app.begin_session_rename(id.clone(), w, cx),
+                        SessionContextAction::ToggleRead => app.toggle_session_read(&id, cx),
                         SessionContextAction::Fork => {
                             app.fork_session(&id, ForkOrigin::Sidebar, cx)
                         }

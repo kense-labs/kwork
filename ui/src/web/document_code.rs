@@ -122,7 +122,7 @@ impl CodeColor {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub(super) struct CodeSpan {
     start: usize,
     end: usize,
@@ -153,6 +153,22 @@ impl CodeSpan {
 
 pub(super) fn display_source(source: &str) -> &str {
     source.strip_suffix('\n').unwrap_or(source)
+}
+
+impl CodeSpan {
+    pub(super) fn highlight(&self, dark: bool) -> (std::ops::Range<usize>, HighlightStyle) {
+        (self.start..self.end, self.style(dark))
+    }
+}
+
+pub(super) struct MarkdownHighlight {
+    pub(super) source: String,
+    pub(super) language: String,
+    pub(super) tokens: Vec<Vec<CodeSpan>>,
+    pub(super) session: std::rc::Rc<HighlightSession>,
+    pub(super) requested: bool,
+    pub(super) retry_at_ms: Option<f64>,
+    pub(super) last_used_ms: f64,
 }
 
 pub(super) fn render_code(

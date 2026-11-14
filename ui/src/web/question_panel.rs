@@ -1341,6 +1341,13 @@ impl DshApp {
                             0,
                             None,
                             None,
+                            true,
+                            super::conversation::MarkdownCache {
+                                highlights: &self.conversation.markdown_highlights,
+                                math: &self.conversation.markdown_math,
+                                expanded_diffs: &self.conversation.expanded_diffs,
+                            },
+                            self.active_session.as_deref(),
                             cx,
                         )
                         .w_auto()

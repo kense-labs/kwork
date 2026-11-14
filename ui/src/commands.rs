@@ -290,64 +290,7 @@ pub(crate) fn visible_commands<'a>(
 /// Rank a display name by the Harness prefix and subsequence alignment rules.
 #[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) fn fuzzy_name_rank(query: &str, label: &str) -> Option<(bool, i64)> {
-    if query.is_empty() {
-        return Some((true, 0));
-    }
-    let label = label.to_lowercase();
-    let name = label.encode_utf16().collect::<Vec<_>>();
-    let boundary = |index: usize| {
-        if index == 0 || matches!(name[index - 1], 45 | 95) {
-            8
-        } else {
-            0
-        }
-    };
-    let missing = i64::MIN / 2;
-    let mut query_units = query.encode_utf16();
-    let first = query_units.next()?;
-    let mut scores = name
-        .iter()
-        .enumerate()
-        .map(|(index, unit)| {
-            if *unit == first {
-                1 + boundary(index) - index as i64
-            } else {
-                missing
-            }
-        })
-        .collect::<Vec<_>>();
-    let mut next = vec![missing; name.len()];
-    for unit in query_units {
-        let mut adjacent = missing;
-        let mut two_back = missing;
-        let mut gapped = missing;
-        for (index, previous) in scores.iter().copied().enumerate() {
-            if two_back != missing {
-                gapped = gapped.max(two_back + index as i64 - 2);
-            }
-            next[index] = if name[index] == unit {
-                let bonus = 1 + boundary(index);
-                let joined = if adjacent == missing {
-                    missing
-                } else {
-                    adjacent + bonus + 4
-                };
-                let skipped = if gapped == missing {
-                    missing
-                } else {
-                    gapped + bonus + 1 - index as i64
-                };
-                joined.max(skipped)
-            } else {
-                missing
-            };
-            two_back = adjacent;
-            adjacent = previous;
-        }
-        std::mem::swap(&mut scores, &mut next);
-    }
-    let score = scores.into_iter().max()?;
-    (score != missing).then_some((label.starts_with(query), score))
+    crate::text_search::name_rank(query, label)
 }
 
 #[cfg(test)]

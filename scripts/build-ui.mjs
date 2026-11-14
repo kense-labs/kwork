@@ -313,6 +313,7 @@ try {
     absWorkingDir: root,
     entryPoints: [
       'ui/document-highlight.js', 'ui/document-frontmatter.js',
+      'ui/document-math.js',
       'ui/document-fonts.js', 'ui/document-fonts-worker.js',
       'ui/document-html.js',
     ],

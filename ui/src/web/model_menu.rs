@@ -70,6 +70,8 @@ impl DshApp {
                 .current_config_label("reasoning_effort")
                 .map_or(px(0.), |label| width("思考强度", 13.) + width(&label, 13.));
             model.max(effort) + px(40.)
+        } else if pane == ComposerMenu::Team {
+            px(372.)
         } else {
             self.model_menu_groups(pane, cx)
                 .into_iter()
@@ -188,14 +190,25 @@ impl DshApp {
             .unwrap_or(0)
     }
 
-    fn back_model_menu(&mut self, pane: ComposerMenu, w: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn back_model_menu(
+        &mut self,
+        pane: ComposerMenu,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if pane == ComposerMenu::Model {
             self.composer_menu = None;
             self.model_menu.active = None;
             self.model_menu.trigger.focus(w, cx);
         } else {
             self.composer_menu = Some(ComposerMenu::Model);
-            self.model_menu.active = Some(usize::from(pane == ComposerMenu::ReasoningChoices));
+            self.model_menu.active = Some(match pane {
+                ComposerMenu::ReasoningChoices => 1,
+                ComposerMenu::Team => {
+                    1 + usize::from(self.current_config_label("reasoning_effort").is_some())
+                }
+                _ => 0,
+            });
             self.model_menu.row.focus(w, cx);
         }
         cx.notify();
@@ -275,7 +288,9 @@ impl DshApp {
     }
 
     pub(super) fn model_menu_busy(&self) -> bool {
-        self.conversation.model_menu_pending.is_some() || self.conversation.command_model_pending
+        self.conversation.model_menu_pending.is_some()
+            || self.conversation.command_model_pending
+            || self.conversation.team_pending
     }
 
     pub(super) fn finish_model_menu(
@@ -353,6 +368,9 @@ impl DshApp {
         };
         let count = if pane == ComposerMenu::Model {
             1 + usize::from(self.current_config_label("reasoning_effort").is_some())
+                + usize::from(self.conversation.acp_open && self.conversation.team.is_some())
+        } else if pane == ComposerMenu::Team {
+            1
         } else {
             groups.iter().map(|(_, choices)| choices.len()).sum()
         };
@@ -377,12 +395,22 @@ impl DshApp {
                 self.highlight_model_menu(pane, &groups, index, w, cx);
             }
             "Enter" | "Tab" if pane == ComposerMenu::Model && active.is_some() => {
-                let target = if active == Some(0) {
-                    ComposerMenu::ModelChoices
-                } else {
-                    ComposerMenu::ReasoningChoices
+                let target = match active {
+                    Some(0) => ComposerMenu::ModelChoices,
+                    Some(1) if self.current_config_label("reasoning_effort").is_some() => {
+                        ComposerMenu::ReasoningChoices
+                    }
+                    _ => ComposerMenu::Team,
                 };
                 self.drill_model_menu(target, w, cx);
+            }
+            "Enter" | "Tab" if pane == ComposerMenu::Team => {
+                let enabled = self
+                    .conversation
+                    .team
+                    .as_ref()
+                    .is_some_and(|team| team.enabled);
+                self.choose_team_mode(!enabled, w, cx);
             }
             "Enter" | "Tab" if active.is_some() => {
                 if let Some(choice) = groups

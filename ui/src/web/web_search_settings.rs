@@ -26,6 +26,20 @@ impl Capability {
         }
     }
 
+    fn billing_key(self) -> &'static str {
+        match self {
+            Self::Search => "searchBilling",
+            Self::Fetch => "fetchBilling",
+        }
+    }
+
+    fn api_provider(self) -> &'static str {
+        match self {
+            Self::Search => SEARCH_API,
+            Self::Fetch => FETCH_API,
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Search => "网页搜索提供方",
@@ -129,11 +143,47 @@ struct Credential {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct Billing {
+    value: String,
+    advanced_override: Vec<String>,
+}
+
+impl Billing {
+    fn choices(&self) -> Vec<PickerOption> {
+        ["auto", "account", "api-key"]
+            .into_iter()
+            .map(|id| PickerOption::new(id, Self::label(id)))
+            .collect()
+    }
+
+    fn label(id: &str) -> &'static str {
+        match id {
+            "account" => "已登录的 DeepSeek 账号",
+            "api-key" => "DeepSeek API Key",
+            _ => "自动",
+        }
+    }
+
+    fn hint(&self) -> &'static str {
+        match self.value.as_str() {
+            "account" => "需要先登录 DeepSeek 账号。",
+            "api-key" => "使用「模型」页配置的 API Key，需要先配置。",
+            _ => {
+                "跟随当前会话的 DeepSeek 账号或 API Key；会话用其他模型时，优先用 API Key，没有则用已登录账号。"
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Snapshot {
     search: ProviderChoice,
     fetch: ProviderChoice,
     fields: HashMap<String, FieldValue>,
     credential: Option<Credential>,
+    search_billing: Option<Billing>,
+    fetch_billing: Option<Billing>,
     revisions: HashMap<String, u64>,
     writable: bool,
     providers_failed: bool,
@@ -144,6 +194,13 @@ impl Snapshot {
         match capability {
             Capability::Search => &self.search,
             Capability::Fetch => &self.fetch,
+        }
+    }
+
+    fn billing(&self, capability: Capability) -> Option<&Billing> {
+        match capability {
+            Capability::Search => self.search_billing.as_ref(),
+            Capability::Fetch => self.fetch_billing.as_ref(),
         }
     }
 }
@@ -222,8 +279,11 @@ pub(super) struct WebSearchSettings {
     identity: Rc<()>,
     snapshot: Option<Snapshot>,
     draft: [Option<String>; 2],
+    billing_draft: [Option<String>; 2],
     selectors: [Option<Entity<Select>>; 2],
-    selectors_disabled: bool,
+    billing_selectors: [Option<Entity<Select>>; 2],
+    _billing_choices: Vec<Subscription>,
+    selectors_disabled: Option<bool>,
     _choices: Vec<Subscription>,
     fields: Vec<Field>,
     credential: Entity<Editor>,
@@ -245,6 +305,14 @@ impl WebSearchSettings {
         self.draft[capability.slot()]
             .as_deref()
             .unwrap_or_else(|| snapshot.choice(capability).value())
+    }
+
+    fn billing<'a>(&'a self, snapshot: &'a Snapshot, capability: Capability) -> Option<&'a str> {
+        snapshot.billing(capability).map(|billing| {
+            self.billing_draft[capability.slot()]
+                .as_deref()
+                .unwrap_or(&billing.value)
+        })
     }
 
     fn field_changes(
@@ -270,6 +338,16 @@ impl WebSearchSettings {
             for (index, name) in ["search", "fetch"].into_iter().enumerate() {
                 if let Some(value) = &self.draft[index] {
                     change.insert(name.into(), json!(value));
+                }
+            }
+            for capability in Capability::ALL {
+                if snapshot
+                    .billing(capability)
+                    .is_some_and(|billing| billing.advanced_override.is_empty())
+                    && self.selected(snapshot, capability) == capability.api_provider()
+                    && let Some(value) = &self.billing_draft[capability.slot()]
+                {
+                    change.insert(capability.billing_key().into(), json!(value));
                 }
             }
             if !fields.is_empty() {
@@ -324,7 +402,7 @@ impl DshApp {
         }
         if let Some(form) = &self.web_search_settings {
             if form.snapshot.as_ref().is_some_and(|snapshot| {
-                form.selectors_blocked(snapshot, cx) != form.selectors_disabled
+                Some(form.selectors_blocked(snapshot, cx)) != form.selectors_disabled
             }) {
                 self.build_web_selectors(w, cx);
             }
@@ -395,8 +473,11 @@ impl DshApp {
             identity: Rc::new(()),
             snapshot: None,
             draft: [None, None],
+            billing_draft: [None, None],
             selectors: [None, None],
-            selectors_disabled: false,
+            billing_selectors: [None, None],
+            _billing_choices: Vec::new(),
+            selectors_disabled: None,
             _choices: Vec::new(),
             fields,
             credential,
@@ -415,12 +496,19 @@ impl DshApp {
         let Some(snapshot) = &form.snapshot else {
             return;
         };
-        form.selectors_disabled = form.selectors_blocked(snapshot, cx);
+        let disabled = form.selectors_blocked(snapshot, cx);
+        if form.selectors_disabled == Some(disabled)
+            && !form._choices.is_empty()
+            && form.selectors.iter().all(Option::is_some)
+        {
+            return;
+        }
+        form.selectors_disabled = Some(disabled);
         form._choices.clear();
         for capability in Capability::ALL {
             let selected = form.selected(snapshot, capability).to_owned();
             let options = snapshot.choice(capability).choices(capability, &selected);
-            let disabled = form.selectors_disabled || options.is_empty();
+            let disabled = disabled || options.is_empty();
             let select = cx.new(|cx| {
                 Select::new(capability.key(), capability.label(), options, w, cx)
                     .with_value(&selected)
@@ -448,10 +536,77 @@ impl DshApp {
                     if form.selected(snapshot, Capability::Search) != LEGACY_SEARCH {
                         replace(&form.credential, "", w, cx);
                     }
+                    // Only billing depends on this provider. Keep the focused
+                    // provider select alive while the pointer/key event finishes.
+                    app.build_web_billing_selectors(w, cx);
                     cx.notify();
                 },
             ));
             form.selectors[capability.slot()] = Some(select);
+        }
+        self.build_web_billing_selectors(w, cx);
+    }
+
+    fn build_web_billing_selectors(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = &mut self.web_search_settings else {
+            return;
+        };
+        let Some(snapshot) = &form.snapshot else {
+            return;
+        };
+        form._billing_choices.clear();
+        for capability in Capability::ALL {
+            let selected_provider = form.selected(snapshot, capability);
+            let Some(billing) = snapshot
+                .billing(capability)
+                .filter(|_| selected_provider == capability.api_provider())
+            else {
+                form.billing_selectors[capability.slot()] = None;
+                continue;
+            };
+            let selected = form
+                .billing(snapshot, capability)
+                .unwrap_or("auto")
+                .to_owned();
+            let disabled =
+                form.selectors_disabled == Some(true) || !billing.advanced_override.is_empty();
+            let select = cx.new(|cx| {
+                Select::new(
+                    capability.billing_key(),
+                    "计费方式",
+                    billing.choices(),
+                    w,
+                    cx,
+                )
+                .with_value(&selected)
+                .with_disabled(disabled, cx)
+            });
+            form._billing_choices.push(cx.subscribe_in(
+                &select,
+                w,
+                move |app, select, event: &SelectionChanged, _, cx| {
+                    let Some(form) = &mut app.web_search_settings else {
+                        return;
+                    };
+                    let Some(snapshot) = &form.snapshot else {
+                        return;
+                    };
+                    if form.busy
+                        || form.billing_selectors[capability.slot()].as_ref() != Some(&select)
+                    {
+                        return;
+                    }
+                    if let Some(id) = &event.0 {
+                        form.billing_draft[capability.slot()] = (id.as_ref()
+                            != snapshot
+                                .billing(capability)
+                                .map_or("auto", |billing| &billing.value))
+                        .then(|| id.to_string());
+                    }
+                    cx.notify();
+                },
+            ));
+            form.billing_selectors[capability.slot()] = Some(select);
         }
     }
 
@@ -479,9 +634,12 @@ impl DshApp {
                 .await
                 .and_then(|value| {
                     serde_json::from_value::<Reply>(value)
-                        .map_err(|_| "网页设置返回的数据无法读取。".to_owned())
+                        .map_err(|error| format!("网页设置返回的数据无法读取：{error}"))
                 });
-            let _ = this.update_in(cx, |app, w, cx| {
+            if let Err(error) = &result {
+                bridge::report_async_error("web settings reply", error);
+            }
+            if let Err(error) = this.update_in(cx, |app, w, cx| {
                 let Some(form) = app
                     .web_search_settings
                     .as_mut()
@@ -498,6 +656,20 @@ impl DshApp {
                                 let draft = &mut form.draft[capability.slot()];
                                 if reply.applied.iter().any(|name| name == capability.key())
                                     || draft.as_deref() == Some(snapshot.choice(capability).value())
+                                {
+                                    *draft = None;
+                                }
+                            }
+                            for capability in Capability::ALL {
+                                let draft = &mut form.billing_draft[capability.slot()];
+                                if reply
+                                    .applied
+                                    .iter()
+                                    .any(|name| name == capability.billing_key())
+                                    || draft.as_deref()
+                                        == snapshot
+                                            .billing(capability)
+                                            .map(|billing| billing.value.as_str())
                                 {
                                     *draft = None;
                                 }
@@ -547,7 +719,9 @@ impl DshApp {
                 form.set_editors_enabled(cx);
                 app.build_web_selectors(w, cx);
                 cx.notify();
-            });
+            }) {
+                bridge::report_async_error("web settings window update", &error.to_string());
+            }
         })
         .detach();
     }
@@ -635,6 +809,46 @@ impl DshApp {
                             .child(retry(capability.key())),
                     )
                 });
+            if let Some(billing) = snapshot
+                .billing(capability)
+                .filter(|_| selected == capability.api_provider())
+            {
+                let panel = column()
+                    .w_full()
+                    .py(px(12.))
+                    .px(px(16.))
+                    .gap(px(6.))
+                    .rounded(px(12.))
+                    .bg(p.bg_module_platform)
+                    .child(
+                        row()
+                            .gap(px(8.))
+                            .when(!billing.advanced_override.is_empty(), |row| {
+                                row.child(
+                                    div()
+                                        .px(px(6.))
+                                        .py(px(2.))
+                                        .rounded(px(4.))
+                                        .bg(p.bg_layer_2)
+                                        .text_size(px(11.))
+                                        .text_color(p.label_tertiary)
+                                        .child(format!(
+                                            "已被 {} 覆盖",
+                                            billing.advanced_override.join("、")
+                                        )),
+                                )
+                            }),
+                    )
+                    .children(form.billing_selectors[capability.slot()].clone())
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(18.))
+                            .text_color(p.label_tertiary)
+                            .child(billing.hint()),
+                    );
+                section = section.child(panel);
+            }
             if matches!(capability, Capability::Search) && provider.is_some() {
                 let panel = column()
                     .w_full()
