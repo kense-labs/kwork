@@ -35,7 +35,7 @@ KWork 是 Rust/GPUI 客户端，通过 ACP 与 Host 通信；官方客户端是 
 - `cargo test --workspace`：**59 宿主 + 290 UI** 全部通过（2 忽略）；
 - `bun test scripts/*.test.mjs`：**43 项 / 10 个文件** 全部通过；
 - `cargo check -p dsh-gpui-ui --target wasm32-unknown-unknown`、`cargo check -p dsh-gpui`、`bun run ui:build`、`cargo fmt --all --check`、`git diff --check` 均通过；
-- `cargo clippy --workspace --all-targets`：0 error；但仓库 `bun run check` 使用的严格 `-D warnings` 仍有 **155 条 warning**（多数是原生目标不使用 wasm 渲染入口导致的 `dead_code`，属存量模式），列为后续清理项。
+- `cargo clippy --workspace --all-targets -- -D warnings`：**通过**；`bun run check`（fmt + 严格 clippy + 全部测试）绿色。原生 target 下 wasm-only渲染代码通过 crate 级 `cfg_attr(not(wasm), allow(dead_code))` 说明其仅为测试编译，其余告警已逐条修复或就地注明原因。
 
 **仍待真机复核（不影响合入，记录在案）**：
 

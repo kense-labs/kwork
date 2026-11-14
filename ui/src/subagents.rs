@@ -402,6 +402,30 @@ fn validate_task_graph(tasks: &[Value]) -> Result<(), String> {
     Ok(())
 }
 
+/// Official TeamBoard progress order: completed, active, then pending.
+pub fn progress_label(team: &TeamState) -> String {
+    let completed = team
+        .tasks
+        .iter()
+        .filter(|task| task.status == "completed")
+        .count();
+    let active = team
+        .tasks
+        .iter()
+        .filter(|task| task.status == "in_progress")
+        .count();
+    let pending = team.tasks.len() - completed - active;
+    [
+        (completed > 0).then(|| format!("{completed} 已完成")),
+        (active > 0).then(|| format!("{active} 进行中")),
+        (pending > 0).then(|| format!("{pending} 待处理")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,28 +627,4 @@ mod tests {
         };
         assert_eq!(progress_label(&state), "1 已完成 · 1 进行中 · 1 待处理");
     }
-}
-
-/// Official TeamBoard progress order: completed, active, then pending.
-pub fn progress_label(team: &TeamState) -> String {
-    let completed = team
-        .tasks
-        .iter()
-        .filter(|task| task.status == "completed")
-        .count();
-    let active = team
-        .tasks
-        .iter()
-        .filter(|task| task.status == "in_progress")
-        .count();
-    let pending = team.tasks.len() - completed - active;
-    [
-        (completed > 0).then(|| format!("{completed} 已完成")),
-        (active > 0).then(|| format!("{active} 进行中")),
-        (pending > 0).then(|| format!("{pending} 待处理")),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" · ")
 }

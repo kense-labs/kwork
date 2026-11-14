@@ -252,6 +252,9 @@ fn is_pointer_down(event_type: NSEventType) -> bool {
     )
 }
 
+// The monitor mirrors AppKit's event dispatch signature; every argument is a
+// distinct piece of the callback context.
+#[allow(clippy::too_many_arguments)]
 fn monitor_event(
     event: &NSEvent,
     window: Option<&NSWindow>,

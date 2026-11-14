@@ -435,9 +435,9 @@ pub fn apply_update(entries: &mut Vec<ChatEntry>, update: &Value) -> UpdateEffec
                 entry.role == EntryRole::Job && entry.external_id.as_deref() == Some(id.as_str())
             }) {
                 if settled {
-                    entry.status = job_status_label(&update).to_owned();
-                    entry.text = job_detail_text(&update);
-                    entry.input = job_finished_at(&update);
+                    entry.status = job_status_label(update).to_owned();
+                    entry.text = job_detail_text(update);
+                    entry.input = job_finished_at(update);
                 }
             } else {
                 let at_ms = update["startedAt"]
@@ -448,14 +448,14 @@ pub fn apply_update(entries: &mut Vec<ChatEntry>, update: &Value) -> UpdateEffec
                     external_id: Some(id),
                     role: EntryRole::Job,
                     title: if label.is_empty() { kind } else { label },
-                    text: job_detail_text(&update),
+                    text: job_detail_text(update),
                     input: if settled {
-                        job_finished_at(&update)
+                        job_finished_at(update)
                     } else {
                         String::new()
                     },
                     status: if settled {
-                        job_status_label(&update).to_owned()
+                        job_status_label(update).to_owned()
                     } else {
                         "running".to_owned()
                     },
@@ -792,7 +792,7 @@ pub enum ContextBodyView {
     Opaque { text: String },
 }
 
-fn context_source<'a>(value: &'a Value) -> &'a Value {
+fn context_source(value: &Value) -> &Value {
     value
         .get("source")
         .filter(|source| source.is_object())
@@ -1101,13 +1101,14 @@ fn content_snapshot_text(value: &Value) -> Vec<String> {
 ///
 /// A live ACP update and a replayed durable event describe the same message id,
 /// so both paths share this so a session shows one row per injection.
+/// One compaction summary's text plus the shadowed item/token counts.
+type CompactionSummaryEntry = (String, Option<usize>, Option<u64>);
+type CompactionSummaryCache =
+    std::sync::Mutex<std::collections::HashMap<String, CompactionSummaryEntry>>;
+
 /// Latest compaction summaries keyed by compactionId (live evidence cache).
-fn compaction_summary_cache() -> &'static std::sync::Mutex<
-    std::collections::HashMap<String, (String, Option<usize>, Option<u64>)>,
-> {
-    static CACHE: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, (String, Option<usize>, Option<u64>)>>,
-    > = std::sync::OnceLock::new();
+fn compaction_summary_cache() -> &'static CompactionSummaryCache {
+    static CACHE: std::sync::OnceLock<CompactionSummaryCache> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 

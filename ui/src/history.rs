@@ -237,10 +237,10 @@ pub(crate) fn tool_title(name: &str, arguments: &str) -> String {
         };
     }
     if let Ok(value) = serde_json::from_str::<Value>(arguments) {
-        if let Some(description) = value.get("description").and_then(Value::as_str) {
-            if !description.is_empty() {
-                return description.to_string();
-            }
+        if let Some(description) = value.get("description").and_then(Value::as_str)
+            && !description.is_empty()
+        {
+            return description.to_string();
         }
         if let Some(command) = value.get("command").and_then(Value::as_str) {
             let short = command.lines().next().unwrap_or(command).trim();
@@ -261,6 +261,10 @@ pub(crate) fn tool_title(name: &str, arguments: &str) -> String {
 }
 
 /// Fold session.v4 events into GPUI chat rows (newest-preserving order).
+/// Compaction id -> (summary text, shadowed item count, shadowed token count).
+type CompactionSummary = (Option<String>, Option<usize>, Option<u64>);
+type CompactionSummaryMap = std::collections::HashMap<String, CompactionSummary>;
+
 pub fn project_session_events(events: &[Value]) -> HistoryProjection {
     project_session_events_with_more(events, false)
 }
@@ -290,10 +294,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
     // Compaction summaries arrive just before the checkpoint message that
     // replaces the shadowed history; keep them keyed so the marker can cite the
     // official counts without rendering an extra row.
-    let mut compaction_summaries: std::collections::HashMap<
-        String,
-        (Option<String>, Option<usize>, Option<u64>),
-    > = std::collections::HashMap::new();
+    let mut compaction_summaries: CompactionSummaryMap = std::collections::HashMap::new();
     // Durable agent inbox: a non-human message is a turn trigger only when the
     // inbox claimed it for the next turn (official `waking`); an injected notice
     // that arrives mid-turn stays a context row. Splices remove the prior claim,
@@ -767,23 +768,23 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                     }
                     match block_kind {
                         Some("reasoning") => {
-                            if let Some(text) = block.get("text").and_then(Value::as_str) {
-                                if !text.is_empty() {
-                                    if !thought.is_empty() {
-                                        thought.push('\n');
-                                    }
-                                    thought.push_str(text);
+                            if let Some(text) = block.get("text").and_then(Value::as_str)
+                                && !text.is_empty()
+                            {
+                                if !thought.is_empty() {
+                                    thought.push('\n');
                                 }
+                                thought.push_str(text);
                             }
                         }
                         Some("text") => {
-                            if let Some(text) = block.get("text").and_then(Value::as_str) {
-                                if !text.is_empty() {
-                                    if !answer.is_empty() {
-                                        answer.push('\n');
-                                    }
-                                    answer.push_str(text);
+                            if let Some(text) = block.get("text").and_then(Value::as_str)
+                                && !text.is_empty()
+                            {
+                                if !answer.is_empty() {
+                                    answer.push('\n');
                                 }
+                                answer.push_str(text);
                             }
                         }
                         _ => {}
@@ -895,7 +896,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                 let status = crate::tool_calls::result_status(&data, &data["message"]);
                 if status != "failed"
                     && let Some(path) = mutation_calls.remove(&call_id)
-                    && !pending_changed_files.iter().any(|seen| *seen == path)
+                    && !pending_changed_files.contains(&path)
                 {
                     pending_changed_files.push(path);
                 }

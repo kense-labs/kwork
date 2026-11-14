@@ -309,6 +309,6 @@ mod tests {
         assert!(paths(&ignored_on).contains(&"debug.log"));
         // VCS metadata stays out even when hidden entries are included.
         let vcs = search_workspace(dir.path(), ".git", true, false, &[]).unwrap();
-        assert!(!paths(&vcs).iter().any(|path| *path == ".git"));
+        assert!(!paths(&vcs).contains(&".git"));
     }
 }

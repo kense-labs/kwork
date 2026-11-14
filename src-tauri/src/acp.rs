@@ -1601,7 +1601,7 @@ fn default_workspace() -> Result<PathBuf, String> {
     if let Some(value) = std::env::var_os("KWORK_WORKSPACE") {
         candidates.push(PathBuf::from(value));
     }
-    if let Some(exe) = std::env::current_exe().ok() {
+    if let Ok(exe) = std::env::current_exe() {
         let mut dir = exe.parent().map(Path::to_path_buf);
         for _ in 0..10 {
             let Some(current) = dir else { break };

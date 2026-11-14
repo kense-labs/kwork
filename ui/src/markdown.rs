@@ -559,8 +559,8 @@ fn split_emphasis(text: String) -> Vec<InlinePart> {
         let rest = &text[cursor..];
         // An unmatched marker renders literally and always advances the cursor,
         // so a stray `**` or backtick can never spin this loop.
-        if rest.starts_with("**") {
-            match rest[2..].find("**") {
+        if let Some(inner) = rest.strip_prefix("**") {
+            match inner.find("**") {
                 Some(offset) => {
                     let start = cursor + 2;
                     let end = start + offset;
@@ -582,8 +582,8 @@ fn split_emphasis(text: String) -> Vec<InlinePart> {
             }
             continue;
         }
-        if rest.starts_with('`') {
-            match rest[1..].find('`') {
+        if let Some(inner) = rest.strip_prefix('`') {
+            match inner.find('`') {
                 Some(offset) => {
                     let start = cursor + 1;
                     let end = start + offset;

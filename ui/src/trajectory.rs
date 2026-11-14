@@ -231,12 +231,13 @@ impl State {
         projected.folded = std::mem::take(&mut self.folded);
         projected.reindex();
         for record in projected.requests.iter_mut().chain(&mut projected.records) {
-            if let Some(old) = previous.get(&record.key) {
-                if record.pending() && !old.pending() {
-                    record.status = old.status.clone();
-                    record.output.clone_from(&old.output);
-                    record.entry.text.clone_from(&old.entry.text);
-                }
+            if let Some(old) = previous.get(&record.key)
+                && record.pending()
+                && !old.pending()
+            {
+                record.status = old.status.clone();
+                record.output.clone_from(&old.output);
+                record.entry.text.clone_from(&old.entry.text);
             }
         }
         *self = projected;
@@ -447,13 +448,12 @@ fn project(events: &[Value]) -> State {
         if let Some(id) = event["data"]["subCallId"].as_str()
             && let Some(parent) = event["data"]["parentCallId"].as_str()
             && id != parent
+            && parents.insert(id.to_owned(), parent.to_owned()).is_none()
         {
-            if parents.insert(id.to_owned(), parent.to_owned()).is_none() {
-                children
-                    .entry(parent.to_owned())
-                    .or_default()
-                    .push(id.to_owned());
-            }
+            children
+                .entry(parent.to_owned())
+                .or_default()
+                .push(id.to_owned());
         }
     }
     for event in events {
@@ -1133,6 +1133,9 @@ pub(crate) fn toggle_global_fold(folded: &mut HashSet<String>, records: &[Record
     }
 }
 
+// The state machine reads eight independent inputs; grouping them would hide
+// the pure transition under a wrapper struct with no other use.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn advance_scroll_index(
     index: usize,
     turn: u64,
@@ -1269,7 +1272,7 @@ mod tests {
         let first = from_entry(&ChatEntry::local(EntryRole::Tool, "first", "first"), 1, 1);
         let mut second = from_entry(&ChatEntry::local(EntryRole::Tool, "second", "second"), 1, 2);
         second.step = 2;
-        let records = vec![first, second];
+        let records = [first, second];
         let rows: Vec<_> = records
             .iter()
             .map(|record| Visible {

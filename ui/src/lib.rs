@@ -1,4 +1,9 @@
 //! KUI/GPUI frontend for KWork.
+//!
+//! Production builds target wasm32 and render inside the Tauri WebView; the
+//! native host target only compiles this crate to run its unit tests, so
+//! render-only items are legitimately unused there.
+#![cfg_attr(not(target_family = "wasm"), allow(dead_code))]
 
 #[cfg(any(target_family = "wasm", test))]
 mod agent_terminals;

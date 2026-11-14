@@ -557,20 +557,11 @@ pub enum Edit {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct Snapshot {
     pub revision: u64,
     pub document: Document,
     pub error: Option<String>,
-}
-
-impl Default for Snapshot {
-    fn default() -> Self {
-        Self {
-            revision: 0,
-            document: Document::default(),
-            error: None,
-        }
-    }
 }
 
 pub struct Row {

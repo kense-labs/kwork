@@ -449,10 +449,10 @@ fn derive_session_stats_from_log(session_id: &str, cwd: &str) -> Option<Value> {
                     .pointer("/data/message/source/callId")
                     .and_then(Value::as_str)
                     .or_else(|| event.pointer("/data/callId").and_then(Value::as_str));
-                if let Some(call_id) = call_id {
-                    if let Some(dispatched) = pending_calls.remove(call_id) {
-                        tool_ms += (time - dispatched).max(0.);
-                    }
+                if let Some(call_id) = call_id
+                    && let Some(dispatched) = pending_calls.remove(call_id)
+                {
+                    tool_ms += (time - dispatched).max(0.);
                 }
             }
             "step/end" => {
@@ -629,8 +629,11 @@ fn fallback_session_title(input: &str) -> String {
     const MAX_BYTES: usize = 96;
     let cleaned = input.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut out = String::new();
-    let mut words = 0usize;
-    for word in cleaned.split(' ').filter(|word| !word.is_empty()) {
+    for (words, word) in cleaned
+        .split(' ')
+        .filter(|word| !word.is_empty())
+        .enumerate()
+    {
         let candidate = if out.is_empty() {
             word.to_string()
         } else {
@@ -640,7 +643,6 @@ fn fallback_session_title(input: &str) -> String {
             break;
         }
         out = candidate;
-        words += 1;
     }
     out
 }
@@ -710,7 +712,7 @@ fn fold_turn_usage(events: &[serde_json::Value]) -> serde_json::Value {
                 };
                 let route = format!("{provider}/{model}");
                 let usage = turns.entry(turn).or_default();
-                if !usage.routes.iter().any(|seen| *seen == route) {
+                if !usage.routes.contains(&route) {
                     usage.routes.push(route);
                 }
             }

@@ -132,7 +132,7 @@ pub(crate) fn vocabularies<'a>(
     let mut map: HashMap<String, FileMentionVocabulary> = HashMap::new();
     let push = |produced: &mut Vec<String>, path: String| {
         let path = path.trim().to_owned();
-        if !path.is_empty() && !produced.iter().any(|seen| *seen == path) {
+        if !path.is_empty() && !produced.contains(&path) {
             produced.push(path);
         }
     };
