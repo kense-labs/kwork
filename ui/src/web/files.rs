@@ -4,7 +4,7 @@ use super::*;
 
 impl DshApp {
     pub(super) fn sync_file_trigger(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        if self.suppress_file_trigger {
+        if self.suppress_file_trigger && self.file_drilled.is_none() {
             return;
         }
         let (text, caret) = {
@@ -17,7 +17,7 @@ impl DshApp {
             self.file_filter = token.filter.clone();
             self.file_token = Some(token.clone());
             self.file_selected = 0;
-            self.file_show_crumbs = false;
+            self.file_show_crumbs = self.file_drilled.is_some();
             self.composer_menu = Some(ComposerMenu::Files);
             self.show_workspace_menu = false;
             if reload {
@@ -26,6 +26,7 @@ impl DshApp {
         } else if self.composer_menu == Some(ComposerMenu::Files) {
             self.composer_menu = None;
             self.file_token = None;
+            self.file_drilled = None;
         }
         cx.notify();
         let _ = w;
@@ -75,6 +76,8 @@ impl DshApp {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.file_drilled = Some(directory.clone());
+        self.file_show_crumbs = !directory.is_empty();
         let mention = if directory.is_empty() {
             "@".to_string()
         } else {
@@ -101,8 +104,21 @@ impl DshApp {
         self.file_selected = 0;
         self.file_show_crumbs = !directory.is_empty();
         self.composer_menu = Some(ComposerMenu::Files);
-        self.load_workspace_files(directory, cx);
+        self.load_workspace_files(directory.clone(), cx);
+        // Keep the drill identity through the deferred Changed effect, then
+        // retire it before a later candidate reload can recreate the header.
         self.focus_composer(w, cx);
+        let app = cx.weak_entity();
+        w.defer(cx, move |_, cx| {
+            let _ = app.update(cx, |this, cx| {
+                this.file_drilled = None;
+                this.file_show_crumbs = this
+                    .file_token
+                    .as_ref()
+                    .is_some_and(|token| !token.directory.is_empty());
+                cx.notify();
+            });
+        });
         cx.notify();
     }
 
@@ -120,6 +136,7 @@ impl DshApp {
             "Escape" => {
                 self.composer_menu = None;
                 self.file_token = None;
+                self.file_drilled = None;
             }
             "ArrowDown" if !files.is_empty() => {
                 self.file_selected = (self.file_selected + 1).min(files.len() - 1);
@@ -136,7 +153,15 @@ impl DshApp {
                 };
                 self.drill_file_directory(file.path.clone(), w, cx);
             }
+            "shift+Tab" => {
+                self.composer_menu = None;
+                self.file_token = None;
+                self.file_drilled = None;
+            }
             "Enter" => {
+                if self.mention_files.loading() {
+                    return true;
+                }
                 let Some(file) = files.get(self.file_selected) else {
                     return true;
                 };

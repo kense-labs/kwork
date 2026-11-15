@@ -4,7 +4,7 @@ use super::*;
 use crate::right_dock::drag_threshold;
 use crate::session_order::{
     DropHalf, FLAT_SESSION_ORDER_KEY, SessionDrop, SessionRow, move_session_to_front,
-    ordered_session_ids, session_drag_order,
+    ordered_session_ids, session_drag_order, smallest_row_at,
 };
 use gpui::{
     Bounds, DispatchPhase, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
@@ -42,18 +42,16 @@ impl SessionRowGeometry {
     }
 
     fn hit(&self, position: Point<Pixels>) -> Option<SessionDrop> {
-        self.0
-            .borrow()
-            .iter()
-            .find(|(_, bounds)| bounds.contains(&position))
-            .map(|(id, bounds)| SessionDrop {
-                id: id.clone(),
-                half: if position.y < bounds.center().y {
-                    DropHalf::Before
-                } else {
-                    DropHalf::After
-                },
-            })
+        let geometry = self.0.borrow();
+        let (id, bounds) = smallest_row_at(geometry.iter(), position)?;
+        Some(SessionDrop {
+            id: id.clone(),
+            half: if position.y < bounds.center().y {
+                DropHalf::Before
+            } else {
+                DropHalf::After
+            },
+        })
     }
 
     fn rendered_ids(&self) -> Vec<String> {
@@ -141,18 +139,16 @@ impl DshApp {
         keys
     }
 
-    fn ordered_account_ids(&self, key: &str, saved: Option<&[String]>) -> Vec<String> {
+    fn ordered_account_ids(&self, key: &str) -> Vec<String> {
         let members = self
             .sessions
             .iter()
-            .filter(|session| {
-                key == FLAT_SESSION_ORDER_KEY || self.workspace_account_key(session) == key
-            })
+            .filter(|session| self.session_account_key(session) == key)
             .cloned()
             .collect::<Vec<_>>();
         ordered_session_ids(
             &members,
-            saved,
+            self.session_order_by_account.get(key).map(Vec::as_slice),
             self.active_session.as_deref(),
             &self.pinned_sessions,
             &self.archived_sessions,
@@ -167,29 +163,58 @@ impl DshApp {
             .filter(|key| {
                 key != FLAT_SESSION_ORDER_KEY || self.workspace_group_by == WorkspaceGroupBy::Flat
             })
-            .flat_map(|key| {
-                self.ordered_account_ids(
-                    &key,
-                    self.session_order_by_account.get(&key).map(Vec::as_slice),
-                )
-            })
+            .flat_map(|key| self.ordered_account_ids(&key))
             .enumerate()
             .map(|(index, id)| (id, index))
             .collect()
     }
 
     fn initial_session_orders(&self) -> HashMap<String, Vec<String>> {
-        let manual = self.workspace_order_by == WorkspaceOrderBy::Manual;
         self.account_keys()
             .into_iter()
             .map(|key| {
-                let saved = manual
-                    .then(|| self.session_order_by_account.get(&key).map(Vec::as_slice))
-                    .flatten();
-                let order = self.ordered_account_ids(&key, saved);
+                let order = self.ordered_account_ids(&key);
                 (key, order)
             })
             .collect()
+    }
+
+    pub(super) fn set_workspace_group_by(&mut self, group: WorkspaceGroupBy) {
+        if self.workspace_group_by == group {
+            return;
+        }
+        self.workspace_group_by = group;
+        if group == WorkspaceGroupBy::Flat && self.workspace_order_by == WorkspaceOrderBy::Manual {
+            let visible = self
+                .session_row_geometry
+                .rendered_ids()
+                .into_iter()
+                .filter_map(|id| {
+                    self.sessions
+                        .iter()
+                        .find(|session| session.id == id)
+                        .cloned()
+                })
+                .filter(|session| !self.hidden_workspaces.contains(&session.cwd))
+                .collect::<Vec<_>>();
+            let mut order = self
+                .full_workspace_order()
+                .into_iter()
+                .flat_map(|cwd| self.ordered_account_ids(&cwd))
+                .collect::<Vec<_>>();
+            if visible.is_empty() {
+                order = self.ordered_account_ids(FLAT_SESSION_ORDER_KEY);
+            } else {
+                let visible_ids = visible
+                    .iter()
+                    .map(|session| session.id.as_str())
+                    .collect::<std::collections::HashSet<_>>();
+                order.retain(|id| !visible_ids.contains(id.as_str()));
+                order.splice(0..0, visible.into_iter().map(|session| session.id));
+            }
+            self.session_order_by_account
+                .insert(FLAT_SESSION_ORDER_KEY.to_owned(), order);
+        }
     }
 
     pub(super) fn set_workspace_order_by(&mut self, order: WorkspaceOrderBy) {
@@ -197,13 +222,7 @@ impl DshApp {
             return;
         }
         self.session_order_by_account = if order == WorkspaceOrderBy::Manual {
-            self.account_keys()
-                .into_iter()
-                .map(|key| {
-                    let ids = self.ordered_account_ids(&key, None);
-                    (key, ids)
-                })
-                .collect()
+            self.initial_session_orders()
         } else {
             HashMap::new()
         };
@@ -341,19 +360,12 @@ impl DshApp {
             .session_drop_at(position, geometry, &gesture)
             .or_else(|| gesture.over.clone());
         if let Some(over) = over {
-            let saved = (self.workspace_order_by == WorkspaceOrderBy::Manual)
-                .then(|| {
-                    self.session_order_by_account
-                        .get(&gesture.account_key)
-                        .map(Vec::as_slice)
-                })
-                .flatten();
-            let order = self.ordered_account_ids(&gesture.account_key, saved);
+            let order = self.ordered_account_ids(&gesture.account_key);
             let rows = self.rendered_session_rows(&gesture.account_key, geometry);
             if let Some(next) =
                 session_drag_order(&order, &rows, &gesture.session_id, gesture.pinned, &over)
             {
-                let mut orders = self.initial_session_orders();
+                let mut orders = self.session_order_by_account.clone();
                 orders.insert(gesture.account_key, next);
                 self.session_order_by_account = orders;
                 self.workspace_order_by = WorkspaceOrderBy::Manual;

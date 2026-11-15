@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::trajectory::{
-    Kind, Record, State, Visible, advance_scroll_index, first_turn_content, format_duration,
-    global_fold, toggle_global_fold, turn_folded, visible,
+    Kind, Record, State, Visible, first_turn_content, format_duration, global_fold,
+    toggle_global_fold, turn_folded, visible,
 };
 use gpui::{DispatchPhase, Entity, MouseButton, MouseMoveEvent, MouseUpEvent, canvas};
 use std::cell::Cell;
@@ -35,7 +35,6 @@ pub(super) struct TrajectoryView {
     visible: usize,
     dragging: Option<(f32, f32)>,
     panning: Option<(f32, f32)>,
-    space_held: Option<String>,
     focused_record: Option<(String, usize)>,
     follow: bool,
 }
@@ -77,7 +76,6 @@ impl TrajectoryView {
             visible: 100,
             dragging: None,
             panning: None,
-            space_held: None,
             focused_record: None,
             follow: true,
         }
@@ -90,7 +88,6 @@ impl TrajectoryView {
         self.viewport = None;
         self.dragging = None;
         self.panning = None;
-        self.space_held = None;
         self.focused_record = None;
         self.visible = 100;
         self.follow = true;
@@ -124,6 +121,7 @@ impl DshApp {
             return;
         }
         let session = self.active_session.clone();
+        self.trajectory.scroll.scroll_to_bottom();
         cx.spawn(async move |this, cx| {
             let mut confirmations = 0;
             for _ in 0..10 {
@@ -458,48 +456,6 @@ impl DshApp {
                     this.clear_trajectory_viewport(cx);
                 },
             ))
-            .child(
-                row()
-                    .id("trajectory-actual-time")
-                    .role(gpui::Role::Switch)
-                    .aria_label("实际时间")
-                    .aria_selected(self.trajectory.actual_time)
-                    .tab_index(0)
-                    .h(px(24.))
-                    .px(px(6.))
-                    .gap(px(5.))
-                    .cursor_pointer()
-                    .text_size(px(12.))
-                    .text_color(if self.trajectory.actual_time {
-                        p.ink
-                    } else {
-                        p.faint
-                    })
-                    .child("实际时间")
-                    .child(
-                        div()
-                            .w(px(20.))
-                            .h(px(10.))
-                            .rounded(px(5.))
-                            .p(px(2.))
-                            .bg(if self.trajectory.actual_time {
-                                p.state_business_primary
-                            } else {
-                                p.border_l2
-                            })
-                            .child(
-                                div()
-                                    .size(px(6.))
-                                    .rounded_full()
-                                    .bg(p.bg_layer_1)
-                                    .when(self.trajectory.actual_time, |thumb| thumb.ml(px(10.))),
-                            ),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.trajectory.actual_time = !this.trajectory.actual_time;
-                        this.clear_trajectory_viewport(cx);
-                    })),
-            )
             .child(button(
                 "trajectory-fold-turns",
                 if turns {
@@ -630,28 +586,54 @@ impl DshApp {
         cx.notify();
     }
 
-    fn trajectory_metrics(record: &Record, p: crate::tokens::Tokens, compact: bool) -> gpui::Div {
-        let usage = record.usage;
-        let metric = |value: Option<u64>| {
-            div()
-                .when(!compact, |metric| metric.w(px(64.)))
-                .whitespace_nowrap()
-                .child(value.map_or_else(|| "—".into(), |value| value.to_string()))
-        };
+    fn trajectory_request_boundary(
+        &self,
+        record: &Record,
+        narrow: bool,
+        empty_step: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let p = dsh(cx);
+        let key = record.key.clone();
+        let keyboard_key = record.key.clone();
         row()
+            .id(gpui::ElementId::Name(
+                format!("request-boundary-{key}").into(),
+            ))
+            .absolute()
+            .top(px(-8.))
+            .left(px(if narrow { 6. } else { 12. }))
+            .size(px(16.))
             .flex_none()
-            .gap(px(if compact { 8. } else { 12. }))
-            .text_size(px(12.))
-            .text_color(p.faint)
-            .whitespace_nowrap()
-            .child(metric(usage.map(|usage| usage.input)))
-            .child(metric(usage.map(|usage| usage.output)))
-            .child(metric(usage.map(|usage| usage.thinking)))
+            .items_start()
+            .role(gpui::Role::Button)
+            .aria_label(format!(
+                "第 {} 轮第 {} 步模型请求",
+                record.turn, record.step
+            ))
+            .tab_index(0)
+            .justify_center()
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, w, cx| {
+                this.select_trajectory_record(key.clone(), w, cx);
+            }))
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, w, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    this.select_trajectory_record(keyboard_key.clone(), w, cx);
+                    w.prevent_default();
+                    cx.stop_propagation();
+                }
+            }))
             .child(
                 div()
-                    .when(!compact, |metric| metric.w(px(70.)))
-                    .whitespace_nowrap()
-                    .child(format_duration(record.timing.duration_ms())),
+                    .absolute()
+                    .top(px(if empty_step { 13.5 } else { 5.5 }))
+                    .left(px(5.5))
+                    .size(px(5.))
+                    .rounded(px(3.))
+                    .bg(p.label_caption)
+                    .border(px(2.))
+                    .border_color(p.bg_layer_1),
             )
     }
 
@@ -659,18 +641,21 @@ impl DshApp {
         &self,
         record: &Record,
         summary: Option<String>,
-        collapsed: bool,
         narrow: bool,
+        turn_start: bool,
+        request_boundary: Option<Record>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let p = dsh(cx);
-        let selected = self.trajectory.selected.as_deref() == Some(&record.key);
+        let collapsed = summary.is_some();
+        let selected = !collapsed && self.trajectory.selected.as_deref() == Some(&record.key);
         let foldable = record.has_children
-            && global_fold(
+            && !global_fold(
                 record,
                 first_turn_content(&self.conversation.trajectory.records).get(&record.turn)
                     == Some(&record.key.as_str()),
-            ) != "";
+            )
+            .is_empty();
         let (ink, fill) = match record.kind {
             Kind::User => (p.state_success_primary, p.state_success_tertiary),
             Kind::Tool | Kind::Subtool => (p.state_warn_label, p.state_warn_tertiary),
@@ -681,6 +666,9 @@ impl DshApp {
             Kind::System => (p.secondary, p.bg_module_platform),
         };
         let key = record.key.clone();
+        let click_key = key.clone();
+        let double_click_key = key.clone();
+        let keyboard_key = key.clone();
         let focus = self
             .trajectory
             .record_focus
@@ -692,70 +680,28 @@ impl DshApp {
             .record_focus
             .borrow_mut()
             .insert(key.clone(), focus.clone());
-        let keyboard_key = key.clone();
-        let fold_key = key.clone();
-        let keyboard_fold = fold_key.clone();
-        let release_fold = fold_key.clone();
-        let fold = foldable.then(|| {
-            row()
-                .id(gpui::ElementId::Name(
-                    format!("trajectory-fold-{}", record.key).into(),
-                ))
-                .role(gpui::Role::Button)
-                .aria_label(if collapsed { "展开" } else { "收起" })
-                .tab_index(0)
-                .size(px(24.))
-                .flex_none()
-                .justify_center()
-                .cursor_pointer()
-                .hover(|button| button.bg(p.hover))
-                .child(icon(
-                    if collapsed { Glyph::Arrow } else { Glyph::Down },
-                    11.,
-                    p.faint,
-                ))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.toggle_trajectory_fold(&fold_key, cx);
-                }))
-                .capture_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, w, cx| {
-                    if w.default_prevented() {
-                        return;
-                    }
-                    match event.keystroke.key.as_str() {
-                        "enter" if !event.keystroke.modifiers.modified() => {
-                            this.toggle_trajectory_fold(&keyboard_fold, cx);
-                        }
-                        "space" if !event.keystroke.modifiers.modified() => {
-                            this.trajectory.space_held = Some(keyboard_fold.clone());
-                        }
-                        _ => return,
-                    }
-                    w.prevent_default();
-                    cx.stop_propagation();
-                }))
-                .on_key_up(cx.listener(move |this, event: &gpui::KeyUpEvent, w, cx| {
-                    if event.keystroke.key == "space"
-                        && this.trajectory.space_held.as_deref() == Some(&release_fold)
-                    {
-                        this.trajectory.space_held = None;
-                        this.toggle_trajectory_fold(&release_fold, cx);
-                        w.prevent_default();
-                        cx.stop_propagation();
-                    }
-                }))
-        });
         let kind = || {
+            let glyph = match record.kind {
+                Kind::User => "↑",
+                Kind::Message => "◆",
+                Kind::Tool | Kind::Subtool => "⌘",
+                Kind::Context | Kind::Compacted => "⊞",
+                Kind::System => "•",
+            };
             div()
-                .px(px(4.))
-                .h(px(22.))
-                .rounded(px(4.))
+                .h(px(19.))
+                .rounded(px(2.))
                 .bg(fill)
-                .text_size(px(11.))
+                .text_size(px(10.))
+                .line_height(px(16.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(ink)
-                .child(record.label())
+                .when(narrow, |kind| kind.w(px(19.)).text_center().child(glyph))
+                .when(!narrow, |kind| kind.px(px(5.)).child(record.label()))
         };
-        let collapsed = summary.is_some();
+        let boundary = request_boundary
+            .as_ref()
+            .map(|request| self.trajectory_request_boundary(request, narrow, false, cx));
         let text = summary.unwrap_or_else(|| {
             let text = record.preview();
             if text.is_empty() {
@@ -764,99 +710,87 @@ impl DshApp {
                 text
             }
         });
-        let container = if narrow { column() } else { row() };
-        container
+        row()
+            .relative()
             .id(gpui::ElementId::Name(
-                format!("trajectory-row-{}", record.key).into(),
+                format!(
+                    "trajectory-{}-{}",
+                    if collapsed { "summary" } else { "row" },
+                    record.key
+                )
+                .into(),
             ))
             .role(gpui::Role::Button)
-            .aria_label(format!(
-                "#{} {} {}",
-                record.index,
-                record.label(),
-                record.input
-            ))
+            .aria_label(if collapsed {
+                format!("展开 {}", text)
+            } else {
+                format!("#{} {} {}", record.index, record.label(), record.input)
+            })
             .aria_selected(selected)
             .track_focus(&focus)
             .tab_index(0)
+            .focus_visible(|row| row.border(px(1.)).border_color(p.state_business_primary))
             .w_full()
-            .when(narrow, |row| {
-                row.h_auto()
-                    .min_h(px(if collapsed { 88. } else { 72. }))
-                    .py(px(5.))
-                    .gap(px(4.))
-            })
-            .when(!narrow, |row| row.h(px(38.)))
-            .px(px(8.))
-            .when(!narrow, |row| row.gap(px(12.)))
-            .rounded(px(6.))
-            .border(px(if selected { 1. } else { 0.5 }))
-            .border_color(if selected {
-                p.state_business_primary
-            } else {
-                p.border_l4
-            })
-            .bg(p.bg_layer_3)
+            .h(px(if collapsed { 20. } else { 30. }))
+            .overflow_hidden()
+            .items_center()
+            .pl(px(if narrow { 28. } else { 36. }))
+            .pr(px(if narrow { 3. } else { 4. }))
+            .gap(px(4.))
+            .border_b(px(0.5))
+            .border_color(p.border_l1)
+            .when(selected, |row| row.bg(p.hover_active))
             .cursor_pointer()
-            .hover(|row| row.border_color(p.label_caption))
-            .child(if narrow {
-                let id = div()
-                    .w(px(48.))
-                    .flex_none()
-                    .text_size(px(12.))
-                    .text_color(p.faint)
-                    .child(format!("#{}", record.index));
-                row()
-                    .w_full()
-                    .h(px(22.))
-                    .flex_none()
-                    .gap(px(8.))
-                    .child(id.whitespace_nowrap())
-                    .child(kind().whitespace_nowrap())
-                    .children(fold)
-            } else {
-                let id = div()
-                    .w(px(48.))
-                    .flex_none()
-                    .text_size(px(12.))
-                    .text_color(p.faint)
-                    .child(format!("#{}", record.index))
-                    .whitespace_nowrap();
-                row()
-                    .flex_none()
-                    .gap(px(12.))
-                    .child(id)
-                    .child(row().w(px(76.)).gap(px(3.)).children(fold).child(kind()))
+            .hover(|row| row.bg(p.hover))
+            .when(selected, |row| {
+                row.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w(px(3.))
+                        .bg(p.brand_accent),
+                )
             })
+            .when(turn_start && !collapsed, |row| {
+                row.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .px(px(5.))
+                        .py(px(1.))
+                        .rounded_br(px(2.))
+                        .bg(p.bg_module_platform)
+                        .font_family("monospace")
+                        .text_size(px(8.))
+                        .line_height(px(10.))
+                        .text_color(p.label_tertiary)
+                        .child(if narrow {
+                            format!("#{}", record.turn)
+                        } else {
+                            format!("第 {} 轮", record.turn)
+                        }),
+                )
+            })
+            .child(
+                row()
+                    .w(px(if narrow { 19. } else { 44. }))
+                    .flex_none()
+                    .justify_end()
+                    .children((!collapsed).then(kind)),
+            )
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
-                    .when(narrow, |text| text.w_full().flex_none())
                     .truncate()
                     .whitespace_nowrap()
-                    .when(narrow && collapsed, |text| {
-                        text.h(px(38.)).whitespace_normal().line_clamp(2)
-                    })
-                    .text_size(px(13.))
+                    .text_size(px(12.))
                     .text_color(p.ink)
                     .child(text),
             )
-            .when(narrow, |row| {
-                row.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .w_full()
-                        .flex_none()
-                        .gap(px(6.))
-                        .child(div().flex_1().min_w_0())
-                        .child(Self::trajectory_metrics(record, p, true)),
-                )
-            })
-            .when(!narrow, |row| {
-                row.child(Self::trajectory_metrics(record, p, false))
-            })
             .child(
                 div()
                     .w(px(14.))
@@ -866,14 +800,23 @@ impl DshApp {
                         row.text_color(p.state_business_primary).child("●")
                     }),
             )
-            .on_click(
-                cx.listener(move |this, _, w, cx| {
-                    this.select_trajectory_record(key.clone(), w, cx)
-                }),
-            )
+            .children(boundary)
+            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, w, cx| {
+                if event.click_count() == 2 && foldable {
+                    this.toggle_trajectory_fold(&double_click_key, cx);
+                } else if collapsed {
+                    this.toggle_trajectory_fold(&click_key, cx);
+                } else {
+                    this.select_trajectory_record(key.clone(), w, cx);
+                }
+            }))
             .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, w, cx| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    this.select_trajectory_record(keyboard_key.clone(), w, cx);
+                    if collapsed {
+                        this.toggle_trajectory_fold(&keyboard_key, cx);
+                    } else {
+                        this.select_trajectory_record(keyboard_key.clone(), w, cx);
+                    }
                     w.prevent_default();
                     cx.stop_propagation();
                 }
@@ -1169,22 +1112,42 @@ impl DshApp {
         .into_iter()
         .filter(|row| in_range(row.record))
         .collect::<Vec<_>>();
-        let requests: Vec<_> = visible(
-            &self.conversation.trajectory.requests,
-            &self.conversation.trajectory.folded,
-            &query,
-        )
-        .into_iter()
-        .filter(|row| {
-            in_range(row.record)
-                && !turn_folded(
-                    &self.conversation.trajectory.records,
-                    &self.conversation.trajectory.folded,
-                    row.record.turn,
-                )
-        })
-        .collect();
-        let mut body = column().w_full().min_h_full().pb(px(16.));
+        let request_boundaries: Vec<_> = self
+            .conversation
+            .trajectory
+            .requests
+            .iter()
+            .filter(|record| {
+                in_range(record)
+                    && !turn_folded(
+                        &self.conversation.trajectory.records,
+                        &self.conversation.trajectory.folded,
+                        record.turn,
+                    )
+            })
+            .collect();
+        // Official request-only rows exist only for steps without an assistant
+        // response or tool call. Their metadata still supplies every boundary.
+        let requests: Vec<_> =
+            request_boundaries
+                .iter()
+                .filter(|request| {
+                    query.trim().is_empty()
+                        && !self.conversation.trajectory.records.iter().any(|record| {
+                            record.turn == request.turn && record.step == request.step
+                        })
+                })
+                .copied()
+                .collect();
+        let composer_clearance = self
+            .composer_seat_bounds
+            .get()
+            .map_or(168., |bounds| f32::from(bounds.size.height) + 16.);
+        let mut body = column()
+            .w_full()
+            .flex_none()
+            .gap_0()
+            .pb(px(composer_clearance));
         if self.conversation.history_has_more || rows.len() > self.trajectory.visible {
             body = body.child(
                 row()
@@ -1218,23 +1181,31 @@ impl DshApp {
         let visible_requests: Vec<_> = rows
             .iter()
             .filter_map(|row| {
-                requests
+                let request = requests.iter().find(|request| {
+                    request.turn == row.record.turn && request.step == row.record.step
+                })?;
+                self.conversation
+                    .trajectory
+                    .records
                     .iter()
-                    .find(|request| {
-                        request.record.turn == row.record.turn
-                            && request.record.step == row.record.step
+                    .find(|candidate| {
+                        candidate.turn == request.turn
+                            && candidate.step == request.step
+                            && !matches!(candidate.kind, Kind::User | Kind::Context | Kind::System)
                     })
-                    .cloned()
+                    .map_or(Some((*request).clone()), |content| {
+                        (content.key == row.record.key).then(|| (*request).clone())
+                    })
             })
             .collect();
-        let narrow = self.trajectory.selected.is_some()
-            || f32::from(w.viewport_size().width)
-                - self.sidebar_track_width(w)
-                - self.right_dock_frame.track
-                < 1040.;
+        let narrow = f32::from(w.viewport_size().width)
+            - self.sidebar_track_width(w)
+            - self.right_dock_frame.track
+            < 620.;
         let mut current_turn = 0;
         let mut current_step = 0;
         let mut shown = 0;
+        let mut last_step = None;
         let mut scroll_index =
             usize::from(self.conversation.history_has_more || rows.len() > self.trajectory.visible);
         let mut focused_record = self
@@ -1242,27 +1213,22 @@ impl DshApp {
             .focused_record
             .take()
             .map(|(key, _)| (key, None));
+        let display_rows: Vec<_> = rows.into_iter().skip(start).collect();
+        let final_step = display_rows
+            .last()
+            .map(|row| (row.record.turn, row.record.step));
         for Visible {
-            record,
-            collapsed,
-            summary,
-        } in rows.into_iter().skip(start)
+            record, summary, ..
+        } in display_rows
         {
             shown += 1;
+            last_step = Some((record.turn, record.step));
             let record_scroll_index = scroll_index;
-            let has_request = visible_requests.iter().any(|request| {
-                request.record.turn == record.turn && request.record.step == record.step
-            });
-            scroll_index = advance_scroll_index(
-                scroll_index,
-                record.turn,
-                record.step,
-                current_turn,
-                current_step,
-                has_request,
-                collapsed,
-                self.conversation.trajectory.folded.contains("$turn"),
-            );
+            let has_request = requests
+                .iter()
+                .any(|request| request.turn == record.turn && request.step == record.step);
+            scroll_index +=
+                usize::from(has_request && record.step > 0 && record.step != current_step) + 1;
             if focused_record
                 .as_ref()
                 .is_some_and(|(key, _)| key == &record.key)
@@ -1271,79 +1237,82 @@ impl DshApp {
             }
             if focused_record.as_ref().is_some_and(|(key, _)| {
                 visible_requests.iter().any(|request| {
-                    request.record.turn == record.turn
-                        && request.record.step == record.step
-                        && &request.record.key == key
+                    request.turn == record.turn
+                        && request.step == record.step
+                        && &request.key == key
                 })
             }) {
                 focused_record.as_mut().unwrap().1 = Some(record_scroll_index + 1);
             }
-            if record.turn > 0 && record.turn != current_turn {
+            let turn_start = record.turn > 0 && record.turn != current_turn;
+            let request_boundary =
+                (!matches!(record.kind, Kind::User | Kind::Context | Kind::System)
+                    && summary.is_none()
+                    && !self
+                        .conversation
+                        .trajectory
+                        .records
+                        .iter()
+                        .any(|candidate| {
+                            candidate.turn == record.turn
+                                && candidate.step == record.step
+                                && candidate.index < record.index
+                                && !matches!(
+                                    candidate.kind,
+                                    Kind::User | Kind::Context | Kind::System
+                                )
+                        }))
+                .then(|| {
+                    request_boundaries
+                        .iter()
+                        .find(|request| request.turn == record.turn && request.step == record.step)
+                        .map(|request| (*request).clone())
+                })
+                .flatten();
+            if turn_start {
                 current_turn = record.turn;
                 current_step = 0;
-                body = body.child(
-                    row()
-                        .w_full()
-                        .h(px(32.))
-                        .px(px(8.))
-                        .gap(px(12.))
-                        .bg(p.sidebar_fill)
-                        .child(
-                            row()
-                                .flex_1()
-                                .text_size(px(12.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(format!("第 {current_turn} 轮")),
-                        )
-                        .children((!narrow).then(|| {
-                            row()
-                                .gap(px(12.))
-                                .text_size(px(11.))
-                                .text_color(p.faint)
-                                .child(div().w(px(64.)).child("输入"))
-                                .child(div().w(px(64.)).child("输出"))
-                                .child(div().w(px(64.)).child("思考"))
-                                .child(div().w(px(70.)).child("时间"))
-                        })),
-                );
             }
             if record.step != current_step && record.step > 0 {
                 current_step = record.step;
-                if let Some(request) = visible_requests.iter().find(|request| {
-                    request.record.turn == current_turn && request.record.step == current_step
-                }) {
-                    body = body.child(self.trajectory_row(
-                        request.record,
-                        request.summary.clone(),
-                        request.collapsed,
-                        narrow,
-                        cx,
-                    ));
-                }
-                if !turn_folded(
-                    &self.conversation.trajectory.records,
-                    &self.conversation.trajectory.folded,
-                    current_turn,
-                ) {
+                if let Some(request) = visible_requests
+                    .iter()
+                    .find(|request| request.turn == current_turn && request.step == current_step)
+                {
                     body = body.child(
-                        row()
+                        div()
+                            .relative()
                             .w_full()
-                            .h(px(24.))
-                            .px(px(12.))
-                            .text_size(px(11.))
-                            .text_color(p.faint)
-                            .child(format!("第 {current_step} 步")),
+                            .h(px(if Some((record.turn, record.step)) == final_step {
+                                9.
+                            } else {
+                                0.
+                            }))
+                            .child(self.trajectory_request_boundary(request, narrow, true, cx)),
                     );
                 }
             }
-            body = body.child(
-                row()
-                    .w_full()
-                    .px(px(4.))
-                    .py(px(2.))
-                    .child(self.trajectory_row(record, summary, collapsed, narrow, cx)),
-            );
+            body = body.child(self.trajectory_row(
+                record,
+                summary,
+                narrow,
+                turn_start,
+                request_boundary,
+                cx,
+            ));
             scroll_index += 1;
+        }
+        for request in requests.iter().filter(|request| {
+            Some((request.turn, request.step)) != last_step
+                && last_step.is_none_or(|(turn, step)| (request.turn, request.step) > (turn, step))
+        }) {
+            body = body.child(
+                div()
+                    .relative()
+                    .w_full()
+                    .h(px(9.))
+                    .child(self.trajectory_request_boundary(request, narrow, true, cx)),
+            );
         }
         if let Some((key, index)) = focused_record {
             if let Some(index) = index {
@@ -1386,7 +1355,7 @@ impl DshApp {
                 .iter()
                 .chain(&self.conversation.trajectory.requests)
                 .find(|record| record.key == key)?;
-            Some(self.render_trajectory_inspector(record, cx))
+            Some(self.render_trajectory_inspector(record, narrow, composer_clearance, cx))
         });
         let table = column()
             .id("trajectory-table")
@@ -1411,17 +1380,18 @@ impl DshApp {
                             .size_full()
                             .overflow_y_scroll()
                             .track_scroll(&self.trajectory.scroll)
-                            .when(self.trajectory.follow, |scroll| {
-                                self.trajectory.scroll.scroll_to_bottom();
-                                scroll
-                            })
-                            .child(body)
+                            // Div's bubble-phase scroll listener is registered first.
+                            // Read the offset after that listener applies this delta.
                             .on_scroll(cx.listener(|this, event: &gpui::ScrollEvent, _, cx| {
-                                if event.delta.pixel_delta(px(20.)).y.as_f32() < 0. {
-                                    this.trajectory.follow = false;
-                                }
+                                let scroll = &this.trajectory.scroll;
+                                let delta = event.delta.pixel_delta(px(20.)).y;
+                                let offset = (scroll.offset().y + delta)
+                                    .clamp(-scroll.max_offset().y, px(0.));
+                                this.trajectory.follow =
+                                    delta < px(0.) && offset + scroll.max_offset().y <= px(2.);
                                 cx.notify();
-                            })),
+                            }))
+                            .child(body),
                     )
                     .child(super::workspace::scrollbar_overlay(
                         "trajectory-scrollbar",
@@ -1430,6 +1400,7 @@ impl DshApp {
                     )),
             );
         row()
+            .relative()
             .id("trajectory-view")
             .w_full()
             .flex_1()
@@ -1444,6 +1415,8 @@ impl DshApp {
     fn render_trajectory_inspector(
         &self,
         record: &Record,
+        narrow: bool,
+        composer_clearance: f32,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let p = dsh(cx);
@@ -1517,8 +1490,16 @@ impl DshApp {
                     this.close_trajectory_inspector(w, cx);
                 }
             }))
-            .w(px(320.))
-            .max_w(px(360.))
+            .when(narrow, |panel| {
+                panel
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right_0()
+                    .w(gpui::relative(0.92))
+                    .max_w(px(420.))
+            })
+            .when(!narrow, |panel| panel.w(px(320.)).max_w(px(360.)))
             .h_full()
             .flex_none()
             .rounded(px(10.))
@@ -1597,6 +1578,7 @@ impl DshApp {
                     .overflow_y_scroll()
                     .track_scroll(&self.trajectory.inspector_scroll)
                     .p(px(12.))
+                    .pb(px(composer_clearance))
                     .gap(px(14.))
                     .child(detail(
                         "记录",

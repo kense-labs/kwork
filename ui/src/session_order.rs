@@ -1,6 +1,7 @@
 //! Browser-local Session ordering shared by flat and Workspace lists.
 
 use crate::sessions::SessionSummary;
+use gpui::{Bounds, Pixels, Point};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) const FLAT_SESSION_ORDER_KEY: &str = "__flat_session_order__";
@@ -134,7 +135,20 @@ pub(crate) fn ordered_session_ids(
     placeholders
 }
 
-/// Apply a visible drop to a complete account, preserving rows hidden by a fold or filter.
+pub(crate) fn smallest_row_at<'a, T>(
+    rows: impl IntoIterator<Item = (&'a T, &'a Bounds<Pixels>)>,
+    position: Point<Pixels>,
+) -> Option<(&'a T, &'a Bounds<Pixels>)> {
+    rows.into_iter()
+        .filter(|(_, bounds)| bounds.contains(&position))
+        .min_by(|(_, a), (_, b)| {
+            let area = |bounds: &Bounds<Pixels>| {
+                f32::from(bounds.size.width) * f32::from(bounds.size.height)
+            };
+            area(a).total_cmp(&area(b))
+        })
+}
+
 pub(crate) fn session_drag_order(
     order: &[String],
     rows: &[SessionRow],
@@ -179,15 +193,43 @@ pub(crate) fn session_drag_order(
         target_index + usize::from(over.half == DropHalf::After),
         source.id.clone(),
     );
-    Some(pin_current_blank(
-        next,
-        rows.iter().find(|row| row.blank).map(|row| row.id.as_str()),
-    ))
+    let current_blank = rows
+        .iter()
+        .find(|row| row.blank && next.contains(&row.id))
+        .map(|row| row.id.clone());
+    Some(pin_current_blank(next, current_blank.as_deref()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{bounds, point, px, size};
+
+    #[test]
+    fn overlapping_rows_hit_the_smallest_row() {
+        let rows = [
+            ("container", 340., 70.),
+            ("source", 340., 32.),
+            ("target", 374., 32.),
+        ]
+        .map(|(id, top, height)| {
+            (
+                id,
+                bounds(point(px(12.), px(top)), size(px(258.), px(height))),
+            )
+        });
+        let rows = rows.iter().map(|(id, bounds)| (id, bounds));
+        assert_eq!(
+            smallest_row_at(rows.clone(), point(px(145.), px(389.)))
+                .map(|(id, bounds)| (*id, bounds.origin.y)),
+            Some(("target", px(374.)))
+        );
+        assert_eq!(
+            smallest_row_at(rows, point(px(145.), px(350.)))
+                .map(|(id, bounds)| (*id, bounds.origin.y)),
+            Some(("source", px(340.)))
+        );
+    }
 
     fn session(id: &str, at: u64) -> SessionSummary {
         SessionSummary {
@@ -291,6 +333,25 @@ mod tests {
                 },
             ),
             Some(ids(&["blank", "pin", "c", "a", "archived", "b"]))
+        );
+    }
+
+    #[test]
+    fn dragging_does_not_resurrect_a_closed_blank_placeholder() {
+        let order = ids(&["a", "b", "c"]);
+        let rows = vec![row("blank", false), row("a", false), row("b", false)];
+        assert_eq!(
+            session_drag_order(
+                &order,
+                &rows,
+                "b",
+                false,
+                &SessionDrop {
+                    id: "a".to_owned(),
+                    half: DropHalf::Before,
+                },
+            ),
+            Some(ids(&["b", "a", "c"]))
         );
     }
 

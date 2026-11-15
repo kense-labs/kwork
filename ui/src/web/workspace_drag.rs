@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::right_dock::drag_threshold;
-use crate::session_order::DropHalf;
+use crate::session_order::{DropHalf, smallest_row_at};
 use crate::workspace_tree::{
     reconcile_workspace_order, workspace_drag_order, workspace_drop_target,
 };
@@ -46,17 +46,7 @@ impl WorkspaceRowGeometry {
     }
 
     fn hit(&self, position: Point<Pixels>) -> Option<String> {
-        self.0
-            .borrow()
-            .iter()
-            .filter(|(_, bounds)| bounds.contains(&position))
-            .min_by(|(_, a), (_, b)| {
-                let area = |bounds: &Bounds<Pixels>| {
-                    f32::from(bounds.size.width) * f32::from(bounds.size.height)
-                };
-                area(a).total_cmp(&area(b))
-            })
-            .map(|(cwd, _)| cwd.clone())
+        smallest_row_at(self.0.borrow().iter(), position).map(|(cwd, _)| cwd.clone())
     }
 
     fn bounds(&self, cwd: &str) -> Option<Bounds<Pixels>> {
@@ -110,7 +100,7 @@ impl WorkspaceRowGeometry {
 }
 
 impl DshApp {
-    fn full_workspace_order(&self) -> Vec<String> {
+    pub(super) fn full_workspace_order(&self) -> Vec<String> {
         let mut known = Vec::new();
         for cwd in self
             .sessions

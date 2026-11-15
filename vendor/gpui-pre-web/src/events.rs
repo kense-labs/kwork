@@ -744,6 +744,13 @@ impl WebWindowInner {
                 key_char: key_char.clone(),
             };
 
+            // GPUI moves focus between painted controls, not DOM tabbables.
+            // Leaving this textarea would disconnect subsequent keyboard and
+            // IME events from the focused control.
+            if keystroke.key == "tab" {
+                event.prevent_default();
+            }
+
             let result = this.dispatch_input(PlatformInput::KeyDown(KeyDownEvent {
                 keystroke,
                 is_held,

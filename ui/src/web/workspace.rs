@@ -120,15 +120,47 @@ impl DshApp {
                     if let Some(rail) = rail {
                         overlay = overlay.child(rail);
                     }
-                    main = main.child(overlay);
-                    main = if approval {
-                        main.children(self.render_permission(w, cx))
-                    } else if plan {
-                        main.children(self.render_plan_review(self.composer_width(w), w, cx))
-                    } else if question {
-                        main.children(self.render_questions(self.composer_width(w), w, cx))
+                    let trajectory_overlay =
+                        self.trajectory.active == trajectory::ConversationView::Trajectory;
+                    if trajectory_overlay {
+                        let seat = if approval {
+                            self.render_permission(w, cx)
+                                .map(|card| card.into_any_element())
+                                .unwrap_or_else(|| div().into_any_element())
+                        } else if plan {
+                            self.render_plan_review(self.composer_width(w), w, cx)
+                                .map(|card| card.into_any_element())
+                                .unwrap_or_else(|| div().into_any_element())
+                        } else if question {
+                            self.render_questions(self.composer_width(w), w, cx)
+                                .map(|card| card.into_any_element())
+                                .unwrap_or_else(|| div().into_any_element())
+                        } else {
+                            self.render_composer(w, cx, false).into_any_element()
+                        };
+                        overlay = overlay.child(
+                            div()
+                                .absolute()
+                                .bottom_0()
+                                .left_0()
+                                .right_0()
+                                .flex()
+                                .justify_center()
+                                .child(seat)
+                                .child(measure_composer_seat(self.composer_seat_bounds.clone())),
+                        );
+                        main = main.child(overlay);
                     } else {
-                        main.child(self.render_composer(w, cx, false))
+                        main = main.child(overlay);
+                        main = if approval {
+                            main.children(self.render_permission(w, cx))
+                        } else if plan {
+                            main.children(self.render_plan_review(self.composer_width(w), w, cx))
+                        } else if question {
+                            main.children(self.render_questions(self.composer_width(w), w, cx))
+                        } else {
+                            main.child(self.render_composer(w, cx, false))
+                        };
                     };
                 }
             }
@@ -1025,7 +1057,7 @@ impl DshApp {
                 "按工作区",
                 include_bytes!("../../assets/workspace-folder.svg"),
                 self.workspace_group_by == WorkspaceGroupBy::Workspace,
-                |this, _| this.workspace_group_by = WorkspaceGroupBy::Workspace,
+                |this, _| this.set_workspace_group_by(WorkspaceGroupBy::Workspace),
                 cx,
             ))
             .child(self.workspace_view_option(
@@ -1033,7 +1065,7 @@ impl DshApp {
                 "按工作区树",
                 include_bytes!("../../assets/workspace-tree.svg"),
                 self.workspace_group_by == WorkspaceGroupBy::WorkspaceTree,
-                |this, _| this.workspace_group_by = WorkspaceGroupBy::WorkspaceTree,
+                |this, _| this.set_workspace_group_by(WorkspaceGroupBy::WorkspaceTree),
                 cx,
             ))
             .child(self.workspace_view_option(
@@ -1041,7 +1073,7 @@ impl DshApp {
                 "单列表",
                 include_bytes!("../../assets/workspace-flat.svg"),
                 self.workspace_group_by == WorkspaceGroupBy::Flat,
-                |this, _| this.workspace_group_by = WorkspaceGroupBy::Flat,
+                |this, _| this.set_workspace_group_by(WorkspaceGroupBy::Flat),
                 cx,
             ))
             .child(div().h(px(0.5)).mx(px(8.)).my(px(3.)).bg(p.line))
@@ -1268,6 +1300,7 @@ impl DshApp {
                 svg()
                     .data(include_bytes!("../../assets/sidebar-panel.svg"))
                     .size(px(16.))
+                    .flex_none()
                     .text_color(if rail { p.label_primary } else { p.secondary }),
             );
         super::dock_controls::dock_action_button(
@@ -5491,13 +5524,15 @@ impl DshApp {
                             .rounded(px(4.))
                             .hover(|style| style.bg(p.hover))
                             .child(icon(Glyph::Arrow, 12., p.secondary))
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _, w, cx| {
-                                    cx.stop_propagation();
-                                    this.drill_file_directory(directory_path.clone(), w, cx);
-                                }),
-                            ),
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            // Drill on click, not mouse-down: replacing the row mid-click can
+                            // deliver the subsequent click to the next row's body.
+                            .on_click(cx.listener(move |this, _, w, cx| {
+                                cx.stop_propagation();
+                                this.drill_file_directory(directory_path.clone(), w, cx);
+                            })),
                     ),
             );
         }
@@ -6550,6 +6585,19 @@ fn composer_label_width(label: &str, weight: FontWeight, w: &Window, cx: &App) -
             None,
         )
         .width()
+}
+
+fn measure_composer_seat(bounds: ComposerAnchor) -> impl IntoElement {
+    canvas(
+        move |measured, w, _| {
+            if bounds.replace(Some(measured)) != Some(measured) {
+                w.request_animation_frame();
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
 }
 
 fn measure_composer_anchor(bounds: ComposerAnchor, open: bool) -> impl IntoElement {

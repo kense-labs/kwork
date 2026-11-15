@@ -137,12 +137,14 @@ impl DshApp {
                             .opacity(fade_in)
                             .cursor_pointer()
                             .hover(|style| style.bg(p.hover))
-                            .child(
-                                svg()
-                                    .data(include_bytes!("../../assets/dock-tab-close.svg"))
-                                    .size(px(14.))
-                                    .text_color(p.label_secondary),
-                            ),
+                            .when(expanded > 0., |button| {
+                                button.child(
+                                    svg()
+                                        .data(include_bytes!("../../assets/dock-tab-close.svg"))
+                                        .size(px(14.))
+                                        .text_color(p.label_secondary),
+                                )
+                            }),
                         cx.listener(|this, _, w, cx| this.close_workspace_search(w, cx)),
                     )),
             )

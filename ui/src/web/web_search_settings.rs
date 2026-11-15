@@ -164,8 +164,8 @@ impl Billing {
         }
     }
 
-    fn hint(&self) -> &'static str {
-        match self.value.as_str() {
+    fn hint(&self, value: &str) -> &'static str {
+        match value {
             "account" => "需要先登录 DeepSeek 账号。",
             "api-key" => "使用「模型」页配置的 API Key，需要先配置。",
             _ => {
@@ -282,6 +282,7 @@ pub(super) struct WebSearchSettings {
     billing_draft: [Option<String>; 2],
     selectors: [Option<Entity<Select>>; 2],
     billing_selectors: [Option<Entity<Select>>; 2],
+    billing_disabled: [bool; 2],
     _billing_choices: Vec<Subscription>,
     selectors_disabled: Option<bool>,
     _choices: Vec<Subscription>,
@@ -295,10 +296,7 @@ pub(super) struct WebSearchSettings {
 
 impl WebSearchSettings {
     fn selectors_blocked(&self, snapshot: &Snapshot, cx: &App) -> bool {
-        self.busy
-            || !snapshot.writable
-            || self.error.is_some()
-            || self.field_changes(snapshot, cx).is_err()
+        self.busy || !snapshot.writable || self.field_changes(snapshot, cx).is_err()
     }
 
     fn selected<'a>(&'a self, snapshot: &'a Snapshot, capability: Capability) -> &'a str {
@@ -476,6 +474,7 @@ impl DshApp {
             billing_draft: [None, None],
             selectors: [None, None],
             billing_selectors: [None, None],
+            billing_disabled: [false, false],
             _billing_choices: Vec::new(),
             selectors_disabled: None,
             _choices: Vec::new(),
@@ -554,7 +553,6 @@ impl DshApp {
         let Some(snapshot) = &form.snapshot else {
             return;
         };
-        form._billing_choices.clear();
         for capability in Capability::ALL {
             let selected_provider = form.selected(snapshot, capability);
             let Some(billing) = snapshot
@@ -568,8 +566,22 @@ impl DshApp {
                 .billing(snapshot, capability)
                 .unwrap_or("auto")
                 .to_owned();
-            let disabled =
-                form.selectors_disabled == Some(true) || !billing.advanced_override.is_empty();
+            let disabled = form.busy || !snapshot.writable || !billing.advanced_override.is_empty();
+            let reusable = form.billing_selectors[capability.slot()]
+                .as_ref()
+                .is_some_and(|select| {
+                    let select = select.read(cx);
+                    !select.is_open() && select.value() == Some(selected.as_str())
+                })
+                && form.billing_disabled[capability.slot()] == disabled;
+            if reusable {
+                form.billing_disabled[capability.slot()] = disabled;
+                continue;
+            }
+            form.billing_selectors[capability.slot()] = None;
+            if form._billing_choices.len() > capability.slot() {
+                let _ = form._billing_choices.remove(capability.slot());
+            }
             let select = cx.new(|cx| {
                 Select::new(
                     capability.billing_key(),
@@ -581,32 +593,36 @@ impl DshApp {
                 .with_value(&selected)
                 .with_disabled(disabled, cx)
             });
-            form._billing_choices.push(cx.subscribe_in(
-                &select,
-                w,
-                move |app, select, event: &SelectionChanged, _, cx| {
-                    let Some(form) = &mut app.web_search_settings else {
-                        return;
-                    };
-                    let Some(snapshot) = &form.snapshot else {
-                        return;
-                    };
-                    if form.busy
-                        || form.billing_selectors[capability.slot()].as_ref() != Some(&select)
-                    {
-                        return;
-                    }
-                    if let Some(id) = &event.0 {
-                        form.billing_draft[capability.slot()] = (id.as_ref()
-                            != snapshot
-                                .billing(capability)
-                                .map_or("auto", |billing| &billing.value))
-                        .then(|| id.to_string());
-                    }
-                    cx.notify();
-                },
-            ));
+            form._billing_choices.insert(
+                capability.slot(),
+                cx.subscribe_in(
+                    &select,
+                    w,
+                    move |app, select, event: &SelectionChanged, _, cx| {
+                        let Some(form) = &mut app.web_search_settings else {
+                            return;
+                        };
+                        let Some(snapshot) = &form.snapshot else {
+                            return;
+                        };
+                        if form.busy
+                            || form.billing_selectors[capability.slot()].as_ref() != Some(&select)
+                        {
+                            return;
+                        }
+                        if let Some(id) = &event.0 {
+                            form.billing_draft[capability.slot()] = (id.as_ref()
+                                != snapshot
+                                    .billing(capability)
+                                    .map_or("auto", |billing| &billing.value))
+                            .then(|| id.to_string());
+                        }
+                        cx.notify();
+                    },
+                ),
+            );
             form.billing_selectors[capability.slot()] = Some(select);
+            form.billing_disabled[capability.slot()] = disabled;
         }
     }
 
@@ -845,7 +861,9 @@ impl DshApp {
                             .text_size(px(12.))
                             .line_height(px(18.))
                             .text_color(p.label_tertiary)
-                            .child(billing.hint()),
+                            .child(
+                                billing.hint(form.billing(snapshot, capability).unwrap_or("auto")),
+                            ),
                     );
                 section = section.child(panel);
             }
@@ -959,6 +977,7 @@ impl DshApp {
         controls.child(
             row()
                 .w_full()
+                .items_center()
                 .pt(px(16.))
                 .gap(px(8.))
                 .when_some(form.error.clone(), |footer, error| {

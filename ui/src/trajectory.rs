@@ -952,6 +952,7 @@ pub fn matches(record: &Record, query: &str) -> bool {
 #[derive(Clone, Debug)]
 pub(crate) struct Visible<'a> {
     pub record: &'a Record,
+    #[cfg(test)]
     pub collapsed: bool,
     pub summary: Option<String>,
 }
@@ -1011,7 +1012,7 @@ pub fn visible<'a>(
         .filter_map(|record| record.entry.external_id.as_deref().map(|id| (id, record)))
         .collect();
     let searching = !query.trim().is_empty();
-    records
+    let rows = records
         .iter()
         .filter_map(|record| {
             let global = global_fold(record);
@@ -1054,7 +1055,10 @@ pub fn visible<'a>(
             if searching && !matched && !collapsed {
                 return None;
             }
-            let summary = collapsed.then(|| {
+            let summary = (record.has_children
+                && !global.is_empty()
+                && (folded.contains(global) || folded.contains(&record.key)))
+            .then(|| {
                 let descendants = records
                     .iter()
                     .filter(|other| {
@@ -1085,11 +1089,27 @@ pub fn visible<'a>(
             });
             Some(Visible {
                 record,
-                collapsed,
+                #[cfg(test)]
+                collapsed: false,
                 summary,
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let mut folded = Vec::with_capacity(rows.len() + 1);
+    for mut row in rows {
+        let summary = row.summary.take();
+        let record = row.record;
+        folded.push(row);
+        if let Some(summary) = summary {
+            folded.push(Visible {
+                record,
+                #[cfg(test)]
+                collapsed: true,
+                summary: Some(summary),
+            });
+        }
+    }
+    folded
 }
 
 /// Global expansion clears only its own domain; per-record expansion materializes exceptions.
@@ -1131,27 +1151,6 @@ pub(crate) fn toggle_global_fold(folded: &mut HashSet<String>, records: &[Record
         folded.insert(domain.to_owned());
         folded.extend(keys);
     }
-}
-
-// The state machine reads eight independent inputs; grouping them would hide
-// the pure transition under a wrapper struct with no other use.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn advance_scroll_index(
-    index: usize,
-    turn: u64,
-    step: u64,
-    previous_turn: u64,
-    previous_step: u64,
-    has_request: bool,
-    collapsed: bool,
-    folded_turns: bool,
-) -> usize {
-    let mut next = index + usize::from(turn > 0 && turn != previous_turn);
-    if step > 0 && step != previous_step {
-        next += usize::from(has_request);
-        next += usize::from(!folded_turns || !collapsed);
-    }
-    next + 1
 }
 
 #[cfg(test)]
@@ -1258,59 +1257,27 @@ mod tests {
     }
 
     #[test]
-    fn record_focus_targets_actual_scroll_children() {
-        // Initial row: turn header + request + step heading + record.
-        assert_eq!(advance_scroll_index(0, 1, 1, 0, 0, true, false, false), 4);
-        // Next step: no turn header; request + step heading + record.
-        assert_eq!(advance_scroll_index(4, 1, 2, 1, 1, true, false, false), 7);
-        // Folded turns hide the request and step heading.
-        assert_eq!(advance_scroll_index(0, 1, 1, 0, 0, false, true, true), 2);
-        // A request does not survive global turn folding.
-        assert_eq!(advance_scroll_index(0, 1, 1, 0, 0, true, true, true), 3);
-        // A collapsed record with no request keeps its own step heading.
-        assert_eq!(advance_scroll_index(0, 1, 1, 0, 0, false, true, false), 3);
-        let first = from_entry(&ChatEntry::local(EntryRole::Tool, "first", "first"), 1, 1);
-        let mut second = from_entry(&ChatEntry::local(EntryRole::Tool, "second", "second"), 1, 2);
-        second.step = 2;
-        let records = [first, second];
-        let rows: Vec<_> = records
-            .iter()
-            .map(|record| Visible {
-                record,
-                collapsed: false,
-                summary: None,
-            })
-            .collect();
-        let mut scroll_index = 0;
-        let mut current_turn = 0;
-        let mut current_step = 0;
-        let mut targets = Vec::new();
-        for row in &rows {
-            targets.push(scroll_index);
-            scroll_index = advance_scroll_index(
-                scroll_index,
-                row.record.turn,
-                row.record.step,
-                current_turn,
-                current_step,
-                true,
-                row.collapsed,
-                false,
-            );
-            current_turn = row.record.turn;
-            current_step = row.record.step;
-        }
-        assert_eq!(targets, [0, 4]);
+    fn wasm_scroll_listener_never_overwrites_gpui_wheel_position() {
+        let source = include_str!("web/trajectory.rs");
+        let scroll = source
+            .split(".track_scroll(&self.trajectory.scroll)")
+            .nth(1)
+            .expect("trajectory scroll listener");
+        assert!(scroll.find(".on_scroll(") < scroll.find(".child(body)"));
+        assert!(scroll.contains("scroll.offset().y + delta"));
+        assert!(!scroll.contains("scroll.set_offset"));
     }
 
     #[test]
     fn turn_folds_keep_the_first_content_record_and_show_its_summary() {
         let state = project(&events());
         let rows = visible(&state.records, &HashSet::from(["$turn".to_owned()]), "");
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].record.kind, Kind::User);
-        assert!(rows[0].collapsed);
-        assert_eq!(rows[0].summary.as_deref(), Some("已收起用户 · 2 条记录"));
+        assert!(!rows[0].collapsed);
+        assert_eq!(rows[0].summary, None);
+        assert!(rows[1].collapsed);
+        assert_eq!(rows[1].summary.as_deref(), Some("已收起用户 · 2 条记录"));
         assert!(state.records[0].has_children);
 
         let rows = visible(&state.records, &HashSet::from(["u".to_owned()]), "");
@@ -1325,8 +1292,8 @@ mod tests {
             &HashSet::from(["$turn".to_owned()]),
             2
         ));
-        assert_eq!(rows.len(), 1);
-        assert!(rows[0].collapsed);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[1].collapsed);
         let rows = visible(&state.records, &HashSet::new(), "");
         assert_eq!(rows.len(), 3);
         assert!(rows.iter().all(|row| !row.collapsed));
@@ -1342,18 +1309,18 @@ mod tests {
         ]);
         assert!(state.records[0].has_children);
         let rows = visible(&state.records, &HashSet::from(["$turn".to_owned()]), "");
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].record.key, "assistant-first");
-        assert_eq!(rows[0].summary.as_deref(), Some("已收起助手 · 1 条记录"));
+        assert_eq!(rows[1].summary.as_deref(), Some("已收起助手 · 1 条记录"));
         let rows = visible(
             &state.records,
             &HashSet::from(["assistant-first".to_owned()]),
             "second",
         );
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].record.key, "assistant-first");
-        assert!(rows[0].collapsed);
-        assert_eq!(rows[1].record.key, "assistant-second");
+        assert!(rows[1].collapsed);
+        assert_eq!(rows[2].record.key, "assistant-second");
     }
 
     #[test]
@@ -1376,11 +1343,17 @@ mod tests {
         assert_eq!(leaf.summary, None);
         let root = rows
             .iter()
-            .find(|row| row.record.key == "tool-root")
+            .find(|row| row.record.key == "tool-root" && !row.collapsed)
             .unwrap();
         assert!(root.record.has_children);
-        assert!(root.collapsed);
-        assert_eq!(root.summary.as_deref(), Some("已收起工具 · 1 条记录"));
+        assert!(!root.collapsed);
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.record.key == "tool-root" && row.collapsed)
+                .and_then(|row| row.summary.as_deref()),
+            Some("已收起工具 · 1 条记录")
+        );
+        assert_eq!(leaf.summary, None);
         assert!(!rows.iter().any(|row| row.record.key == "tool-child"));
 
         let rows = visible(&state.records, &HashSet::from(["tool-leaf".to_owned()]), "");
@@ -1427,8 +1400,8 @@ mod tests {
         let mut folded = HashSet::from(["$subcall".to_owned()]);
         toggle_global_fold(&mut folded, &state.records, "$call");
         let rows = visible(&state.records, &folded, "");
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[1].summary.as_deref(), Some("已收起工具 · 2 条记录"));
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[2].summary.as_deref(), Some("已收起工具 · 2 条记录"));
         toggle_global_fold(&mut folded, &state.records, "$call");
         assert_eq!(folded, HashSet::from(["$subcall".to_owned()]));
         let rows = visible(&state.records, &folded, "");
@@ -1436,24 +1409,24 @@ mod tests {
             rows.iter().any(|row| row.record.key == "tool-child"),
             "rows: {rows:#?}"
         );
-        assert_eq!(rows[2].summary.as_deref(), Some("已收起子工具 · 1 条记录"));
+        assert_eq!(rows[3].summary.as_deref(), Some("已收起子工具 · 1 条记录"));
         assert!(!rows.iter().any(|row| row.record.key == "tool-grandchild"));
         let rows = visible(&state.records, &folded, "needle");
-        assert_eq!(rows.len(), 2, "rows: {rows:#?}");
-        assert_eq!(rows[0].record.key, "tool-child");
-        assert_eq!(rows[0].summary.as_deref(), Some("已收起子工具 · 1 条记录"));
-        assert_eq!(rows[1].record.key, "tool-grandchild");
-        let rows = visible(&state.records, &folded, "");
-        assert_eq!(rows.len(), 3);
-        folded.insert("tool-root".to_owned());
-        let rows = visible(&state.records, &folded, "needle");
         assert_eq!(rows.len(), 3, "rows: {rows:#?}");
-        assert_eq!(rows[0].record.key, "tool-root");
-        assert_eq!(rows[0].summary.as_deref(), Some("已收起工具 · 2 条记录"));
+        assert_eq!(rows[0].record.key, "tool-child");
         assert_eq!(rows[1].summary.as_deref(), Some("已收起子工具 · 1 条记录"));
         assert_eq!(rows[2].record.key, "tool-grandchild");
         let rows = visible(&state.records, &folded, "");
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 4);
+        folded.insert("tool-root".to_owned());
+        let rows = visible(&state.records, &folded, "needle");
+        assert_eq!(rows.len(), 5, "rows: {rows:#?}");
+        assert_eq!(rows[0].record.key, "tool-root");
+        assert_eq!(rows[1].summary.as_deref(), Some("已收起工具 · 2 条记录"));
+        assert_eq!(rows[3].summary.as_deref(), Some("已收起子工具 · 1 条记录"));
+        assert_eq!(rows[4].record.key, "tool-grandchild");
+        let rows = visible(&state.records, &folded, "");
+        assert_eq!(rows.len(), 3);
     }
 
     #[test]
