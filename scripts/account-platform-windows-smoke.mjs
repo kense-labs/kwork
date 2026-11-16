@@ -330,16 +330,23 @@ if (import.meta.main) {
   const home = join(root, 'harness');
   const documents = join(root, 'documents');
   let fixture;
+  let testFailed = false;
   try {
     await mkdir(documents);
     const host = process.argv[3] ? resolve(process.argv[3]) : await installHost(root);
     fixture = await platformFixture(home);
     await verify(binary, host, home, documents, fixture);
   } catch (error) {
+    testFailed = true;
     if (fixture) console.error('Platform request checks:', JSON.stringify(fixture.records));
     throw error;
   } finally {
-    await fixture?.close();
-    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    try {
+      await fixture?.close();
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    } catch (error) {
+      if (!testFailed) throw error;
+      console.error('Could not remove the Windows fixture:', error);
+    }
   }
 }

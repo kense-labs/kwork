@@ -85,8 +85,7 @@ impl AcpConnection {
                 serde_json::to_string(ASK_USER_TOOL).map_err(|error| error.to_string())?;
             let terminal_script =
                 write_module("agent-terminal-bridge", AGENT_TERMINAL_BRIDGE.as_bytes())?;
-            let terminal_import = serde_json::to_string(&terminal_script.path().to_string_lossy())
-                .map_err(|error| error.to_string())?;
+            let terminal_import = module_import_specifier(terminal_script.path())?;
             let bridge = format!(
                 "{SESSION_READ_STATUS}\nconst bundledAskUser = {ask_tool};\n{SESSION_BRIDGE}"
             )
@@ -350,6 +349,12 @@ fn service_digest(service: &Path) -> String {
     format!("{:x}", Sha256::digest(service.to_string_lossy().as_bytes()))[..16].to_owned()
 }
 
+fn module_import_specifier(path: &Path) -> Result<String, String> {
+    let url = url::Url::from_file_path(path)
+        .map_err(|()| format!("无法生成模块 URL：{}", path.display()))?;
+    serde_json::to_string(url.as_str()).map_err(|error| error.to_string())
+}
+
 async fn prepare_terminal_module(
     node: &std::ffi::OsStr,
     service: &Path,
@@ -365,7 +370,7 @@ async fn prepare_terminal_module(
     let adapter = cached_module("agent-terminal-bridge", AGENT_TERMINAL_BRIDGE.as_bytes())?;
     let contents = String::from_utf8_lossy(TERMINAL_INSTALLER).replace(
         "'./agent-terminal-bridge.mjs'",
-        &serde_json::to_string(&adapter.to_string_lossy()).map_err(|error| error.to_string())?,
+        &module_import_specifier(&adapter)?,
     ) + "\nconsole.log(await main());\n";
     let installer = write_module("install-terminal-controller-resolved", contents.as_bytes())?;
     let output = Command::new(node)
@@ -2208,9 +2213,25 @@ impl AcpService {
 
 #[cfg(test)]
 mod tests {
-    use super::{MessageFeedbackRequest, decode_response, filter_account_models};
+    use super::{
+        MessageFeedbackRequest, decode_response, filter_account_models, module_import_specifier,
+    };
     use serde_json::json;
 
+    #[test]
+    fn generated_esm_import_encodes_spaces_and_hashes_in_the_file_url() {
+        let path = std::env::temp_dir()
+            .join("KWork #1")
+            .join("agent terminal.mjs");
+        let specifier: String =
+            serde_json::from_str(&module_import_specifier(&path).unwrap()).unwrap();
+        assert!(specifier.starts_with("file://"));
+        assert!(specifier.ends_with("/KWork%20%231/agent%20terminal.mjs"));
+        assert_eq!(
+            url::Url::parse(&specifier).unwrap().to_file_path().unwrap(),
+            path
+        );
+    }
     #[test]
     fn signed_out_account_choices_are_hidden_and_session_selection_is_retained() {
         let mut options = json!([{"id":"model","currentValue":"[\"deepseek-account\",\"deepseek-v4-pro\"]",
