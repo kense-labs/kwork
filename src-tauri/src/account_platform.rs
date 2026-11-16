@@ -419,8 +419,14 @@ async fn page_failed<R: Runtime>(app: &AppHandle<R>, shell: u64, id: u32) {
             .as_ref()
             .is_some_and(|visit| visit.id == id && visit.epoch == epoch && !visit.loaded)
     {
-        let _ = state.clear(app).await;
+        // Native profile cleanup may take seconds. Hide the failed document and
+        // expose Retry immediately; the state lock still serializes a new visit
+        // behind cleanup so its profile cannot race the preceding document.
+        if let Some(view) = app.get_webview(&label(shell, id)) {
+            let _ = view.hide();
+        }
         surface_status(app, shell, id, "failed");
+        let _ = state.clear(app).await;
     }
 }
 

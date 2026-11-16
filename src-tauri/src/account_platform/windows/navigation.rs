@@ -87,6 +87,12 @@ pub(super) fn install(
             let mut error = COREWEBVIEW2_WEB_ERROR_STATUS::default();
             // SAFETY: The native completion writes its error status to this slot.
             unsafe { args.WebErrorStatus(&mut error) }?;
+            if std::env::var_os("KWORK_PLATFORM_TRACE").is_some() {
+                eprintln!(
+                    "platform navigation {id} failed with WebView2 status {}",
+                    error.0
+                );
+            }
             if error == COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED {
                 // The next trusted navigation may be replacing this document.
                 observation.borrow_mut().navigation = None;
