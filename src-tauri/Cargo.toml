@@ -29,6 +29,11 @@ image = { version = "0.25", default-features = false, features = ["gif", "jpeg",
 notify = "8.2.0"
 ignore = "0.4"
 
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39.1"
+windows = { version = "0.62.2", features = ["Win32_System_Com", "Win32_System_SystemServices", "Win32_System_Time"] }
+windows-core = "0.62.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 core-text = "21"
 ttf-parser = "0.25"
@@ -37,9 +42,9 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSButton", "NSEvent", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSPasteboard", "NSSavePanel", "NSView", "NSWindow", "block2", "objc2-quartz-core"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGPath"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSDictionary", "NSError", "NSGeometry", "NSKeyValueObserving", "NSNotification", "NSOperation", "NSString", "NSURL", "NSURLAuthenticationChallenge", "NSURLCredential", "NSURLProtectionSpace", "NSURLRequest", "NSURLResponse", "NSURLSession", "NSURLError", "block2"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDate", "NSDictionary", "NSError", "NSGeometry", "NSHTTPCookie", "NSKeyValueObserving", "NSNotification", "NSOperation", "NSProcessInfo", "NSSet", "NSString", "NSTimeZone", "NSURL", "NSURLAuthenticationChallenge", "NSURLCredential", "NSURLProtectionSpace", "NSURLRequest", "NSURLResponse", "NSURLSession", "NSURLError", "NSUUID", "NSValue", "block2"] }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CAShapeLayer", "CATransaction", "objc2-core-graphics"] }
-objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKBackForwardList", "WKBackForwardListItem", "WKDownload", "WKFrameInfo", "WKNavigation", "WKNavigationAction", "WKNavigationDelegate", "WKNavigationResponse", "WKSecurityOrigin", "WKUIDelegate", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKWindowFeatures", "block2", "objc2-app-kit"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKBackForwardList", "WKBackForwardListItem", "WKContentRuleList", "WKContentRuleListStore", "WKDownload", "WKFrameInfo", "WKHTTPCookieStore", "WKNavigation", "WKNavigationAction", "WKNavigationDelegate", "WKNavigationResponse", "WKSecurityOrigin", "WKUIDelegate", "WKUserContentController", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataRecord", "WKWebsiteDataStore", "WKWindowFeatures", "block2", "objc2-app-kit"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

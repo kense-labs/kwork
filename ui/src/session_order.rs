@@ -42,7 +42,7 @@ fn by_recency(
 pub(crate) fn reconcile_manual_order(
     members: &[SessionSummary],
     saved_order: &[String],
-    pinned: &HashSet<String>,
+    pinned: &[String],
     archived: &HashSet<String>,
     recency: impl Fn(&SessionSummary) -> u64,
 ) -> Vec<String> {
@@ -57,19 +57,25 @@ pub(crate) fn reconcile_manual_order(
             ordered.push(id.clone());
         }
     }
+    let pins = pinned
+        .iter()
+        .filter(|id| {
+            by_id.contains_key(id.as_str())
+                && !archived.contains(*id)
+                && included.insert((*id).clone())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     let mut missing = members
         .iter()
         .filter(|session| !included.contains(&session.id))
         .collect::<Vec<_>>();
     missing.sort_by(|a, b| recency(b).cmp(&recency(a)).then_with(|| a.id.cmp(&b.id)));
-    let mut pins = Vec::new();
     let mut ordinary = Vec::new();
     let mut archives = Vec::new();
     for session in missing {
         if archived.contains(&session.id) {
             archives.push(session.id.clone());
-        } else if pinned.contains(&session.id) {
-            pins.push(session.id.clone());
         } else {
             ordinary.push(session.id.clone());
         }
@@ -100,39 +106,20 @@ pub(crate) fn ordered_session_ids(
     members: &[SessionSummary],
     saved_order: Option<&[String]>,
     current_blank: Option<&str>,
-    pinned: &HashSet<String>,
+    pinned: &[String],
     archived: &HashSet<String>,
     recency: impl Fn(&SessionSummary) -> u64,
 ) -> Vec<String> {
-    let mut order = match saved_order {
+    let order = match saved_order {
         Some(saved) => reconcile_manual_order(members, saved, pinned, archived, recency),
         None => by_recency(&members.iter().collect::<Vec<_>>(), &recency),
     };
-    if let Some(blank) = current_blank
-        && members
+    let current_blank = current_blank.filter(|id| {
+        members
             .iter()
-            .any(|session| session.id == blank && session.blank)
-    {
-        order = pin_current_blank(order, Some(blank));
-    }
-    let mut placeholders = Vec::new();
-    let mut leading = Vec::new();
-    let mut rest = Vec::new();
-    for id in order {
-        let Some(session) = members.iter().find(|session| session.id == id) else {
-            continue;
-        };
-        if session.blank {
-            placeholders.push(id);
-        } else if !archived.contains(&id) && pinned.contains(&id) {
-            leading.push(id);
-        } else {
-            rest.push(id);
-        }
-    }
-    placeholders.extend(leading);
-    placeholders.extend(rest);
-    placeholders
+            .any(|session| session.id == *id && session.blank)
+    });
+    pin_current_blank(order, current_blank)
 }
 
 pub(crate) fn smallest_row_at<'a, T>(
@@ -160,8 +147,6 @@ pub(crate) fn session_drag_order(
     let target = rows.iter().find(|row| row.id == over.id)?;
     if source.blank
         || source.archived
-        || target.blank
-        || target.archived
         || source.pinned != source_pinned
         || target.pinned != source_pinned
         || source.id == target.id
@@ -169,6 +154,11 @@ pub(crate) fn session_drag_order(
     {
         return None;
     }
+    let half = if target.blank {
+        DropHalf::After
+    } else {
+        over.half
+    };
     let section = rows
         .iter()
         .filter(|row| row.pinned == source_pinned)
@@ -179,7 +169,7 @@ pub(crate) fn session_drag_order(
         .filter(|row| row.id != source.id)
         .collect::<Vec<_>>();
     let insert_at = without_source.iter().position(|row| row.id == target.id)?
-        + usize::from(over.half == DropHalf::After);
+        + usize::from(half == DropHalf::After);
     if insert_at == source_index {
         return None;
     }
@@ -190,7 +180,7 @@ pub(crate) fn session_drag_order(
         .collect::<Vec<_>>();
     let target_index = next.iter().position(|id| *id == target.id)?;
     next.insert(
-        target_index + usize::from(over.half == DropHalf::After),
+        target_index + usize::from(half == DropHalf::After),
         source.id.clone(),
     );
     let current_blank = rows
@@ -268,7 +258,7 @@ mod tests {
             session("saved", 20),
         ];
         let saved = ids(&["saved", "saved", "removed"]);
-        let pinned = HashSet::from(["pin".to_owned()]);
+        let pinned = ids(&["pin"]);
         let archived = HashSet::from(["archived".to_owned()]);
         assert_eq!(
             reconcile_manual_order(&members, &saved, &pinned, &archived, at),
@@ -277,14 +267,14 @@ mod tests {
     }
 
     #[test]
-    fn selected_blank_leads_pins_and_manual_members_keep_their_order() {
+    fn selected_blank_leads_the_complete_order_without_moving_pinned_slots() {
         let members = vec![
             session("a", 10),
             session("pin", 40),
             session("blank", 30),
             session("b", 20),
         ];
-        let pinned = HashSet::from(["pin".to_owned()]);
+        let pinned = ids(&["pin"]);
         let archived = HashSet::new();
         assert_eq!(
             ordered_session_ids(
@@ -295,7 +285,7 @@ mod tests {
                 &archived,
                 at,
             ),
-            ids(&["blank", "pin", "b", "a"])
+            ids(&["blank", "b", "a", "pin"])
         );
         assert_eq!(
             ordered_session_ids(&members, None, Some("blank"), &pinned, &archived, at),
@@ -304,10 +294,43 @@ mod tests {
     }
 
     #[test]
+    fn missing_pins_follow_pin_order_instead_of_recency() {
+        let members = [
+            session("recent", 100),
+            session("first-pin", 10),
+            session("normal", 50),
+        ];
+        let pinned = ids(&["first-pin", "recent"]);
+        assert_eq!(
+            reconcile_manual_order(&members, &[], &pinned, &HashSet::new(), at),
+            ids(&["first-pin", "recent", "normal"])
+        );
+    }
+
+    #[test]
     fn pinning_moves_to_the_front_without_a_duplicate_slot() {
         assert_eq!(
             move_session_to_front(ids(&["pin", "a", "b"]), "b"),
             ids(&["b", "pin", "a"])
+        );
+    }
+
+    #[test]
+    fn pinned_drag_updates_complete_positions_without_regrouping_other_slots() {
+        let order = ids(&["first", "pin-a", "archived", "second", "pin-b"]);
+        let rows = [
+            row("pin-a", true),
+            row("pin-b", true),
+            row("first", false),
+            row("second", false),
+        ];
+        let target = SessionDrop {
+            id: "pin-a".to_owned(),
+            half: DropHalf::Before,
+        };
+        assert_eq!(
+            session_drag_order(&order, &rows, "pin-b", true, &target),
+            Some(ids(&["first", "pin-b", "pin-a", "archived", "second"]))
         );
     }
 
@@ -366,7 +389,6 @@ mod tests {
         for (source, pinned, target) in [
             ("pin", true, "ordinary"),
             ("ordinary", true, "pin"),
-            ("ordinary", false, "archived"),
             ("archived", false, "ordinary"),
         ] {
             assert_eq!(
@@ -383,6 +405,37 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn ordinary_rows_can_land_after_the_blank_or_use_a_visible_archive_as_an_anchor() {
+        let rows = [
+            row("blank", false),
+            row("a", false),
+            row("archived", false),
+            row("b", false),
+        ];
+        let order = ids(&["blank", "a", "archived", "b"]);
+        let drop = |target: &str, half| {
+            session_drag_order(
+                &order,
+                &rows,
+                "b",
+                false,
+                &SessionDrop {
+                    id: target.to_owned(),
+                    half,
+                },
+            )
+        };
+        assert_eq!(
+            drop("blank", DropHalf::Before),
+            Some(ids(&["blank", "b", "a", "archived"]))
+        );
+        assert_eq!(
+            drop("archived", DropHalf::Before),
+            Some(ids(&["blank", "a", "b", "archived"]))
+        );
     }
 
     #[test]

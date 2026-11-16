@@ -6,6 +6,7 @@ use super::menu_surface::{menu_elevation, menu_material};
 use super::session_context_menu::{
     SessionMenuAnchor, SessionMenuOrigin, mac_control_click, session_menu_gestures,
 };
+use super::workspace_accessibility::{AccessibleRow, RowAction};
 use super::*;
 use crate::theme_preference::ThemePreference;
 use gpui::{AvailableSpace, canvas, point, size, svg};
@@ -76,7 +77,7 @@ impl DshApp {
         match self.page {
             WorkspacePage::Conversation => {
                 main = main.child(self.render_header(w, cx));
-                let approval = self.conversation.permission.is_some();
+                let approval = !self.conversation.approvals.is_empty();
                 let plan = !self.conversation.plan_reviews.is_empty();
                 let question = self.conversation.visible_question().is_some();
                 if self.conversation.entries.is_empty()
@@ -233,8 +234,9 @@ impl DshApp {
                         cx.stop_propagation();
                     }
                 } else if this.workspace_context_menu.is_some() {
-                    this.workspace_context_menu = None;
-                    cx.notify();
+                    this.dismiss_workspace_context(true, w, cx);
+                    w.prevent_default();
+                    cx.stop_propagation();
                 } else if this.composer_menu.is_some() {
                     this.composer_menu = match this.composer_menu {
                         Some(
@@ -329,31 +331,43 @@ impl DshApp {
                 })
             })
             .children(sidebar_overlay)
-            .when(self.show_more_menu, |element| {
-                element.child(menu_in(
-                    "sidebar-more-menu-in",
-                    self.render_more_menu(cx).into_any_element(),
-                ))
-            })
-            .when_some(
-                self.workspace_context_menu.clone(),
-                |element, (cwd, pointer_y)| {
-                    let card = self
-                        .render_workspace_context_menu(cwd, cx)
-                        .into_any_element();
-                    let height = f32::from(w.viewport_size().height);
-                    let top = (pointer_y - 12.).clamp(52., (height - 142.).max(52.));
-                    let origin = point(px(self.sidebar_width - 10.), px(top));
-                    element.child(
-                        canvas(
-                            move |_, w, _| w.defer_draw(card, origin, 4, None),
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .inset_0(),
-                    )
+            .when(
+                self.show_more_menu && self.deepseek_account.launcher_compact.is_none(),
+                |element| {
+                    element.child(menu_in(
+                        "sidebar-more-menu-in",
+                        self.render_more_menu(cx).into_any_element(),
+                    ))
                 },
             )
+            .when_some(self.workspace_context_menu.clone(), |element, menu| {
+                let preferred = point(px(self.sidebar_width - 10.), px(menu.pointer_y - 12.));
+                let mut card = self
+                    .render_workspace_context_menu(menu, cx)
+                    .into_any_element();
+                element.child(
+                    canvas(
+                        move |_, w, cx| {
+                            let measured = card.layout_as_root(
+                                size(AvailableSpace::MaxContent, AvailableSpace::MaxContent),
+                                w,
+                                cx,
+                            );
+                            let viewport = w.viewport_size();
+                            let right = (viewport.width - measured.width - px(8.)).max(px(8.));
+                            let bottom = (viewport.height - measured.height - px(8.)).max(px(52.));
+                            let origin = point(
+                                preferred.x.clamp(px(8.), right),
+                                preferred.y.clamp(px(52.), bottom),
+                            );
+                            w.defer_draw(card, origin, 4, None);
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+            })
             .children(self.render_exiting_header_menu(cx))
             .children(self.render_open_session_context(cx))
             .child(self.header_menu_pointer_watch(cx))
@@ -364,9 +378,7 @@ impl DshApp {
             .child(self.workspace_row_geometry.clone().pointer_capture(cx))
             .children(self.render_terminal_shell_menu(w, cx))
             .when(
-                self.workspace_rename.is_some()
-                    || self.workspace_delete.is_some()
-                    || self.session_rename.is_some(),
+                self.workspace_dialog.is_some() || self.session_rename.is_some(),
                 |element| {
                     element.child(modal_in(
                         "workspace-dialog-in",
@@ -495,176 +507,31 @@ impl DshApp {
         };
         let content_width = (expanded_width - 16.).max(0.);
 
-        let query = self.search_editor.read(cx).value().trim().to_lowercase();
-        let mut filtered = self
-            .sessions
-            .iter()
-            .filter(|session| {
-                // 官方：移除 Workspace 分组后，它的 Session 仍留在 Ungrouped 下。
-                // 真实 cwd 保留在 SessionSummary 上供 ACP resume 使用，只在
-                // 分组时把隐藏路径映射到空 cwd。
-                (match self.workspace_archived_filter {
-                    WorkspaceArchivedFilter::Hide => !self.archived_sessions.contains(&session.id),
-                    WorkspaceArchivedFilter::Only => self.archived_sessions.contains(&session.id),
-                    WorkspaceArchivedFilter::Show => true,
-                }) && (query.is_empty()
-                    || self
-                        .session_display_title(session)
-                        .to_lowercase()
-                        .contains(&query)
-                    || session.cwd.to_lowercase().contains(&query)
-                    || self
-                        .workspace_name(&session.cwd)
-                        .to_lowercase()
-                        .contains(&query))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        // 官方：非空白查询以单一扁平列表呈现，最多 20 条结果。
-        if !query.is_empty() {
-            filtered.truncate(20);
-        }
-        // 官方排序：置顶会话稳定排在组内最前；手动顺序按各账号独立持久化，
-        // 搜索或归档筛选不会改变未显示成员在完整账号中的位置。
         self.session_row_geometry.clear();
         self.workspace_row_geometry.clear();
-        let order_by = self.workspace_order_by;
-        let manual_ranks =
-            (order_by == WorkspaceOrderBy::Manual).then(|| self.manual_session_ranks());
-        filtered.sort_by(|a, b| {
-            let a_pinned = self.pinned_sessions.contains(&a.id);
-            let b_pinned = self.pinned_sessions.contains(&b.id);
-            b_pinned.cmp(&a_pinned).then_with(|| {
-                if order_by == WorkspaceOrderBy::Updated {
-                    let at = |session: &crate::sessions::SessionSummary| {
-                        self.session_activity
-                            .get(&session.id)
-                            .and_then(|item| item.last_prompt_at_ms)
-                            .max(session.created_at_ms)
-                            .unwrap_or(0)
-                    };
-                    at(b).cmp(&at(a))
-                } else {
-                    let rank = |session: &crate::sessions::SessionSummary| {
-                        manual_ranks
-                            .as_ref()
-                            .and_then(|ranks| ranks.get(&session.id))
-                            .copied()
-                            .unwrap_or(usize::MAX)
-                    };
-                    rank(a).cmp(&rank(b))
-                }
-            })
-        });
-        // 官方：当前选中的空白「新会话」在置顶和普通分区之前固定首位。
-        if let Some(active) = self.active_session.as_deref()
-            && let Some(index) = filtered
-                .iter()
-                .position(|session| session.id == active && session.blank)
-            && index > 0
-        {
-            let session = filtered.remove(index);
-            filtered.insert(0, session);
-        }
-        let filtered_count = filtered.len();
-        for session in &filtered {
-            self.session_row_focus
-                .entry(session.id.clone())
-                .or_insert_with(|| cx.focus_handle());
-            if !session.blank {
-                self.session_row_more_focus
-                    .entry(session.id.clone())
-                    .or_insert_with(|| cx.focus_handle().tab_stop(true));
-            }
-        }
-        // 官方：非空白查询用单一扁平结果列表替代任一浏览模式。
-        let grouping = if query.is_empty() {
-            self.workspace_group_by
+        let session_groups = if self.workspace_search.query.is_empty() {
+            self.render_browsing_sessions(w, cx)
         } else {
-            WorkspaceGroupBy::Flat
+            self.render_search_results(w, cx)
         };
-        let mut session_groups = column().w_full().gap(px(match grouping {
-            WorkspaceGroupBy::Workspace | WorkspaceGroupBy::WorkspaceTree => 4.,
-            WorkspaceGroupBy::Flat => 2.,
-        }));
-        let mut empty = filtered.is_empty();
-        match grouping {
-            WorkspaceGroupBy::Flat => {
-                for session in filtered {
-                    session_groups =
-                        session_groups.child(self.render_session_row(session, 0, w, cx));
-                }
-            }
-            WorkspaceGroupBy::Workspace | WorkspaceGroupBy::WorkspaceTree => {
-                let mut by_workspace =
-                    std::collections::HashMap::<String, Vec<SessionSummary>>::new();
-                for session in filtered {
-                    // 已移除的 Workspace 分组：Session 归入 Ungrouped。
-                    let group_cwd = if self.hidden_workspaces.contains(&session.cwd) {
-                        String::new()
-                    } else {
-                        session.cwd.clone()
-                    };
-                    by_workspace.entry(group_cwd).or_default().push(session);
-                }
-                let mut known = Vec::new();
-                for cwd in self
-                    .sessions
-                    .iter()
-                    .map(|session| &session.cwd)
-                    .chain(self.added_workspaces.iter())
-                {
-                    if !cwd.is_empty() && !known.contains(cwd) {
-                        known.push(cwd.clone());
-                    }
-                }
-                let order =
-                    crate::workspace_tree::reconcile_workspace_order(&self.workspace_order, &known);
-                self.workspace_order = order.clone();
-                let hierarchy = order
-                    .into_iter()
-                    .filter(|cwd| !self.hidden_workspaces.contains(cwd))
-                    .collect::<Vec<_>>();
-                let mut groups = Vec::new();
-                for cwd in hierarchy {
-                    let sessions = by_workspace.remove(&cwd).unwrap_or_default();
-                    if self.workspace_archived_filter == WorkspaceArchivedFilter::Only
-                        && sessions.is_empty()
-                    {
-                        continue;
-                    }
-                    groups.push(workspace_rows::WorkspaceGroup { cwd, sessions });
-                }
-                if let Some(sessions) = by_workspace.remove("") {
-                    groups.push(workspace_rows::WorkspaceGroup {
-                        cwd: String::new(),
-                        sessions,
+        if !self.rail_active(w)
+            && self.workspace_search.query.is_empty()
+            && self.workspace_search.reveal.is_some()
+        {
+            let owner = cx.weak_entity();
+            w.defer(cx, move |w, cx| {
+                if let Some(owner) = owner.upgrade() {
+                    owner.update(cx, |app, cx| {
+                        if !app.rail_active(w)
+                            && let Some(id) = app.workspace_search.reveal.take()
+                            && let Some(bounds) = app.session_row_geometry.bounds(&id)
+                            && app.scroll_sidebar_row_into_view(bounds)
+                        {
+                            cx.notify();
+                        }
                     });
                 }
-                empty = groups.is_empty();
-                if grouping == WorkspaceGroupBy::WorkspaceTree {
-                    let tree = workspace_rows::WorkspaceTree::new(&groups);
-                    for root in &tree.roots {
-                        session_groups = session_groups.child(self.render_workspace_tree_group(
-                            &mut groups,
-                            &tree,
-                            *root,
-                            0,
-                            w,
-                            cx,
-                        ));
-                    }
-                } else {
-                    for group in groups {
-                        session_groups =
-                            session_groups.child(self.render_workspace_group(group, 0, w, cx));
-                    }
-                }
-            }
-        }
-        if empty {
-            session_groups =
-                session_groups.child(self.render_empty_sessions(!query.is_empty(), cx));
+            });
         }
         let wide_opacity = progress;
         let material = !drawer && bridge::has_mac_window_material();
@@ -799,7 +666,7 @@ impl DshApp {
                             .px(px(3.))
                             .child(self.render_workspace_navigation(cx)),
                     )
-                    .child(self.render_workspace_search(content_width, filtered_count, w, cx))
+                    .child(self.render_workspace_search(content_width, w, cx))
                     .child(
                         div()
                             .relative()
@@ -811,17 +678,24 @@ impl DshApp {
                                     .id("session-list")
                                     .h_full()
                                     .overflow_y_scroll()
-                                    .track_scroll(&self.sessions_scroll)
+                                    .track_scroll(self.sidebar_session_scroll())
                                     .px(px(3.))
                                     .child(session_groups),
                             )
                             .child(scrollbar_overlay(
                                 "session-scrollbar",
-                                &self.sessions_scroll,
+                                self.sidebar_session_scroll(),
                                 cx,
                             )),
                     )
-                    .child(
+                    .child(if self.deepseek_account.available {
+                        if drawer || progress >= 0.5 {
+                            self.render_account_launcher(false, content_width, cx)
+                                .into_any_element()
+                        } else {
+                            div().into_any_element()
+                        }
+                    } else {
                         row()
                             .id("sidebar-more-settings")
                             .role(gpui::Role::Button)
@@ -849,13 +723,10 @@ impl DshApp {
                             )
                             .child(icon(Glyph::Up, 14., p.faint))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_more_menu = !this.show_more_menu;
-                                this.show_workspace_menu = false;
-                                this.show_workspace_view_options = false;
-                                this.composer_menu = None;
-                                cx.notify();
-                            })),
-                    ),
+                                this.toggle_more_settings(cx);
+                            }))
+                            .into_any_element()
+                    }),
             );
         }
         if !drawer && !bridge::is_mac() && progress < 0.999 {
@@ -865,10 +736,119 @@ impl DshApp {
         sidebar
     }
 
-    fn render_empty_sessions(&self, searching: bool, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_browsing_sessions(&mut self, w: &Window, cx: &mut Context<Self>) -> gpui::Div {
+        let mut filtered = self
+            .sessions
+            .iter()
+            .filter(|session| self.session_visible_in_sidebar(session))
+            .cloned()
+            .collect::<Vec<_>>();
+        let order_by = self.workspace_order_by;
+        let manual_ranks =
+            (order_by == WorkspaceOrderBy::Manual).then(|| self.manual_session_ranks());
+        filtered.sort_by(|a, b| {
+            let a_pinned = !self.archived_sessions.contains(&a.id) && self.session_is_pinned(&a.id);
+            let b_pinned = !self.archived_sessions.contains(&b.id) && self.session_is_pinned(&b.id);
+            b_pinned.cmp(&a_pinned).then_with(|| {
+                if order_by == WorkspaceOrderBy::Updated {
+                    self.session_recency(b)
+                        .cmp(&self.session_recency(a))
+                        .then_with(|| a.id.cmp(&b.id))
+                } else {
+                    let rank = |session: &crate::sessions::SessionSummary| {
+                        manual_ranks
+                            .as_ref()
+                            .and_then(|ranks| ranks.get(&session.id))
+                            .copied()
+                            .unwrap_or(usize::MAX)
+                    };
+                    rank(a).cmp(&rank(b))
+                }
+            })
+        });
+        // 官方：当前选中的空白「新会话」在置顶和普通分区之前固定首位。
+        if let Some(active) = self.active_session.as_deref()
+            && let Some(index) = filtered
+                .iter()
+                .position(|session| session.id == active && session.blank)
+            && index > 0
+        {
+            let session = filtered.remove(index);
+            filtered.insert(0, session);
+        }
+        let grouping = self.workspace_group_by;
+        let mut session_groups = column().w_full().gap(px(match grouping {
+            WorkspaceGroupBy::Workspace | WorkspaceGroupBy::WorkspaceTree => 4.,
+            WorkspaceGroupBy::Flat => 2.,
+        }));
+        let mut empty = filtered.is_empty();
+        match grouping {
+            WorkspaceGroupBy::Flat => {
+                for session in filtered {
+                    session_groups =
+                        session_groups.child(self.render_session_row(session, 0, 0, None, w, cx));
+                }
+            }
+            WorkspaceGroupBy::Workspace | WorkspaceGroupBy::WorkspaceTree => {
+                let mut by_workspace =
+                    std::collections::HashMap::<String, Vec<SessionSummary>>::new();
+                for session in filtered {
+                    // 已移除的 Workspace 分组：Session 归入 Ungrouped。
+                    let group_cwd = self.workspace_account_key(&session).to_owned();
+                    by_workspace.entry(group_cwd).or_default().push(session);
+                }
+                let order = self.full_workspace_order();
+                if !self.workspace_registry.available() {
+                    self.workspace_order.clone_from(&order);
+                }
+                let hierarchy = order
+                    .into_iter()
+                    .filter(|cwd| !self.workspace_group_hidden(cwd))
+                    .collect::<Vec<_>>();
+                let mut groups = Vec::new();
+                for cwd in hierarchy {
+                    let sessions = by_workspace.remove(&cwd).unwrap_or_default();
+                    if self.workspace_archived_filter == WorkspaceArchivedFilter::Only
+                        && sessions.is_empty()
+                    {
+                        continue;
+                    }
+                    groups.push(workspace_rows::WorkspaceGroup { cwd, sessions });
+                }
+                if let Some(sessions) = by_workspace.remove("") {
+                    groups.push(workspace_rows::WorkspaceGroup {
+                        cwd: String::new(),
+                        sessions,
+                    });
+                }
+                empty = groups.is_empty();
+                if grouping == WorkspaceGroupBy::WorkspaceTree {
+                    let tree = workspace_rows::WorkspaceTree::new(&groups);
+                    for root in &tree.roots {
+                        session_groups = session_groups.child(self.render_workspace_tree_group(
+                            &mut groups,
+                            &tree,
+                            *root,
+                            0,
+                            w,
+                            cx,
+                        ));
+                    }
+                } else {
+                    for group in groups {
+                        session_groups =
+                            session_groups.child(self.render_workspace_group(group, 0, w, cx));
+                    }
+                }
+            }
+        }
+        session_groups.when(empty, |groups| groups.child(self.render_empty_sessions(cx)))
+    }
+
+    fn render_empty_sessions(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = dsh(cx);
         let archived = self.workspace_archived_filter == WorkspaceArchivedFilter::Only;
-        let (glyph, text): (&[u8], &str) = if archived && !searching {
+        let (glyph, text): (&[u8], &str) = if archived {
             (
                 include_bytes!("../../assets/workspace-empty-archived.svg"),
                 "暂无已归档会话",
@@ -876,11 +856,7 @@ impl DshApp {
         } else {
             (
                 include_bytes!("../../assets/workspace-empty.svg"),
-                if searching {
-                    "无匹配结果"
-                } else {
-                    "暂无会话"
-                },
+                "暂无会话",
             )
         };
         column()
@@ -898,7 +874,7 @@ impl DshApp {
                     .child(svg().data(glyph).size(px(24.)).text_color(p.label_caption)),
             )
             .child(text)
-            .when(archived && !searching, |empty| {
+            .when(archived, |empty| {
                 empty.child(dock_action_button(
                     div()
                         .id("show-other-sessions")
@@ -999,29 +975,34 @@ impl DshApp {
                     })),
             );
         }
-        rail.child(div().flex_1()).child(
-            div()
-                .id("rail-more-settings")
-                .role(gpui::Role::Button)
-                .aria_label("更多设置")
-                .tab_index(0)
-                .size(px(36.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(12.))
-                .cursor_pointer()
-                .hover(|style| style.bg(p.hover))
-                .child(settings_mark(24., cx))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.show_more_menu = !this.show_more_menu;
-                    this.show_workspace_menu = false;
-                    this.show_workspace_view_options = false;
-                    this.composer_menu = None;
-                    cx.notify();
-                })),
-        )
+        rail.child(div().flex_1())
+            .child(if self.deepseek_account.available {
+                if opacity > 0.5 {
+                    self.render_account_launcher(true, 36., cx)
+                        .into_any_element()
+                } else {
+                    div().into_any_element()
+                }
+            } else {
+                div()
+                    .id("rail-more-settings")
+                    .role(gpui::Role::Button)
+                    .aria_label("更多设置")
+                    .tab_index(0)
+                    .size(px(36.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(12.))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(p.hover))
+                    .child(settings_mark(24., cx))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toggle_more_settings(cx);
+                    }))
+                    .into_any_element()
+            })
     }
 
     pub(super) fn render_workspace_view_options(
@@ -1348,9 +1329,11 @@ impl DshApp {
     }
 
     pub(super) fn render_session_row(
-        &self,
+        &mut self,
         session: SessionSummary,
         depth: usize,
+        tree_depth: usize,
+        search_match: Option<(String, Option<String>)>,
         w: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
@@ -1366,16 +1349,27 @@ impl DshApp {
         let menu_open = menu.is_some();
         let more_expanded =
             menu.is_some_and(|menu| matches!(menu.anchor, SessionMenuAnchor::Button(_)));
-        let focus = self.session_row_focus.get(&session.id);
+        let focus = self
+            .session_row_focus
+            .entry(session.id.clone())
+            .or_insert_with(|| cx.focus_handle())
+            .clone();
+        let searching = search_match.is_some();
+        if !session.blank && !searching {
+            self.session_row_more_focus
+                .entry(session.id.clone())
+                .or_insert_with(|| cx.focus_handle().tab_stop(true));
+        }
         let more_focus = self.session_row_more_focus.get(&session.id);
         let pointer_hover = bridge::has_pointer_hover();
         let revealed = menu_open
             || self.hovered_session.as_deref() == Some(session.id.as_str())
-            || (w.last_input_was_keyboard()
-                && focus.is_some_and(|focus| focus.contains_focused(w, cx)));
+            || (w.last_input_was_keyboard() && focus.contains_focused(w, cx));
         let archived = self.archived_sessions.contains(&session.id);
-        let pinned = !archived && self.pinned_sessions.contains(&session.id);
-        let (status, subagents) = self.session_indicator(&session.id);
+        let can_unarchive =
+            searching && archived && self.session_archival.available && self.connected();
+        let pinned = !archived && self.session_is_pinned(&session.id);
+        let (status, subagents) = self.session_indicator(&session.id, w, cx);
         let pending = matches!(
             status,
             SessionIndicator::Approval | SessionIndicator::PlanReview | SessionIndicator::Question
@@ -1416,22 +1410,53 @@ impl DshApp {
                 status_text.to_owned()
             }
         };
+        let mut description = visible_status
+            .then(describe)
+            .into_iter()
+            .collect::<Vec<_>>();
+        if let Some((workspace, snippet)) = &search_match {
+            description.push(workspace.clone());
+            description.extend(snippet.iter().cloned());
+            if archived {
+                description.push(workspace_search::ARCHIVED_RESULT.to_owned());
+            }
+        }
+        let description = (!description.is_empty()).then(|| description.join("。"));
+        let key = format!("session/{}", session.id);
+        let accessibility_focused = self.workspace_accessibility.focused(&key);
+        self.workspace_accessibility.rendering.push(AccessibleRow {
+            key,
+            label: title.clone(),
+            depth: tree_depth,
+            expanded: None,
+            selected: Some(selected),
+            description: description.clone(),
+            menu: !session.blank && !searching,
+            unarchive: can_unarchive,
+            action: RowAction::OpenSession(session.clone()),
+        });
         let for_drag = session.clone();
         row()
             .id(gpui::ElementId::Name(session.id.clone().into()))
             .role(gpui::Role::TreeItem)
             .aria_selected(selected)
             .aria_label(title.clone())
-            .when(visible_status, |row| row.aria_description(describe()))
-            .when_some(focus, |row, focus| row.track_focus(focus).tab_index(0))
+            .when_some(description, |row, description| {
+                row.aria_description(description)
+            })
+            .track_focus(&focus)
+            .tab_index(0)
             .w_full()
-            .h(px(32.))
+            .h(px(if searching { 48. } else { 32. }))
             .flex_none()
             .gap_0()
             .pl(px(9. + depth as f32 * 12.))
             .pr(px(8.))
             .rounded(px(12.))
             .cursor_pointer()
+            .when(accessibility_focused, |row| {
+                row.border(px(1.)).border_color(p.brand_accent)
+            })
             .when(self.is_dragged_session(&session.id), |row| {
                 row.opacity(0.45)
             })
@@ -1448,15 +1473,23 @@ impl DshApp {
                         }
                     }))
             })
-            .when(!session.blank, |row| {
-                session_menu_gestures(row, session.id.clone(), SessionMenuOrigin::Row, focus, cx)
+            .when(!session.blank && !searching, |row| {
+                session_menu_gestures(
+                    row,
+                    session.id.clone(),
+                    SessionMenuOrigin::Row,
+                    Some(&focus),
+                    cx,
+                )
             })
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
-                    this.press_session_row(&for_drag, event, cx);
-                }),
-            )
+            .when(!searching, |row| {
+                row.on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                        this.press_session_row(&for_drag, event, cx);
+                    }),
+                )
+            })
             .when_some(self.session_drop_half(&session.id), |row, half| {
                 let line = div()
                     .absolute()
@@ -1471,6 +1504,7 @@ impl DshApp {
                 })
             })
             .child(self.session_row_geometry.measure(session.id.clone()))
+            .when(searching, |row| row.items_start().pt(px(5.)))
             .child(
                 row()
                     .w(px(16.))
@@ -1497,168 +1531,221 @@ impl DshApp {
                         SessionIndicator::Idle => slot,
                     }),
             )
-            .child(
-                div()
-                    .id("session-row-title")
-                    .flex_1()
-                    .min_w_0()
-                    .mx(px(6.))
-                    .truncate()
-                    .text_size(px(14.))
-                    .line_height(px(20.))
-                    .text_color(title_color)
-                    .child(title.clone())
-                    .when(!session.blank, |title| {
-                        title.on_click(cx.listener(move |this, event: &gpui::ClickEvent, w, cx| {
-                            if !event.is_right_click()
-                                && !mac_control_click(event.modifiers())
-                                && event.click_count() == 2
-                            {
-                                cx.stop_propagation();
-                                this.begin_session_rename(for_rename.clone(), w, cx);
-                            }
-                        }))
-                    }),
-            )
-            .when(!session.blank && (!revealed || !pointer_hover), |element| {
-                element.child(
-                    row()
-                        .gap(px(6.))
-                        .flex_none()
-                        .when_some(time, |tail, time| {
-                            tail.child(
-                                div()
-                                    .flex_none()
-                                    .mr(px(-1.))
-                                    .text_size(px(10.))
-                                    .line_height(px(16.))
-                                    .text_color(p.label_tertiary)
-                                    .child(time),
-                            )
-                        })
-                        .when(pinned && pointer_hover, |tail| {
-                            tail.child(
-                                row().w(px(16.)).h(px(20.)).justify_center().child(
-                                    svg()
-                                        .data(include_bytes!("../../assets/session-pin-fill.svg"))
-                                        .size(px(14.))
-                                        .text_color(p.label_caption),
-                                ),
-                            )
+            .when_some(search_match, |row, (workspace, snippet)| {
+                row.child(
+                    column()
+                        .flex_1()
+                        .min_w_0()
+                        .mx(px(6.))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(px(14.))
+                                .line_height(px(20.))
+                                .text_color(title_color)
+                                .child(title.clone()),
+                        )
+                        .child(
+                            self.render_search_result_metadata(workspace, snippet, archived, cx),
+                        ),
+                )
+            })
+            .when(!searching, |row| {
+                row.child(
+                    div()
+                        .id("session-row-title")
+                        .flex_1()
+                        .min_w_0()
+                        .mx(px(6.))
+                        .truncate()
+                        .text_size(px(14.))
+                        .line_height(px(20.))
+                        .text_color(title_color)
+                        .child(title.clone())
+                        .when(!session.blank, |title| {
+                            title.on_click(cx.listener(
+                                move |this, event: &gpui::ClickEvent, w, cx| {
+                                    if !event.is_right_click()
+                                        && !mac_control_click(event.modifiers())
+                                        && event.click_count() == 2
+                                    {
+                                        cx.stop_propagation();
+                                        this.begin_session_rename(for_rename.clone(), w, cx);
+                                    }
+                                },
+                            ))
                         }),
                 )
             })
-            .when(!session.blank && (revealed || !pointer_hover), |element| {
-                let anchor = Rc::new(Cell::new(None));
-                let button_focus = more_focus.cloned();
-                let more = div()
-                    .id(gpui::ElementId::Name(
-                        format!("session-more-{}", session.id).into(),
-                    ))
-                    .group("session-row-more")
-                    .relative()
-                    .when_some(more_focus, |button, focus| button.track_focus(focus))
-                    .role(gpui::Role::Button)
-                    .aria_label(format!("会话“{title}”的操作"))
-                    .aria_expanded(more_expanded)
-                    .tab_index(0)
-                    .size(px(24.))
-                    .mx(px(-4.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .text_color(p.label_tertiary)
-                    .hover(|style| style.text_color(p.label_primary))
-                    .child(
-                        svg()
-                            .data(include_bytes!("../../assets/workspace-ellipsis.svg"))
-                            .size(px(14.))
-                            .text_color(p.label_tertiary)
-                            .group_hover("session-row-more", |style| {
-                                style.text_color(p.label_primary)
-                            }),
-                    )
-                    .child(self.track_header_menu_button(Some(anchor.clone())))
-                    .on_click(cx.listener(move |this, event: &gpui::ClickEvent, w, cx| {
-                        if !event.is_right_click()
-                            && !mac_control_click(event.modifiers())
-                            && let Some(bounds) = anchor.get()
-                        {
-                            this.open_session_context(
-                                &for_row_menu,
-                                SessionMenuOrigin::Row,
-                                SessionMenuAnchor::Button(bounds),
-                                button_focus.clone(),
-                                w,
-                                cx,
-                            );
-                        }
-                    }));
-                // 官方：置顶/取消置顶按钮位于「更多」之前。
+            .when(can_unarchive, |element| {
+                let session_id = session.id.clone();
                 element.child(
-                    row()
-                        .flex_none()
-                        .gap(px(13.))
-                        .when(!archived && (pointer_hover || pinned), |actions| {
-                            actions.child(
-                                div()
-                                    .id("session-row-pin")
-                                    .group("session-row-pin")
-                                    .role(gpui::Role::Button)
-                                    .aria_label(if pinned {
-                                        "取消置顶"
-                                    } else {
-                                        "置顶会话"
-                                    })
-                                    .tab_index(0)
-                                    .size(px(24.))
-                                    .mx(px(-4.))
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(px(4.))
-                                    .cursor_pointer()
-                                    .text_color(p.label_tertiary)
-                                    .hover(|style| style.text_color(p.label_primary))
-                                    .child(
-                                        svg()
-                                            .size(px(14.))
-                                            .text_color(p.label_tertiary)
-                                            .group_hover("session-row-pin", |style| {
-                                                style.text_color(p.label_primary)
-                                            })
-                                            .data(if pinned {
-                                                include_bytes!("../../assets/session-pin-fill.svg")
-                                                    .as_slice()
-                                            } else {
-                                                include_bytes!(
-                                                    "../../assets/session-pin-outline.svg"
-                                                )
-                                                .as_slice()
-                                            }),
-                                    )
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        this.toggle_session_pin(&for_pin, cx);
-                                    })),
-                            )
-                        })
-                        .child(more),
+                    dock_action_button(
+                        div()
+                            .id("unarchive-search-result")
+                            .role(gpui::Role::Button)
+                            .aria_label("取消归档")
+                            .tab_index(0)
+                            .tab_stop(true)
+                            .px(px(4.))
+                            .h(px(20.))
+                            .rounded(px(4.))
+                            .text_size(px(11.))
+                            .text_color(p.label_secondary)
+                            .hover(|style| style.bg(p.hover)),
+                        cx.listener(move |this, _, w, cx| {
+                            cx.stop_propagation();
+                            this.set_session_archived(session_id.clone(), false, false, w, cx);
+                        }),
+                    )
+                    .child("取消归档"),
                 )
             })
+            .when(
+                !searching && !session.blank && (!revealed || !pointer_hover),
+                |element| {
+                    element.child(
+                        row()
+                            .gap(px(6.))
+                            .flex_none()
+                            .when_some(time, |tail, time| {
+                                tail.child(
+                                    div()
+                                        .flex_none()
+                                        .mr(px(-1.))
+                                        .text_size(px(10.))
+                                        .line_height(px(16.))
+                                        .text_color(p.label_tertiary)
+                                        .child(time),
+                                )
+                            })
+                            .when(pinned && pointer_hover, |tail| {
+                                tail.child(
+                                    row().w(px(16.)).h(px(20.)).justify_center().child(
+                                        svg()
+                                            .data(include_bytes!(
+                                                "../../assets/session-pin-fill.svg"
+                                            ))
+                                            .size(px(14.))
+                                            .text_color(p.label_caption),
+                                    ),
+                                )
+                            }),
+                    )
+                },
+            )
+            .when(
+                !searching && !session.blank && (revealed || !pointer_hover),
+                |element| {
+                    let anchor = Rc::new(Cell::new(None));
+                    let button_focus = more_focus.cloned();
+                    let more = div()
+                        .id(gpui::ElementId::Name(
+                            format!("session-more-{}", session.id).into(),
+                        ))
+                        .group("session-row-more")
+                        .relative()
+                        .when_some(more_focus, |button, focus| button.track_focus(focus))
+                        .role(gpui::Role::Button)
+                        .aria_label(format!("会话“{title}”的操作"))
+                        .aria_expanded(more_expanded)
+                        .tab_index(0)
+                        .size(px(24.))
+                        .mx(px(-4.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_color(p.label_tertiary)
+                        .hover(|style| style.text_color(p.label_primary))
+                        .child(
+                            svg()
+                                .data(include_bytes!("../../assets/workspace-ellipsis.svg"))
+                                .size(px(14.))
+                                .text_color(p.label_tertiary)
+                                .group_hover("session-row-more", |style| {
+                                    style.text_color(p.label_primary)
+                                }),
+                        )
+                        .child(self.track_header_menu_button(Some(anchor.clone())))
+                        .on_click(cx.listener(move |this, event: &gpui::ClickEvent, w, cx| {
+                            if !event.is_right_click()
+                                && !mac_control_click(event.modifiers())
+                                && let Some(bounds) = anchor.get()
+                            {
+                                this.open_session_context(
+                                    &for_row_menu,
+                                    SessionMenuOrigin::Row,
+                                    SessionMenuAnchor::Button(bounds),
+                                    button_focus.clone(),
+                                    w,
+                                    cx,
+                                );
+                            }
+                        }));
+                    // 官方：置顶/取消置顶按钮位于「更多」之前。
+                    element.child(
+                        row()
+                            .flex_none()
+                            .gap(px(13.))
+                            .when(!archived && (pointer_hover || pinned), |actions| {
+                                actions.child(
+                                    div()
+                                        .id("session-row-pin")
+                                        .group("session-row-pin")
+                                        .role(gpui::Role::Button)
+                                        .aria_label(if pinned {
+                                            "取消置顶"
+                                        } else {
+                                            "置顶会话"
+                                        })
+                                        .tab_index(0)
+                                        .size(px(24.))
+                                        .mx(px(-4.))
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .text_color(p.label_tertiary)
+                                        .hover(|style| style.text_color(p.label_primary))
+                                        .child(
+                                            svg()
+                                                .size(px(14.))
+                                                .text_color(p.label_tertiary)
+                                                .group_hover("session-row-pin", |style| {
+                                                    style.text_color(p.label_primary)
+                                                })
+                                                .data(if pinned {
+                                                    include_bytes!(
+                                                        "../../assets/session-pin-fill.svg"
+                                                    )
+                                                    .as_slice()
+                                                } else {
+                                                    include_bytes!(
+                                                        "../../assets/session-pin-outline.svg"
+                                                    )
+                                                    .as_slice()
+                                                }),
+                                        )
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.toggle_session_pin(&for_pin, cx);
+                                        })),
+                                )
+                            })
+                            .child(more),
+                    )
+                },
+            )
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, w, cx| {
                 if event.is_right_click() || mac_control_click(event.modifiers()) {
                     return;
                 }
-                if this.active_session.as_deref() == Some(for_click.id.as_str()) {
-                    this.open_page(WorkspacePage::Conversation, cx);
-                } else {
-                    this.resume(for_click.clone(), w, cx);
-                }
+                this.open_workspace_session(for_click.clone(), w, cx);
             }))
     }
 
@@ -1673,7 +1760,7 @@ impl DshApp {
             .is_none_or(|session| session.blank)
             && self.conversation.entries.is_empty()
             && !self.conversation.running
-            && self.conversation.permission.is_none()
+            && self.conversation.approvals.is_empty()
             && self.conversation.plan_reviews.is_empty()
     }
 
@@ -1770,7 +1857,7 @@ impl DshApp {
             )
     }
 
-    fn composer_width(&self, w: &Window) -> f32 {
+    pub(super) fn composer_width(&self, w: &Window) -> f32 {
         let main_width = f32::from(w.viewport_size().width) - self.sidebar_track_width(w);
         let width =
             (crate::layout::conversation_axis(main_width) + 32.).min((main_width - 32.).max(272.));
@@ -1792,13 +1879,11 @@ impl DshApp {
             .gap(px(2.))
             .overflow_y_scroll();
         let mut workspaces = self
-            .sessions
-            .iter()
-            .map(|session| session.cwd.clone())
-            .chain(self.added_workspaces.iter().cloned())
-            .filter(|path| !self.hidden_workspaces.contains(path))
+            .full_workspace_order()
+            .into_iter()
+            .filter(|path| !self.workspace_group_hidden(path))
             .collect::<Vec<_>>();
-        if !self.workspace.is_empty() {
+        if !self.workspace_registry.available() && !self.workspace.is_empty() {
             workspaces.push(self.workspace.clone());
         }
         workspaces.sort();
@@ -1806,7 +1891,7 @@ impl DshApp {
         let has_workspaces = !workspaces.is_empty();
         for workspace in workspaces {
             let selected = workspace == self.workspace;
-            let label = path_name(&workspace);
+            let label = self.workspace_name(&workspace);
             choices = choices.child(
                 row()
                     .id(gpui::ElementId::Name(
@@ -1934,6 +2019,14 @@ impl DshApp {
     fn render_hero(&mut self, w: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = dsh(cx);
         let composer_width = self.composer_width(w);
+        let workspace_label = if self.workspace_registry.available() {
+            self.active_session
+                .as_deref()
+                .and_then(|id| self.workspace_registry.session_path(id))
+                .map_or_else(|| "选择工作区".to_owned(), |path| self.workspace_name(path))
+        } else {
+            path_name(&self.workspace)
+        };
         div()
             .flex_1()
             .min_h_0()
@@ -2041,12 +2134,16 @@ impl DshApp {
                                                         .text_size(px(13.))
                                                         .line_height(px(20.))
                                                         .font_weight(FontWeight::MEDIUM)
-                                                        .child(path_name(&self.workspace)),
+                                                        .child(workspace_label),
                                                 )
                                                 .child(icon(Glyph::Down, 12., p.faint)),
                                             cx.listener(|this, _, _, cx| {
-                                                this.show_workspace_menu =
-                                                    !this.show_workspace_menu;
+                                                if this.workspace_registry.is_empty() {
+                                                    this.request_workspace_picker();
+                                                } else {
+                                                    this.show_workspace_menu =
+                                                        !this.show_workspace_menu;
+                                                }
                                                 this.composer_menu = None;
                                                 cx.notify();
                                             }),
@@ -2840,6 +2937,22 @@ impl DshApp {
                 index += 1;
                 continue;
             }
+            if !hidden
+                && entry.role == EntryRole::User
+                && entry.title != "goal"
+                && !entry.title.starts_with("trigger:")
+            {
+                self.attachment_accessibility.rendered.extend(
+                    crate::state::user_files(entry)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, file)| {
+                            super::queue_attachments::AttachmentControl::download(
+                                &entry.key, index, file,
+                            )
+                        }),
+                );
+            }
             let rendered =
                 self.render_transcript_entry(entry, &tree, !compact || turn_live, turn_live, cx);
             let rendered = match frame {
@@ -2931,16 +3044,30 @@ impl DshApp {
         // Official pending steering rows: a Host-pending next-step message keeps
         // its user bubble at the transcript tail (QueueDock only lists next-turn
         // rows), so a mid-turn 插话 is visible next to the running status.
-        for queued in self
+        let steering = crate::submit::SubmitMode::Steer;
+        let pending_steering = self
             .conversation
             .queued_prompts
             .iter()
-            .filter(|row| row.mode == crate::submit::SubmitMode::Steer)
-        {
-            let text = queued.display.clone();
+            .filter(|row| row.mode == steering)
+            .map(|row| {
+                (
+                    &row.item_id,
+                    &row.display,
+                    &row.attachments,
+                    "插话 · 待回应",
+                )
+            })
+            .chain(
+                self.conversation
+                    .pending_inbox_submission(steering)
+                    .map(|send| (&send.id, &send.display, &send.attachments, "发送中…")),
+            );
+        for (id, text, attachments, status) in pending_steering {
+            let text = text.clone();
             content = content.child(
                 flow_rows.row(
-                    format!("pending-steer-{}", queued.item_id),
+                    format!("pending-steer-{id}"),
                     row().w_full().justify_end().child(
                         column()
                             .max_w(gpui::relative(0.702))
@@ -2956,14 +3083,15 @@ impl DshApp {
                                     .bg(p.bubble)
                                     .text_size(px(14.))
                                     .line_height(px(22.))
-                                    .child(text),
+                                    .child(text)
+                                    .children(self.render_queue_attachments(attachments, cx)),
                             )
                             .child(
                                 div()
                                     .text_size(px(12.))
                                     .line_height(px(18.))
                                     .text_color(p.faint)
-                                    .child("插话 · 待回应"),
+                                    .child(status),
                             ),
                     ),
                 ),
@@ -3728,130 +3856,6 @@ impl DshApp {
         list
     }
 
-    fn render_permission(
-        &mut self,
-        w: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::Stateful<gpui::Div>> {
-        let permission = self.conversation.permission.as_ref()?;
-        let p = dsh(cx);
-        // 官方 escalation 文案里的工具名：ACP 权限请求可能只带 toolCallId，
-        // 名字从会话里的工具行取（映射为官方中文工具名）。
-        let subject = crate::approval_command::approval_tool_label(
-            &permission.tool_call,
-            &self.conversation.entries,
-        );
-        let mut actions = row().w_full().justify_end().gap(px(8.));
-        // 官方：拒绝 → 允许 → 始终允许；有「始终允许」时只有它是主按钮。
-        let mut options = permission.options.clone();
-        options.sort_by_key(|(id, _)| {
-            let id = id.to_lowercase();
-            if id.contains("reject") || id.contains("deny") || id.contains("cancel") {
-                0
-            } else if id.contains("always") {
-                2
-            } else {
-                1
-            }
-        });
-        let has_always = options
-            .iter()
-            .any(|(id, _)| id.to_lowercase().contains("always"));
-        for (id, name) in &options {
-            let option_id = id.clone();
-            let label = crate::approval_command::approval_option_label(id, name);
-            let primary = if has_always {
-                id.to_lowercase().contains("always")
-            } else {
-                id.to_lowercase().contains("allow")
-            };
-            let button = if primary {
-                Button::new(gpui::ElementId::Name(format!("permission-{id}").into())).primary()
-            } else {
-                Button::new(gpui::ElementId::Name(format!("permission-{id}").into())).secondary()
-            };
-            actions = actions.child(
-                button
-                    .label(label)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.respond_permission(option_id.clone(), cx);
-                    }))
-                    .into_themed(cx),
-            );
-        }
-        // 官方 rc.3 ApprovalCommand：审批卡在标题下显示被审批调用的命令行。
-        let command = crate::approval_command::approval_command(
-            &permission.tool_call,
-            &self.conversation.entries,
-        );
-        let width = self.composer_width(w);
-        Some(
-            column()
-                .id("approval-card")
-                .w(px(width))
-                .max_w_full()
-                .mx_auto()
-                .flex_none()
-                .relative()
-                .gap(px(12.))
-                .px(px(16.))
-                .pt(px(12.))
-                .pb(px(12.))
-                .rounded(px(20.))
-                .border_1()
-                .border_color(p.state_warn_primary.opacity(0.6))
-                .bg(composer_bg(cx))
-                .shadow(elevation_soft())
-                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    row()
-                        .w_full()
-                        .gap(px(8.))
-                        .items_center()
-                        .child(pending_dot(
-                            "approval-dot",
-                            div().size(px(8.)).rounded_full().bg(p.state_warn_primary),
-                        ))
-                        .child(
-                            div()
-                                .text_size(px(14.))
-                                .line_height(px(22.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child("等待审批"),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(12.))
-                                .line_height(px(18.))
-                                .text_color(p.secondary)
-                                .child(match &subject {
-                                    Some(subject) => {
-                                        format!("工具 {subject} 请求越权执行")
-                                    }
-                                    None => "工具请求越权执行".to_owned(),
-                                }),
-                        ),
-                )
-                .when_some(command, |card, command| {
-                    card.child(
-                        div()
-                            .w_full()
-                            .min_w_0()
-                            .font_family("monospace")
-                            .text_size(px(13.))
-                            .line_height(px(20.))
-                            .whitespace_normal()
-                            .text_color(p.label_tertiary)
-                            .child(command),
-                    )
-                })
-                .child(actions),
-        )
-    }
-
     fn render_composer(&mut self, w: &mut Window, cx: &mut Context<Self>, hero: bool) -> gpui::Div {
         let p = dsh(cx);
         let usage = self.conversation.usage;
@@ -3864,8 +3868,14 @@ impl DshApp {
                 - self.right_dock_frame.track;
             composer_width = composer_width.min(main_width - 48.);
         }
-        let model = self.current_config_label("model");
+        let current_model = self.model_menu_current_label();
         let reasoning = self.current_config_label("reasoning_effort");
+        let model = self.config_option("model").map(|_| {
+            current_model
+                .as_deref()
+                .unwrap_or_else(|| self.model_menu_placeholder())
+                .to_owned()
+        });
         let permission_open = self.composer_menu == Some(ComposerMenu::Permission);
         let model_open = self.composer_menu.is_some_and(ComposerMenu::is_model);
         let permission_chevron = composer_chevron(
@@ -3927,13 +3937,19 @@ impl DshApp {
         });
         // 官方 hero / conversation 两套 placeholder；plan 模式生效期间，
         // 会话 composer 改用计划任务提示（hero 自带 surface placeholder）。
-        let placeholder = if !hero && self.conversation.plan_active == Some(true) {
+        let placeholder = if !hero && self.can_steer_inbox(empty) {
+            "Cmd/Ctrl+Enter 插话发送全部排队消息"
+        } else if !hero && self.conversation.plan_active == Some(true) {
             "描述你的任务以生成计划"
         } else if hero {
             "描述你想要构建的内容, / 调用指令, @ 文件或对话"
         } else {
             "发消息或创建任务, / 调用指令, @ 文件或对话"
         };
+        self.model_accessibility.rendered_composer = true;
+        if self.composer.read(cx).focus.is_focused(w) {
+            self.model_accessibility.input_label = Some(placeholder);
+        }
         let brand = p.state_business_primary;
         self.composer.update(cx, |editor, _| {
             editor.set_placeholder(placeholder);
@@ -4032,7 +4048,7 @@ impl DshApp {
                 },
             )
             .when(self.conversation.goal.is_some(), |element| {
-                element.child(self.render_goal_bar(cx))
+                element.child(self.render_goal_bar(composer_width, w, cx))
             })
             .when(!self.conversation.subagents.is_empty(), |element| {
                 element.child(self.render_subagent_catalog(cx))
@@ -4040,9 +4056,7 @@ impl DshApp {
             .when_some(self.conversation.team.clone(), |element, team| {
                 element.child(self.render_team_board(&team, cx))
             })
-            .when(!self.conversation.queued_prompts.is_empty(), |element| {
-                element.child(self.render_queue_cards(cx))
-            })
+            .children(self.render_queue_cards(composer_width, w, cx))
             .child(
                 column()
                     .relative()
@@ -4107,12 +4121,7 @@ impl DshApp {
                                     .hover(|style| style.bg(p.hover_solid))
                                     .child(icon(Glyph::Plus, 14., p.ink))
                                     .on_click(cx.listener(|this, _, w, cx| {
-                                        this.toggle_composer_menu(ComposerMenu::Commands);
-                                        if this.composer_menu == Some(ComposerMenu::Commands) {
-                                            let focus = this.composer.read(cx).focus.clone();
-                                            focus.focus(w, cx);
-                                        }
-                                        cx.notify();
+                                        this.toggle_command_menu(w, cx);
                                     })),
                             )
                             .children(permission.map(|state| {
@@ -4125,7 +4134,7 @@ impl DshApp {
                                     .id("composer-permission")
                                     .relative()
                                     .role(gpui::Role::ComboBox)
-                                    .aria_label(format!("审批模式：{mode_label}"))
+                                    .aria_label(format!("访问模式，当前：{mode_label}"))
                                     .aria_expanded(permission_open)
                                     .track_focus(&self.permission_menu.trigger)
                                     .tab_index(0)
@@ -4176,6 +4185,15 @@ impl DshApp {
                             }))
                             .children(self.plan_chip(cx))
                             .children(model.map(|label| {
+                                let accessible_label = match (current_model, reasoning.as_deref()) {
+                                    (Some(model), Some(effort)) => {
+                                        format!("选择模型，当前 {model}，推理等级 {effort}")
+                                    }
+                                    (Some(model), None) => format!("选择模型，当前 {model}"),
+                                    (None, _) => label.clone(),
+                                };
+                                self.model_accessibility.rendered_label =
+                                    Some(accessible_label.clone());
                                 let popup = self
                                     .composer_menu
                                     .filter(|menu| menu.is_model())
@@ -4184,10 +4202,7 @@ impl DshApp {
                                     .id("composer-model")
                                     .relative()
                                     .role(gpui::Role::ComboBox)
-                                    .aria_label(reasoning.as_ref().map_or_else(
-                                        || format!("选择模型，{label}"),
-                                        |effort| format!("选择模型，{label}，思考强度 {effort}"),
-                                    ))
+                                    .aria_label(accessible_label)
                                     .aria_expanded(model_open)
                                     .track_focus(&self.model_menu.trigger)
                                     .tab_index(0)
@@ -4302,7 +4317,11 @@ impl DshApp {
                                                 bounds.contains(&event.position)
                                             })
                                         {
-                                            this.composer_menu = None;
+                                            if menu == ComposerMenu::Commands {
+                                                this.dismiss_command_menu();
+                                            } else {
+                                                this.composer_menu = None;
+                                            }
                                             cx.notify();
                                         }
                                     },
@@ -4350,12 +4369,12 @@ impl DshApp {
     /// 图标 + 阶段标签 + 单行省略的目标正文 + 动作：进行中且可自动继续时给
     /// 暂停，非进行中的阶段给恢复，任何阶段都可以编辑或清除。创建目标仍归
     /// `/goal` 命令，这条只管理层状态。
-    fn render_goal_bar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_goal_bar(&self, width: f32, w: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let p = dsh(cx);
         let Some(goal) = self.conversation.goal.clone() else {
             return div().into_any_element();
         };
-        let busy = self.conversation.goal_busy;
+        let busy = self.conversation.goal_busy || !self.conversation.acp_open;
         let can_resume = goal.can_resume();
         let action_button =
             |id: &'static str,
@@ -4368,14 +4387,17 @@ impl DshApp {
                     .id(gpui::ElementId::Name(id.into()))
                     .role(gpui::Role::Button)
                     .aria_label(label)
-                    .size(px(24.))
-                    .rounded(px(crate::tokens::Tokens::RADIUS_SM))
+                    .size(px(28.))
+                    .flex_none()
+                    .rounded_full()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(icon(glyph, 14., p.faint));
+                    .child(icon(glyph, 14., p.faint))
+                    .tooltip(move |_, cx| cx.new(|_| TurnActionHint(label.into())).into());
                 if enabled && !busy {
                     button
+                        .tab_index(0)
                         .cursor_pointer()
                         .hover(|style| style.bg(p.hover))
                         .on_click(cx.listener(move |this, _, w, cx| on_click(this, w, cx)))
@@ -4383,18 +4405,90 @@ impl DshApp {
                     button.opacity(0.4)
                 }
             };
-        let mut bar = row()
+        let bar = row()
             .id("goal-bar")
             .w_full()
-            .h(px(36.))
-            .px(px(12.))
+            .pl(px(12.))
+            .pr(px(5.))
             .py(px(4.))
             .gap(px(10.))
-            .items_center()
-            .rounded(px(crate::tokens::Tokens::RADIUS_SM))
+            .rounded(px(crate::tokens::Tokens::RADIUS_MD))
             .border(px(0.5))
             .border_color(p.line)
-            .bg(p.stage)
+            .bg(composer_bg(cx))
+            .shadow(elevation_soft());
+        let error = self.conversation.goal_error.as_ref().map(|message| {
+            let message: gpui::SharedString = message.clone().into();
+            let tooltip = message.clone();
+            div()
+                .id("goal-action-error")
+                .role(gpui::Role::Alert)
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(px(12.))
+                .line_height(px(20.))
+                .text_color(p.danger)
+                .child(message)
+                .tooltip(move |_, cx| cx.new(|_| TurnActionHint(tooltip.clone())).into())
+        });
+        if let Some(edit) = &self.conversation.goal_edit {
+            let value = edit.editor.read(cx).value();
+            let can_save = !value.trim().is_empty();
+            // Bar border/padding and the two action buttons precede the editor's own insets.
+            let editor_width = width - 18. - 64. - 10.;
+            let editor_width = if error.is_some() {
+                (editor_width - 10.) / 2.
+            } else {
+                editor_width
+            };
+            let height = goal_bar::goal_editor_height(value, editor_width - 17., w, cx);
+            let focused = edit.editor.read(cx).focus.is_focused(w);
+            return bar
+                .items_end()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h(px(height))
+                        .px(px(8.))
+                        .py(px(3.))
+                        .rounded(px(crate::tokens::Tokens::RADIUS_SM))
+                        .border(px(0.5))
+                        .border_color(if focused {
+                            p.state_business_primary
+                        } else {
+                            p.border_l4
+                        })
+                        .bg(p.bg_base)
+                        .child(edit.editor.clone()),
+                )
+                .when_some(error, |bar, error| bar.child(error))
+                .child(
+                    row()
+                        .gap(px(8.))
+                        .flex_none()
+                        .child(action_button(
+                            "goal-edit-save",
+                            "保存目标",
+                            Glyph::Check,
+                            can_save,
+                            cx,
+                            DshApp::save_goal_objective,
+                        ))
+                        .child(action_button(
+                            "goal-edit-cancel",
+                            "取消编辑目标",
+                            Glyph::Close,
+                            true,
+                            cx,
+                            DshApp::cancel_goal_edit,
+                        )),
+                )
+                .into_any_element();
+        }
+        bar.h(px(36.))
+            .items_center()
             .when_some(goal.title().map(str::to_owned), |bar, title| {
                 let reason: gpui::SharedString = format!("受阻原因：{title}").into();
                 bar.tooltip(move |_, cx| cx.new(|_| TurnActionHint(reason.clone())).into())
@@ -4410,6 +4504,7 @@ impl DshApp {
                 div()
                     .flex_none()
                     .text_size(px(13.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .line_height(px(24.))
                     .text_color(p.ink)
                     .child(goal.label()),
@@ -4421,61 +4516,51 @@ impl DshApp {
                     .truncate()
                     .text_size(px(13.))
                     .line_height(px(20.))
-                    .text_color(p.label_dimmed)
-                    .child(goal.objective_preview(120)),
-            );
-        if let Some(error) = self.conversation.goal_error.clone() {
-            bar = bar.child(
-                div()
+                    .text_color(p.label_primary_dimmed)
+                    .child(goal.objective_preview()),
+            )
+            .when_some(error, |bar, error| bar.child(error))
+            .child(
+                row()
+                    .gap(px(8.))
                     .flex_none()
-                    .max_w(px(180.))
-                    .truncate()
-                    .text_size(px(12.))
-                    .line_height(px(18.))
-                    .text_color(p.danger)
-                    .child(error),
-            );
-        }
-        // rc.3 action order: edit, clear, then the single pause/resume toggle,
-        // disabled until activation is known.
-        bar = bar
-            .child(action_button(
-                "goal-edit",
-                "编辑目标",
-                Glyph::Edit,
-                true,
-                cx,
-                |this, w, cx| this.edit_goal_objective(w, cx),
-            ))
-            .child(action_button(
-                "goal-clear",
-                "清除目标",
-                Glyph::Trash,
-                true,
-                cx,
-                |this, w, cx| this.run_goal_action("clear", w, cx),
-            ));
-        let resume = can_resume;
-        bar = bar.child(if resume {
-            action_button(
-                "goal-toggle",
-                "恢复目标",
-                Glyph::Play,
-                goal.can_toggle(),
-                cx,
-                |this, w, cx| this.run_goal_action("resume", w, cx),
+                    .child(action_button(
+                        "goal-edit",
+                        "编辑目标",
+                        Glyph::Edit,
+                        true,
+                        cx,
+                        DshApp::edit_goal_objective,
+                    ))
+                    .child(action_button(
+                        "goal-clear",
+                        "清除目标",
+                        Glyph::Trash,
+                        true,
+                        cx,
+                        |this, w, cx| this.run_goal_action("clear", None, w, cx),
+                    ))
+                    .child(if can_resume {
+                        action_button(
+                            "goal-toggle",
+                            "恢复目标",
+                            Glyph::Play,
+                            goal.can_toggle(),
+                            cx,
+                            |this, w, cx| this.run_goal_action("resume", None, w, cx),
+                        )
+                    } else {
+                        action_button(
+                            "goal-toggle",
+                            "暂停目标",
+                            Glyph::Pause,
+                            goal.can_toggle(),
+                            cx,
+                            |this, w, cx| this.run_goal_action("pause", None, w, cx),
+                        )
+                    }),
             )
-        } else {
-            action_button(
-                "goal-toggle",
-                "暂停目标",
-                Glyph::Pause,
-                goal.can_toggle(),
-                cx,
-                |this, w, cx| this.run_goal_action("pause", w, cx),
-            )
-        });
-        bar.into_any_element()
+            .into_any_element()
     }
 
     /// composer 上方的子智能体目录（官方 session-header lineage 的功能对应）。
@@ -4651,161 +4736,6 @@ impl DshApp {
     ///
     /// 行来自 Host（关闭应用也不会丢），这里只负责展示与动作：复制、取回
     /// 编辑、删除；排队中的行还可以改成插话，交给运行中的回合。
-    fn render_queue_cards(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let p = dsh(cx);
-        let running = self.conversation.running;
-        // Steering rows live in the transcript as pending user bubbles, so the
-        // dock mirrors only the official next-turn (queued) rows.
-        let count = self
-            .conversation
-            .queued_prompts
-            .iter()
-            .filter(|row| row.mode != crate::submit::SubmitMode::Steer)
-            .count();
-        let mut list = column().w_full().gap(px(6.));
-        if count > 1 {
-            list = list.child(
-                row()
-                    .w_full()
-                    .px(px(4.))
-                    .gap(px(6.))
-                    .items_center()
-                    .child(icon(Glyph::ArrowUp, 12., p.label_caption))
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .line_height(px(16.))
-                            .text_color(p.label_caption)
-                            .child(format!("{count} 条排队消息")),
-                    ),
-            );
-        }
-        for (index, queued) in self.conversation.queued_prompts.iter().enumerate() {
-            if queued.mode == crate::submit::SubmitMode::Steer {
-                continue;
-            }
-            let preview = short_text(&queued.display, 96);
-            let for_copy = queued.display.clone();
-            let mode = queued.mode;
-            let can_steer = running && mode == crate::submit::SubmitMode::Queue;
-            let steer_label = if can_steer {
-                "插话发送"
-            } else {
-                "排队中"
-            };
-            list = list.child(
-                row()
-                    .id(gpui::ElementId::Name(format!("queue-{index}").into()))
-                    .w_full()
-                    .min_h(px(40.))
-                    .px(px(12.))
-                    .py(px(8.))
-                    .gap(px(8.))
-                    .items_center()
-                    .rounded(px(crate::tokens::Tokens::RADIUS_LG))
-                    .border(px(0.5))
-                    .border_color(p.line)
-                    .bg(p.stage)
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .px(px(6.))
-                            .py(px(1.))
-                            .rounded_full()
-                            .border(px(0.5))
-                            .border_color(p.line)
-                            .text_size(px(10.))
-                            .line_height(px(14.))
-                            .text_color(p.label_caption)
-                            .child(mode.label()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(px(13.))
-                            .line_height(px(20.))
-                            .text_color(p.secondary)
-                            .child(preview),
-                    )
-                    .child(if can_steer {
-                        div()
-                            .id(gpui::ElementId::Name(format!("queue-steer-{index}").into()))
-                            .role(gpui::Role::Button)
-                            .aria_label(steer_label)
-                            .size(px(24.))
-                            .rounded(px(8.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(p.hover))
-                            .child(icon(Glyph::Send, 13., p.faint))
-                            .on_click(cx.listener(move |this, _, w, cx| {
-                                this.steer_queued_prompt(index, w, cx);
-                            }))
-                            .into_any_element()
-                    } else {
-                        // 没有运行中的回合时插话没有落点，占位保持行对齐。
-                        div().size(px(24.)).into_any_element()
-                    })
-                    .child(
-                        div()
-                            .id(gpui::ElementId::Name(format!("queue-copy-{index}").into()))
-                            .role(gpui::Role::Button)
-                            .aria_label("复制排队消息")
-                            .size(px(24.))
-                            .rounded(px(8.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(p.hover))
-                            .child(icon(Glyph::Copy, 13., p.faint))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                bridge::copy_text(&for_copy);
-                                this.push_toast("已复制", cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id(gpui::ElementId::Name(format!("queue-edit-{index}").into()))
-                            .role(gpui::Role::Button)
-                            .aria_label("取回编辑")
-                            .size(px(24.))
-                            .rounded(px(8.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(p.hover))
-                            .child(icon(Glyph::Edit, 13., p.faint))
-                            .on_click(cx.listener(move |this, _, w, cx| {
-                                this.edit_queued_prompt(index, w, cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id(gpui::ElementId::Name(format!("queue-del-{index}").into()))
-                            .role(gpui::Role::Button)
-                            .aria_label("删除排队消息")
-                            .size(px(24.))
-                            .rounded(px(8.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(p.hover))
-                            .child(icon(Glyph::Close, 13., p.faint))
-                            .on_click(cx.listener(move |this, _, w, cx| {
-                                this.remove_queued_prompt(index, w, cx);
-                            })),
-                    ),
-            );
-        }
-        list
-    }
-
     /// 官方草稿附件轨：64px 高，图片方块 + 240px 文件卡，可移除。
     fn render_attachment_rail(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let p = dsh(cx);
@@ -4878,10 +4808,7 @@ impl DshApp {
                                 .cursor_pointer()
                                 .child(icon(Glyph::Close, 10., p.ink))
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.conversation
-                                        .draft_attachments
-                                        .retain(|item| item.id != id);
-                                    cx.notify();
+                                    this.remove_draft_attachment(&id, cx);
                                 })),
                         )
                         .child(
@@ -4957,10 +4884,7 @@ impl DshApp {
                                 .hover(|style| style.bg(p.hover))
                                 .child(icon(Glyph::Close, 12., p.faint))
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.conversation
-                                        .draft_attachments
-                                        .retain(|item| item.id != id);
-                                    cx.notify();
+                                    this.remove_draft_attachment(&id, cx);
                                 })),
                         )
                 }
@@ -4973,19 +4897,9 @@ impl DshApp {
         let t = dsh(cx);
         let blue = t.button_info_fill;
         let ink = gpui::rgb(0xffffff);
-        // 官方三态：生成中无文字 → 停止；生成中有文字 → 排队发送；空闲 → 发送。
-        let stopping = self.conversation.running && empty;
-        let queueing = self.conversation.running && !empty;
-        let enabled = stopping
-            || (!self.creating_session
-                && !self.conversation.permission_mode.changing()
-                && (self.conversation.running
-                    || (self.connected()
-                        && self.conversation.acp_open
-                        && (!self.conversation.history_loading
-                            || self.conversation.history_prepend_pending)
-                        && !empty
-                        && self.active_session.is_some())));
+        let action = self.primary_composer_action(empty);
+        let stopping = action.stop;
+        let enabled = action.enabled;
         let mut button = div()
             .id(if self.conversation.running {
                 if stopping {
@@ -4997,13 +4911,7 @@ impl DshApp {
                 "send-prompt"
             })
             .role(gpui::Role::Button)
-            .aria_label(if stopping {
-                "停止生成"
-            } else if queueing {
-                "排队发送"
-            } else {
-                "发送"
-            })
+            .aria_label(action.label)
             .tab_index(0)
             .tab_stop(enabled)
             .size(px(34.))
@@ -5062,7 +4970,7 @@ impl DshApp {
             .map_or(px(0.), |state| px(8. + 34. * state.options.len() as f32));
         let p = dsh(cx);
         let (id, label) = if model_menu {
-            ("composer-model-popup", "模型与思考强度")
+            ("composer-model-popup", "模型与推理等级")
         } else {
             ("composer-permission-popup", "审批模式")
         };
@@ -5093,7 +5001,7 @@ impl DshApp {
                     self.current_config_label("reasoning_effort"),
                     |card, label| {
                         card.child(self.model_root_row(
-                            "思考强度",
+                            "推理等级",
                             &label,
                             ComposerMenu::ReasoningChoices,
                             cx,
@@ -5158,6 +5066,7 @@ impl DshApp {
                             }),
                     )
                 })
+                .child(self.render_model_catalog_notices(cx))
                 .child(self.render_config_choices(pane, searchable, cx))
             }
             ComposerMenu::ReasoningChoices => {
@@ -5279,21 +5188,15 @@ impl DshApp {
                     .min_h_0()
                     .gap_0()
                     .overflow_y_scroll();
-                let mut index = 0usize;
-                for section in ["添加", "指令"] {
-                    let rows = visible
-                        .iter()
-                        .filter(|spec| spec.section == section)
-                        .collect::<Vec<_>>();
-                    if rows.is_empty() {
-                        continue;
+                let mut previous = None;
+                for (index, spec) in visible.into_iter().enumerate() {
+                    if self.command_filter.is_empty() && previous != Some(spec.section) {
+                        list =
+                            list.child(command_section_title(spec.section, previous.is_some(), cx));
+                        previous = Some(spec.section);
                     }
-                    list = list.child(command_section_title(section, section == "指令", cx));
-                    for spec in rows {
-                        let selected = self.command_from_slash && index == self.command_selected;
-                        list = list.child(self.command_row(spec, selected, cx));
-                        index += 1;
-                    }
+                    let selected = index == self.command_selected;
+                    list = list.child(self.command_row(spec, selected, cx));
                 }
                 composer_overlay_card("commands-menu", max_height, cx)
                     .left_0()
@@ -5596,41 +5499,6 @@ impl DshApp {
             .on_click(cx.listener(move |this, _, w, cx| this.drill_model_menu(target, w, cx)))
     }
 
-    /// 模型/推理选项按提供商分组；无分组的平铺进“模型”一组。
-    pub(super) fn model_choice_groups(&self, config_id: &str) -> Vec<(String, Vec<PickerOption>)> {
-        let Some(option) = self.config_option(config_id) else {
-            return Vec::new();
-        };
-        let mut groups: Vec<(String, Vec<PickerOption>)> = Vec::new();
-        let mut ungrouped = None;
-        for item in option
-            .get("options")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            if let Some(nested) = item.get("options").and_then(Value::as_array) {
-                let name = item
-                    .get("name")
-                    .or_else(|| item.get("group"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("模型")
-                    .to_string();
-                let choices = nested.iter().filter_map(picker_choice).collect::<Vec<_>>();
-                if !choices.is_empty() {
-                    groups.push((name, choices));
-                }
-            } else if let Some(choice) = picker_choice(item) {
-                let index = *ungrouped.get_or_insert_with(|| {
-                    groups.push(("模型".to_string(), Vec::new()));
-                    groups.len() - 1
-                });
-                groups[index].1.push(choice);
-            }
-        }
-        groups
-    }
-
     fn render_config_choices(
         &self,
         pane: ComposerMenu,
@@ -5640,8 +5508,11 @@ impl DshApp {
         let config_id = super::model_menu::config_id(pane);
         let groups = self.model_menu_groups(pane, cx);
         if groups.is_empty() {
+            if pane == ComposerMenu::ModelChoices && self.model_catalog.loading() {
+                return column();
+            }
             let message = if pane == ComposerMenu::ReasoningChoices {
-                "当前模型未提供思考强度。"
+                "当前模型未提供推理等级。"
             } else if self.model_menu.query.is_empty() {
                 "暂无可用模型"
             } else {
@@ -5657,7 +5528,12 @@ impl DshApp {
             .config_option(config_id)
             .and_then(|option| option["currentValue"].as_str());
         let ungrouped = groups.len() == 1 && groups[0].0 == "模型";
-        let active = self.model_menu.active.unwrap_or(0);
+        let count: usize = groups.iter().map(|(_, choices)| choices.len()).sum();
+        let active = self
+            .model_menu
+            .active
+            .unwrap_or(0)
+            .min(count.saturating_sub(1));
         let busy = self.model_menu_busy();
         let mut list = column()
             .id("model-menu-choices")
@@ -5893,6 +5769,21 @@ impl DshApp {
             })
     }
 
+    pub(super) fn toggle_more_settings(&mut self, cx: &mut Context<Self>) {
+        self.show_more_menu = !self.show_more_menu;
+        self.show_workspace_menu = false;
+        self.show_workspace_view_options = false;
+        self.composer_menu = None;
+        cx.notify();
+    }
+
+    pub(super) fn open_settings_from_more(&mut self, cx: &mut Context<Self>) {
+        self.show_more_menu = false;
+        self.settings_page = SettingsPage::Credentials;
+        self.show_settings = true;
+        cx.notify();
+    }
+
     fn render_more_menu(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let left = 12.;
         column()
@@ -5923,11 +5814,8 @@ impl DshApp {
                 Glyph::Settings,
                 true,
                 cx,
-                |this, _, cx| {
-                    this.show_more_menu = false;
-                    this.settings_page = SettingsPage::Credentials;
-                    this.show_settings = true;
-                    cx.notify();
+                |this, w, cx| {
+                    this.open_account_menu_settings(w, cx);
                 },
             ))
     }
@@ -6040,19 +5928,30 @@ impl DshApp {
             ))
     }
 
-    /// Restores workspaces hidden from the sidebar. Harness keeps session data
-    /// when a group is removed, so undoing the local `hidden` preference is all
-    /// that is needed — no files or history are touched.
+    /// Recovery for removals recorded by the pre-registry client.
     fn render_hidden_workspaces(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = dsh(cx);
-        let mut hidden: Vec<String> = self.hidden_workspaces.iter().cloned().collect();
+        let registered = self.workspace_registry.available();
+        let mut hidden: Vec<String> = self
+            .hidden_workspaces
+            .iter()
+            .filter(|path| !self.workspace_registry.contains(path))
+            .cloned()
+            .collect();
+        if registered && hidden.is_empty() {
+            return column();
+        }
         hidden.sort();
         let mut body = column().w_full().gap(px(8.)).child(
             div()
                 .text_size(px(14.))
                 .line_height(px(20.))
                 .text_color(p.label_primary)
-                .child("已移除的工作区"),
+                .child(if registered {
+                    "旧版移除的工作区"
+                } else {
+                    "已移除的工作区"
+                }),
         );
         if hidden.is_empty() {
             return body.child(
@@ -6098,11 +5997,8 @@ impl DshApp {
                             .text_size(px(12.))
                             .text_color(p.label_primary_foreground)
                             .child("恢复")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.hidden_workspaces.remove(&restored);
-                                this.save_workspace_preferences(cx);
-                                this.push_toast("已恢复工作区分组", cx);
-                                cx.notify();
+                            .on_click(cx.listener(move |this, _, w, cx| {
+                                this.restore_workspace_group(restored.clone(), w, cx);
                             })),
                     ),
             );
@@ -6155,7 +6051,7 @@ impl DshApp {
                             .secondary()
                             .loading(self.status == ServiceStatus::Starting)
                             .disabled(self.conversation.running || self.creating_session || self.plugin_install_busy())
-                            .on_click(cx.listener(|this, _, w, cx| this.start_service(w, cx)))
+                            .on_click(cx.listener(|this, _, w, cx| this.start_service(true, w, cx)))
                             .into_themed(cx),
                     )
                     .child(note(format!("{status} · {detail}"), cx))
@@ -6304,7 +6200,8 @@ impl DshApp {
                     )),
                 cx,
             ),
-            SettingsPage::Providers => self.render_model_providers(compact, cx),
+            SettingsPage::Providers => self.render_model_providers(),
+            SettingsPage::Account => self.render_account_panel(),
             SettingsPage::Plugins => {
                 let inventory = self.render_plugin_inventory(w, cx);
                 settings_section("内置插件", inventory, cx)
@@ -6330,6 +6227,7 @@ impl DshApp {
             ),
         };
         let nav = [
+            (SettingsPage::Account, "DeepSeek 账号", Glyph::User),
             (SettingsPage::Credentials, "API Key", Glyph::Lock),
             (SettingsPage::General, "通用设置", Glyph::Settings),
             (SettingsPage::Appearance, "外观", Glyph::Sun),
@@ -6342,6 +6240,9 @@ impl DshApp {
         ];
         let mut nav_list = column().w_full().gap(px(4.));
         for (target, label, glyph) in nav {
+            if target == SettingsPage::Account && !self.deepseek_account.available {
+                continue;
+            }
             let active = page == target;
             nav_list = nav_list.child(
                 row()
@@ -6357,9 +6258,14 @@ impl DshApp {
                     .child(icon(glyph, 16., p.secondary))
                     .child(div().text_size(px(14.)).child(label))
                     .on_click(cx.listener(move |this, _, w, cx| {
+                        if this.provider_navigation_locked() || this.account_confirmation_open() {
+                            return;
+                        }
                         this.transcript_preferences.clear_menu();
                         if target == SettingsPage::Providers {
                             this.open_model_providers(w, cx);
+                        } else if target == SettingsPage::Account {
+                            this.open_account_settings(w, cx);
                         } else {
                             this.settings_page = target;
                             if target == SettingsPage::WebSearch {
@@ -6414,6 +6320,23 @@ impl DshApp {
                     .shadow(elevation_prominent())
                     .occlude()
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .when(self.has_account_notice_feed(), |panel| {
+                        panel.child(
+                            canvas(
+                                |bounds, _, _| {
+                                    super::deepseek_account::place_account_notice_cover(
+                                        bounds.left().as_f32(),
+                                        bounds.top().as_f32(),
+                                        bounds.size.width.as_f32(),
+                                        bounds.size.height.as_f32(),
+                                    );
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .inset_0(),
+                        )
+                    })
                     .child(
                         column()
                             .w(px(if compact { 132. } else { 188. }))
@@ -6441,23 +6364,28 @@ impl DshApp {
                             .h_full()
                             .min_w_0()
                             .gap_0()
-                            .child(
-                                row()
-                                    .w_full()
-                                    .h(px(54.))
-                                    .flex_none()
-                                    .justify_end()
-                                    .px(px(14.))
-                                    .pt(px(14.))
-                                    .child(icon_btn(
-                                        "close-settings",
-                                        "关闭设置",
-                                        Glyph::Close,
-                                        cx,
-                                        |this, _, cx| {
-                                            this.close_settings(cx);
-                                        },
-                                    )),
+                            .when(
+                                !matches!(page, SettingsPage::Providers | SettingsPage::Account),
+                                |column| {
+                                    column.child(
+                                        row()
+                                            .w_full()
+                                            .h(px(54.))
+                                            .flex_none()
+                                            .justify_end()
+                                            .px(px(14.))
+                                            .pt(px(14.))
+                                            .child(icon_btn(
+                                                "close-settings",
+                                                "关闭设置",
+                                                Glyph::Close,
+                                                cx,
+                                                |this, _, cx| {
+                                                    this.close_settings(cx);
+                                                },
+                                            )),
+                                    )
+                                },
                             )
                             .child(
                                 div()
@@ -6465,9 +6393,13 @@ impl DshApp {
                                     .flex_1()
                                     .min_h_0()
                                     .w_full()
-                                    .when(page != SettingsPage::Providers, |content| {
-                                        content.overflow_y_scroll()
-                                    })
+                                    .when(
+                                        !matches!(
+                                            page,
+                                            SettingsPage::Providers | SettingsPage::Account
+                                        ),
+                                        |content| content.overflow_y_scroll(),
+                                    )
                                     .px(px(if compact { 12. } else { 24. }))
                                     .pb(px(if compact { 12. } else { 24. }))
                                     .child(content),
@@ -6763,6 +6695,7 @@ fn render_entry(
                             .flex()
                             .flex_col()
                             .gap(px(8.))
+                            .children(super::queue_attachments::render_user_files(entry, cx))
                             .when_some(render_user_images(entry, cx), |bubble, images| {
                                 bubble.child(images)
                             })

@@ -156,8 +156,16 @@ pub(super) struct Conversation {
     pub(super) turn_summary: Option<TurnSummary>,
     pub(super) turn_usage_base: Option<u64>,
     pub(super) queued_prompts: Vec<QueuedPrompt>,
+    pub(super) inbox_expanded: bool,
+    pub(super) inbox_edit: Option<session_inbox::InboxEdit>,
+    pub(super) inbox_action: Option<String>,
+    pub(super) inbox_error: Option<String>,
+    pub(super) inbox_submission: Option<session_inbox::InboxSubmission>,
+
     /// Current goal shown by the composer's GoalBar; None renders nothing.
     pub(super) goal: Option<crate::goal::GoalView>,
+    pub(super) goal_sequence: u64,
+    pub(super) goal_edit: Option<super::goal_bar::GoalEdit>,
     /// One goal mutation in flight; the strip disables its verbs meanwhile.
     pub(super) goal_busy: bool,
     /// Last rejected goal verb, shown inside the strip (official `actionError`).
@@ -168,7 +176,7 @@ pub(super) struct Conversation {
     /// conversation running; a missed `turn_end` would leave the strip stuck on
     /// "进行中的目标". After a goal revision changes, KWork re-reads history once
     /// while idle so the failure row (or the round's content) cannot be lost.
-    pub(super) goal_synced_revision: Option<u64>,
+    pub(super) goal_synced_revision: Option<(String, u64)>,
     /// Direct children this session spawned (official subagent catalog).
     pub(super) subagents: Vec<crate::subagents::SubagentRow>,
     /// Whether the composer's subagent list is expanded.
@@ -206,7 +214,7 @@ pub(super) struct Conversation {
     pub(super) tool_mutations: HashMap<String, String>,
     pub(super) pending_changed_files: Vec<String>,
     pub(super) usage: Option<(u64, u64)>,
-    pub(super) permission: Option<PermissionRequest>,
+    pub(super) approvals: std::collections::VecDeque<approval::ApprovalRequest>,
     pub(super) permission_mode: super::permission_picker::PermissionMode,
     pub(super) plan_reviews: Vec<plan::PlanReview>,
     pub(super) questions: Vec<question_panel::PendingQuestions>,
@@ -241,6 +249,7 @@ pub(super) struct Conversation {
     pub(super) stats_ttft_steps: u64,
     pub(super) history_has_more: bool,
     pub(super) history_loading: bool,
+    pub(super) history_request_id: u64,
     pub(super) history_prepend_pending: bool,
     pub(super) history_oldest_seq: Option<u64>,
     /// An older-page request failed; the edge row shows 重新加载.
@@ -360,7 +369,7 @@ impl Conversation {
         }
         self.tool_mutations.clear();
         self.flush_pending_deliverables();
-        self.permission = None;
+        self.approvals.clear();
     }
 
     pub(super) fn push_local(&mut self, role: EntryRole, text: String) {
@@ -407,83 +416,80 @@ impl Conversation {
             .filter(|count| *count > 0)
     }
 
-    /// 记下一行刚刚被 Host 接受的待投递消息。
-    pub(super) fn push_inbox_row(
-        &mut self,
-        item_id: String,
+    pub(super) fn pending_inbox_submission(
+        &self,
         mode: crate::submit::SubmitMode,
-        display: String,
-    ) {
-        self.inbox_seq += 1;
-        let added_at = self.inbox_seq;
-        self.queued_prompts.push(QueuedPrompt {
-            item_id,
-            mode,
-            display,
-            added_at,
-        });
+    ) -> Option<&session_inbox::InboxSubmission> {
+        self.inbox_submission.as_ref().filter(|send| {
+            !send.admitted
+                && send.mode == mode
+                && !self
+                    .queued_prompts
+                    .iter()
+                    .any(|row| row.request_id.as_deref() == Some(&send.id))
+        })
     }
 
-    /// 为一次待投递快照请求分配序号；Host 会把它原样回传。
+    /// A prompt may already have reached the transcript by the time ACP replies.
+    pub(super) fn accept_inbox_row(&mut self, row: QueuedPrompt) {
+        if self
+            .queued_prompts
+            .iter()
+            .any(|existing| existing.item_id == row.item_id)
+            || self.entries.iter().any(|entry| {
+                entry.external_id.as_deref() == Some(&row.item_id) && entry.role == EntryRole::User
+            })
+        {
+            return;
+        }
+        self.inbox_seq += 1;
+        self.queued_prompts.push(row);
+    }
+
     pub(super) fn inbox_snapshot_request(&mut self) -> u64 {
         self.inbox_seq += 1;
         self.inbox_seq
     }
 
-    /// 用 Host 的待投递快照替换本地列表。
-    ///
-    /// 快照可能早于本地刚提交的一条消息（两次投递几乎同时发生时），所以
-    /// 只删除在快照请求之前就存在的行：`added_at` 是本地单调序号，
-    /// `issued_at` 是请求时的序号。
+    /// An older snapshot cannot undo a local mutation or a newer Host read.
     pub(super) fn apply_inbox_snapshot(&mut self, items: &[Value], issued_at: u64) {
-        let mut rows: Vec<QueuedPrompt> = Vec::with_capacity(items.len());
-        for item in items {
-            let Some(item_id) = item["itemId"].as_str() else {
-                continue;
-            };
-            let mode = crate::submit::SubmitMode::from_wire(item["mode"].as_str());
-            // 本地行记得附件名等展示细节，保留它；Host 恢复的行只有正文。
-            let local = self
-                .queued_prompts
-                .iter()
-                .find(|row| row.item_id == item_id);
-            let (display, added_at) = match local {
-                Some(row) => (row.display.clone(), row.added_at),
-                None => (
-                    pending_inbox_display(
-                        item["text"].as_str().unwrap_or_default(),
-                        item["hasImage"].as_bool().unwrap_or(false),
-                    ),
-                    0,
-                ),
-            };
-            rows.push(QueuedPrompt {
-                item_id: item_id.to_owned(),
-                mode,
-                display,
-                added_at,
-            });
+        if issued_at != self.inbox_seq {
+            return;
         }
-        for row in &self.queued_prompts {
-            if row.added_at > issued_at && !rows.iter().any(|kept| kept.item_id == row.item_id) {
-                rows.push(row.clone());
-            }
+        self.queued_prompts = items.iter().filter_map(QueuedPrompt::from_inbox).collect();
+        if self.inbox_edit.as_ref().is_some_and(|edit| {
+            !self.queued_prompts.iter().any(|row| {
+                row.item_id == edit.item_id && row.mode == crate::submit::SubmitMode::Queue
+            })
+        }) {
+            self.inbox_edit = None;
         }
-        self.queued_prompts = rows;
+        if !self
+            .queued_prompts
+            .iter()
+            .any(|row| row.mode == crate::submit::SubmitMode::Queue)
+            && self.inbox_submission.is_none()
+        {
+            self.inbox_expanded = false;
+        }
     }
 
-    /// Host 受理（claim）了一条待投递消息：它已经变成 transcript 里的持久行。
-    pub(super) fn admit_inbox_row(&mut self, item_id: &str) {
+    /// The Host has claimed this row into the durable conversation log.
+    pub(super) fn admit_inbox_row(&mut self, item_id: &str) -> bool {
+        let count = self.queued_prompts.len();
         self.queued_prompts.retain(|row| row.item_id != item_id);
-    }
-
-    /// 把一条排队消息改成插话投递。
-    pub(super) fn steer_inbox_row(&mut self, item_id: &str) {
-        for row in &mut self.queued_prompts {
-            if row.item_id == item_id {
-                row.mode = crate::submit::SubmitMode::Steer;
-            }
+        let removed = self.queued_prompts.len() != count;
+        if removed {
+            self.inbox_seq += 1;
         }
+        if self
+            .inbox_edit
+            .as_ref()
+            .is_some_and(|edit| edit.item_id == item_id)
+        {
+            self.inbox_edit = None;
+        }
+        removed
     }
 
     pub(super) fn reconcile_assistant_stream(
@@ -524,12 +530,11 @@ impl Conversation {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            let kind = if item.get("kind").and_then(Value::as_str) == Some("image")
-                || mime.starts_with("image/")
-            {
-                AttachmentKind::Image
-            } else {
-                AttachmentKind::File
+            let kind = match item["kind"].as_str() {
+                Some("image") => AttachmentKind::Image,
+                Some("file") => AttachmentKind::File,
+                _ if mime.starts_with("image/") => AttachmentKind::Image,
+                _ => AttachmentKind::File,
             };
             let preview = item
                 .get("preview")
@@ -538,7 +543,7 @@ impl Conversation {
             if self
                 .draft_attachments
                 .iter()
-                .any(|existing| existing.name == name && existing.size == size)
+                .any(|existing| existing.id == id)
             {
                 continue;
             }
@@ -554,7 +559,17 @@ impl Conversation {
     }
 
     pub(super) fn apply_permission(&mut self, event: &Value) {
-        let tool_call = event.get("toolCall").cloned().unwrap_or_else(|| json!({}));
+        let Some(request) = approval::ApprovalRequest::from_event(event) else {
+            return;
+        };
+        if self
+            .approvals
+            .iter()
+            .any(|pending| pending.id == request.id)
+        {
+            return;
+        }
+        let tool_call = &request.tool_call;
         if let Some(call_id) = tool_call.get("toolCallId").and_then(Value::as_str)
             && let Some(entry) = self.entries.iter_mut().find(|entry| {
                 entry.role == EntryRole::Tool && entry.external_id.as_deref() == Some(call_id)
@@ -562,25 +577,6 @@ impl Conversation {
         {
             entry.status = "approval".to_string();
         }
-        let options = event
-            .get("options")
-            .and_then(Value::as_array)
-            .map(|options| {
-                options
-                    .iter()
-                    .filter_map(|option| {
-                        Some((
-                            option.get("optionId")?.as_str()?.to_string(),
-                            option.get("name")?.as_str()?.to_string(),
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        self.permission = Some(PermissionRequest {
-            request_id: event.get("requestId").cloned().unwrap_or(Value::Null),
-            tool_call,
-            options,
-        });
+        self.approvals.push_back(request);
     }
 }

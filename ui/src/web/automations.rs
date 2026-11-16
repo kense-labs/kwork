@@ -399,7 +399,11 @@ impl DshApp {
     fn start_automation_chat(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         self.close_automation_create_menu();
         self.close_automation_detail(w, cx);
-        self.new_session_at(self.workspace.clone(), Some(SCHEDULE_CHAT_PROMPT), w, cx);
+        if let Some(path) = self.new_session_workspace().map(str::to_owned) {
+            self.new_session_at(path, Some(SCHEDULE_CHAT_PROMPT), w, cx);
+        } else {
+            self.push_toast("请先选择工作区", cx);
+        }
     }
 
     pub(super) fn close_automation_create_menu(&mut self) {

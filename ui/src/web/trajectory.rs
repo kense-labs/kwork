@@ -2,12 +2,128 @@
 
 use super::*;
 use crate::trajectory::{
-    Kind, Record, State, Visible, first_turn_content, format_duration, global_fold,
-    toggle_global_fold, turn_folded, visible,
+    Kind, Record, State, Visible, first_turn_content, folded_turns, format_duration, global_fold,
+    toggle_global_fold, visible,
 };
 use gpui::{DispatchPhase, Entity, MouseButton, MouseMoveEvent, MouseUpEvent, canvas};
 use std::cell::Cell;
 use std::rc::Rc;
+
+const HISTORY_ROW_HEIGHT: f32 = 30.;
+const OLDER_HISTORY_THRESHOLD: f32 = 48.;
+const OVERSCAN: f32 = 360.;
+
+struct LedgerPosition {
+    key: String,
+    summary: bool,
+    top: f32,
+    bottom: f32,
+}
+
+struct LedgerRecord<'a> {
+    display: Visible<'a>,
+    turn_start: bool,
+    foldable: bool,
+    boundary: Option<&'a Record>,
+}
+
+enum LedgerCell<'a> {
+    Record(LedgerRecord<'a>),
+    Request(&'a Record),
+}
+
+impl<'a> LedgerCell<'a> {
+    fn record(&self) -> &'a Record {
+        match self {
+            Self::Record(row) => row.display.record,
+            Self::Request(record) => record,
+        }
+    }
+
+    fn summary(&self) -> bool {
+        matches!(self, Self::Record(row) if row.display.summary.is_some())
+    }
+}
+
+struct LedgerRow<'a> {
+    cell: LedgerCell<'a>,
+    top: f32,
+    height: f32,
+}
+
+fn ledger_rows<'a>(
+    state: &'a State,
+    query: &str,
+    in_range: impl Fn(&Record) -> bool,
+    start: f32,
+) -> Vec<LedgerRow<'a>> {
+    let first_in_turn = first_turn_content(&state.records);
+    let folded_turns = folded_turns(&state.records, &state.folded, &first_in_turn);
+    let mut first_in_step = HashMap::new();
+    for record in &state.records {
+        if !matches!(record.kind, Kind::User | Kind::Context | Kind::System) {
+            first_in_step
+                .entry((record.turn, record.step))
+                .or_insert(record.key.as_str());
+        }
+    }
+    let boundaries: HashMap<_, _> = state
+        .requests
+        .iter()
+        .filter(|request| in_range(request) && !folded_turns.contains(&request.turn))
+        .map(|request| ((request.turn, request.step), request))
+        .collect();
+    let mut request_only: Vec<_> = if query.trim().is_empty() {
+        boundaries
+            .iter()
+            .filter_map(|(step, request)| (!first_in_step.contains_key(step)).then_some(*request))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    request_only.sort_by_key(|request| (request.turn, request.step));
+    let mut request_only = request_only.into_iter().peekable();
+    let mut rows = Vec::new();
+    let mut top = start;
+    let mut push = |cell, height| {
+        rows.push(LedgerRow { cell, top, height });
+        top += height;
+    };
+    let mut current_turn = 0;
+    for row in visible(&state.records, &state.folded, query)
+        .into_iter()
+        .filter(|row| in_range(row.record))
+    {
+        let record = row.record;
+        let step = (record.turn, record.step);
+        while let Some(request) =
+            request_only.next_if(|request| (request.turn, request.step) <= step)
+        {
+            push(LedgerCell::Request(request), 0.);
+        }
+        let turn_start = record.turn > 0 && record.turn != current_turn;
+        current_turn = record.turn;
+        let first = first_in_turn.get(&record.turn) == Some(&record.key.as_str());
+        let boundary = (row.summary.is_none()
+            && first_in_step.get(&step) == Some(&record.key.as_str()))
+        .then_some(boundaries.get(&step).copied())
+        .flatten();
+        let height = if row.summary.is_some() { 20. } else { 30. };
+        push(
+            LedgerCell::Record(LedgerRecord {
+                display: row,
+                turn_start,
+                foldable: record.has_children && !global_fold(record, first).is_empty(),
+                boundary,
+            }),
+            height,
+        );
+    }
+    for request in request_only {
+        push(LedgerCell::Request(request), 9.);
+    }
+    rows
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ConversationView {
@@ -32,10 +148,12 @@ pub(super) struct TrajectoryView {
     pub(super) actual_time: bool,
     pub(super) range: Option<(f32, f32)>,
     viewport: Option<(f32, f32)>,
-    visible: usize,
     dragging: Option<(f32, f32)>,
     panning: Option<(f32, f32)>,
-    focused_record: Option<(String, usize)>,
+    focused_record: Option<String>,
+    positions: Vec<LedgerPosition>,
+    prepend_anchor: Option<(String, bool, f32)>,
+    ledger_height: Rc<Cell<f32>>,
     follow: bool,
 }
 
@@ -46,7 +164,8 @@ impl TrajectoryView {
         let subscription = cx.subscribe_in(&search, w, |this, _, event: &EditEvent, w, cx| {
             match event {
                 EditEvent::Changed => {
-                    this.trajectory.visible = 100;
+                    this.trajectory.follow = false;
+                    this.trajectory.prepend_anchor = None;
                     this.trajectory
                         .scroll
                         .set_offset(gpui::point(px(0.), px(0.)));
@@ -73,10 +192,12 @@ impl TrajectoryView {
             actual_time: false,
             range: None,
             viewport: None,
-            visible: 100,
             dragging: None,
             panning: None,
             focused_record: None,
+            positions: Vec::new(),
+            prepend_anchor: None,
+            ledger_height: Rc::new(Cell::new(0.)),
             follow: true,
         }
     }
@@ -89,17 +210,27 @@ impl TrajectoryView {
         self.dragging = None;
         self.panning = None;
         self.focused_record = None;
-        self.visible = 100;
+        self.positions.clear();
+        self.prepend_anchor = None;
         self.follow = true;
         self.scroll.set_offset(gpui::point(px(0.), px(0.)));
+    }
+
+    pub(super) fn preserve_viewport_on_prepend(&mut self) {
+        if self.active != ConversationView::Trajectory {
+            return;
+        }
+        let top = -f32::from(self.scroll.offset().y);
+        self.prepend_anchor = self
+            .positions
+            .iter()
+            .find(|row| row.bottom > top)
+            .map(|row| (row.key.clone(), row.summary, top - row.top));
+        self.follow = false;
     }
 }
 
 impl DshApp {
-    pub(super) fn trajectory_follow_tail(&self) -> bool {
-        self.trajectory.follow
-    }
-
     pub(super) fn open_conversation_view(
         &mut self,
         view: ConversationView,
@@ -109,53 +240,10 @@ impl DshApp {
         self.trajectory.active = view;
         if view == ConversationView::Trajectory {
             self.focus_trajectory_search(w, cx);
-            self.settle_trajectory_scroll(cx);
         } else {
             self.focus_composer(w, cx);
         }
         cx.notify();
-    }
-
-    fn settle_trajectory_scroll(&mut self, cx: &mut Context<Self>) {
-        if !self.trajectory.follow {
-            return;
-        }
-        let session = self.active_session.clone();
-        self.trajectory.scroll.scroll_to_bottom();
-        cx.spawn(async move |this, cx| {
-            let mut confirmations = 0;
-            for _ in 0..10 {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(16))
-                    .await;
-                let settled = this.update(cx, |app, cx| {
-                    if app.active_session != session || !app.trajectory.follow {
-                        return None;
-                    }
-                    let max = app.trajectory.scroll.max_offset().y;
-                    if max <= px(0.) {
-                        return Some(false);
-                    }
-                    if app.trajectory.scroll.offset().y + max <= px(1.) {
-                        return Some(true);
-                    }
-                    app.trajectory.scroll.scroll_to_bottom();
-                    cx.notify();
-                    Some(false)
-                });
-                match settled.ok().flatten() {
-                    Some(true) => {
-                        confirmations += 1;
-                        if confirmations >= 2 {
-                            break;
-                        }
-                    }
-                    Some(false) => confirmations = 0,
-                    None => break,
-                }
-            }
-        })
-        .detach();
     }
 
     fn focus_trajectory_search(&self, w: &mut Window, cx: &mut Context<Self>) {
@@ -288,9 +376,8 @@ impl DshApp {
                             });
                         if let Some((_, _, key)) = nearest {
                             self.trajectory.selected = None;
-                            self.trajectory.visible = 100;
                             self.trajectory.follow = false;
-                            self.trajectory.focused_record = Some((key, 0));
+                            self.trajectory.focused_record = Some(key);
                         }
                     }
                 }
@@ -639,23 +726,21 @@ impl DshApp {
 
     fn trajectory_row(
         &self,
-        record: &Record,
-        summary: Option<String>,
+        ledger_record: LedgerRecord<'_>,
         narrow: bool,
-        turn_start: bool,
-        request_boundary: Option<Record>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let LedgerRecord {
+            display: Visible {
+                record, summary, ..
+            },
+            turn_start,
+            foldable,
+            boundary,
+        } = ledger_record;
         let p = dsh(cx);
         let collapsed = summary.is_some();
         let selected = !collapsed && self.trajectory.selected.as_deref() == Some(&record.key);
-        let foldable = record.has_children
-            && !global_fold(
-                record,
-                first_turn_content(&self.conversation.trajectory.records).get(&record.turn)
-                    == Some(&record.key.as_str()),
-            )
-            .is_empty();
         let (ink, fill) = match record.kind {
             Kind::User => (p.state_success_primary, p.state_success_tertiary),
             Kind::Tool | Kind::Subtool => (p.state_warn_label, p.state_warn_tertiary),
@@ -699,9 +784,8 @@ impl DshApp {
                 .when(narrow, |kind| kind.w(px(19.)).text_center().child(glyph))
                 .when(!narrow, |kind| kind.px(px(5.)).child(record.label()))
         };
-        let boundary = request_boundary
-            .as_ref()
-            .map(|request| self.trajectory_request_boundary(request, narrow, false, cx));
+        let boundary =
+            boundary.map(|request| self.trajectory_request_boundary(request, narrow, false, cx));
         let text = summary.unwrap_or_else(|| {
             let text = record.preview();
             if text.is_empty() {
@@ -1084,6 +1168,62 @@ impl DshApp {
             .child(track)
     }
 
+    fn load_trajectory_history(&mut self, cx: &mut Context<Self>) {
+        if self.conversation.history_has_more {
+            self.request_older_history(cx);
+        } else if self.conversation.history_error.is_some() {
+            self.request_session_history(cx);
+        }
+    }
+
+    fn measure_trajectory_ledger(&self, cx: &Context<Self>) -> impl IntoElement {
+        let height = self.trajectory.ledger_height.clone();
+        let view = cx.weak_entity();
+        canvas(
+            move |bounds, w, cx| {
+                let measured = f32::from(bounds.size.height);
+                if (height.replace(measured) - measured).abs() > 0.1 {
+                    let view = view.clone();
+                    w.defer(cx, move |_, cx| {
+                        let _ = view.update(cx, |_, cx| cx.notify());
+                    });
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full()
+    }
+
+    fn on_trajectory_scroll(
+        &mut self,
+        event: &gpui::ScrollEvent,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let delta = event.delta.pixel_delta(w.line_height()).y;
+        if delta == px(0.) {
+            return;
+        }
+        // The native scroll listener owns the offset. Reconcile after it handles the gesture.
+        self.trajectory.follow = false;
+        self.trajectory.prepend_anchor = None;
+        let view = cx.weak_entity();
+        w.defer(cx, move |_, cx| {
+            let _ = view.update(cx, |app, cx| {
+                let scroll = &app.trajectory.scroll;
+                let top = -f32::from(scroll.offset().y);
+                if delta < px(0.) {
+                    app.trajectory.follow = f32::from(scroll.max_offset().y) - top <= 2.;
+                } else if top <= OLDER_HISTORY_THRESHOLD && app.conversation.history_error.is_none()
+                {
+                    app.request_older_history(cx);
+                }
+                cx.notify();
+            });
+        });
+    }
+
     pub(super) fn render_trajectory(
         &mut self,
         w: &mut Window,
@@ -1091,247 +1231,166 @@ impl DshApp {
     ) -> gpui::Stateful<gpui::Div> {
         let p = dsh(cx);
         let query = self.trajectory.search.read(cx).value().to_owned();
-        let positions = crate::trajectory::time_spans(
-            &self.conversation.trajectory,
-            self.trajectory.actual_time,
-            self.trajectory.actual_duration,
-        );
+        let range = self.trajectory.range.map(|range| {
+            let positions = crate::trajectory::time_spans(
+                &self.conversation.trajectory,
+                self.trajectory.actual_time,
+                self.trajectory.actual_duration,
+            );
+            (crate::trajectory::ordered_range(range), positions)
+        });
         let in_range = |record: &Record| {
-            self.trajectory.range.is_none_or(|range| {
-                let (start, end) = crate::trajectory::ordered_range(range);
+            range.as_ref().is_none_or(|((start, end), positions)| {
                 positions
                     .get(&record.key)
-                    .is_some_and(|span| span.start <= end && span.end >= start)
+                    .is_some_and(|span| span.start <= *end && span.end >= *start)
             })
         };
-        let rows = visible(
-            &self.conversation.trajectory.records,
-            &self.conversation.trajectory.folded,
+        let loading = self.conversation.history_loading;
+        let has_more = self.conversation.history_has_more;
+        let history_error = self.conversation.history_error.is_some();
+        let show_history_control = has_more
+            || history_error
+            || (loading && self.conversation.trajectory.events.is_empty());
+        let history_height = if show_history_control {
+            HISTORY_ROW_HEIGHT
+        } else {
+            0.
+        };
+        let rows = ledger_rows(
+            &self.conversation.trajectory,
             &query,
-        )
-        .into_iter()
-        .filter(|row| in_range(row.record))
-        .collect::<Vec<_>>();
-        let request_boundaries: Vec<_> = self
-            .conversation
-            .trajectory
-            .requests
-            .iter()
-            .filter(|record| {
-                in_range(record)
-                    && !turn_folded(
-                        &self.conversation.trajectory.records,
-                        &self.conversation.trajectory.folded,
-                        record.turn,
-                    )
-            })
-            .collect();
-        // Official request-only rows exist only for steps without an assistant
-        // response or tool call. Their metadata still supplies every boundary.
-        let requests: Vec<_> =
-            request_boundaries
-                .iter()
-                .filter(|request| {
-                    query.trim().is_empty()
-                        && !self.conversation.trajectory.records.iter().any(|record| {
-                            record.turn == request.turn && record.step == request.step
-                        })
-                })
-                .copied()
-                .collect();
+            in_range,
+            history_height,
+        );
         let composer_clearance = self
             .composer_seat_bounds
             .get()
             .map_or(168., |bounds| f32::from(bounds.size.height) + 16.);
-        let mut body = column()
-            .w_full()
-            .flex_none()
-            .gap_0()
-            .pb(px(composer_clearance));
-        if self.conversation.history_has_more || rows.len() > self.trajectory.visible {
-            body = body.child(
-                row()
-                    .id("trajectory-load-earlier")
-                    .role(gpui::Role::Button)
-                    .aria_label("加载更早的历史")
-                    .tab_index(0)
-                    .w_full()
-                    .h(px(30.))
-                    .justify_center()
-                    .cursor_pointer()
-                    .text_size(px(12.))
-                    .text_color(p.secondary)
-                    .child(if self.conversation.history_loading {
-                        "正在加载更早的历史…"
-                    } else {
-                        "加载更早的历史"
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if this.trajectory.visible <= this.conversation.trajectory.records.len() {
-                            this.trajectory.visible += 100;
-                        } else {
-                            this.request_older_history(cx);
-                        }
-                        cx.notify();
-                    })),
-            );
+        let ledger_end = rows
+            .last()
+            .map_or(history_height + 180., |row| row.top + row.height);
+        let content_height = ledger_end + composer_clearance;
+        let viewport = self.trajectory.ledger_height.get();
+        let viewport = if viewport > 0. {
+            viewport
+        } else {
+            f32::from(w.viewport_size().height)
+        };
+        let max_top = (content_height - viewport).max(0.);
+        let scroll = &self.trajectory.scroll;
+        let current_top = -f32::from(scroll.offset().y);
+        let mut top = if self.trajectory.follow {
+            max_top
+        } else {
+            current_top
+        };
+        if let Some((key, summary, offset)) = self.trajectory.prepend_anchor.take()
+            && let Some(row) = rows
+                .iter()
+                .find(|row| row.cell.record().key == key && row.cell.summary() == summary)
+        {
+            top = row.top + offset;
         }
-        let start = rows.len().saturating_sub(self.trajectory.visible);
-        let row_count = rows.len();
-        let visible_requests: Vec<_> = rows
+        if let Some(key) = self.trajectory.focused_record.take()
+            && let Some(row) = rows.iter().find(|row| match &row.cell {
+                LedgerCell::Record(row) => {
+                    row.display.record.key == key
+                        || row.boundary.is_some_and(|request| request.key == key)
+                }
+                LedgerCell::Request(request) => request.key == key,
+            })
+        {
+            self.trajectory.follow = false;
+            top = row.top + (row.height - viewport) / 2.;
+        }
+        top = top.clamp(0., max_top);
+        if (top - current_top).abs() > 0.1 {
+            scroll.set_offset(gpui::point(px(0.), px(-top)));
+        }
+        self.trajectory.positions = rows
             .iter()
-            .filter_map(|row| {
-                let request = requests.iter().find(|request| {
-                    request.turn == row.record.turn && request.step == row.record.step
-                })?;
-                self.conversation
-                    .trajectory
-                    .records
-                    .iter()
-                    .find(|candidate| {
-                        candidate.turn == request.turn
-                            && candidate.step == request.step
-                            && !matches!(candidate.kind, Kind::User | Kind::Context | Kind::System)
-                    })
-                    .map_or(Some((*request).clone()), |content| {
-                        (content.key == row.record.key).then(|| (*request).clone())
-                    })
+            .filter(|row| row.height > 0.)
+            .map(|row| LedgerPosition {
+                key: row.cell.record().key.clone(),
+                summary: row.cell.summary(),
+                top: row.top,
+                bottom: row.top + row.height,
             })
             .collect();
+
         let narrow = f32::from(w.viewport_size().width)
             - self.sidebar_track_width(w)
             - self.right_dock_frame.track
             < 620.;
-        let mut current_turn = 0;
-        let mut current_step = 0;
-        let mut shown = 0;
-        let mut last_step = None;
-        let mut scroll_index =
-            usize::from(self.conversation.history_has_more || rows.len() > self.trajectory.visible);
-        let mut focused_record = self
-            .trajectory
-            .focused_record
-            .take()
-            .map(|(key, _)| (key, None));
-        let display_rows: Vec<_> = rows.into_iter().skip(start).collect();
-        let final_step = display_rows
-            .last()
-            .map(|row| (row.record.turn, row.record.step));
-        for Visible {
-            record, summary, ..
-        } in display_rows
-        {
-            shown += 1;
-            last_step = Some((record.turn, record.step));
-            let record_scroll_index = scroll_index;
-            let has_request = requests
-                .iter()
-                .any(|request| request.turn == record.turn && request.step == record.step);
-            scroll_index +=
-                usize::from(has_request && record.step > 0 && record.step != current_step) + 1;
-            if focused_record
-                .as_ref()
-                .is_some_and(|(key, _)| key == &record.key)
-            {
-                focused_record.as_mut().unwrap().1 = Some(record_scroll_index);
-            }
-            if focused_record.as_ref().is_some_and(|(key, _)| {
-                visible_requests.iter().any(|request| {
-                    request.turn == record.turn
-                        && request.step == record.step
-                        && &request.key == key
-                })
-            }) {
-                focused_record.as_mut().unwrap().1 = Some(record_scroll_index + 1);
-            }
-            let turn_start = record.turn > 0 && record.turn != current_turn;
-            let request_boundary =
-                (!matches!(record.kind, Kind::User | Kind::Context | Kind::System)
-                    && summary.is_none()
-                    && !self
-                        .conversation
-                        .trajectory
-                        .records
-                        .iter()
-                        .any(|candidate| {
-                            candidate.turn == record.turn
-                                && candidate.step == record.step
-                                && candidate.index < record.index
-                                && !matches!(
-                                    candidate.kind,
-                                    Kind::User | Kind::Context | Kind::System
-                                )
-                        }))
-                .then(|| {
-                    request_boundaries
-                        .iter()
-                        .find(|request| request.turn == record.turn && request.step == record.step)
-                        .map(|request| (*request).clone())
-                })
-                .flatten();
-            if turn_start {
-                current_turn = record.turn;
-                current_step = 0;
-            }
-            if record.step != current_step && record.step > 0 {
-                current_step = record.step;
-                if let Some(request) = visible_requests
-                    .iter()
-                    .find(|request| request.turn == current_turn && request.step == current_step)
-                {
-                    body = body.child(
-                        div()
-                            .relative()
-                            .w_full()
-                            .h(px(if Some((record.turn, record.step)) == final_step {
-                                9.
-                            } else {
-                                0.
-                            }))
-                            .child(self.trajectory_request_boundary(request, narrow, true, cx)),
-                    );
+        let mut body = div().relative().w_full().flex_none().h(px(content_height));
+        if show_history_control && top <= HISTORY_ROW_HEIGHT + OVERSCAN {
+            let label = if loading {
+                if has_more {
+                    "正在加载更早的历史…"
+                } else {
+                    "正在加载轨迹…"
                 }
-            }
-            body = body.child(self.trajectory_row(
-                record,
-                summary,
-                narrow,
-                turn_start,
-                request_boundary,
-                cx,
-            ));
-            scroll_index += 1;
+            } else if history_error {
+                "重新加载历史"
+            } else {
+                "加载更早的历史"
+            };
+            let button = row()
+                .id("trajectory-load-earlier")
+                .role(if loading {
+                    gpui::Role::Status
+                } else {
+                    gpui::Role::Button
+                })
+                .aria_label(label)
+                .absolute()
+                .top_0()
+                .w_full()
+                .h(px(HISTORY_ROW_HEIGHT))
+                .justify_center()
+                .items_center()
+                .text_size(px(12.))
+                .text_color(p.secondary)
+                .child(label)
+                .when(!loading, |button| {
+                    button
+                        .tab_index(0)
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| this.load_trajectory_history(cx)))
+                });
+            body = body.child(button);
         }
-        for request in requests.iter().filter(|request| {
-            Some((request.turn, request.step)) != last_step
-                && last_step.is_none_or(|(turn, step)| (request.turn, request.step) > (turn, step))
-        }) {
+        let first = rows.partition_point(|row| row.top + row.height < top - OVERSCAN);
+        for LedgerRow {
+            cell,
+            top: row_top,
+            height,
+        } in rows
+            .into_iter()
+            .skip(first)
+            .take_while(|row| row.top <= top + viewport + OVERSCAN)
+        {
+            let element = match cell {
+                LedgerCell::Record(row) => self.trajectory_row(row, narrow, cx).into_any_element(),
+                LedgerCell::Request(request) => self
+                    .trajectory_request_boundary(request, narrow, true, cx)
+                    .into_any_element(),
+            };
             body = body.child(
                 div()
-                    .relative()
+                    .absolute()
+                    .top(px(row_top))
                     .w_full()
-                    .h(px(9.))
-                    .child(self.trajectory_request_boundary(request, narrow, true, cx)),
+                    .h(px(height))
+                    .child(element),
             );
         }
-        if let Some((key, index)) = focused_record {
-            if let Some(index) = index {
-                self.trajectory.follow = false;
-                self.trajectory.scroll.scroll_to_item(index);
-            } else if row_count > self.trajectory.visible || self.conversation.history_has_more {
-                self.trajectory.visible += 100;
-                self.trajectory.focused_record = Some((key, 0));
-                if self.trajectory.visible > self.conversation.trajectory.records.len()
-                    && self.conversation.history_has_more
-                    && !self.conversation.history_loading
-                {
-                    self.request_older_history(cx);
-                }
-            }
-        }
-        if shown == 0 {
+        if self.trajectory.positions.is_empty() && !loading {
             body = body.child(
                 row()
+                    .absolute()
+                    .top(px(history_height))
                     .w_full()
                     .h(px(180.))
                     .justify_center()
@@ -1380,19 +1439,10 @@ impl DshApp {
                             .size_full()
                             .overflow_y_scroll()
                             .track_scroll(&self.trajectory.scroll)
-                            // Div's bubble-phase scroll listener is registered first.
-                            // Read the offset after that listener applies this delta.
-                            .on_scroll(cx.listener(|this, event: &gpui::ScrollEvent, _, cx| {
-                                let scroll = &this.trajectory.scroll;
-                                let delta = event.delta.pixel_delta(px(20.)).y;
-                                let offset = (scroll.offset().y + delta)
-                                    .clamp(-scroll.max_offset().y, px(0.));
-                                this.trajectory.follow =
-                                    delta < px(0.) && offset + scroll.max_offset().y <= px(2.);
-                                cx.notify();
-                            }))
+                            .on_scroll(cx.listener(Self::on_trajectory_scroll))
                             .child(body),
                     )
+                    .child(self.measure_trajectory_ledger(cx))
                     .child(super::workspace::scrollbar_overlay(
                         "trajectory-scrollbar",
                         &self.trajectory.scroll,

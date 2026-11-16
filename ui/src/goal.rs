@@ -112,26 +112,30 @@ impl GoalView {
         self.blocked_reason.as_deref()
     }
 
-    /// Single-line objective preview; the strip ellipsizes anything longer.
-    pub fn objective_preview(&self, limit: usize) -> String {
-        let single_line = self.objective.lines().next().unwrap_or_default().trim();
-        let mut chars = single_line.chars();
-        let prefix: String = chars.by_ref().take(limit).collect();
-        if chars.next().is_some() {
-            format!("{prefix}…")
-        } else {
-            prefix
-        }
+    /// Like the official single-line preview, collapse whitespace and let the strip ellipsize to fit.
+    pub fn objective_preview(&self) -> String {
+        self.objective
+            .split_ascii_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
-/// Apply one Host goal view (or its absence) to the current strip state.
-///
-/// A revision that moves backwards means the Session was reopened with a
-/// different goal; the Host view is authoritative either way, so the new value
-/// simply replaces the old one.
-pub fn apply_goal_view(current: &mut Option<GoalView>, next: Option<GoalView>) {
-    *current = next.filter(GoalView::visible);
+/// Replies and notifications share the Host's sequence, including clears and activation changes.
+pub fn apply_goal_snapshot(
+    current: &mut Option<GoalView>,
+    last_sequence: &mut u64,
+    snapshot: &Value,
+) -> bool {
+    let Some(sequence) = snapshot["sequence"].as_u64() else {
+        return false;
+    };
+    if sequence <= *last_sequence {
+        return false;
+    }
+    *last_sequence = sequence;
+    *current = GoalView::from_json(&snapshot["goal"]).filter(GoalView::visible);
+    true
 }
 
 #[cfg(test)]
@@ -196,23 +200,39 @@ mod tests {
     }
 
     #[test]
-    fn the_preview_keeps_one_line_and_marks_a_truncation() {
+    fn the_preview_collapses_line_breaks_without_dropping_the_rest_of_the_goal() {
         let mut goal = view("active", "armed");
-        goal.objective = "第一行\n第二行".to_owned();
-        assert_eq!(goal.objective_preview(96), "第一行");
-        goal.objective = "一二三四五六".to_owned();
-        assert_eq!(goal.objective_preview(4), "一二三四…");
-        assert_eq!(goal.objective_preview(6), "一二三四五六");
+        goal.objective = "第一行\n  第二行\t示例".to_owned();
+        assert_eq!(goal.objective_preview(), "第一行 第二行 示例");
     }
 
     #[test]
-    fn a_completed_goal_clears_the_strip_and_a_live_one_restores_it() {
-        let mut current = Some(view("active", "armed"));
-        apply_goal_view(&mut current, Some(view("complete", "armed")));
-        assert!(current.is_none());
-        apply_goal_view(&mut current, Some(view("paused", "disarmed")));
-        assert_eq!(current.as_ref().map(GoalView::label), Some("已暂停的目标"));
-        apply_goal_view(&mut current, None);
-        assert!(current.is_none());
+    fn stale_replies_cannot_restore_a_cleared_goal_or_undo_an_activation_edge() {
+        let mut current = None;
+        let mut last_sequence = 0;
+        let mut apply = |sequence, goal| {
+            let applied = apply_goal_snapshot(
+                &mut current,
+                &mut last_sequence,
+                &json!({"sequence": sequence, "goal": goal}),
+            );
+            (applied, current.as_ref().map(GoalView::label))
+        };
+        let goal = |phase, activation| json!({"id": "g", "revision": 1, "phase": phase, "activation": activation});
+        assert_eq!(
+            apply(2, goal("active", "disarmed")),
+            (true, Some("待继续的目标"))
+        );
+        assert_eq!(
+            apply(1, goal("active", "armed")),
+            (false, Some("待继续的目标"))
+        );
+        assert_eq!(apply(3, goal("complete", "disarmed")), (true, None));
+        assert_eq!(
+            apply(4, goal("paused", "disarmed")),
+            (true, Some("已暂停的目标"))
+        );
+        assert_eq!(apply(6, Value::Null), (true, None));
+        assert_eq!(apply(5, goal("active", "armed")), (false, None));
     }
 }

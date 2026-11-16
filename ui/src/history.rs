@@ -572,7 +572,14 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                         })
                     })
                     .collect();
-                let text = if images.is_empty() {
+                let files: Vec<crate::state::UserFile> = data["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|block| block["type"] == "file")
+                    .filter_map(|block| serde_json::from_value(block["attachment"].clone()).ok())
+                    .collect();
+                let text = if images.is_empty() && files.is_empty() {
                     blocks_text
                 } else {
                     let text_blocks: Vec<Value> = data
@@ -602,7 +609,7 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                     })
                     .cloned()
                     .collect();
-                if text.trim().is_empty() && images.is_empty() {
+                if text.trim().is_empty() && images.is_empty() && files.is_empty() {
                     continue;
                 }
                 // Goal rounds wrap the objective; surface as turn trigger, not a giant bubble.
@@ -643,10 +650,10 @@ pub fn project_session_events_with_more(events: &[Value], has_more: bool) -> His
                         .unwrap_or_default(),
                     _ => "",
                 };
-                let input = if images.is_empty() && extra_blocks.is_empty() {
+                let input = if images.is_empty() && files.is_empty() && extra_blocks.is_empty() {
                     String::new()
                 } else {
-                    crate::state::user_entry_input(&images, &extra_blocks, &[])
+                    crate::state::user_entry_input(&images, &files, &extra_blocks, &[])
                 };
                 out.entries.push(ChatEntry {
                     key,
@@ -2034,6 +2041,26 @@ mod tests {
         ];
         let projected = project_session_events(&known);
         assert!(projected.entries.is_empty());
+    }
+
+    #[test]
+    fn replay_preserves_a_file_only_user_message_as_a_durable_attachment() {
+        let history = project_session_events(&[json!({
+            "type": "user/message", "surfaceOp": "append", "seq": 1, "time": 42,
+            "data": {
+                "id": "file-only", "source": {"kind": "user"},
+                "content": [{"type": "file", "attachment": {
+                    "attachmentId": format!("sha256:{}", "a".repeat(64)), "name": "notes.bin", "bytes": 3
+                }}],
+            }
+        })]);
+        assert_eq!(history.entries.len(), 1);
+        let entry = &history.entries[0];
+        assert_eq!(entry.external_id.as_deref(), Some("file-only"));
+        assert!(entry.text.is_empty());
+        assert_eq!(crate::state::user_files(entry)[0].name, "notes.bin");
+        assert_eq!(crate::state::user_files(entry)[0].bytes, 3);
+        assert!(crate::state::user_extra_blocks(entry).is_empty());
     }
 
     #[test]

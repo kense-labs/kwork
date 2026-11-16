@@ -290,6 +290,7 @@ fn invalidate_browser_shell<R: Runtime>(app: &AppHandle<R>) {
         .shell
         .fetch_add(1, Ordering::AcqRel);
     crate::workspace::watch::retire_shell(app);
+    crate::account_platform::retire_shell(app);
     let app = app.clone();
     // Do not wait on a presentation that is itself waiting for the window thread.
     tauri::async_runtime::spawn(async move {
@@ -314,6 +315,9 @@ pub(crate) fn shell_window_event<R: Runtime>(window: &Window<R>, event: &WindowE
 
 #[cfg(target_os = "macos")]
 pub(crate) fn shell_process_terminated<R: Runtime>(webview: &Webview<R>) {
+    if crate::account_platform::process_terminated(webview) {
+        return;
+    }
     if webview.label() == "main" {
         invalidate_browser_shell(webview.app_handle());
     }
@@ -623,6 +627,7 @@ fn browser_history_availability(view: &PlatformWebview) -> (bool, bool) {
             // SAFETY: both BOOL receivers live in this stack frame and stay
             // valid for the duration of each call.
             let can_back = unsafe { view.CanGoBack(&mut back) }.is_ok() && back.as_bool();
+            // SAFETY: `forward` is a live BOOL receiver on the creating thread.
             let can_forward =
                 unsafe { view.CanGoForward(&mut forward) }.is_ok() && forward.as_bool();
             return (can_back, can_forward);

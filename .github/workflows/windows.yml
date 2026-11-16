@@ -55,6 +55,10 @@ jobs:
       - name: Build Windows installer (NSIS)
         run: bun x tauri build --bundles nsis
 
+      - name: Exercise account pages in WebView2
+        timeout-minutes: 10
+        run: bun scripts/account-platform-windows-smoke.mjs target/release/KWork.exe
+
       - name: Upload installer and portable binary
         uses: actions/upload-artifact@v4
         with:

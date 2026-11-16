@@ -9,6 +9,11 @@
 
 use super::*;
 
+pub(super) struct GoalEdit {
+    pub(super) editor: gpui::Entity<Editor>,
+    _subscription: Subscription,
+}
+
 impl DshApp {
     /// Read the current goal when a session opens.
     pub(super) fn request_goal_state(&mut self, session: &str) {
@@ -18,23 +23,18 @@ impl DshApp {
         invoke_with_reply("goal_state", "goal_state", json!({"sessionId": session}));
     }
 
-    /// Apply a `goal_state` / `goal_action` reply.
+    /// An initial read cannot replace a fresher live notification.
     pub(super) fn finish_goal_state(
         &mut self,
         owner: Option<&str>,
         result: Result<Value, String>,
-        _w: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = owner else {
-            return;
-        };
-        let parsed = match result {
-            Ok(reply) => Ok(parse_goal_view(&reply["goal"])),
-            Err(error) => Err(error),
-        };
-        self.apply_goal_reply(session, parsed);
-        cx.notify();
+        if let (Some(session), Ok(reply)) = (owner, result)
+            && self.apply_goal_snapshot(session, &reply)
+        {
+            cx.notify();
+        }
     }
 
     /// Apply a live `gpui_goal_changed` notification.
@@ -44,31 +44,32 @@ impl DshApp {
         update: &Value,
         cx: &mut Context<Self>,
     ) {
-        let goal = parse_goal_view(&update["goal"]);
-        let selected = self.active_session.as_deref() == Some(session);
-        let revision = goal.as_ref().map(|goal| goal.revision);
-        let active = goal
-            .as_ref()
-            .is_some_and(|goal| goal.phase == crate::goal::GoalPhase::Active);
-        self.apply_goal_reply(session, Ok(goal));
+        if !self.apply_goal_snapshot(session, update) {
+            return;
+        }
         cx.notify();
+        let selected = self.active_session.as_deref() == Some(session);
         // A new goal revision may have opened an autonomous round that already
         // failed before this client saw it (the ACP event can be emitted before
         // the conversation is attached). Re-read the durable history once while
         // the session is idle; the replayed `turn/end` failure keeps its row and
         // the strip's `goal_error` explains the failed round.
-        if !selected || !active {
+        if !selected {
             return;
         }
-        let first_sync = self
-            .session_conversation(session)
-            .is_some_and(|conversation| conversation.goal_synced_revision != revision);
-        if !first_sync {
+        let conversation = &mut self.conversation;
+        let Some(goal) = conversation
+            .goal
+            .as_ref()
+            .filter(|goal| goal.phase == crate::goal::GoalPhase::Active)
+        else {
+            return;
+        };
+        let revision = Some((goal.id.clone(), goal.revision));
+        if conversation.goal_synced_revision == revision {
             return;
         }
-        if let Some(conversation) = self.conversation_mut(session) {
-            conversation.goal_synced_revision = revision;
-        }
+        conversation.goal_synced_revision = revision;
         let session = session.to_owned();
         cx.spawn(async move |this, cx| {
             cx.background_executor()
@@ -91,29 +92,30 @@ impl DshApp {
         .detach();
     }
 
-    fn apply_goal_reply(
-        &mut self,
-        session: &str,
-        result: Result<Option<crate::goal::GoalView>, String>,
-    ) {
+    fn apply_goal_snapshot(&mut self, session: &str, snapshot: &Value) -> bool {
         let Some(conversation) = self.conversation_mut(session) else {
-            return;
+            return false;
         };
-        conversation.goal_busy = false;
-        match result {
-            Ok(goal) => {
-                conversation.goal_error = None;
-                crate::goal::apply_goal_view(&mut conversation.goal, goal);
-            }
-            Err(error) => conversation.goal_error = Some(error),
+        let previous = conversation.goal.as_ref().map(|goal| goal.id.clone());
+        if !crate::goal::apply_goal_snapshot(
+            &mut conversation.goal,
+            &mut conversation.goal_sequence,
+            snapshot,
+        ) {
+            return false;
         }
+        if previous.as_ref() != conversation.goal.as_ref().map(|goal| &goal.id) {
+            conversation.goal_edit = None;
+            conversation.goal_error = None;
+        }
+        true
     }
 
-    /// Run one goal verb through the Host goal service (compare-and-set on the
-    /// revision the strip is showing).
+    /// Run one mutation with the exact identity and revision shown in the strip.
     pub(super) fn run_goal_action(
         &mut self,
         action: &'static str,
+        objective: Option<String>,
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -135,35 +137,121 @@ impl DshApp {
                 json!({
                     "sessionId": session,
                     "action": action,
+                    "goalId": goal.id,
                     "revision": goal.revision,
+                    "objective": objective,
                 }),
             )
             .await;
-            let _ = this.update_in(cx, |this, w, cx| {
-                this.finish_goal_state(Some(&session), result, w, cx);
+            let _ = this.update_in(cx, |app, w, cx| {
+                let selected = app.active_session.as_deref() == Some(&session);
+                let Some(conversation) = app.conversation_mut(&session) else {
+                    return;
+                };
+                conversation.goal_busy = false;
+                match result {
+                    Ok(reply) => {
+                        if let Some(objective) = objective.as_deref()
+                            && conversation.goal_edit.as_ref().is_some_and(|edit| {
+                                edit.editor.read(cx).value().trim() == objective
+                            })
+                        {
+                            let edit = conversation.goal_edit.take();
+                            if selected
+                                && edit.is_some_and(|edit| edit.editor.read(cx).focus.is_focused(w))
+                            {
+                                app.focus_composer(w, cx);
+                            }
+                        }
+                        app.apply_goal_snapshot(&session, &reply);
+                    }
+                    Err(error) => {
+                        if conversation
+                            .goal
+                            .as_ref()
+                            .is_some_and(|current| current.id == goal.id)
+                        {
+                            conversation.goal_error = Some(error);
+                        }
+                    }
+                }
+                cx.notify();
             });
         })
         .detach();
     }
 
-    /// Load the objective back into the composer as `/goal edit …`: the Host
-    /// command owns the rewrite, so the strip needs no inline editor.
     pub(super) fn edit_goal_objective(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        let Some(goal) = self.conversation.goal.clone() else {
+        if self.conversation.goal_busy || self.conversation.goal_edit.is_some() {
+            return;
+        }
+        let Some(goal) = &self.conversation.goal else {
             return;
         };
-        let line = format!("/goal edit {}", goal.objective.trim());
-        replace(&self.composer, &line, w, cx);
+        let input = editor("目标内容".into(), InputMode::InlineMulti, w, cx);
+        input.update(cx, |editor, _| editor.font_size = 13.);
+        replace(&input, goal.objective.clone(), w, cx);
+        let subscription = cx.subscribe_in(&input, w, |app, sender, event, w, cx| {
+            if !app
+                .conversation
+                .goal_edit
+                .as_ref()
+                .is_some_and(|edit| edit.editor == *sender)
+            {
+                return;
+            }
+            match event {
+                EditEvent::Submitted => app.save_goal_objective(w, cx),
+                EditEvent::Escape => app.cancel_goal_edit(w, cx),
+                EditEvent::Changed => cx.notify(),
+                _ => {}
+            }
+        });
+        self.conversation.goal_error = None;
+        self.conversation.goal_edit = Some(GoalEdit {
+            editor: input.clone(),
+            _subscription: subscription,
+        });
         self.composer_menu = None;
-        self.focus_composer(w, cx);
+        input.read(cx).focus.clone().focus(w, cx);
         cx.notify();
+    }
+
+    pub(super) fn save_goal_objective(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        let Some(edit) = &self.conversation.goal_edit else {
+            return;
+        };
+        let objective = edit.editor.read(cx).value().trim().to_owned();
+        if !objective.is_empty() {
+            self.run_goal_action("edit", Some(objective), w, cx);
+        }
+    }
+
+    pub(super) fn cancel_goal_edit(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if !self.conversation.goal_busy && self.conversation.goal_edit.take().is_some() {
+            self.conversation.goal_error = None;
+            self.focus_composer(w, cx);
+            cx.notify();
+        }
     }
 }
 
-/// One Host goal view, tolerating `null` for "no goal".
-fn parse_goal_view(value: &Value) -> Option<crate::goal::GoalView> {
-    if value.is_null() {
-        return None;
-    }
-    crate::goal::GoalView::from_json(value)
+pub(super) fn goal_editor_height(value: &str, width: f32, w: &Window, cx: &App) -> f32 {
+    let run = document_fonts::interface_style(w, cx).to_run(value.len());
+    let rows = w
+        .text_system()
+        .shape_text(
+            value.to_owned().into(),
+            px(13.),
+            &[run],
+            Some(px(width.max(1.))),
+            None,
+        )
+        .map_or(1, |lines| {
+            lines
+                .iter()
+                .map(|line| line.wrap_boundaries().len() + 1)
+                .sum()
+        });
+    (rows as f32 * 20. + 7.).clamp(28., 127.)
 }

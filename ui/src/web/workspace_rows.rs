@@ -1,13 +1,107 @@
 //! Workspace group rows, hover actions and native-path context menus.
 
 use super::workspace::{composer_bg, menu_bg, path_name};
+use super::workspace_accessibility::{
+    AccessibleMenuItem, AccessibleRow, AccessibleSurface, AccessibleTarget, RowAction,
+};
 use super::*;
 use crate::theme_preference::ThemePreference;
 use crate::workspace_tree::clear_workspace_watermarks;
 pub(super) use crate::workspace_tree::{WorkspaceGroup, WorkspaceTree, owning_parent_folder};
 use gpui::{Transformation, svg};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum WorkspaceMenuAction {
+    Rename,
+    Reveal,
+    Remove,
+}
+
+impl WorkspaceMenuAction {
+    const ITEMS: [Self; 3] = [Self::Rename, Self::Reveal, Self::Remove];
+
+    fn presentation(self) -> (&'static str, &'static str, &'static [u8]) {
+        match self {
+            Self::Rename => (
+                "rename",
+                "重命名",
+                include_bytes!("../../assets/workspace-edit.svg"),
+            ),
+            Self::Reveal => (
+                "reveal",
+                if bridge::is_mac() {
+                    "在 Finder 中显示"
+                } else if bridge::is_windows() {
+                    "在资源管理器中显示"
+                } else {
+                    "在文件夹中显示"
+                },
+                include_bytes!("../../assets/workspace-reveal.svg"),
+            ),
+            Self::Remove => (
+                "delete",
+                "移除工作区",
+                include_bytes!("../../assets/workspace-trash.svg"),
+            ),
+        }
+    }
+}
+
 impl DshApp {
+    pub(super) fn toggle_workspace_group(
+        &mut self,
+        cwd: &str,
+        descendants: &[String],
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace_context_menu = None;
+        if !self.collapsed_workspaces.remove(cwd) {
+            self.collapsed_workspaces.insert(cwd.to_owned());
+            clear_workspace_watermarks(&mut self.workspace_watermarks, descendants);
+        }
+        self.save_workspace_preferences(cx);
+        cx.notify();
+    }
+
+    pub(super) fn set_workspace_watermark(
+        &mut self,
+        cwd: &str,
+        limit: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(limit) = limit {
+            self.workspace_watermarks.insert(cwd.to_owned(), limit);
+        } else {
+            self.workspace_watermarks.remove(cwd);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn open_workspace_session(
+        &mut self,
+        session: SessionSummary,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.archived_sessions.contains(&session.id) {
+            self.push_toast(workspace_search::ARCHIVED_RESULT, cx);
+            return;
+        }
+        let from_search = !self.workspace_search.query.is_empty();
+        if from_search {
+            self.workspace_search.reveal = Some(session.id.clone());
+        }
+        if self.active_session.as_deref() == Some(session.id.as_str()) {
+            self.close_workspace_search(false, w, cx);
+            if from_search {
+                self.expand_session_workspace(&session);
+            }
+            self.open_page(WorkspacePage::Conversation, cx);
+        } else {
+            self.resume(session, w, cx);
+        }
+    }
+
     pub(super) fn render_workspace_group(
         &mut self,
         group: WorkspaceGroup,
@@ -21,7 +115,7 @@ impl DshApp {
             .sessions
             .iter()
             .find(|session| Some(session.id.as_str()) == self.active_session.as_deref())
-            .is_some_and(|session| session.cwd == cwd);
+            .is_some_and(|session| self.workspace_account_key(session) == cwd);
         let descendants = vec![cwd.clone()];
         let mut rendered = column()
             .relative()
@@ -52,7 +146,11 @@ impl DshApp {
             .sessions
             .iter()
             .find(|session| Some(session.id.as_str()) == self.active_session.as_deref())
-            .and_then(|session| groups.iter().position(|group| group.cwd == session.cwd));
+            .and_then(|session| {
+                groups
+                    .iter()
+                    .position(|group| group.cwd == self.workspace_account_key(session))
+            });
         let active = active_index.is_some_and(|current| {
             (current != index && tree.contains(index, current)) || (expanded && current == index)
         });
@@ -97,13 +195,24 @@ impl DshApp {
     }
 
     pub(super) fn workspace_name(&self, cwd: &str) -> String {
-        self.workspace_aliases.get(cwd).cloned().unwrap_or_else(|| {
-            if cwd.is_empty() {
-                "默认工作区".to_string()
-            } else {
-                path_name(cwd)
-            }
-        })
+        self.workspace_registry
+            .title(cwd)
+            .map(|title| {
+                if title == "default-workspace" {
+                    "默认工作区"
+                } else {
+                    title
+                }
+                .to_owned()
+            })
+            .or_else(|| self.workspace_aliases.get(cwd).cloned())
+            .unwrap_or_else(|| {
+                if cwd.is_empty() {
+                    "未分组".to_string()
+                } else {
+                    path_name(cwd)
+                }
+            })
     }
 
     pub(super) fn apply_workspace_preferences(&mut self, reply: Value, cx: &mut Context<Self>) {
@@ -220,7 +329,9 @@ impl DshApp {
                 _ => self.workspace_archived_filter,
             };
         }
-        if let Some(pinned) = reply.get("pinned").and_then(Value::as_array) {
+        if !self.workspace_registry.available()
+            && let Some(pinned) = reply.get("pinned").and_then(Value::as_array)
+        {
             self.pinned_sessions = pinned
                 .iter()
                 .filter_map(Value::as_str)
@@ -279,6 +390,12 @@ impl DshApp {
         {
             self.scratch_session = Some(scratch.to_owned());
         }
+        if self.active_session.is_none() {
+            self.selected_session = reply["selectedSession"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned);
+        }
         if let Some(mode) = reply.get("themeMode").and_then(Value::as_str) {
             let preference = ThemePreference::from_id(mode);
             self.restore_theme_preference(preference, cx);
@@ -297,11 +414,9 @@ impl DshApp {
             .iter()
             .cloned()
             .collect::<Vec<_>>();
-        let mut pinned = self.pinned_sessions.iter().cloned().collect::<Vec<_>>();
         let mut archived = self.archived_sessions.iter().cloned().collect::<Vec<_>>();
         hidden.sort();
         collapsed.sort();
-        pinned.sort();
         archived.sort();
         let mut files_search: std::collections::HashMap<String, Value> = self
             .files_search_prefs
@@ -340,6 +455,7 @@ impl DshApp {
         invoke(
             "save_workspace_preferences",
             json!({
+                "onboardingRevision": self.desktop_onboarding.revision(),
                 "preferences": {
                     "aliases": self.workspace_aliases,
                     "hidden": hidden,
@@ -363,7 +479,7 @@ impl DshApp {
                         WorkspaceArchivedFilter::Show => "show",
                         WorkspaceArchivedFilter::Only => "only",
                     },
-                    "pinned": pinned,
+                    "pinned": self.pinned_sessions,
                     "sessionTitles": self.legacy_session_titles,
                     "archived": archived,
                     "themeMode": self.theme_preference.id(),
@@ -374,6 +490,7 @@ impl DshApp {
                     "performanceUsage": if self.performance_compact { "compact" } else { "detailed" },
                     "workspaceOpenWith": self.workspace_open_with,
                     "scratchSession": self.scratch_session,
+                    "selectedSession": self.selected_session,
                     "workDetails": match self.work_details {
                         WorkDetailsMode::Compact => "compact",
                         WorkDetailsMode::Standard => "standard",
@@ -400,13 +517,15 @@ impl DshApp {
         let menu_open = self
             .workspace_context_menu
             .as_ref()
-            .is_some_and(|(path, _)| path == cwd);
+            .is_some_and(|menu| menu.path == cwd);
         // 官方：工作区操作只在展开时显示；无 hover 的设备上展开行常显。
         let revealed = expanded && (hovered || menu_open || !bridge::has_pointer_hover());
         let label = self.workspace_name(cwd);
         let for_hover = cwd.to_owned();
         let for_toggle = cwd.to_owned();
         let for_menu = cwd.to_owned();
+        let for_menu_key = cwd.to_owned();
+        let for_control_click = cwd.to_owned();
         let for_create = cwd.to_owned();
         let for_drag = cwd.to_owned();
         let enabled = self.connected() && !self.creating_session;
@@ -415,14 +534,37 @@ impl DshApp {
         } else {
             p.faint
         };
+        let key = format!("group/{}", self.workspace_registry.id(cwd).unwrap_or(cwd));
+        let can_open_menu = !cwd.is_empty();
+        let focus = self
+            .workspace_row_focus
+            .entry(cwd.to_owned())
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
+        let accessibility_focused = self.workspace_accessibility.focused(&key);
+        self.workspace_accessibility.rendering.push(AccessibleRow {
+            key,
+            label: label.clone(),
+            depth,
+            expanded: Some(expanded),
+            selected: None,
+            description: None,
+            menu: can_open_menu,
+            unarchive: false,
+            action: RowAction::ToggleGroup {
+                path: cwd.to_owned(),
+                descendants: descendants.clone(),
+            },
+        });
         row()
             .id(gpui::ElementId::Name(
                 format!("workspace-group-{cwd}").into(),
             ))
             .relative()
-            .role(gpui::Role::Button)
+            .role(gpui::Role::TreeItem)
             .aria_label(label.clone())
             .aria_expanded(expanded)
+            .track_focus(&focus)
             .tab_index(0)
             .w_full()
             .h(px(32.))
@@ -432,6 +574,9 @@ impl DshApp {
             .gap(px(6.))
             .rounded(px(8.))
             .cursor_pointer()
+            .when(accessibility_focused, |row| {
+                row.border(px(1.)).border_color(p.brand_accent)
+            })
             .when(self.is_dragged_workspace(cwd), |row| row.opacity(0.45))
             .when(revealed, |element| element.bg(p.hover))
             .hover(|style| style.bg(p.hover))
@@ -442,20 +587,23 @@ impl DshApp {
                     cx.notify();
                 }
             }))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.workspace_context_menu = None;
-                if !this.collapsed_workspaces.remove(&for_toggle) {
-                    this.collapsed_workspaces.insert(for_toggle.clone());
-                    // 官方：折叠 Workspace 会重置它及所有后代的水位线。
-                    clear_workspace_watermarks(&mut this.workspace_watermarks, &descendants);
+            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
+                if !event.is_right_click()
+                    && !super::session_context_menu::mac_control_click(event.modifiers())
+                {
+                    this.toggle_workspace_group(&for_toggle, &descendants, cx);
                 }
-                this.save_workspace_preferences(cx);
-                cx.notify();
             }))
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
-                    this.press_workspace_row(&for_drag, event, cx);
+                cx.listener(move |this, event: &gpui::MouseDownEvent, w, cx| {
+                    if can_open_menu
+                        && super::session_context_menu::mac_control_click(event.modifiers)
+                    {
+                        this.open_workspace_context(&for_control_click, event.position.y, w, cx);
+                    } else {
+                        this.press_workspace_row(&for_drag, event, cx);
+                    }
                 }),
             )
             .when_some(self.workspace_drop_half(cwd), |row, half| {
@@ -474,10 +622,24 @@ impl DshApp {
             .on_mouse_down(
                 gpui::MouseButton::Right,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, w, cx| {
-                    w.prevent_default();
-                    open_workspace_menu(this, &for_menu, event.position.y.into(), cx);
+                    this.open_workspace_context(&for_menu, event.position.y, w, cx);
                 }),
             )
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, w, cx| {
+                let stroke = &event.keystroke;
+                if !event.is_held
+                    && focus.is_focused(w)
+                    && !w.default_prevented()
+                    && !stroke.modifiers.control
+                    && !stroke.modifiers.alt
+                    && !stroke.modifiers.platform
+                    && (stroke.key == "contextmenu"
+                        || stroke.key == "f10" && stroke.modifiers.shift)
+                    && let Some(bounds) = this.workspace_row_geometry.bounds(&for_menu_key)
+                {
+                    this.open_workspace_context(&for_menu_key, bounds.top(), w, cx);
+                }
+            }))
             .child(
                 div()
                     .size(px(16.))
@@ -518,7 +680,7 @@ impl DshApp {
                     .text_color(p.ink)
                     .child(label),
             )
-            .when(revealed, |element| {
+            .when(revealed && can_open_menu, |element| {
                 let for_more = cwd.to_owned();
                 element
                     .child(
@@ -551,8 +713,7 @@ impl DshApp {
                                 {
                                     return;
                                 }
-                                w.prevent_default();
-                                open_workspace_menu(this, &for_more, event.position().y.into(), cx);
+                                this.open_workspace_context(&for_more, event.position().y, w, cx);
                             })),
                     )
                     .child(
@@ -615,12 +776,17 @@ impl DshApp {
             .unwrap_or(WATERMARK_BASE)
             .max(WATERMARK_BASE);
         for (index, session) in sessions.iter().take(50).enumerate() {
-            let notable = self.session_indicator(&session.id).0
+            let notable = self.session_indicator(&session.id, w, cx).0
                 != crate::sessions::SessionIndicator::Idle
                 || active.as_deref() == Some(session.id.as_str());
             if notable {
                 limit = limit.max(index + 1);
             }
+        }
+        if let Some(id) = self.workspace_search.reveal.as_deref()
+            && let Some(index) = sessions.iter().position(|session| session.id == id)
+        {
+            limit = limit.max(index + 1);
         }
         self.workspace_watermarks.insert(cwd.clone(), limit);
         // 当前选中的空白「新会话」是水位线之外的额外行。
@@ -633,7 +799,8 @@ impl DshApp {
         });
         for (index, session) in sessions.into_iter().enumerate() {
             if index < limit || Some(index) == extra_blank {
-                rendered = rendered.child(self.render_session_row(session, depth, w, cx));
+                rendered =
+                    rendered.child(self.render_session_row(session, depth, depth + 1, None, w, cx));
             }
         }
         let remaining = total.saturating_sub(limit);
@@ -642,6 +809,28 @@ impl DshApp {
             let expand = remaining > 0;
             let target = if remaining <= 5 { total } else { limit + 5 };
             let for_watermark = cwd.clone();
+            let label = if expand {
+                format!("展开其余（{remaining}）")
+            } else {
+                "收起".to_owned()
+            };
+            let next_limit = expand.then_some(target);
+            let key = format!("watermark/{cwd}");
+            let accessibility_focused = self.workspace_accessibility.focused(&key);
+            self.workspace_accessibility.rendering.push(AccessibleRow {
+                key,
+                label: label.clone(),
+                depth: depth + 1,
+                expanded: None,
+                selected: None,
+                description: None,
+                menu: false,
+                unarchive: false,
+                action: RowAction::SetWatermark {
+                    path: cwd.clone(),
+                    limit: next_limit,
+                },
+            });
             rendered = rendered.child(
                 div()
                     .id(gpui::ElementId::Name(
@@ -655,23 +844,16 @@ impl DshApp {
                     .flex()
                     .items_center()
                     .rounded(px(4.))
+                    .when(accessibility_focused, |row| {
+                        row.border(px(1.)).border_color(p.brand_accent)
+                    })
                     .cursor_pointer()
                     .text_size(px(12.))
                     .text_color(p.label_tertiary)
                     .hover(|style| style.text_color(p.label_primary))
-                    .child(if expand {
-                        format!("展开其余（{remaining}）")
-                    } else {
-                        "收起".to_owned()
-                    })
+                    .child(label)
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if expand {
-                            this.workspace_watermarks
-                                .insert(for_watermark.clone(), target);
-                        } else {
-                            this.workspace_watermarks.remove(&for_watermark);
-                        }
-                        cx.notify();
+                        this.set_workspace_watermark(&for_watermark, next_limit, cx);
                     })),
             );
         }
@@ -680,14 +862,13 @@ impl DshApp {
 
     pub(super) fn render_workspace_context_menu(
         &self,
-        cwd: String,
+        menu: WorkspaceContextMenu,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let p = dsh(cx);
-        let for_rename = cwd.clone();
-        let for_reveal = cwd.clone();
-        column()
+        let mut card = column()
             .id("workspace-context-menu")
+            .role(gpui::Role::Menu)
             .w(px(216.))
             .gap_0()
             .p(px(4.))
@@ -696,64 +877,211 @@ impl DshApp {
             .shadow(elevation_prominent())
             .occlude()
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                this.workspace_context_menu = None;
-                cx.notify();
+            .on_mouse_down_out(cx.listener(|this, _, w, cx| {
+                this.dismiss_workspace_context(false, w, cx);
             }))
-            .child(workspace_menu_row(
-                "rename",
-                "重命名",
-                include_bytes!("../../assets/workspace-edit.svg"),
-                false,
+            .on_key_down(cx.listener(Self::workspace_context_key));
+        for (action, focus) in &menu.rows {
+            let action = *action;
+            if action == WorkspaceMenuAction::Remove {
+                card = card.child(div().h(px(0.5)).mx(px(8.)).my(px(3.)).bg(p.line));
+            }
+            let path = menu.path.clone();
+            let id = menu.id.clone();
+            card = card.child(workspace_menu_row(
+                action,
+                focus,
+                menu.accessible_focus == Some(action),
                 cx,
                 move |this, w, cx| {
-                    let name = this.workspace_name(&for_rename);
-                    replace(&this.workspace_rename_editor, name, w, cx);
-                    this.workspace_rename = Some(for_rename.clone());
-                    this.workspace_context_menu = None;
-                    this.workspace_rename_editor.update(cx, |editor, cx| {
-                        editor.focus(w, cx);
-                        editor.select_all(w, cx);
-                    });
-                    cx.notify();
+                    if this.workspace_menu_matches(&path, id.as_deref()) {
+                        this.run_workspace_menu_action(action, w, cx);
+                    }
                 },
-            ))
-            .child(workspace_menu_row(
-                "reveal",
-                // The frontend is compiled to wasm32, so compile-time target
-                // checks are always false here — use the runtime host platform.
-                if bridge::is_mac() {
-                    "在 Finder 中显示"
-                } else if bridge::is_windows() {
-                    "在资源管理器中显示"
-                } else {
-                    "在文件夹中显示"
+            ));
+        }
+        card
+    }
+
+    fn workspace_target_current(&self, path: &str, id: Option<&str>) -> bool {
+        !path.is_empty()
+            && if self.workspace_registry.available() {
+                id.is_some() && self.workspace_registry.id(path) == id
+            } else {
+                id.is_none() && !self.workspace_group_hidden(path)
+            }
+    }
+
+    pub(super) fn workspace_menu_matches(&self, path: &str, id: Option<&str>) -> bool {
+        self.workspace_context_menu
+            .as_ref()
+            .is_some_and(|menu| menu.path == path && menu.id.as_deref() == id)
+            && self.workspace_target_current(path, id)
+    }
+
+    pub(super) fn open_workspace_context(
+        &mut self,
+        path: &str,
+        y: gpui::Pixels,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.workspace_registry.id(path).map(str::to_owned);
+        if !self.workspace_target_current(path, id.as_deref()) {
+            return;
+        }
+        let trigger = self
+            .workspace_row_focus
+            .get(path)
+            .cloned()
+            .or_else(|| w.focused(cx));
+        let rows = WorkspaceMenuAction::ITEMS
+            .into_iter()
+            .map(|action| (action, cx.focus_handle().tab_stop(true)))
+            .collect::<Vec<_>>();
+        rows[0].1.focus(w, cx);
+        self.workspace_context_menu = Some(WorkspaceContextMenu {
+            path: path.to_owned(),
+            id,
+            pointer_y: y.into(),
+            trigger,
+            rows,
+            accessible_focus: None,
+        });
+        self.replace_header_menu(cx);
+        self.show_workspace_view_options = false;
+        self.show_workspace_menu = false;
+        self.show_more_menu = false;
+        self.composer_menu = None;
+        w.prevent_default();
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    pub(super) fn dismiss_workspace_context(
+        &mut self,
+        restore_focus: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(menu) = self.workspace_context_menu.take() {
+            if restore_focus && let Some(trigger) = menu.trigger {
+                trigger.focus(w, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    fn workspace_context_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let stroke = &event.keystroke;
+        if stroke.modifiers.control || stroke.modifiers.alt || stroke.modifiers.platform {
+            return;
+        }
+        let Some(menu) = self.workspace_context_menu.as_ref() else {
+            return;
+        };
+        let active = menu.rows.iter().position(|(_, focus)| focus.is_focused(w));
+        let last = menu.rows.len() - 1;
+        match stroke.key.as_str() {
+            "escape" | "tab" => self.dismiss_workspace_context(true, w, cx),
+            key => {
+                let index = match key {
+                    "down" => active.map_or(0, |index| (index + 1) % menu.rows.len()),
+                    "up" => active
+                        .and_then(|index| index.checked_sub(1))
+                        .unwrap_or(last),
+                    "home" => 0,
+                    "end" => last,
+                    _ => return,
+                };
+                menu.rows[index].1.focus(w, cx);
+            }
+        }
+        w.prevent_default();
+        cx.stop_propagation();
+    }
+
+    fn run_workspace_menu_action(
+        &mut self,
+        action: WorkspaceMenuAction,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self.workspace_context_menu.clone() else {
+            return;
+        };
+        self.dismiss_workspace_context(true, w, cx);
+        match action {
+            WorkspaceMenuAction::Rename => {
+                self.begin_workspace_dialog(&menu, WorkspaceDialogAction::Rename, w, cx)
+            }
+            WorkspaceMenuAction::Remove => {
+                self.begin_workspace_dialog(&menu, WorkspaceDialogAction::Remove, w, cx)
+            }
+            WorkspaceMenuAction::Reveal => invoke(
+                "open_start_tool",
+                json!({"workspace": menu.path, "tool": "files"}),
+            ),
+        }
+    }
+
+    pub(super) fn accessible_workspace_menu(&self) -> Option<AccessibleSurface> {
+        let menu = self.workspace_context_menu.as_ref()?;
+        self.workspace_target_current(&menu.path, menu.id.as_deref())
+            .then(|| AccessibleSurface::Menu {
+                target: AccessibleTarget::Workspace {
+                    path: menu.path.clone(),
+                    id: menu.id.clone(),
                 },
-                include_bytes!("../../assets/workspace-reveal.svg"),
-                false,
-                cx,
-                move |this, _, cx| {
-                    invoke(
-                        "open_start_tool",
-                        json!({"workspace": for_reveal, "tool": "files"}),
-                    );
-                    this.workspace_context_menu = None;
-                    cx.notify();
-                },
-            ))
-            .child(div().h(px(0.5)).mx(px(8.)).my(px(3.)).bg(p.line))
-            .child(workspace_menu_row(
-                "delete",
-                "移除工作区",
-                include_bytes!("../../assets/workspace-trash.svg"),
-                true,
-                cx,
-                move |this, _, cx| {
-                    this.workspace_delete = Some(cwd.clone());
-                    this.workspace_context_menu = None;
-                    cx.notify();
-                },
-            ))
+                label: format!("工作区“{}”的操作", self.workspace_name(&menu.path)),
+                submenu: false,
+                items: menu
+                    .rows
+                    .iter()
+                    .map(|(action, _)| {
+                        let (key, label, _) = action.presentation();
+                        AccessibleMenuItem {
+                            key: key.to_owned(),
+                            label: label.to_owned(),
+                            disabled: false,
+                            submenu: false,
+                        }
+                    })
+                    .collect(),
+            })
+    }
+
+    pub(super) fn handle_accessible_group_menu(
+        &mut self,
+        key: &str,
+        activate: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self.workspace_context_menu.as_mut() else {
+            return;
+        };
+        if let Some((action, focus)) = menu
+            .rows
+            .iter()
+            .find(|(action, _)| action.presentation().0 == key)
+        {
+            if activate {
+                let action = *action;
+                self.run_workspace_menu_action(action, w, cx);
+            } else {
+                menu.accessible_focus = Some(*action);
+                focus.focus(w, cx);
+                cx.notify();
+            }
+        } else if !activate && key.is_empty() && menu.accessible_focus.take().is_some() {
+            cx.notify();
+        }
     }
 
     pub(super) fn close_workspace_dialog(&mut self, w: &mut Window, cx: &mut Context<Self>) {
@@ -761,16 +1089,68 @@ impl DshApp {
             .session_rename
             .as_ref()
             .is_some_and(|rename| rename.pending)
+            || self
+                .workspace_dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.pending)
         {
             return;
         }
-        self.workspace_rename = None;
-        self.workspace_delete = None;
-        if let Some(rename) = self.session_rename.take()
-            && let Some(focus) = rename.restore_focus
-        {
+        let restore_focus = if let Some(dialog) = self.workspace_dialog.take() {
+            dialog.restore_focus
+        } else {
+            self.session_rename
+                .take()
+                .and_then(|rename| rename.restore_focus)
+        };
+        if let Some(focus) = restore_focus {
             focus.focus(w, cx);
         }
+    }
+
+    fn begin_workspace_dialog(
+        &mut self,
+        menu: &WorkspaceContextMenu,
+        action: WorkspaceDialogAction,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace_context_menu = None;
+        if !self.workspace_target_current(&menu.path, menu.id.as_deref()) {
+            cx.notify();
+            return;
+        }
+        let title = self.workspace_name(&menu.path);
+        let dialog = WorkspaceDialog {
+            action,
+            path: menu.path.clone(),
+            id: menu.id.clone(),
+            stored_title: self
+                .workspace_registry
+                .title(&menu.path)
+                .unwrap_or(&title)
+                .to_owned(),
+            title,
+            restore_focus: w.focused(cx),
+            close: cx.focus_handle().tab_stop(true),
+            cancel: cx.focus_handle().tab_stop(true),
+            confirm: cx.focus_handle().tab_stop(true),
+            pending: false,
+            error: None,
+        };
+        super::document_html::restore_shell_focus();
+        match action {
+            WorkspaceDialogAction::Rename => {
+                replace(&self.workspace_rename_editor, dialog.title.clone(), w, cx);
+                self.workspace_rename_editor.update(cx, |editor, cx| {
+                    editor.focus(w, cx);
+                    editor.select_all(w, cx);
+                });
+            }
+            WorkspaceDialogAction::Remove => dialog.cancel.focus(w, cx),
+        }
+        self.workspace_dialog = Some(dialog);
+        cx.notify();
     }
 
     pub(super) fn begin_session_rename(
@@ -779,7 +1159,7 @@ impl DshApp {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.connected() || self.session_rename.is_some() {
+        if !self.connected() || self.session_rename.is_some() || self.workspace_dialog.is_some() {
             return;
         }
         let Some(session) = self
@@ -862,7 +1242,11 @@ impl DshApp {
         }
     }
 
-    fn workspace_rename_duplicate(&self, path: &str, name: &str) -> bool {
+    fn workspace_rename_duplicate(&self, dialog: &WorkspaceDialog, name: &str) -> bool {
+        if let Some(id) = &dialog.id {
+            return self.workspace_registry.title_in_use(id, name);
+        }
+        let path = dialog.path.as_str();
         self.sessions
             .iter()
             .any(|session| session.cwd != path && self.workspace_name(&session.cwd) == name)
@@ -873,25 +1257,205 @@ impl DshApp {
                 .any(|cwd| cwd != path && self.workspace_name(cwd) == name)
     }
 
-    pub(super) fn confirm_workspace_rename(&mut self, cx: &App) {
-        let Some(path) = self.workspace_rename.clone() else {
+    fn workspace_remove_description(dialog: &WorkspaceDialog) -> String {
+        let name = &dialog.title;
+        if dialog.id.is_some() {
+            format!(
+                "将把“{name}”从工作区列表中移除。文件夹与会话记录会保留，其会话将显示在“未分组”下。"
+            )
+        } else {
+            format!("将从侧栏移除“{name}”分组。文件夹和会话记录会保留。")
+        }
+    }
+
+    fn workspace_dialog_error(&self, dialog: &WorkspaceDialog) -> Option<String> {
+        if !dialog.pending && !self.workspace_target_current(&dialog.path, dialog.id.as_deref()) {
+            Some("工作区已移除或替换，请重新选择。".into())
+        } else {
+            dialog.error.clone()
+        }
+    }
+
+    pub(super) fn accessible_workspace_dialog(&self, cx: &App) -> Option<AccessibleSurface> {
+        let dialog = self.workspace_dialog.as_ref()?;
+        let target = AccessibleTarget::Workspace {
+            path: dialog.path.clone(),
+            id: dialog.id.clone(),
+        };
+        let current = self.workspace_target_current(&dialog.path, dialog.id.as_deref());
+        let error = self.workspace_dialog_error(dialog);
+        Some(match dialog.action {
+            WorkspaceDialogAction::Rename => {
+                let draft = self.workspace_rename_editor.read(cx).value();
+                let name = draft.trim();
+                let duplicate = !name.is_empty() && self.workspace_rename_duplicate(dialog, name);
+                AccessibleSurface::Rename {
+                    target,
+                    draft: draft.to_owned(),
+                    pending: dialog.pending,
+                    blocked: !current
+                        || name.is_empty()
+                        || name == dialog.stored_title
+                        || duplicate,
+                    error: error
+                        .or_else(|| duplicate.then(|| format!("已存在名为“{name}”的工作区"))),
+                }
+            }
+            WorkspaceDialogAction::Remove => AccessibleSurface::RemoveWorkspace {
+                target,
+                description: Self::workspace_remove_description(dialog),
+                pending: dialog.pending,
+                blocked: !current,
+                error,
+            },
+        })
+    }
+
+    pub(super) fn confirm_workspace_rename(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = self
+            .workspace_dialog
+            .as_ref()
+            .filter(|dialog| dialog.action == WorkspaceDialogAction::Rename && !dialog.pending)
+        else {
             return;
         };
-        let name = self
-            .workspace_rename_editor
-            .read(cx)
-            .value()
-            .trim()
-            .to_string();
-        if name.is_empty()
-            || self.workspace_aliases.get(&path) == Some(&name)
-            || self.workspace_rename_duplicate(&path, &name)
+        let editor = self.workspace_rename_editor.read(cx);
+        let name = editor.value().trim();
+        if !self.workspace_target_current(&dialog.path, dialog.id.as_deref())
+            || editor.is_composing()
+            || name.is_empty()
+            || name == dialog.stored_title
+            || self.workspace_rename_duplicate(dialog, name)
         {
             return;
         }
-        self.workspace_aliases.insert(path, name);
-        self.workspace_rename = None;
-        self.save_workspace_preferences(cx);
+        let name = name.to_owned();
+        if dialog.id.is_some() {
+            self.submit_registered_workspace_change(Some(name), w, cx);
+        } else {
+            self.workspace_aliases.insert(dialog.path.clone(), name);
+            self.close_workspace_dialog(w, cx);
+            self.save_workspace_preferences(cx);
+        }
+    }
+
+    pub(super) fn confirm_workspace_remove(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = self
+            .workspace_dialog
+            .as_ref()
+            .filter(|dialog| dialog.action == WorkspaceDialogAction::Remove && !dialog.pending)
+        else {
+            return;
+        };
+        if !self.workspace_target_current(&dialog.path, dialog.id.as_deref()) {
+            return;
+        }
+        if dialog.id.is_some() {
+            self.submit_registered_workspace_change(None, w, cx);
+        } else {
+            self.hidden_workspaces.insert(dialog.path.clone());
+            self.close_workspace_dialog(w, cx);
+            self.save_workspace_preferences(cx);
+            self.push_toast("已从侧栏移除工作区分组；可在「设置 → 通用」中恢复。", cx);
+        }
+    }
+
+    fn submit_registered_workspace_change(
+        &mut self,
+        title: Option<String>,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let available = self.connected() && !self.service_starting;
+        let Some(dialog) = &mut self.workspace_dialog else {
+            return;
+        };
+        let Some(id) = &dialog.id else { return };
+        if self.workspace_registry.pending || !available {
+            dialog.error = Some(if available {
+                "正在保存另一项工作区更改，请稍后重试。".into()
+            } else {
+                "连接服务后可修改工作区。".into()
+            });
+            return;
+        }
+        let operation = if let Some(title) = title {
+            json!({"action": "rename", "id": id, "title": title})
+        } else {
+            json!({"action": "delete", "id": id})
+        };
+        dialog.pending = true;
+        dialog.error = None;
+        dialog.close.focus(w, cx);
+        self.workspace_registry.pending = true;
+        self.workspace_rename_editor
+            .update(cx, |editor, _| editor.disabled = true);
+        cx.spawn_in(w, async move |this, cx| {
+            let result =
+                bridge::invoke("workspace_registry", json!({"operation": operation})).await;
+            let _ = this.update_in(cx, |app, w, cx| {
+                app.finish_registered_workspace_change(result, w, cx)
+            });
+        })
+        .detach();
+    }
+
+    fn finish_registered_workspace_change(
+        &mut self,
+        result: Result<Value, String>,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace_registry.pending = false;
+        self.workspace_rename_editor
+            .update(cx, |editor, _| editor.disabled = false);
+        let Some(dialog) = self
+            .workspace_dialog
+            .as_mut()
+            .filter(|dialog| dialog.pending)
+        else {
+            return;
+        };
+        dialog.pending = false;
+        let path = dialog.path.clone();
+        let id = dialog.id.clone();
+        let removed = dialog.action == WorkspaceDialogAction::Remove;
+        let result = result.and_then(|snapshot| {
+            if !self.apply_workspace_registry(&snapshot)
+                || (removed == (self.workspace_registry.id(&path) == id.as_deref()))
+            {
+                return Err("服务未返回工作区状态。".into());
+            }
+            Ok(())
+        });
+        match result {
+            Ok(()) => {
+                self.workspace_aliases.remove(&path);
+                if removed && self.workspace_registry.id(&path).is_none() {
+                    self.added_workspaces.retain(|candidate| candidate != &path);
+                    self.hidden_workspaces.remove(&path);
+                    self.collapsed_workspaces.remove(&path);
+                    self.workspace_order.retain(|candidate| candidate != &path);
+                    self.session_order_by_account.remove(&path);
+                    self.workspace_watermarks.remove(&path);
+                    self.workspace_row_focus.remove(&path);
+                }
+                self.close_workspace_dialog(w, cx);
+                self.save_workspace_preferences(cx);
+            }
+            Err(error) => {
+                if let Some(dialog) = &mut self.workspace_dialog {
+                    dialog.error = Some(error);
+                    if removed {
+                        dialog.confirm.focus(w, cx);
+                    } else {
+                        self.workspace_rename_editor
+                            .update(cx, |editor, cx| editor.focus(w, cx));
+                    }
+                }
+            }
+        }
+        cx.notify();
     }
 
     pub(super) fn render_workspace_dialog(
@@ -901,15 +1465,20 @@ impl DshApp {
     ) -> gpui::Stateful<gpui::Div> {
         let p = dsh(cx);
         let session_rename = self.session_rename.is_some();
+        let workspace_dialog = self.workspace_dialog.as_ref();
+        let workspace_rename =
+            workspace_dialog.is_some_and(|dialog| dialog.action == WorkspaceDialogAction::Rename);
         let pending = self
             .session_rename
             .as_ref()
-            .is_some_and(|rename| rename.pending);
-        let rename_error = self
+            .is_some_and(|rename| rename.pending)
+            || workspace_dialog.is_some_and(|dialog| dialog.pending);
+        let error = self
             .session_rename
             .as_ref()
-            .and_then(|rename| rename.error.clone());
-        let rename = self.workspace_rename.is_some() || session_rename;
+            .and_then(|rename| rename.error.clone())
+            .or_else(|| workspace_dialog.and_then(|dialog| self.workspace_dialog_error(dialog)));
+        let rename = workspace_rename || session_rename;
         let title = if session_rename {
             "重命名会话"
         } else if rename {
@@ -917,13 +1486,8 @@ impl DshApp {
         } else {
             "移除工作区"
         };
-        let path = self
-            .workspace_rename
-            .as_ref()
-            .or(self.workspace_delete.as_ref())
-            .cloned()
-            .unwrap_or_default();
-        let name = self.workspace_name(&path);
+        let remove_description = workspace_dialog.map(Self::workspace_remove_description);
+        let stored_title = workspace_dialog.map_or("", |dialog| dialog.stored_title.as_str());
         let editor = if session_rename {
             self.session_rename_editor.clone()
         } else {
@@ -931,20 +1495,29 @@ impl DshApp {
         };
         let draft = editor.read(cx).value().trim().to_owned();
         // 重名检查只适用于工作区；会话标题允许与工作区无关。
-        let duplicate = self.workspace_rename.is_some()
+        let duplicate = workspace_rename
             && !draft.is_empty()
-            && self.workspace_rename_duplicate(&path, &draft);
+            && workspace_dialog
+                .is_some_and(|dialog| self.workspace_rename_duplicate(dialog, &draft));
         let blocked = pending
-            || draft.is_empty()
-            || (!session_rename && self.workspace_aliases.get(&path) == Some(&draft))
-            || duplicate;
+            || workspace_dialog.is_some_and(|dialog| {
+                !self.workspace_target_current(&dialog.path, dialog.id.as_deref())
+            })
+            || (rename
+                && (draft.is_empty() || (workspace_rename && draft == stored_title) || duplicate));
         let width = (f32::from(w.viewport_size().width) - 48.).clamp(0., 380.);
         let caption = if bridge::is_mac() && !self.shell_fullscreen(w) {
             40.
         } else {
             0.
         };
-        let rename_focus = self.session_rename.as_ref();
+        let focus = self
+            .session_rename
+            .as_ref()
+            .map(|dialog| (&dialog.close, &dialog.cancel, &dialog.confirm))
+            .or_else(|| {
+                workspace_dialog.map(|dialog| (&dialog.close, &dialog.cancel, &dialog.confirm))
+            });
         div()
             .id("workspace-dialog")
             .absolute()
@@ -975,17 +1548,36 @@ impl DshApp {
                     .occlude()
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
-                    .when(session_rename, |panel| {
-                        panel.capture_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, w, cx| {
+                    .capture_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, w, cx| {
                             let stroke = &event.keystroke;
-                            if stroke.key != "tab" || stroke.modifiers.control || stroke.modifiers.alt
-                                || stroke.modifiers.platform {
+                            if stroke.key != "tab"
+                                || stroke.modifiers.control
+                                || stroke.modifiers.alt
+                                || stroke.modifiers.platform
+                            {
                                 return;
                             }
-                            let Some(rename) = &this.session_rename else { return };
-                            let focus = &this.session_rename_editor.read(cx).focus;
-                            let stops = [&rename.close, focus, &rename.cancel, &rename.confirm];
-                            let stops = &stops[..if rename.pending { 1 } else if blocked { 3 } else { 4 }];
+                            let (close, cancel, confirm, input) =
+                                if let Some(dialog) = &this.session_rename {
+                                    (
+                                        &dialog.close,
+                                        &dialog.cancel,
+                                        &dialog.confirm,
+                                        Some(&this.session_rename_editor.read(cx).focus),
+                                    )
+                                } else if let Some(dialog) = &this.workspace_dialog {
+                                    let input = rename
+                                        .then(|| &this.workspace_rename_editor.read(cx).focus);
+                                    (&dialog.close, &dialog.cancel, &dialog.confirm, input)
+                                } else {
+                                    return;
+                                };
+                            let stops: Vec<_> = std::iter::once(close)
+                                .chain(input.filter(|_| !pending))
+                                .chain((!pending).then_some(cancel))
+                                .chain((!blocked).then_some(confirm))
+                                .collect();
                             let index = stops.iter().position(|stop| stop.is_focused(w));
                             let next = if stroke.modifiers.shift {
                                 index.unwrap_or(0).checked_sub(1).unwrap_or(stops.len() - 1)
@@ -996,12 +1588,12 @@ impl DshApp {
                             target.focus(w, cx);
                             w.prevent_default();
                             cx.stop_propagation();
-                        }))
-                    })
+                        },
+                    ))
                     .child(super::permission_dialog::dialog_header(
                         title,
                         "close-workspace-dialog",
-                        rename_focus.map(|rename| &rename.close),
+                        focus.map(|(close, _, _)| close),
                         cx,
                         |this, w, cx| {
                             this.close_workspace_dialog(w, cx);
@@ -1040,27 +1632,37 @@ impl DshApp {
                                         )
                                     })
                             })
-                            .when_some(rename_error, |element, error| {
+                            .when(!rename, |element| {
+                                element
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .line_height(px(22.))
+                                            .text_color(p.secondary)
+                                            .child(remove_description.unwrap_or_default()),
+                                    )
+                                    .when(pending, |element| {
+                                        element.child(
+                                            div()
+                                                .id("workspace-delete-status")
+                                                .role(gpui::Role::Status)
+                                                .mt(px(8.))
+                                                .text_size(px(12.))
+                                                .text_color(p.secondary)
+                                                .child("正在移除工作区…"),
+                                        )
+                                    })
+                            })
+                            .when_some(error, |element, error| {
                                 element.child(
                                     div()
-                                        .id("session-rename-error")
+                                        .id("workspace-dialog-error")
                                         .role(gpui::Role::Alert)
                                         .mt(px(8.))
                                         .text_size(px(12.))
                                         .line_height(px(18.))
                                         .text_color(p.danger)
                                         .child(error),
-                                )
-                            })
-                            .when(!rename, |element| {
-                                element.child(
-                                    div()
-                                        .text_size(px(14.))
-                                        .line_height(px(22.))
-                                        .text_color(p.secondary)
-                                        .child(format!(
-                                            "仅从侧栏移除“{name}”分组，不会删除磁盘文件夹或会话数据。"
-                                        )),
                                 )
                             }),
                     )
@@ -1084,34 +1686,36 @@ impl DshApp {
                                         cx.notify();
                                     },
                                 )
-                                .when_some(rename_focus, |button, rename| button.track_focus(&rename.cancel)),
+                                .when_some(focus, |button, (_, cancel, _)| {
+                                    button.track_focus(cancel)
+                                }),
                             )
                             .child(
                                 super::permission_dialog::dialog_action(
                                     "workspace-dialog-confirm",
-                                    if rename { "重命名" } else { "移除" },
+                                    if rename {
+                                        "重命名"
+                                    } else {
+                                        "移除工作区"
+                                    },
                                     rename,
-                                    rename && blocked,
+                                    blocked,
                                     0.,
                                     cx,
-                                    move |this, _, cx| {
+                                    move |this, w, cx| {
                                         if session_rename {
                                             this.confirm_session_rename(cx);
                                         } else if rename {
-                                            this.confirm_workspace_rename(cx);
+                                            this.confirm_workspace_rename(w, cx);
                                         } else {
-                                            this.hidden_workspaces.insert(path.clone());
-                                            this.workspace_delete = None;
-                                            this.save_workspace_preferences(cx);
-                                            this.push_toast(
-                                                "已从侧栏移除工作区分组；可在「设置 → 通用」中恢复。",
-                                                cx,
-                                            );
+                                            this.confirm_workspace_remove(w, cx);
                                         }
                                         cx.notify();
                                     },
                                 )
-                                .when_some(rename_focus, |button, rename| button.track_focus(&rename.confirm))
+                                .when_some(focus, |button, (_, _, confirm)| {
+                                    button.track_focus(confirm)
+                                })
                                 .when(!rename, |element| element.text_color(p.danger)),
                             ),
                     ),
@@ -1145,23 +1749,21 @@ impl SessionRename {
     }
 }
 
-fn open_workspace_menu(this: &mut DshApp, cwd: &str, pointer_y: f32, cx: &mut Context<DshApp>) {
-    this.workspace_context_menu = Some((cwd.to_string(), pointer_y));
-    this.replace_header_menu(cx);
-    this.show_workspace_view_options = false;
-    this.show_workspace_menu = false;
-    this.show_more_menu = false;
-    this.composer_menu = None;
-    cx.stop_propagation();
-    cx.notify();
-}
-
 impl DshApp {
     pub(super) fn toggle_session_pin(&mut self, id: &str, cx: &mut Context<Self>) {
-        if !self.pinned_sessions.remove(id) {
-            self.pinned_sessions.insert(id.to_owned());
+        if self.service_starting {
+            return;
         }
-        self.sync_session_pin_order(id);
+        if self.workspace_registry.available() {
+            self.set_registered_session_pin(id, !self.session_is_pinned(id), cx);
+            return;
+        }
+        if let Some(index) = self.pinned_sessions.iter().position(|pinned| pinned == id) {
+            self.pinned_sessions.remove(index);
+        } else {
+            self.pinned_sessions.insert(0, id.to_owned());
+            self.sync_session_pin_order(id);
+        }
         self.save_workspace_preferences(cx);
         cx.notify();
     }
@@ -1192,19 +1794,24 @@ fn string_set(value: Option<&Value>) -> std::collections::HashSet<String> {
 }
 
 fn workspace_menu_row(
-    id: &'static str,
-    label: &'static str,
-    artwork: &'static [u8],
-    danger: bool,
+    item: WorkspaceMenuAction,
+    focus: &gpui::FocusHandle,
+    accessibility_focused: bool,
     cx: &mut Context<DshApp>,
     action: impl Fn(&mut DshApp, &mut Window, &mut Context<DshApp>) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
     let p = dsh(cx);
-    let color = if danger { p.danger } else { p.ink };
-    row()
+    let (id, label, artwork) = item.presentation();
+    let color = if item == WorkspaceMenuAction::Remove {
+        p.danger
+    } else {
+        p.ink
+    };
+    let item = row()
         .id(gpui::ElementId::Name(format!("workspace-menu-{id}").into()))
-        .role(gpui::Role::Button)
+        .role(gpui::Role::MenuItem)
         .aria_label(label)
+        .track_focus(focus)
         .tab_index(0)
         .w_full()
         .h(px(32.))
@@ -1216,6 +1823,8 @@ fn workspace_menu_row(
         .text_size(px(14.))
         .line_height(px(20.))
         .text_color(color)
+        .when(accessibility_focused, |item| item.bg(p.hover))
+        .focus_visible(|style| style.bg(p.hover))
         .hover(|style| style.bg(p.hover))
         .child(
             svg()
@@ -1224,6 +1833,6 @@ fn workspace_menu_row(
                 .flex_none()
                 .text_color(color),
         )
-        .child(div().flex_1().min_w_0().truncate().child(label))
-        .on_click(cx.listener(move |this, _, w, cx| action(this, w, cx)))
+        .child(div().flex_1().min_w_0().truncate().child(label));
+    dock_action_button(item, cx.listener(move |this, _, w, cx| action(this, w, cx)))
 }

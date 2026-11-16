@@ -6,8 +6,8 @@ use crate::{
     anim::{FISH_SWIM, menu_in, modal_in, pending_dot},
     bridge,
     commands::{
-        CommandCatalog, CommandSpec, canonical_host_command, client_side_command,
-        resolve_command_token, visible_commands,
+        CommandCatalog, CommandSpec, canonical_host_command, resolve_command_token,
+        visible_commands,
     },
     files::{
         FileListing, FileToken, WorkspaceFile, active_file_token, file_mention, replace_token,
@@ -52,11 +52,15 @@ struct Host {
     _key_listener: KeyListener,
     _file_listener: Closure<dyn FnMut(String)>,
     _dock_cancel_listener: Closure<dyn FnMut()>,
-    _browser_selection_listener: Closure<dyn FnMut(String)>,
+    _text_replacement_listener: Closure<dyn FnMut(String)>,
     _html_focus_listener: Closure<dyn FnMut(String, u32)>,
     _transparency_listener: Closure<dyn FnMut()>,
     _motion_listener: Closure<dyn FnMut(bool)>,
     _runtime_error_listener: Closure<dyn FnMut(String)>,
+    _workspace_tree_listener: Closure<dyn FnMut(String, String)>,
+    _model_selector_listener: Closure<dyn FnMut(String, String)>,
+    _approval_listener: Closure<dyn FnMut(String, String)>,
+    _inbox_listener: Closure<dyn FnMut(String, String)>,
 }
 
 thread_local! {
@@ -186,11 +190,11 @@ pub fn start() {
                 });
             });
         });
-        let browser_selection_listener = Closure::<dyn FnMut(String)>::new(|prefix: String| {
+        let text_replacement_listener = Closure::<dyn FnMut(String)>::new(|prefix: String| {
             with_host(|host| {
                 host.app.update(|cx| {
                     let _ = host.window.update(cx, |app, w, cx| {
-                        app.advance_browser_selection(&prefix, w, cx);
+                        app.advance_replacement_selection(&prefix, w, cx);
                     });
                 });
             });
@@ -220,6 +224,46 @@ pub fn start() {
                 });
             });
         });
+        let workspace_tree_listener =
+            Closure::<dyn FnMut(String, String)>::new(|action: String, key: String| {
+                with_host(|host| {
+                    host.app.update(|cx| {
+                        let _ = host.window.update(cx, |app, w, cx| {
+                            app.handle_workspace_tree_action(&action, &key, w, cx);
+                        });
+                    });
+                });
+            });
+        let model_selector_listener =
+            Closure::<dyn FnMut(String, String)>::new(|action: String, value: String| {
+                with_host(|host| {
+                    host.app.update(|cx| {
+                        let _ = host.window.update(cx, |app, w, cx| {
+                            app.handle_accessible_model_action(&action, &value, w, cx);
+                        });
+                    });
+                });
+            });
+        let approval_listener =
+            Closure::<dyn FnMut(String, String)>::new(|request_id: String, option_id: String| {
+                with_host(|host| {
+                    host.app.update(|cx| {
+                        let _ = host.window.update(cx, |app, w, cx| {
+                            app.answer_accessible_approval(&request_id, &option_id, w, cx);
+                        });
+                    });
+                });
+            });
+        let inbox_listener =
+            Closure::<dyn FnMut(String, String)>::new(|action: String, payload: String| {
+                with_host(|host| {
+                    host.app.update(|cx| {
+                        let _ = host.window.update(cx, |app, w, cx| {
+                            app.handle_accessible_inbox_action(&action, &payload, w, cx);
+                        });
+                    });
+                });
+            });
         HOST.set(Some(Host {
             app: cx.to_async(),
             window,
@@ -227,21 +271,51 @@ pub fn start() {
             _key_listener: key_listener,
             _file_listener: file_listener,
             _dock_cancel_listener: dock_cancel_listener,
-            _browser_selection_listener: browser_selection_listener,
+            _text_replacement_listener: text_replacement_listener,
             _html_focus_listener: html_focus_listener,
             _transparency_listener: transparency_listener,
             _motion_listener: motion_listener,
             _runtime_error_listener: runtime_error_listener,
+            _workspace_tree_listener: workspace_tree_listener,
+            _model_selector_listener: model_selector_listener,
+            _approval_listener: approval_listener,
+            _inbox_listener: inbox_listener,
         }));
         with_host(|host| {
             bridge::listen_keys(host._key_listener.as_ref().unchecked_ref());
             bridge::listen_files(host._file_listener.as_ref().unchecked_ref());
             bridge::listen_dock_cancel(host._dock_cancel_listener.as_ref().unchecked_ref());
-            bridge::listen_browser_selection(
-                host._browser_selection_listener.as_ref().unchecked_ref(),
+            bridge::listen_text_replacement(
+                host._text_replacement_listener.as_ref().unchecked_ref(),
             );
             document_html::listen_focus(host._html_focus_listener.as_ref().unchecked_ref());
             bridge::listen_runtime_error(host._runtime_error_listener.as_ref().unchecked_ref());
+            workspace_accessibility::listen_workspace_tree(
+                host._workspace_tree_listener.as_ref().unchecked_ref(),
+            );
+            model_accessibility::listen_model_selector(
+                host._model_selector_listener.as_ref().unchecked_ref(),
+            );
+            model_providers::listen_model_provider_form(
+                host._model_selector_listener.as_ref().unchecked_ref(),
+            );
+            deepseek_account::listen_deepseek_account_form(
+                host._model_selector_listener.as_ref().unchecked_ref(),
+            );
+            deepseek_account::listen_account_platform_view(
+                host._model_selector_listener.as_ref().unchecked_ref(),
+            );
+            desktop_onboarding::listen_desktop_onboarding(
+                host._model_selector_listener.as_ref().unchecked_ref(),
+            );
+            crate::welcome::listen_welcome_form(
+                host._model_selector_listener.as_ref().unchecked_ref(),
+            );
+            approval::listen_approval(host._approval_listener.as_ref().unchecked_ref());
+            composer_preferences::listen_composer_accessibility(
+                host._model_selector_listener.as_ref().unchecked_ref(),
+            );
+            session_inbox::listen_inbox(host._inbox_listener.as_ref().unchecked_ref());
             bridge::watch_reduced_motion(host._motion_listener.as_ref().unchecked_ref());
             if bridge::has_mac_window_material() {
                 bridge::watch_transparency(host._transparency_listener.as_ref().unchecked_ref());
@@ -317,7 +391,10 @@ pub(crate) fn invoke(command: &'static str, args: Value) {
 }
 
 fn invoke_with_reply(command: &'static str, reply: &'static str, args: Value) {
-    let owner = args["sessionId"].as_str().map(str::to_owned);
+    let owner = args["sessionId"]
+        .as_str()
+        .or_else(|| args["attachmentId"].as_str())
+        .map(str::to_owned);
     wasm_bindgen_futures::spawn_local(async move {
         let result = bridge::invoke(command, args).await;
         with_host(|host| {
@@ -368,6 +445,7 @@ pub(crate) enum WorkspaceArchivedFilter {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingsPage {
     Credentials,
+    Account,
     General,
     Appearance,
     WebSearch,
@@ -446,6 +524,7 @@ pub(crate) enum StatsDialog {
 enum PendingAction {
     New {
         cwd: String,
+        workspace_id: Option<String>,
         draft: Option<&'static str>,
     },
     Resume(SessionSummary),
@@ -466,6 +545,36 @@ struct SessionRename {
     confirm: gpui::FocusHandle,
     pending: bool,
     error: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkspaceDialogAction {
+    Rename,
+    Remove,
+}
+
+struct WorkspaceDialog {
+    action: WorkspaceDialogAction,
+    path: String,
+    id: Option<String>,
+    title: String,
+    stored_title: String,
+    restore_focus: Option<gpui::FocusHandle>,
+    close: gpui::FocusHandle,
+    cancel: gpui::FocusHandle,
+    confirm: gpui::FocusHandle,
+    pending: bool,
+    error: Option<String>,
+}
+
+#[derive(Clone)]
+struct WorkspaceContextMenu {
+    path: String,
+    id: Option<String>,
+    pointer_y: f32,
+    trigger: Option<gpui::FocusHandle>,
+    rows: Vec<(workspace_rows::WorkspaceMenuAction, gpui::FocusHandle)>,
+    accessible_focus: Option<workspace_rows::WorkspaceMenuAction>,
 }
 
 pub(crate) struct TerminalTab {
@@ -591,6 +700,14 @@ pub(crate) struct DraftAttachment {
     pub(crate) preview: Option<String>,
 }
 
+impl Drop for DraftAttachment {
+    fn drop(&mut self) {
+        if self.kind == AttachmentKind::File {
+            bridge::discard_draft_file(&self.id);
+        }
+    }
+}
+
 /// 排队发送：Host Inbox 里的待处理消息（官方 QueueDock 的一行）。
 ///
 /// 消息一旦提交就归 Host 所有：`item_id` 是 Inbox 里的稳定身份，`mode` 说明
@@ -601,8 +718,34 @@ pub(crate) struct QueuedPrompt {
     pub(crate) item_id: String,
     pub(crate) mode: crate::submit::SubmitMode,
     pub(crate) display: String,
-    /// 加入队列时的本地序号：用于忽略比它更早请求的 Host 快照。
-    pub(crate) added_at: u64,
+    pub(crate) edit_text: Option<String>,
+    pub(crate) request_id: Option<String>,
+    attachments: Vec<queue_attachments::QueueAttachment>,
+}
+
+impl QueuedPrompt {
+    fn from_inbox(value: &Value) -> Option<Self> {
+        let attachments: Vec<_> = value["attachments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(queue_attachments::QueueAttachment::from_inbox)
+            .collect();
+        let text = value["text"].as_str().unwrap_or_default();
+        let display = if attachments.is_empty() {
+            pending_inbox_display(text, value["hasImage"].as_bool().unwrap_or(false))
+        } else {
+            text.to_owned()
+        };
+        Some(Self {
+            item_id: value["itemId"].as_str()?.to_owned(),
+            mode: crate::submit::SubmitMode::from_wire(value["mode"].as_str()),
+            display,
+            edit_text: value["editText"].as_str().map(str::to_owned),
+            request_id: value["requestId"].as_str().map(str::to_owned),
+            attachments,
+        })
+    }
 }
 
 /// 已经组好 ACP prompt blocks、可以直接交给 `session/prompt` 的一条消息。
@@ -610,6 +753,12 @@ pub(crate) struct QueuedPrompt {
 pub(crate) struct OutgoingPrompt {
     pub(crate) display: String,
     pub(crate) prompt: Vec<Value>,
+}
+
+impl OutgoingPrompt {
+    fn has_file(&self) -> bool {
+        self.prompt.iter().any(|block| block["type"] == "file")
+    }
 }
 
 /// 一次会话指令提交：成功后才清理对应草稿与附件。
@@ -622,12 +771,6 @@ pub(super) struct CommandSubmission {
 pub(crate) enum AttachmentKind {
     Image,
     File,
-}
-
-pub(crate) struct PermissionRequest {
-    pub(crate) request_id: Value,
-    pub(crate) tool_call: Value,
-    pub(crate) options: Vec<(String, String)>,
 }
 
 /// 官方轮次结束状态：分隔线文案由它决定。
@@ -709,6 +852,7 @@ pub(crate) struct DshApp {
     parked_conversations: HashMap<String, Conversation>,
     session_activity: HashMap<String, SessionActivity>,
     session_reading: crate::session_reading::SessionReading,
+    history_request_id: u64,
     reading_ack_scheduled: bool,
     running_subagents: HashMap<String, String>,
     /// Read-only child transcript currently open, and the parent to return to.
@@ -716,6 +860,8 @@ pub(crate) struct DshApp {
     /// Blank session opened by a previous launch; reused instead of creating a
     /// new unused session each time.
     scratch_session: Option<String>,
+    selected_session: Option<String>,
+    workspace_preferences_loaded: bool,
     /// The pending open is that scratch-session reuse, so a missing session
     /// falls back to a fresh one instead of a read-only view.
     scratch_opening: bool,
@@ -736,6 +882,8 @@ pub(crate) struct DshApp {
     pub(crate) search_editor: gpui::Entity<Editor>,
     pub(crate) sessions_scroll: ScrollHandle,
     pub(crate) search_expanded: bool,
+    workspace_search: workspace_search::WorkspaceSearch,
+    workspace_search_focus: gpui::FocusHandle,
     pub(crate) search_slide: kui::primitives::family::Slide,
     pub(crate) sidebar_collapsed: bool,
     sidebar_narrow: bool,
@@ -750,7 +898,9 @@ pub(crate) struct DshApp {
     pub(crate) show_settings: bool,
     pub(crate) settings_page: SettingsPage,
     transcript_preferences: transcript_preferences::TranscriptPreferences,
+    desktop_onboarding: desktop_onboarding::DesktopOnboarding,
     model_providers: model_providers::ProviderSettings,
+    deepseek_account: deepseek_account::AccountPanel,
     runtime_settings: Option<runtime_settings::RuntimeSettings>,
     web_search_settings: Option<web_search_settings::WebSearchSettings>,
     plugin_center: plugin_center::PluginCenter,
@@ -776,11 +926,12 @@ pub(crate) struct DshApp {
     developer_tools_switched_at: Option<f64>,
     pub(crate) content_font_delta: i32,
     pub(crate) work_details: WorkDetailsMode,
+    composer_preference: composer_preferences::ComposerPreference,
     pub(crate) collapse_next_input: bool,
     pub(crate) keep_folded_replies: bool,
     pub(crate) show_workspace_menu: bool,
     pub(crate) show_workspace_view_options: bool,
-    pub(crate) workspace_context_menu: Option<(String, f32)>,
+    workspace_context_menu: Option<WorkspaceContextMenu>,
     pub(crate) hovered_workspace: Option<String>,
     hovered_session: Option<String>,
     session_row_focus: HashMap<String, gpui::FocusHandle>,
@@ -793,16 +944,16 @@ pub(crate) struct DshApp {
     added_workspaces: Vec<String>,
     workspace_picker_pending: bool,
     pub(crate) workspace_aliases: std::collections::HashMap<String, String>,
-    pub(crate) workspace_rename: Option<String>,
-    pub(crate) workspace_delete: Option<String>,
+    workspace_dialog: Option<WorkspaceDialog>,
     session_rename: Option<SessionRename>,
-    pub(crate) pinned_sessions: std::collections::HashSet<String>,
+    pub(crate) pinned_sessions: Vec<String>,
     legacy_session_titles: HashMap<String, String>,
     session_title_seqs: HashMap<String, u64>,
     pub(crate) archived_sessions: std::collections::HashSet<String>,
     pub(crate) toasts: Vec<Toast>,
     /// User-message images already requested from the host (by attachment id).
     pub(crate) requested_attachments: std::collections::HashSet<String>,
+    attachment_data: HashMap<String, String>,
     /// Chat HTTP(S) links open in the built-in right-sidebar browser (official
     /// default) unless the 网页链接 preference selects the system browser.
     pub(crate) link_open_external: bool,
@@ -821,18 +972,22 @@ pub(crate) struct DshApp {
     /// Full-screen picture opened from a user bubble (official image dialog).
     pub(crate) image_viewer: Option<ImageViewer>,
     confirm_permission: Option<String>,
+    permission_dialog_focus: permission_dialog::PermissionDialogFocus,
     team_disable: Option<team_mode::TeamDisableRequest>,
     pub(crate) full_access_acknowledged: bool,
     pub(crate) stats_dialog: Option<StatsDialog>,
     stats_dialog_bounds: ComposerAnchor,
     pub(crate) workspace_group_by: WorkspaceGroupBy,
+    workspace_accessibility: workspace_accessibility::WorkspaceAccessibility,
     pub(crate) workspace_order_by: WorkspaceOrderBy,
     session_order_by_account: HashMap<String, Vec<String>>,
     session_drag_gesture: Option<session_drag::SessionDragGesture>,
     session_row_geometry: session_drag::SessionRowGeometry,
     workspace_order: Vec<String>,
+    workspace_registry: workspace_registry::WorkspaceRegistryUi,
     workspace_drag_gesture: Option<workspace_drag::WorkspaceDragGesture>,
     workspace_row_geometry: workspace_drag::WorkspaceRowGeometry,
+    workspace_row_focus: HashMap<String, gpui::FocusHandle>,
     pub(crate) workspace_archived_filter: WorkspaceArchivedFilter,
     sidebar: SessionSidebar,
     parked_sidebars: HashMap<String, SessionSidebar>,
@@ -852,6 +1007,7 @@ pub(crate) struct DshApp {
     float_grips: HashMap<DockPaneId, floating_panes::FloatGrip>,
     right_dock_focus: HashMap<DockPaneId, gpui::FocusHandle>,
     pub(crate) drop_active: bool,
+    attachment_intake_owners: HashMap<String, String>,
     pub(crate) composer_menu: Option<ComposerMenu>,
     composer_card_bounds: ComposerAnchor,
     composer_seat_bounds: ComposerAnchor,
@@ -874,6 +1030,11 @@ pub(crate) struct DshApp {
     pub(crate) command_catalog: CommandCatalog,
     pub(crate) model_filter_editor: gpui::Entity<Editor>,
     model_menu: model_menu::ModelMenu,
+    model_accessibility: model_accessibility::ModelAccessibility,
+    attachment_accessibility: queue_attachments::AttachmentAccessibility,
+    approvals: approval::ApprovalSurface,
+    inbox_accessibility: Option<session_inbox::AccessibleInbox>,
+    model_catalog: model_catalog::ModelCatalog,
     permission_menu: permission_picker::PermissionMenu,
     command_picker: command_picker::CommandPicker,
     /// Official RunningStatus activity label ("深度求索中，用时 Xs···").
@@ -996,7 +1157,10 @@ impl DshApp {
             w,
             cx,
         );
-        composer.update(cx, |editor, _| editor.set_command_submit(true));
+        composer.update(cx, |editor, _| {
+            editor.set_command_submit(true);
+            editor.disabled = true;
+        });
         // `EditorShortcutEvent` is Cmd/Ctrl+Enter: the complementary delivery
         // gesture (official `resolveSubmitMode`), so a busy session steers
         // instead of queueing.
@@ -1028,14 +1192,19 @@ impl DshApp {
             w,
             |this, _, event: &EditEvent, w, cx| match event {
                 EditEvent::Submitted => {
-                    this.confirm_workspace_rename(cx);
+                    this.confirm_workspace_rename(w, cx);
                     cx.notify();
                 }
                 EditEvent::Escape => {
                     this.close_workspace_dialog(w, cx);
                     cx.notify();
                 }
-                EditEvent::Changed => cx.notify(),
+                EditEvent::Changed => {
+                    if let Some(dialog) = &mut this.workspace_dialog {
+                        dialog.error = None;
+                    }
+                    cx.notify();
+                }
                 _ => {}
             },
         );
@@ -1094,8 +1263,10 @@ impl DshApp {
         });
         let search_subscription =
             cx.subscribe_in(&search_editor, w, |this, _, event: &EditEvent, w, cx| {
-                if *event == EditEvent::Escape {
-                    this.close_workspace_search(w, cx);
+                match event {
+                    EditEvent::Changed => this.update_workspace_search(w, cx),
+                    EditEvent::Escape => this.close_workspace_search(true, w, cx),
+                    _ => {}
                 }
                 cx.notify();
             });
@@ -1139,8 +1310,20 @@ impl DshApp {
                 match event {
                     WelcomeEvent::Changed => {
                         let welcome = this.welcome.read(cx);
+                        let was_visible = this.show_welcome;
                         this.show_welcome = welcome.should_show();
                         this.sync_shell_window(cx);
+                        if was_visible && !this.show_welcome {
+                            cx.on_next_frame(w, |this, w, cx| {
+                                if !this.show_welcome
+                                    && !this.show_settings
+                                    && this.page == WorkspacePage::Conversation
+                                    && this.active_session.is_some()
+                                {
+                                    this.focus_composer(w, cx);
+                                }
+                            });
+                        }
                     }
                     WelcomeEvent::OpenModelProviders => {
                         this.show_settings = true;
@@ -1151,7 +1334,7 @@ impl DshApp {
             });
         Self {
             status: ServiceStatus::Starting,
-            service_starting: false,
+            service_starting: true,
             agent_name: "deepseek-harness-acp".to_string(),
             workspace: String::new(),
             service_path: String::new(),
@@ -1163,10 +1346,13 @@ impl DshApp {
             parked_conversations: HashMap::new(),
             session_activity: HashMap::new(),
             session_reading: Default::default(),
+            history_request_id: 0,
             reading_ack_scheduled: false,
             running_subagents: HashMap::new(),
             subagent_view: None,
             scratch_session: None,
+            selected_session: None,
+            workspace_preferences_loaded: false,
             scratch_opening: false,
             opening_session_events: Vec::new(),
             page: WorkspacePage::Conversation,
@@ -1185,6 +1371,8 @@ impl DshApp {
             search_editor,
             sessions_scroll: ScrollHandle::new(),
             search_expanded: false,
+            workspace_search: workspace_search::WorkspaceSearch::default(),
+            workspace_search_focus: cx.focus_handle().tab_stop(true),
             search_slide: kui::primitives::family::Slide::new(0.),
             sidebar_collapsed: false,
             sidebar_narrow: false,
@@ -1199,7 +1387,9 @@ impl DshApp {
             show_settings: false,
             settings_page: SettingsPage::Credentials,
             transcript_preferences: transcript_preferences::TranscriptPreferences::new(cx),
-            model_providers: model_providers::ProviderSettings::new(w, cx),
+            desktop_onboarding: desktop_onboarding::DesktopOnboarding::default(),
+            model_providers: Default::default(),
+            deepseek_account: Default::default(),
             runtime_settings: None,
             web_search_settings: None,
             plugin_center: plugin_center::PluginCenter::default(),
@@ -1225,6 +1415,7 @@ impl DshApp {
             developer_tools_switched_at: None,
             content_font_delta: 0,
             work_details: WorkDetailsMode::Standard,
+            composer_preference: Default::default(),
             collapse_next_input: false,
             keep_folded_replies: true,
             show_workspace_menu: false,
@@ -1241,15 +1432,15 @@ impl DshApp {
             added_workspaces: Vec::new(),
             workspace_picker_pending: false,
             workspace_aliases: std::collections::HashMap::new(),
-            workspace_rename: None,
-            workspace_delete: None,
+            workspace_dialog: None,
             session_rename: None,
-            pinned_sessions: std::collections::HashSet::new(),
+            pinned_sessions: Vec::new(),
             legacy_session_titles: HashMap::new(),
             session_title_seqs: HashMap::new(),
             archived_sessions: std::collections::HashSet::new(),
             toasts: Vec::new(),
             requested_attachments: std::collections::HashSet::new(),
+            attachment_data: HashMap::new(),
             link_open_external: false,
             performance_compact: false,
             theme_preference: ThemePreference::System,
@@ -1259,18 +1450,22 @@ impl DshApp {
             file_open_error: None,
             image_viewer: None,
             confirm_permission: None,
+            permission_dialog_focus: permission_dialog::PermissionDialogFocus::new(cx),
             team_disable: None,
             full_access_acknowledged: false,
             stats_dialog: None,
             stats_dialog_bounds: ComposerAnchor::default(),
             workspace_group_by: WorkspaceGroupBy::Workspace,
+            workspace_accessibility: Default::default(),
             workspace_order_by: WorkspaceOrderBy::Updated,
             session_order_by_account: HashMap::new(),
             session_drag_gesture: None,
             session_row_geometry: session_drag::SessionRowGeometry::default(),
             workspace_order: Vec::new(),
+            workspace_registry: Default::default(),
             workspace_drag_gesture: None,
             workspace_row_geometry: workspace_drag::WorkspaceRowGeometry::default(),
+            workspace_row_focus: HashMap::new(),
             workspace_archived_filter: WorkspaceArchivedFilter::Hide,
             sidebar: SessionSidebar::default(),
             parked_sidebars: HashMap::new(),
@@ -1290,6 +1485,7 @@ impl DshApp {
             float_grips: HashMap::new(),
             right_dock_focus: HashMap::new(),
             drop_active: false,
+            attachment_intake_owners: HashMap::new(),
             composer_menu: None,
             composer_card_bounds: ComposerAnchor::default(),
             composer_seat_bounds: ComposerAnchor::default(),
@@ -1311,6 +1507,11 @@ impl DshApp {
             command_catalog: CommandCatalog::default(),
             model_filter_editor,
             model_menu: model_menu::ModelMenu::new(w, cx),
+            model_accessibility: Default::default(),
+            attachment_accessibility: Default::default(),
+            approvals: approval::ApprovalSurface::new(cx),
+            inbox_accessibility: None,
+            model_catalog: model_catalog::ModelCatalog::new(cx),
             permission_menu: permission_picker::PermissionMenu::new(cx),
             command_picker: command_picker::CommandPicker::new(w, cx),
             seeking_shimmer,
@@ -1345,6 +1546,7 @@ impl DshApp {
             _reading_activation_subscription: cx.observe_window_activation(w, |app, w, cx| {
                 app.session_reading.focus_changed();
                 app.schedule_reading_ack(w, cx);
+                cx.notify();
             }),
         }
     }
@@ -1430,36 +1632,14 @@ impl DshApp {
         cx: &mut Context<Self>,
     ) {
         if self.active_session.as_deref() != Some(session.id.as_str()) {
+            self.session_reading.enter(&session.id);
             trajectory::reset_on_switch(&mut self.trajectory);
             self.command_catalog.clear();
             let next = self
                 .parked_conversations
                 .remove(&session.id)
                 .unwrap_or_else(Conversation::fresh);
-            let mut previous = std::mem::replace(&mut self.conversation, next);
-            if let Some(id) = self.detach_sidebar(w, cx) {
-                previous.draft = self.composer.read(cx).value().to_owned();
-                previous.draft_workspace = self
-                    .sessions
-                    .iter()
-                    .find(|session| session.id == id && session.blank && !previous.running)
-                    .map(|session| session.cwd.clone());
-                if previous.draft_workspace.is_some()
-                    && previous.draft.is_empty()
-                    && previous.draft_attachments.is_empty()
-                    && previous.plan_active != Some(true)
-                    && previous.plan_reviews.is_empty()
-                    && previous.questions.is_empty()
-                {
-                    if previous.acp_open {
-                        invoke("close_session", json!({"sessionId": id}));
-                    }
-                    self.sessions.retain(|session| session.id != id);
-                    self.parked_sidebars.remove(&id);
-                } else {
-                    self.parked_conversations.insert(id, previous);
-                }
-            }
+            self.park_active_conversation(next, w, cx);
             let draft = std::mem::take(&mut self.conversation.draft);
             self.replace_composer_without_trigger(&draft, w, cx);
             self.composer_menu = None;
@@ -1488,14 +1668,53 @@ impl DshApp {
         self.sessions.insert(0, session.clone());
         self.workspace.clone_from(&session.cwd);
         replace(&self.workspace_editor, self.workspace.clone(), w, cx);
-        self.session_reading.enter(&session.id);
+        if self.selected_session.as_ref() != Some(&session.id) {
+            self.selected_session = Some(session.id.clone());
+            self.save_workspace_preferences(cx);
+        }
         self.active_session = Some(session.id);
+        self.composer
+            .update(cx, |editor, _| editor.disabled = false);
         if self.connected() {
             self.watch_agent_terminals(w, cx);
         }
         self.mount_restored_terminals(w, cx);
         self.start_turn_ticker(cx);
         self.maybe_follow_tail();
+    }
+
+    fn park_active_conversation(
+        &mut self,
+        next: Conversation,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut previous = std::mem::replace(&mut self.conversation, next);
+        previous.goal_edit = None;
+        if let Some(id) = self.detach_sidebar(w, cx) {
+            previous.draft = self.composer.read(cx).value().to_owned();
+            previous.draft_workspace = self
+                .sessions
+                .iter()
+                .find(|session| session.id == id && session.blank && !previous.running)
+                .map(|session| session.cwd.clone());
+            if previous.draft_workspace.is_some()
+                && previous.draft.is_empty()
+                && previous.draft_attachments.is_empty()
+                && previous.plan_active != Some(true)
+                && previous.approvals.is_empty()
+                && previous.plan_reviews.is_empty()
+                && previous.questions.is_empty()
+            {
+                if previous.acp_open {
+                    invoke("close_session", json!({"sessionId": id}));
+                }
+                self.sessions.retain(|session| session.id != id);
+                self.parked_sidebars.remove(&id);
+            } else {
+                self.parked_conversations.insert(id, previous);
+            }
+        }
     }
 
     fn detach_sidebar(&mut self, w: &mut Window, cx: &mut Context<Self>) -> Option<String> {
@@ -1577,11 +1796,11 @@ impl DshApp {
         }
     }
 
-    fn session_indicator(&self, id: &str) -> (SessionIndicator, usize) {
+    fn session_indicator(&self, id: &str, w: &Window, cx: &App) -> (SessionIndicator, usize) {
         let conversation = self.session_conversation(id);
         let running = conversation.is_some_and(|conversation| conversation.running);
         let pending = conversation.and_then(|conversation| {
-            if conversation.permission.is_some() {
+            if !conversation.approvals.is_empty() {
                 Some(PendingInteraction::Approval)
             } else if !conversation.plan_reviews.is_empty() {
                 Some(PendingInteraction::PlanReview)
@@ -1602,11 +1821,8 @@ impl DshApp {
             .count();
         let baseline = SessionActivity::default();
         let status = self.session_activity.get(id).unwrap_or(&baseline);
-        let viewing = self.active_session.as_deref() == Some(id)
-            && self.conversation.acp_open
-            && self.page == WorkspacePage::Conversation
-            && !self.show_welcome
-            && self.subagent_view.is_none();
+        let viewing =
+            self.active_session.as_deref() == Some(id) && self.reading_view_visible(w, cx);
         let unread = self.session_reading.completion_unread(id, viewing);
         let failed = self.session_reading.completion_failed(id, viewing);
         (
@@ -1645,7 +1861,7 @@ impl DshApp {
         }
     }
 
-    fn apply_session_page(&mut self, reply: &Value) {
+    fn merge_session_catalog(&mut self, reply: &Value) {
         let incoming = reply
             .get("sessions")
             .and_then(Value::as_array)
@@ -1654,6 +1870,9 @@ impl DshApp {
             .filter_map(|session| {
                 let id = session.get("sessionId")?.as_str()?.to_string();
                 let cwd = session.get("cwd")?.as_str()?.to_string();
+                if let Some(time) = session["lastPromptAt"].as_u64() {
+                    self.record_session_prompt_time(&id, time);
+                }
                 // ACP session/list often omits titles or sends placeholders; treat those as missing
                 // so peek_session_titles can fill from projcache / session.v4.
                 let title = session
@@ -1683,8 +1902,13 @@ impl DshApp {
                                 .map(|value| value as u64)
                         }),
                 })
-            });
+            })
+            .collect::<Vec<_>>();
         merge_session_page(&mut self.sessions, incoming, self.active_session.as_deref());
+    }
+
+    fn apply_session_page(&mut self, reply: &Value) {
+        self.merge_session_catalog(reply);
         let next = reply
             .get("nextCursor")
             .and_then(Value::as_str)
@@ -1703,43 +1927,14 @@ impl DshApp {
     }
 
     fn apply_local_sessions(&mut self, reply: &Value) {
-        let incoming = reply
-            .get("sessions")
-            .and_then(Value::as_array)
+        self.workspace_search.durable_blanks = reply["sessions"]
+            .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|session| {
-                let id = session.get("sessionId")?.as_str()?.to_string();
-                let cwd = session.get("cwd")?.as_str()?.to_string();
-                let title = session
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|title| {
-                        !title.is_empty()
-                            && *title != "未命名会话"
-                            && *title != "未命名"
-                            && *title != "Untitled"
-                            && *title != "New session"
-                    })
-                    .map(str::to_string);
-                Some(SessionSummary {
-                    id,
-                    cwd,
-                    title,
-                    blank: false,
-                    created_at_ms: session
-                        .get("createdAt")
-                        .and_then(Value::as_u64)
-                        .or_else(|| {
-                            session
-                                .get("createdAt")
-                                .and_then(Value::as_f64)
-                                .map(|value| value as u64)
-                        }),
-                })
-            });
-        merge_session_page(&mut self.sessions, incoming, self.active_session.as_deref());
+            .filter(|session| session["blank"] == true)
+            .filter_map(|session| session["sessionId"].as_str().map(str::to_owned))
+            .collect();
+        self.merge_session_catalog(reply);
         // ACP session/list omits titles; enrich from durable session.v4 logs / first prompt.
         self.request_session_titles();
         if self.sessions_acp_complete {
@@ -1760,7 +1955,7 @@ impl DshApp {
     /// Harness-style "添加工作区": delegate to the host's native directory
     /// picker. The chosen path is applied in `handle_reply`.
     pub(super) fn request_workspace_picker(&mut self) {
-        if self.workspace_picker_pending {
+        if self.workspace_picker_pending || self.workspace_registry.pending {
             return;
         }
         self.workspace_picker_pending = true;
@@ -1784,26 +1979,19 @@ impl DshApp {
         let Some(path) = reply.as_str().filter(|path| !path.is_empty()) else {
             return;
         };
-        if !self
-            .added_workspaces
-            .iter()
-            .any(|workspace| workspace == path)
-        {
-            self.added_workspaces.push(path.to_owned());
-        }
-        self.hidden_workspaces.remove(path);
-        self.collapsed_workspaces.remove(path);
-        self.save_workspace_preferences(cx);
-        if self.connected() {
-            self.new_session_at(path.to_owned(), None, w, cx);
-        } else if !self.service_starting {
-            replace(&self.workspace_editor, path.to_owned(), w, cx);
-            self.start_service(w, cx);
+        if self.connected() && !self.service_starting {
+            self.open_picked_workspace(path.to_owned(), w, cx);
+        } else {
+            self.workspace_registry.open_after_start = Some(path.to_owned());
+            if !self.service_starting {
+                replace(&self.workspace_editor, path.to_owned(), w, cx);
+                self.start_service(false, w, cx);
+            }
         }
         cx.notify();
     }
 
-    fn start_service(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+    fn start_service(&mut self, apply_workspace: bool, w: &mut Window, cx: &mut Context<Self>) {
         if self.conversation.running
             || self
                 .parked_conversations
@@ -1813,12 +2001,23 @@ impl DshApp {
             || self.creating_session
             || self.fork_pending.is_some()
             || self.plugin_install_busy()
+            || self.workspace_registry.pending
+            || self.session_archival.pending
         {
             return;
         }
         let workspace = self.workspace_editor.read(cx).value().trim().to_string();
+        if apply_workspace
+            && !workspace.is_empty()
+            && (workspace != self.workspace
+                || self.active_session.is_none() && self.workspace_registry.is_empty())
+        {
+            self.workspace_registry.open_after_start = Some(workspace.clone());
+        }
         let service_path = self.service_editor.read(cx).value().trim().to_string();
         self.service_starting = true;
+        self.model_catalog.reset();
+        self.workspace_registry.reset_snapshot();
         self.runtime_settings = None;
         self.web_search_settings = None;
         self.plugin_center = plugin_center::PluginCenter::default();
@@ -1827,11 +2026,14 @@ impl DshApp {
         self.close_plugin_add_menu();
         self.creating_session = false;
         self.pending_action = None;
+        self.scratch_opening = false;
         self.status = ServiceStatus::Starting;
         self.error = None;
         self.detach_sidebar(w, cx);
         self.page = WorkspacePage::Conversation;
         self.conversation = Conversation::fresh();
+        self.replace_composer_without_trigger("", w, cx);
+        self.composer.update(cx, |editor, _| editor.disabled = true);
         self.parked_conversations.clear();
         self.session_activity.clear();
         self.running_subagents.clear();
@@ -1839,6 +2041,7 @@ impl DshApp {
         self.opening_session_events.clear();
         self.sessions.clear();
         self.sessions_loading = false;
+        self.sessions_acp_complete = false;
         self.composer_menu = None;
         self.rebuild_selectors(w, cx);
         invoke(
@@ -1849,6 +2052,7 @@ impl DshApp {
     }
 
     pub(crate) fn open_page(&mut self, page: WorkspacePage, cx: &mut Context<Self>) {
+        self.workspace_registry.startup = None;
         self.page = page;
         if page != WorkspacePage::Automations {
             self.close_automation_create_menu();
@@ -1864,7 +2068,38 @@ impl DshApp {
     }
 
     fn new_session(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        self.new_session_at(self.workspace.clone(), None, w, cx);
+        if !self.connected() || self.creating_session {
+            return;
+        }
+        if let Some(path) = self.new_session_workspace().map(str::to_owned) {
+            self.new_session_at(path, None, w, cx);
+        } else {
+            self.clear_main_session(w, cx);
+        }
+    }
+
+    fn new_session_workspace(&self) -> Option<&str> {
+        if self.workspace_registry.available() {
+            self.default_session_workspace()
+        } else {
+            Some(&self.workspace)
+        }
+    }
+
+    fn clear_main_session(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        self.open_page(WorkspacePage::Conversation, cx);
+        self.subagent_view = None;
+        self.park_active_conversation(Conversation::fresh(), w, cx);
+        trajectory::reset_on_switch(&mut self.trajectory);
+        self.command_catalog.clear();
+        self.stats_dialog = None;
+        self.replace_composer_without_trigger("", w, cx);
+        self.composer.update(cx, |editor, _| editor.disabled = true);
+        self.rebuild_selectors(w, cx);
+        if self.selected_session.take().is_some() {
+            self.save_workspace_preferences(cx);
+        }
+        cx.notify();
     }
 
     /// Open the blank session a previous launch left behind, or create one.
@@ -1878,16 +2113,25 @@ impl DshApp {
         if !self.connected() || self.creating_session {
             return;
         }
-        let remembered = self.scratch_session.clone();
+        self.workspace_registry.startup = None;
+        let remembered = self
+            .scratch_session
+            .as_ref()
+            .filter(|id| !self.archived_sessions.contains(*id))
+            .cloned();
         let Some(id) = remembered else {
             self.new_session(w, cx);
             return;
         };
+        let cwd = self
+            .workspace_registry
+            .session_path(&id)
+            .unwrap_or(&self.workspace);
         self.scratch_opening = true;
         self.begin_action(
             PendingAction::Resume(SessionSummary {
                 id,
-                cwd: self.workspace.clone(),
+                cwd: cwd.to_owned(),
                 title: None,
                 blank: true,
                 created_at_ms: None,
@@ -1898,11 +2142,14 @@ impl DshApp {
 
     /// Remember the blank session a launch opened.
     fn remember_scratch_session(&mut self, id: &str, cx: &App) {
-        if self.scratch_session.as_deref() == Some(id) {
-            return;
+        let changed_id = self.scratch_session.as_deref() != Some(id);
+        if changed_id {
+            self.scratch_session = Some(id.to_owned());
         }
-        self.scratch_session = Some(id.to_owned());
-        self.save_workspace_preferences(cx);
+        let reserved = self.reserve_scratch_order(id);
+        if changed_id || reserved {
+            self.save_workspace_preferences(cx);
+        }
     }
 
     /// The scratch session received its first content: stop reusing it.
@@ -1924,19 +2171,33 @@ impl DshApp {
         if !self.connected() || self.creating_session {
             return;
         }
+        self.workspace_registry.startup = None;
         if self.sidebar_drawer && self.narrow_sidebar_expanded {
             self.set_left_sidebar_collapsed(true, w, cx);
         }
+        let workspace_id = self.workspace_registry.id(&cwd).map(str::to_owned);
+        let can_reuse = |id: &str, session_cwd: &str| {
+            !self.archived_sessions.contains(id)
+                && if workspace_id.is_some() {
+                    self.workspace_registry.session_path(id) == Some(cwd.as_str())
+                } else {
+                    session_cwd == cwd
+                }
+        };
         if self.conversation.acp_open
             && self.sessions.iter().any(|session| {
                 session.blank
-                    && session.cwd == cwd
                     && self.active_session.as_ref() == Some(&session.id)
+                    && can_reuse(&session.id, &session.cwd)
             })
         {
             self.open_page(WorkspacePage::Conversation, cx);
-        } else if let Some((id, _)) = self.parked_conversations.iter().find(|(_, session)| {
-            session.acp_open && session.draft_workspace.as_deref() == Some(cwd.as_str())
+        } else if let Some((id, _)) = self.parked_conversations.iter().find(|(id, session)| {
+            session.acp_open
+                && session
+                    .draft_workspace
+                    .as_deref()
+                    .is_some_and(|path| can_reuse(id, path))
         }) {
             self.resume(
                 SessionSummary {
@@ -1950,7 +2211,14 @@ impl DshApp {
                 cx,
             );
         } else {
-            self.begin_action(PendingAction::New { cwd, draft }, cx);
+            self.begin_action(
+                PendingAction::New {
+                    cwd,
+                    workspace_id,
+                    draft,
+                },
+                cx,
+            );
             return;
         }
         if let Some(draft) = draft {
@@ -1972,30 +2240,16 @@ impl DshApp {
         self.subagent_view = None;
         if self.archived_sessions.contains(&session.id) {
             // 官方：已归档结果不清空查询、不导航。
-            self.push_toast("已归档对话暂时无法查看，请取消归档后查看", cx);
+            self.push_toast(workspace_search::ARCHIVED_RESULT, cx);
             return;
         }
+        self.workspace_registry.startup = None;
         // 官方：选择未归档搜索结果会清空并收起搜索、打开会话，
         // 分组浏览还按需展开其所属 Workspace 及全部祖先。
         if self.search_expanded {
-            self.close_workspace_search(w, cx);
+            self.close_workspace_search(false, w, cx);
         }
-        if self.workspace_group_by != WorkspaceGroupBy::Flat {
-            self.collapsed_workspaces.remove(&session.cwd);
-        }
-        if self.workspace_group_by == WorkspaceGroupBy::WorkspaceTree {
-            let paths = self
-                .added_workspaces
-                .iter()
-                .map(String::as_str)
-                .chain(self.sessions.iter().map(|session| session.cwd.as_str()))
-                .collect::<Vec<_>>();
-            let mut cwd = session.cwd.as_str();
-            while let Some(parent) = workspace_rows::owning_parent_folder(cwd, &paths) {
-                cwd = paths[parent];
-                self.collapsed_workspaces.remove(cwd);
-            }
-        }
+        self.expand_session_workspace(&session);
         if self.sidebar_drawer && self.narrow_sidebar_expanded {
             self.set_left_sidebar_collapsed(true, w, cx);
         }
@@ -2017,6 +2271,26 @@ impl DshApp {
                 return;
             }
             self.begin_action(PendingAction::Resume(session), cx);
+        }
+    }
+
+    fn expand_session_workspace(&mut self, session: &SessionSummary) {
+        let group = self.workspace_account_key(session).to_owned();
+        if self.workspace_group_by != WorkspaceGroupBy::Flat {
+            self.collapsed_workspaces.remove(group.as_str());
+        }
+        if self.workspace_group_by == WorkspaceGroupBy::WorkspaceTree {
+            let workspace_order = self.full_workspace_order();
+            let paths = workspace_order
+                .iter()
+                .filter(|path| !self.workspace_group_hidden(path))
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let mut cwd = group.as_str();
+            while let Some(parent) = workspace_rows::owning_parent_folder(cwd, &paths) {
+                cwd = paths[parent];
+                self.collapsed_workspaces.remove(cwd);
+            }
         }
     }
 
@@ -2082,6 +2356,7 @@ impl DshApp {
             }
             return;
         };
+        self.apply_session_workspace(&reply, cx);
         let summary = SessionSummary {
             id: id.to_owned(),
             cwd: reply["cwd"].as_str().unwrap_or(&self.workspace).to_owned(),
@@ -2105,7 +2380,12 @@ impl DshApp {
         self.creating_session = true;
         self.opening_session_events.clear();
         match &action {
-            PendingAction::New { cwd, .. } => invoke("new_session", json!({"cwd": cwd})),
+            PendingAction::New {
+                cwd, workspace_id, ..
+            } => invoke(
+                "new_session",
+                json!({"cwd": cwd, "workspaceId": workspace_id}),
+            ),
             PendingAction::Resume(session) => invoke(
                 "resume_session",
                 json!({"sessionId": session.id, "cwd": session.cwd}),
@@ -2174,8 +2454,9 @@ impl DshApp {
         };
         self.creating_session = false;
         match (action, result) {
-            (PendingAction::New { cwd, draft }, Ok(reply)) => {
+            (PendingAction::New { cwd, draft, .. }, Ok(reply)) => {
                 if let Some(id) = reply["sessionId"].as_str() {
+                    self.apply_session_workspace(&reply, cx);
                     self.open_conversation(
                         SessionSummary {
                             id: id.to_owned(),
@@ -2197,11 +2478,13 @@ impl DshApp {
             (PendingAction::Resume(session), Ok(reply)) => {
                 let scratch = self.scratch_opening
                     && self.scratch_session.as_deref() == Some(session.id.as_str());
+                let scratch_id = scratch.then(|| session.id.clone());
                 self.scratch_opening = false;
                 self.open_conversation(session, Some(&reply), true, None, w, cx);
-                if scratch {
+                if let Some(id) = scratch_id {
                     // Reusing the blank session is a fresh start, not a restore.
                     self.conversation.resumed_session = false;
+                    self.remember_scratch_session(&id, cx);
                 }
                 self.refresh_sessions();
             }
@@ -2239,6 +2522,7 @@ impl DshApp {
     /// The Harness logs attachment references, not pixels, so each bubble needs
     /// one `read_attachment` round trip before it can show the picture.
     fn request_user_images(&mut self) {
+        let mut unresolved = Vec::new();
         for entry in self.conversation.entries.iter().filter(|entry| {
             entry.role == crate::state::EntryRole::User
                 || entry.role == crate::state::EntryRole::Tool
@@ -2258,17 +2542,40 @@ impl DshApp {
                     .collect::<Vec<_>>()
             };
             for (attachment_id, media_type, data_url) in images {
-                if data_url.is_some() || !self.requested_attachments.insert(attachment_id.clone()) {
-                    continue;
+                if data_url.is_none() {
+                    unresolved.push((attachment_id, media_type));
                 }
-                invoke(
-                    "read_attachment",
-                    json!({
-                        "attachmentId": attachment_id,
-                        "mediaType": media_type,
-                        "failed": false,
-                    }),
-                );
+            }
+        }
+        for (id, mime) in unresolved {
+            if let Some(data) = self.attachment_data.get(&id) {
+                Self::apply_attachment_data(&mut self.conversation.entries, &id, data);
+            } else {
+                self.request_attachment(&id, &mime);
+            }
+        }
+    }
+
+    fn request_attachment(&mut self, attachment_id: &str, media_type: &str) {
+        if self.requested_attachments.insert(attachment_id.to_owned()) {
+            invoke(
+                "read_attachment",
+                json!({
+                    "attachmentId": attachment_id, "mediaType": media_type, "failed": false,
+                }),
+            );
+        }
+    }
+
+    fn apply_attachment_data(entries: &mut [ChatEntry], id: &str, data_url: &str) {
+        crate::state::set_user_image_data(entries, id, data_url);
+        for entry in entries {
+            if entry.role == EntryRole::Tool
+                && let Some(presentation) = entry.presentation.as_deref()
+                && let Some(updated) =
+                    crate::tool_presentation::set_image_data(presentation, id, data_url)
+            {
+                entry.presentation = Some(updated);
             }
         }
     }
@@ -2400,41 +2707,7 @@ impl DshApp {
     }
 
     fn request_session_history(&mut self, cx: &mut Context<Self>) {
-        let Some(session_id) = self.active_session.clone() else {
-            return;
-        };
-        self.conversation.history_loading = true;
-        self.conversation.history_error = None;
-        self.conversation.history_prepend_pending = false;
-        invoke(
-            "load_session_history",
-            json!({
-                "sessionId": session_id,
-                "cwd": self.workspace,
-                "limit": 2500,
-            }),
-        );
-        // A Host that never answers must not leave the transcript on
-        // 载入历史… forever: surface the failure so the edge row offers 重新加载.
-        cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(std::time::Duration::from_secs(20))
-                .await;
-            this.update(cx, |app, cx| {
-                if app.active_session.as_deref() != Some(session_id.as_str())
-                    || !app.conversation.history_loading
-                {
-                    return;
-                }
-                app.conversation.history_loading = false;
-                app.conversation.history_was_partial = true;
-                app.conversation.history_error = Some("历史加载失败：请求超时".to_owned());
-                app.conversation.error = app.conversation.history_error.clone();
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        self.request_history_page(None, cx);
     }
 
     pub(crate) fn request_older_history(&mut self, cx: &mut Context<Self>) {
@@ -2444,50 +2717,107 @@ impl DshApp {
         {
             return;
         }
-        let Some(session_id) = self.active_session.clone() else {
-            return;
-        };
         let Some(before_seq) = self.conversation.history_oldest_seq else {
             self.conversation.history_has_more = false;
             return;
         };
+        self.request_history_page(Some(before_seq), cx);
+    }
+
+    fn request_history_page(&mut self, before_seq: Option<u64>, cx: &mut Context<Self>) {
+        let Some(session_id) = self.active_session.clone() else {
+            return;
+        };
+        self.history_request_id += 1;
+        let request = self.history_request_id;
+        self.conversation.history_request_id = request;
         self.conversation.history_loading = true;
         self.conversation.history_error = None;
-        self.conversation.history_prepend_pending = true;
-        invoke(
-            "load_session_history",
-            json!({
-                "sessionId": session_id,
-                "cwd": self.workspace,
-                "beforeSeq": before_seq,
-                "limit": 800,
-            }),
-        );
+        self.conversation.history_prepend_pending = before_seq.is_some();
+        let args = json!({
+            "sessionId": session_id,
+            "cwd": self.workspace,
+            "beforeSeq": before_seq,
+            "limit": if before_seq.is_some() { 800 } else { 2500 },
+        });
+        let owner = session_id.clone();
+        cx.spawn(async move |this, cx| {
+            let result = bridge::invoke("load_session_history", args).await;
+            let _ = this.update(cx, |app, cx| {
+                app.finish_history_page(&owner, request, result, cx)
+            });
+        })
+        .detach();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(20))
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                app.finish_history_page(&session_id, request, Err("请求超时".to_owned()), cx);
+            });
+        })
+        .detach();
         cx.notify();
     }
 
-    fn apply_session_history(
+    fn finish_history_page(
         &mut self,
         session: &str,
-        reply: &Value,
-        prepend: bool,
+        request: u64,
+        result: Result<Value, String>,
         cx: &mut Context<Self>,
     ) {
-        let events = reply
+        let selected = self.active_session.as_deref() == Some(session);
+        let Some(conversation) = self.conversation_mut(session) else {
+            return;
+        };
+        if !conversation.history_loading || conversation.history_request_id != request {
+            return;
+        }
+        let prepend = std::mem::take(&mut conversation.history_prepend_pending);
+        conversation.history_loading = false;
+        match result {
+            Ok(reply) => {
+                self.apply_session_history(session, &reply, prepend);
+                if selected {
+                    self.request_user_images();
+                    self.preload_markdown_images();
+                    self.request_turn_usage();
+                    if !prepend {
+                        self.settle_history_scroll(session, cx);
+                    }
+                }
+            }
+            Err(error) => {
+                conversation.history_was_partial = true;
+                conversation.history_error = Some(format!("历史加载失败：{error}"));
+                conversation.error = conversation.history_error.clone();
+            }
+        }
+        cx.notify();
+    }
+
+    fn apply_session_history(&mut self, session: &str, reply: &Value, prepend: bool) {
+        let mut events = reply
             .get("events")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        if prepend
+            && let Some(cursor) = self
+                .session_conversation(session)
+                .and_then(|conversation| conversation.history_oldest_seq)
+        {
+            events.retain(|event| event["seq"].as_u64().is_some_and(|seq| seq < cursor));
+        }
         let has_more = reply
             .get("hasMore")
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let mut projected = crate::history::project_session_events_with_more(&events, has_more);
-        let trajectory_offset = prepend.then(|| {
-            let scroll = self.trajectory.scroll.clone();
-            (scroll.clone(), scroll.offset().y, scroll.max_offset().y)
-        });
-        self.conversation.trajectory.apply_page(&events, prepend);
+        if prepend && self.active_session.as_deref() == Some(session) {
+            self.trajectory.preserve_viewport_on_prepend();
+        }
         if let Some(time) = projected.last_prompt_at_ms {
             self.record_session_prompt_time(session, time);
         }
@@ -2497,14 +2827,43 @@ impl DshApp {
         let Some(conversation) = self.conversation_mut(session) else {
             return;
         };
-        conversation.history_loading = false;
+        // The raw cursor advances even when the page projects no chat rows.
+        let previous_oldest = conversation.history_oldest_seq;
+        if prepend {
+            let advanced = projected
+                .oldest_seq
+                .zip(previous_oldest)
+                .is_some_and(|(new, old)| new < old);
+            if projected.has_more && !advanced {
+                conversation.history_error = Some("历史加载失败：未返回更早的记录".to_owned());
+                conversation.error = conversation.history_error.clone();
+                return;
+            }
+            if advanced {
+                conversation.history_oldest_seq = projected.oldest_seq;
+            }
+            conversation.history_has_more = projected.has_more;
+        } else if projected
+            .oldest_seq
+            .is_some_and(|oldest| previous_oldest.is_none_or(|previous| oldest <= previous))
+        {
+            conversation.history_oldest_seq = projected.oldest_seq;
+            conversation.history_has_more = projected.has_more && projected.oldest_seq.is_some();
+        }
+        conversation.history_was_partial |= projected.has_more;
+        conversation.history_error = None;
+        if conversation
+            .error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("历史加载失败："))
+        {
+            conversation.error = None;
+        }
+        conversation.trajectory.apply_page(&events, prepend);
         for event in &events {
             conversation.turn_tails.observe_history(event);
             conversation.turn_process.observe_history(event);
         }
-        conversation.history_has_more = projected.has_more;
-        conversation.history_was_partial |= projected.has_more;
-        conversation.history_error = None;
         // The catalog is independent of transcript rows: a parent whose history
         // page holds only subagent facts must still list its children.
         for row in std::mem::take(&mut projected.subagents) {
@@ -2653,28 +3012,6 @@ impl DshApp {
                 conversation.usage = Some((billed, window));
             }
         }
-        if let Some(oldest) = projected.oldest_seq {
-            conversation.history_oldest_seq = Some(match conversation.history_oldest_seq {
-                Some(current) if prepend => current.min(oldest),
-                _ => oldest,
-            });
-        }
-        if let Some((scroll, old_offset, old_max)) = trajectory_offset {
-            let session = session.to_owned();
-            cx.spawn(async move |this, cx| {
-                this.update(cx, |this, _| {
-                    if this.active_session.as_deref() != Some(session.as_str()) {
-                        return;
-                    }
-                    let growth = scroll.max_offset().y - old_max;
-                    if growth > px(0.) {
-                        scroll.set_offset(gpui::point(px(0.), old_offset - growth));
-                    }
-                })
-                .ok();
-            })
-            .detach();
-        }
     }
 
     fn request_session_titles(&mut self) {
@@ -2748,6 +3085,7 @@ impl DshApp {
         if self.conversation.permission_mode.changing()
             || self.confirm_permission.is_some()
             || self.conversation.command_busy
+            || self.conversation.inbox_submission.is_some()
         {
             return;
         }
@@ -2760,6 +3098,13 @@ impl DshApp {
         // `/model` is a KWork extension rather than an official builtin, so it is
         // matched literally alongside them.
         let draft = self.composer.read(cx).value().trim().to_owned();
+        if gesture == crate::submit::SubmitGesture::Accelerated
+            && self
+                .can_steer_inbox(draft.is_empty() && self.conversation.draft_attachments.is_empty())
+        {
+            self.steer_inbox(w, cx);
+            return;
+        }
         let resolved = resolve_command_token(&draft);
         let argument = resolved
             .as_ref()
@@ -2782,7 +3127,6 @@ impl DshApp {
         }
         if self.submit_feedback_command(w, cx)
             || self.submit_export_command(w, cx)
-            || self.submit_plan_command(w, cx)
             || self.submit_host_command(w, cx)
         {
             return;
@@ -2797,16 +3141,14 @@ impl DshApp {
         }
     }
 
-    /// 把 `/goal`、`/compact`、`/permission` 等及中文别名交给会话的 ACP 命令目录执行。
-    /// `/plan` 由 `submit_plan_command` 处理，因为它还要提交可选的后续消息；
-    /// 纯客户端的命令（如 `/export`）在这里返回 `false`，交给后面的提交路径。
+    /// 把 `/goal`、`/plan`、`/compact` 及中文别名交给 Host 的会话命令。
     fn submit_host_command(&mut self, w: &mut Window, cx: &mut Context<Self>) -> bool {
         let draft = self.composer.read(cx).value().to_owned();
         let Some((name, line)) = canonical_host_command(&draft) else {
             return false;
         };
-        if name == "plan" || client_side_command(&name) {
-            return false;
+        if name == "plan" && self.conversation.plan_mode_busy {
+            return true;
         }
         if !self.command_catalog.supports(&name) {
             self.conversation.error = Some("当前会话暂不支持该指令。".to_owned());
@@ -2853,7 +3195,6 @@ impl DshApp {
         if self.conversation.command_busy {
             return;
         }
-        self.forget_scratch_session(&session, cx);
         let name = line
             .trim_start_matches('/')
             .split_whitespace()
@@ -2876,6 +3217,7 @@ impl DshApp {
         } else {
             Vec::new()
         };
+        self.forget_scratch_session(&session, cx);
         self.conversation.command_busy = true;
         self.conversation.error = None;
         self.composer_menu = None;
@@ -2886,7 +3228,7 @@ impl DshApp {
             "attachments": attachments,
         });
         cx.spawn_in(w, async move |this, cx| {
-            let result = bridge::invoke("execute_session_command", args).await;
+            let result = bridge::submit_session_command(args).await;
             let _ = this.update_in(cx, |this, w, cx| {
                 let selected = this.active_session.as_deref() == Some(session.as_str());
                 let Some(conversation) = this.conversation_mut(&session) else {
@@ -2896,8 +3238,11 @@ impl DshApp {
                 match result {
                     // The command card comes from the session event stream, so the
                     // RPC reply only has to settle the pending state.
-                    Ok(_reply) => {
+                    Ok(reply) => {
                         conversation.error = None;
+                        if let Some(active) = reply["planActive"].as_bool() {
+                            conversation.plan_active = Some(active);
+                        }
                         if let Some(CommandSubmission {
                             ref draft,
                             ref attachment_ids,
@@ -2956,13 +3301,16 @@ impl DshApp {
         };
         // 兼容官方 `resolveSubmitMode`：会话无法插话（或已空闲）时一律排队；
         // 具体落点仍由 Host 决定，因为它才是回合状态的所有者。
-        let mode = crate::submit::resolve_submit_mode(
-            crate::submit::DEFAULT_BUSY_ENTER,
-            self.conversation.running,
-            gesture,
-            self.conversation.acp_open,
-        );
-        let (display, prompt) = build_prompt_payload(&text, &self.conversation.draft_attachments);
+        let mode = self.submit_mode(gesture);
+        let (display, prompt) =
+            match build_prompt_payload(&text, &self.conversation.draft_attachments) {
+                Ok(prompt) => prompt,
+                Err(error) => {
+                    self.conversation.error = Some(error);
+                    cx.notify();
+                    return;
+                }
+            };
         let draft = self.composer.read(cx).value().to_owned();
         let attachment_ids: Vec<String> = self
             .conversation
@@ -2995,37 +3343,63 @@ impl DshApp {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.forget_scratch_session(&session, cx);
-        self.error = None;
-        self.conversation.error = None;
-        self.page = WorkspacePage::Conversation;
+        if self.active_session.as_deref() == Some(&session) {
+            self.error = None;
+            self.page = WorkspacePage::Conversation;
+        }
+        let Some(conversation) = self.conversation_mut(&session) else {
+            return;
+        };
+        conversation.error = None;
+        let request_id = submission.as_ref().map(|_| bridge::random_id());
+        if let (Some(id), Some(submission)) = (&request_id, &submission) {
+            conversation.inbox_submission = Some(session_inbox::InboxSubmission {
+                id: id.clone(),
+                admitted: false,
+                mode,
+                display: if display.has_file() {
+                    display
+                        .prompt
+                        .iter()
+                        .filter_map(|block| block["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("")
+                } else {
+                    submission.draft.trim().to_owned()
+                },
+                attachments: conversation
+                    .draft_attachments
+                    .iter()
+                    .filter(|item| submission.attachment_ids.contains(&item.id))
+                    .map(queue_attachments::QueueAttachment::from_draft)
+                    .collect(),
+            });
+        }
         cx.notify();
         cx.spawn_in(w, async move |this, cx| {
-            let result = bridge::invoke(
-                "queue_prompt",
-                json!({
-                    "sessionId": session,
-                    "prompt": display.prompt,
-                    "mode": mode.as_str(),
-                }),
-            )
+            let result = bridge::submit_inbox_prompt(json!({
+                "sessionId": session,
+                "prompt": display.prompt,
+                "mode": mode.as_str(),
+                "requestId": request_id,
+            }))
             .await;
             let _ = this.update_in(cx, |this, w, cx| {
                 let selected = this.active_session.as_deref() == Some(session.as_str());
                 let Some(conversation) = this.conversation_mut(&session) else {
                     return;
                 };
-                match result {
-                    Ok(reply) => {
-                        if let Some(item_id) = reply["itemId"].as_str() {
-                            let accepted =
-                                crate::submit::SubmitMode::from_wire(reply["mode"].as_str());
-                            conversation.push_inbox_row(
-                                item_id.to_owned(),
-                                accepted,
-                                display.display,
-                            );
-                        }
+                if submission.is_some() {
+                    conversation.inbox_submission = None;
+                }
+                let mut accepted = false;
+                match result.and_then(|reply| {
+                    QueuedPrompt::from_inbox(&reply)
+                        .ok_or_else(|| "服务未返回排队消息，请刷新后再试。".to_owned())
+                }) {
+                    Ok(row) => {
+                        accepted = true;
+                        conversation.accept_inbox_row(row);
                         // 只有真正投递成功才清空草稿与附件。
                         if let Some(CommandSubmission {
                             ref draft,
@@ -3045,10 +3419,25 @@ impl DshApp {
                     }
                     Err(error) => conversation.error = Some(error),
                 }
+                if accepted {
+                    this.note_accepted_inbox_prompt(&session, &display.display, cx);
+                }
+                this.request_inbox_state(&session);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    fn note_accepted_inbox_prompt(&mut self, session: &str, display: &str, cx: &App) {
+        self.forget_scratch_session(session, cx);
+        if let Some(row) = self.sessions.iter_mut().find(|row| row.id == session) {
+            if row.title.is_none() {
+                row.title = Some(short_session_title(display));
+            }
+            row.blank = false;
+        }
+        self.workspace_search.durable_blanks.remove(session);
     }
 
     fn send_prompt(&mut self, w: &mut Window, cx: &mut Context<Self>) {
@@ -3066,11 +3455,28 @@ impl DshApp {
             cx.notify();
             return;
         };
+        if self
+            .conversation
+            .draft_attachments
+            .iter()
+            .any(|item| item.kind == AttachmentKind::File)
+        {
+            self.queue_prompt(crate::submit::SubmitGesture::Enter, w, cx);
+            return;
+        }
         let text = self.composer.read(cx).value().trim().to_string();
         if text.is_empty() && self.conversation.draft_attachments.is_empty() {
             return;
         }
-        let (display, prompt) = build_prompt_payload(&text, &self.conversation.draft_attachments);
+        let (display, prompt) =
+            match build_prompt_payload(&text, &self.conversation.draft_attachments) {
+                Ok(prompt) => prompt,
+                Err(error) => {
+                    self.conversation.error = Some(error);
+                    cx.notify();
+                    return;
+                }
+            };
         replace(&self.composer, "", w, cx);
         self.conversation.draft_attachments.clear();
         self.page = WorkspacePage::Conversation;
@@ -3084,6 +3490,7 @@ impl DshApp {
             }
             session.blank = false;
         }
+        self.workspace_search.durable_blanks.remove(&session_id);
         self.error = None;
         self.start_prompt(&session_id, OutgoingPrompt { display, prompt }, cx);
         cx.notify();
@@ -3255,6 +3662,8 @@ impl DshApp {
                             owner.as_deref().and_then(|id| app.conversation_mut(id))
                         {
                             conversation.ingest_draft_items(&items);
+                        } else {
+                            discard_unused_draft_files(&items);
                         }
                         cx.notify();
                     });
@@ -3289,10 +3698,27 @@ impl DshApp {
                     cx.notify();
                 }
             }
+            Some("files_begin") => {
+                if let (Some(batch), Some(session)) =
+                    (event["batch"].as_str(), self.active_session.as_ref())
+                {
+                    self.attachment_intake_owners
+                        .insert(batch.to_owned(), session.clone());
+                }
+            }
             Some("files") => {
                 self.drop_active = false;
+                let owner = event["batch"]
+                    .as_str()
+                    .and_then(|batch| self.attachment_intake_owners.remove(batch));
                 if let Some(items) = event.get("items").and_then(Value::as_array) {
-                    self.conversation.ingest_draft_items(items);
+                    if let Some(conversation) =
+                        owner.as_deref().and_then(|id| self.conversation_mut(id))
+                    {
+                        conversation.ingest_draft_items(items);
+                    } else {
+                        discard_unused_draft_files(items);
+                    }
                 }
                 cx.notify();
             }
@@ -3431,16 +3857,6 @@ impl DshApp {
         }
     }
 
-    fn respond_permission(&mut self, option_id: String, cx: &mut Context<Self>) {
-        if let Some(permission) = self.conversation.permission.take() {
-            invoke(
-                "respond_permission",
-                json!({"sessionId": self.active_session, "requestId": permission.request_id, "optionId": option_id}),
-            );
-            cx.notify();
-        }
-    }
-
     fn handle_reply(
         &mut self,
         command: &'static str,
@@ -3465,8 +3881,9 @@ impl DshApp {
                 && !self.creating_session
                 && self.conversation.entries.is_empty()
             {
-                self.start_service(w, cx);
+                self.start_service(false, w, cx);
             }
+            self.reconcile_desktop_onboarding(w, cx);
             cx.notify();
             return;
         }
@@ -3476,6 +3893,7 @@ impl DshApp {
                 match result {
                     Ok(reply) => {
                         self.status = ServiceStatus::Connected;
+                        self.load_model_catalog(w, cx);
                         self.workspace = string_at(&reply, "workspace");
                         self.service_path = string_at(&reply, "servicePath");
                         self.agent_name = reply
@@ -3487,9 +3905,21 @@ impl DshApp {
                         replace(&self.service_editor, self.service_path.clone(), w, cx);
                         self.error = None;
                         self.apply_archive_snapshot(&reply["workspaceArchive"]);
+                        self.apply_workspace_registry(&reply["workspaceRegistry"]);
                         self.apply_session_reading(&reply["sessionReading"]);
                         self.load_startup_model_providers(&reply, w, cx);
-                        self.open_scratch_session(w, cx);
+                        self.load_startup_account(&reply, w, cx);
+                        self.reconcile_desktop_onboarding(w, cx);
+                        if let Some(path) = self.workspace_registry.open_after_start.take() {
+                            self.refresh_sessions();
+                            self.open_picked_workspace(path, w, cx);
+                        } else if self.workspace_registry.available() {
+                            self.workspace_registry.startup =
+                                Some(workspace_registry::WorkspaceStartup::WaitingForSessions);
+                            self.refresh_sessions();
+                        } else {
+                            self.open_scratch_session(w, cx);
+                        }
                     }
                     Err(error) => {
                         self.status = ServiceStatus::Error;
@@ -3499,6 +3929,7 @@ impl DshApp {
                         }
                     }
                 }
+                self.request_composer_preference(None, w, cx);
             }
             "session_read_ack" => self.finish_session_read_ack(result, cx),
             "session_read_state" => {
@@ -3507,35 +3938,11 @@ impl DshApp {
                 }
             }
             "inbox_state" => self.finish_inbox_state(owner, result, w, cx),
-            "goal_state" | "goal_action" => self.finish_goal_state(owner, result, w, cx),
+            "goal_state" => self.finish_goal_state(owner, result, cx),
             "team_state" => self.finish_team_state(owner, result, w, cx),
             "fork_session" => self.finish_fork(result, w, cx),
             "rename_session" => self.finish_session_rename(result, w, cx),
             "new_session" | "resume_session" => self.finish_session_open(result, w, cx),
-            "load_session_history" => {
-                if let Some(session) = owner
-                    && let Some(conversation) = self.conversation_mut(session)
-                {
-                    let prepend = std::mem::take(&mut conversation.history_prepend_pending);
-                    match result {
-                        Ok(reply) => {
-                            self.apply_session_history(session, &reply, prepend, cx);
-                            self.request_user_images();
-                            self.preload_markdown_images();
-                            self.request_turn_usage();
-                            if !prepend {
-                                self.settle_history_scroll(session, cx);
-                            }
-                        }
-                        Err(error) => {
-                            conversation.history_loading = false;
-                            conversation.history_was_partial = true;
-                            conversation.history_error = Some(format!("历史加载失败：{error}"));
-                            conversation.error = conversation.history_error.clone();
-                        }
-                    }
-                }
-            }
             // Files-pane workspace search answer; stale requests are dropped.
             "search_workspace_files" => {
                 let answer_request = result
@@ -3602,29 +4009,22 @@ impl DshApp {
             }
             // One user-message picture finished decoding into a data URL: patch it
             // into every visible row that references the attachment.
+            "download_user_attachment" => match result {
+                Ok(reply) if reply["saved"].as_bool() == Some(true) => {
+                    self.push_toast(format!("已保存 {}", string_at(&reply, "name")), cx);
+                }
+                Ok(_) => {}
+                Err(error) => self.push_toast(error, cx),
+            },
             "read_attachment" => match result {
                 Ok(reply) => {
                     if let (Some(id), Some(data_url)) = (
                         reply.get("attachmentId").and_then(Value::as_str),
                         reply.get("dataUrl").and_then(Value::as_str),
                     ) {
-                        crate::state::set_user_image_data(
-                            &mut self.conversation.entries,
-                            id,
-                            data_url,
-                        );
-                        for entry in &mut self.conversation.entries {
-                            if entry.role == EntryRole::Tool
-                                && let Some(presentation) = entry.presentation.as_deref()
-                                && let Some(updated) = crate::tool_presentation::set_image_data(
-                                    presentation,
-                                    id,
-                                    data_url,
-                                )
-                            {
-                                entry.presentation = Some(updated);
-                            }
-                        }
+                        self.attachment_data
+                            .insert(id.to_owned(), data_url.to_owned());
+                        Self::apply_attachment_data(&mut self.conversation.entries, id, data_url);
                         cx.notify();
                     }
                 }
@@ -3646,7 +4046,10 @@ impl DshApp {
                             .into_iter()
                             .flatten()
                         {
-                            if block["attachment"]["dataUrl"].is_null() {
+                            if owner.is_some()
+                                && block["attachment"]["attachmentId"].as_str() == owner
+                                && block["attachment"]["dataUrl"].is_null()
+                            {
                                 block["attachment"]["failed"] = Value::Bool(true);
                                 changed = true;
                             }
@@ -3686,22 +4089,33 @@ impl DshApp {
                 }
             },
             "list_local_sessions" => match result {
-                Ok(reply) => self.apply_local_sessions(&reply),
+                Ok(reply) => {
+                    self.apply_local_sessions(&reply);
+                    self.finish_startup_session_list(w, cx);
+                }
                 Err(_) => {
                     self.request_session_titles();
                     if self.sessions_acp_complete {
                         self.sessions_loading = false;
                     }
+                    self.finish_startup_session_list(w, cx);
                 }
             },
             "peek_session_titles" => match result {
                 Ok(reply) => self.apply_session_titles(&reply),
                 Err(error) => self.error = Some(format!("会话标题加载失败：{error}")),
             },
-            "load_workspace_preferences" => match result {
-                Ok(reply) => self.apply_workspace_preferences(reply, cx),
-                Err(error) => self.error = Some(error),
-            },
+            "load_workspace_preferences" => {
+                self.load_desktop_onboarding(&result);
+                match result {
+                    Ok(reply) => self.apply_workspace_preferences(reply, cx),
+                    Err(error) => self.error = Some(error),
+                }
+                self.workspace_preferences_loaded = true;
+                self.reconcile_desktop_onboarding(w, cx);
+                self.request_composer_preference(None, w, cx);
+                self.finish_startup_session_list(w, cx);
+            }
             "save_workspace_preferences" => {
                 if let Err(error) = result {
                     self.error = Some(error);
@@ -3718,6 +4132,7 @@ impl DshApp {
                 if let Some(enabled) = result.ok().and_then(|reply| reply.as_bool()) {
                     self.update_html_preview_mode(enabled);
                 }
+                self.reconcile_desktop_onboarding(w, cx);
             }
             "save_developer_tools" => {
                 self.developer_tools_saving = false;
@@ -3794,7 +4209,7 @@ impl DshApp {
                     }
                 }
             },
-            "cancel_session" | "respond_permission" => {
+            "cancel_session" => {
                 if let Err(error) = result
                     && let Some(conversation) =
                         owner.and_then(|session| self.conversation_mut(session))
@@ -3938,6 +4353,12 @@ impl DshApp {
             }
             return;
         }
+        if event["kind"] == "permission_closed" {
+            if let Some(id) = event["requestId"].as_str() {
+                self.close_approval(session, id, w, cx);
+            }
+            return;
+        }
         if update["sessionUpdate"] == "gpui_plan_review" {
             self.handle_plan_review(session, update, w, cx);
             return;
@@ -3954,12 +4375,6 @@ impl DshApp {
             conversation
                 .trajectory
                 .apply_page(&[update["event"].clone()], false);
-            if selected
-                && self.trajectory.active == trajectory::ConversationView::Trajectory
-                && self.trajectory_follow_tail()
-            {
-                self.trajectory.scroll.scroll_to_bottom();
-            }
             cx.notify();
             return;
         }
@@ -3983,7 +4398,14 @@ impl DshApp {
             // transcript text.
             return;
         }
-        if update["sessionUpdate"] == "gpui_turn_tail" {
+        let durable_tail = update["sessionUpdate"] == "gpui_turn_tail";
+        let end_update =
+            update["sessionUpdate"] == "turn_end" || durable_tail && update["type"] == "turn/end";
+        if durable_tail {
+            let started = update["type"] == "turn/start" && !conversation.running;
+            if started {
+                conversation.begin_turn();
+            }
             if let (Some(id), Some(time)) = (
                 update["toolCall"]["toolCallId"].as_str(),
                 update["toolCall"]["time"].as_f64(),
@@ -4010,9 +4432,18 @@ impl DshApp {
             }
             conversation.turn_tails.observe_live(update);
             conversation.turn_process.observe_live(update);
-            return;
+            if !end_update {
+                if started {
+                    if selected {
+                        self.start_turn_ticker(cx);
+                        self.maybe_follow_tail();
+                    }
+                    cx.notify();
+                }
+                return;
+            }
         }
-        if update["sessionUpdate"] == "turn_end"
+        if end_update
             && let Some(plans) = update["turn"]
                 .as_u64()
                 .and_then(|turn| conversation.submitted_plans.remove(&turn))
@@ -4110,7 +4541,8 @@ impl DshApp {
         // Official TurnErrorItem rows must not depend on the client's local
         // running flag: a goal round can open and fail before the session view
         // was marked running, and the old guard silently dropped the failure.
-        if update["sessionUpdate"] == "turn_end"
+        let mut new_failure = None;
+        if end_update
             && let Some(turn) = update["turn"].as_u64()
             && let Some(entry) = crate::state::turn_failure_entry(
                 turn,
@@ -4124,11 +4556,19 @@ impl DshApp {
         {
             let failure = entry.text.clone();
             conversation.entries.push(entry);
+            new_failure = update["reasonObject"]["error"]["code"].as_str();
             if conversation.goal.is_some() {
                 conversation.goal_error = Some(format!("目标轮次失败：{failure}"));
             }
         }
-        if let Some(reason) = effect.turn_ended.as_deref()
+        // Bridge installations send the durable end as a tail event. The
+        // ordinary ACP event can arrive as well and follows its existing path.
+        let end_reason = if durable_tail {
+            update["reason"].as_str()
+        } else {
+            effect.turn_ended.as_deref()
+        };
+        if let Some(reason) = end_reason
             && conversation.running
         {
             if crate::workflow_runs::interrupted(reason) {
@@ -4147,13 +4587,18 @@ impl DshApp {
             };
             self.finish_session_turn(session, end, cx);
         }
-        if effect.turn_triggered
-            && let Some(summary) = self
+        if let Some(code) = new_failure {
+            self.show_quota_failure(code);
+        }
+        if effect.turn_triggered {
+            self.workspace_search.durable_blanks.remove(session);
+            if let Some(summary) = self
                 .sessions
                 .iter_mut()
                 .find(|summary| summary.id == session)
-        {
-            summary.blank = false;
+            {
+                summary.blank = false;
+            }
         }
         // Markdown pictures inside streamed or finalized prose are Host files:
         // read each new absolute destination once so the next paint can show it.
@@ -4264,18 +4709,45 @@ impl DshApp {
                 }
             }
             Some("schedule_changed") => self.invalidate_automations(cx),
+            Some("model_catalog_changed") => self.model_catalog_changed(w, cx),
+            Some("deepseek_account_changed") => {
+                self.account_changed(event["reason"].as_str().unwrap_or("changed"), w, cx);
+            }
+            Some("account_platform_status") => {
+                self.handle_account_platform_event(&event);
+            }
+            Some("composer_preference_changed") => self.request_composer_preference(None, w, cx),
             Some("schedule_session") => {
                 self.apply_local_sessions(&json!({"sessions": [event["session"]]}));
             }
             Some("session_read") => self.accept_session_reading(&event),
+            Some("workspace_registry") if !self.service_starting => {
+                self.apply_workspace_registry(&event);
+            }
             Some("service") => {
                 self.session_reading.disconnect();
                 match event.get("status").and_then(Value::as_str) {
-                    Some("starting") => self.status = ServiceStatus::Starting,
-                    Some("running") => self.status = ServiceStatus::Connected,
+                    Some("starting") => {
+                        self.status = ServiceStatus::Starting;
+                        self.reset_account_connection();
+                        self.conversation.approvals.clear();
+                        for conversation in self.parked_conversations.values_mut() {
+                            conversation.approvals.clear();
+                        }
+                        self.opening_session_events.retain(|event| {
+                            event["kind"] != "permission" && event["kind"] != "permission_closed"
+                        });
+                    }
+
+                    Some("running") if !self.service_starting => {
+                        self.status = ServiceStatus::Connected
+                    }
                     Some("exited") => {
                         self.status = ServiceStatus::Error;
+                        self.reset_account_connection();
+                        self.model_catalog.reset();
                         self.service_starting = false;
+                        self.workspace_registry.startup = None;
                         self.session_activity.clear();
                         self.agent_terminal_watch = None;
                         self.running_subagents.clear();
@@ -4283,7 +4755,7 @@ impl DshApp {
                             .chain(self.parked_conversations.values_mut())
                         {
                             conversation.acp_open = false;
-                            conversation.permission = None;
+                            conversation.approvals.clear();
                             conversation.plan_reviews.clear();
                             conversation.questions.clear();
                             conversation.submitted_plans.clear();
@@ -4302,7 +4774,9 @@ impl DshApp {
                     _ => {}
                 }
             }
-            Some("session_update" | "permission") => self.handle_conversation_event(event, w, cx),
+            Some("session_update" | "permission" | "permission_closed") => {
+                self.handle_conversation_event(event, w, cx)
+            }
             Some("workspace_directory_changed") => {
                 self.workspace_directory_changed(&event, cx);
                 return;
@@ -4386,6 +4860,9 @@ impl DshApp {
                     return;
                 }
                 match result {
+                    Ok(reply) if reply["available"] == false => {
+                        app.agent_terminal_watch = None;
+                    }
                     Ok(terminals) => {
                         let terminals = serde_json::from_value::<Vec<AgentTerminalInfo>>(terminals)
                             .unwrap_or_default();
@@ -4950,6 +5427,7 @@ impl DshApp {
         self._config_subscriptions.clear();
         self.model_select = self.build_selector("model", "模型", w, cx);
         self.reasoning_select = self.build_selector("reasoning_effort", "推理强度", w, cx);
+        self.refresh_model_menu(w, cx);
     }
 
     fn build_selector(
@@ -5102,9 +5580,13 @@ use conversation::Conversation;
 
 mod dock_controls;
 pub(crate) use dock_controls::dock_action_button;
+mod approval;
 mod automations;
 mod command_picker;
+mod composer_preferences;
 mod composer_stats;
+mod deepseek_account;
+mod desktop_onboarding;
 mod dock_documents;
 mod dock_drag;
 mod dock_files;
@@ -5126,6 +5608,8 @@ mod live_shimmer;
 mod menu_groups;
 mod menu_surface;
 mod message_feedback;
+mod model_accessibility;
+mod model_catalog;
 mod model_menu;
 mod model_providers;
 mod panels;
@@ -5136,7 +5620,9 @@ mod plugin_center;
 mod plugin_install;
 mod plugin_versions;
 mod process_scroll;
+mod provider_retry;
 mod question_panel;
+mod queue_attachments;
 mod runtime_settings;
 mod session_archive;
 mod session_context_menu;
@@ -5159,7 +5645,9 @@ mod turn_usage;
 mod web_search_settings;
 mod workflow_run;
 mod workspace;
+mod workspace_accessibility;
 mod workspace_drag;
+mod workspace_registry;
 mod workspace_rows;
 mod workspace_search;
 mod workspace_watch;
@@ -5188,11 +5676,56 @@ impl Render for DshApp {
         self.update_terminal_shell_menu(cx);
         self.header_menu_buttons.borrow_mut().clear();
         self.update_header_menu(w, cx);
+        if self.rail_active(w) || self.workspace_group_by == WorkspaceGroupBy::Flat {
+            self.dismiss_workspace_context(false, w, cx);
+        }
         self.update_terminal_title(w, cx);
         self.persist_right_sidebar();
         self.schedule_reading_ack(w, cx);
         self.dock_controls.begin_frame();
+        self.model_accessibility.rendered_label = None;
+        self.model_accessibility.rendered_composer = false;
+        self.model_accessibility.input_label = None;
+        self.deepseek_account.launcher_compact = None;
+        self.approvals.begin_frame();
+        let welcome_visible = self.show_welcome;
+        let checking_models = self.service_starting;
+        let account_available = self.deepseek_account.available;
+        let account_open = self.deepseek_account.welcome_open;
+        self.welcome.update(cx, |welcome, _| {
+            welcome.publish_form(
+                welcome_visible,
+                checking_models,
+                account_available,
+                account_open,
+                w,
+            )
+        });
         let workspace = self.render_workspace(w, cx);
+        self.publish_accessible_model_selector(cx);
+        self.publish_accessible_approval();
+        self.publish_accessible_inbox(cx);
+        self.publish_accessible_composer(cx);
+        self.publish_accessible_attachments();
+        self.publish_model_provider_form(cx);
+        self.publish_account_panel(cx);
+        self.publish_desktop_onboarding(cx);
+        let sidebar_accessible = self.workspace_tree_available() && !self.rail_active(w);
+        if !sidebar_accessible {
+            self.workspace_accessibility.rendering.clear();
+        }
+        let accessible_surface = self.accessible_workspace_surface(cx);
+        let accessible_search = (sidebar_accessible && accessible_surface.is_none()).then(|| {
+            workspace_accessibility::AccessibleSearch {
+                draft: self
+                    .search_expanded
+                    .then(|| self.search_editor.read(cx).value().to_owned()),
+                results: !self.workspace_search.query.is_empty(),
+                status: self.workspace_accessibility.search_status,
+            }
+        });
+        self.workspace_accessibility
+            .publish(accessible_surface, accessible_search);
         self.dock_controls.end_frame();
         if self.browser_shell.is_some() {
             // The native surface needs the menu bounds measured during prepaint.
@@ -5297,70 +5830,40 @@ fn pending_inbox_display(text: &str, has_image: bool) -> String {
     }
 }
 
-fn build_prompt_payload(text: &str, attachments: &[DraftAttachment]) -> (String, Vec<Value>) {
+fn discard_unused_draft_files(items: &[Value]) {
+    for id in items.iter().filter_map(|item| item["id"].as_str()) {
+        bridge::discard_draft_file(id);
+    }
+}
+
+fn build_prompt_payload(
+    text: &str,
+    attachments: &[DraftAttachment],
+) -> Result<(String, Vec<Value>), String> {
     let mut blocks = Vec::new();
-    let mut display_lines = Vec::new();
+    let mut display = Vec::new();
     if !text.is_empty() {
         blocks.push(json!({"type": "text", "text": text}));
-        display_lines.push(text.to_string());
+        display.push(text.to_owned());
     }
-    let mut file_notes = Vec::new();
     for item in attachments {
         match item.kind {
             AttachmentKind::Image => {
-                if let Some((mime, data)) = image_block_from_attachment(item) {
-                    blocks.push(json!({
-                        "type": "image",
-                        "mimeType": mime,
-                        "data": data,
-                    }));
-                    display_lines.push(format!("[图片] {}", item.name));
-                } else {
-                    let note = format!("[图片未就绪] {}", item.name);
-                    file_notes.push(note.clone());
-                    display_lines.push(note);
-                }
+                let (mime, data) = image_block_from_attachment(item)
+                    .ok_or_else(|| format!("无法读取图片 {}，草稿已保留。", item.name))?;
+                blocks.push(json!({"type": "image", "mimeType": mime, "data": data}));
+                display.push(format!("[图片] {}", item.name));
             }
             AttachmentKind::File => {
-                let note = format!("📎 {} ({})", item.name, format_bytes(item.size));
-                file_notes.push(note.clone());
-                display_lines.push(note);
+                blocks.push(json!({"type": "file", "draftId": item.id}));
+                display.push(item.name.clone());
             }
         }
     }
-    if !file_notes.is_empty() {
-        let note = file_notes.join("\n");
-        if text.is_empty()
-            && blocks
-                .iter()
-                .all(|block| block.get("type") != Some(&json!("text")))
-        {
-            blocks.insert(0, json!({"type": "text", "text": note}));
-        } else if let Some(first) = blocks.first_mut() {
-            if first.get("type") == Some(&json!("text")) {
-                let existing = first
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let merged = if existing.is_empty() {
-                    note
-                } else {
-                    format!("{existing}\n\n{note}")
-                };
-                *first = json!({"type": "text", "text": merged});
-            } else {
-                blocks.insert(0, json!({"type": "text", "text": note}));
-            }
-        }
-    }
-    if blocks.is_empty() {
-        blocks.push(json!({"type": "text", "text": ""}));
-    }
-    (display_lines.join("\n"), blocks)
+    Ok((display.join("\n"), blocks))
 }
 
-/// 把草稿图片转换成 `commands.execute` 的 `CommandSubmitAttachment`。
-/// KWork 的通用文件附件仍是草稿轨里的本地提示，未上传成 receipt，不能伪造。
+/// 图片以内联形式发送，文件在执行指令时从所属草稿分块上传。
 fn command_attachment_payload(
     items: &[DraftAttachment],
     accepts_attachments: bool,
@@ -5375,7 +5878,7 @@ fn command_attachment_payload(
     for item in items {
         match item.kind {
             AttachmentKind::File => {
-                return Err("文件附件暂不支持该指令；草稿已保留。".to_owned());
+                attachments.push(json!({"type": "file", "draftId": item.id}));
             }
             AttachmentKind::Image => {
                 let Some((mime, data)) = image_block_from_attachment(item) else {

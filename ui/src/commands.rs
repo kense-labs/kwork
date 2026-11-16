@@ -244,8 +244,7 @@ pub(crate) fn resolve_command_token(line: &str) -> Option<(String, String)> {
 
 /// 输入行是否以某个 builtin 的某种写法开头，返回其后的参数文本。
 ///
-/// 客户端自己接管的命令（`/feedback` 的反馈面板、`/plan` 的模式切换）必须同时
-/// 识别英文与中文写法；只认英文会让两种写法走上不同路径，行为不一致。
+/// 客户端的反馈和导出界面使用中英文写法触发同一个本地命令。
 pub(crate) fn strip_command_token<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     let (_, en, zh) = HOST_COMMAND_TOKENS
         .iter()

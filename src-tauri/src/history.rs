@@ -6,9 +6,12 @@ pub(crate) mod plan;
 mod submitted_plan;
 
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+use std::time::SystemTime;
 
 const MAX_EVENTS: usize = 2_500;
 
@@ -928,29 +931,61 @@ pub async fn list_local_sessions() -> Result<Value, String> {
 }
 
 fn scan_local_sessions() -> Vec<Value> {
-    let mut sessions = scan_session_projection_cache();
-    // The projection cache is optional. A restarted Host must still discover
-    // durable session.v4 histories before ACP or that cache has seen them.
-    let known = sessions
-        .iter()
-        .filter_map(|session| session["sessionId"].as_str().map(str::to_owned))
-        .collect::<std::collections::HashSet<_>>();
+    static LOG_SUMMARIES: LazyLock<Mutex<HashMap<PathBuf, SessionLogSummary>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    let mut log_summaries = LOG_SUMMARIES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let home = dsh_home();
-    sessions.extend(discover_session_logs(&home.join("sessions"), &known));
+    let checkpoints = scan_session_projection_cache(&home);
+    // Verify checkpoints against existing logs and fold logs whose checkpoints
+    // lack current list metadata.
+    let mut by_id = discover_session_logs(&home.join("sessions"), &checkpoints, &mut log_summaries);
+    for (id, checkpoint) in checkpoints {
+        by_id.entry(id).or_insert(checkpoint.row);
+    }
+    let mut sessions = by_id.into_values().collect::<Vec<_>>();
     sort_local_sessions(&mut sessions);
     sessions
 }
 
 fn sort_local_sessions(sessions: &mut [Value]) {
+    let recency = |session: &Value| {
+        session["createdAt"]
+            .as_u64()
+            .max(session["lastPromptAt"].as_u64())
+    };
     sessions.sort_by(|left, right| {
-        let left_ms = left.get("createdAt").and_then(Value::as_u64).unwrap_or(0);
-        let right_ms = right.get("createdAt").and_then(Value::as_u64).unwrap_or(0);
-        right_ms.cmp(&left_ms)
+        recency(right)
+            .cmp(&recency(left))
+            .then_with(|| left["sessionId"].as_str().cmp(&right["sessionId"].as_str()))
     });
 }
 
-fn discover_session_logs(root: &Path, known: &std::collections::HashSet<String>) -> Vec<Value> {
-    let mut sessions: Vec<Value> = Vec::new();
+struct SessionLogSummary {
+    stamp: (SystemTime, u64),
+    row: Value,
+}
+
+struct SessionListCheckpoint {
+    row: Value,
+    written_at: Option<SystemTime>,
+    format_version: Option<u64>,
+    seeded: bool,
+}
+
+fn log_stamp(path: &Path) -> Option<(SystemTime, u64)> {
+    let metadata = fs::metadata(path).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
+fn discover_session_logs(
+    root: &Path,
+    checkpoints: &HashMap<String, SessionListCheckpoint>,
+    previous: &mut HashMap<PathBuf, SessionLogSummary>,
+) -> HashMap<String, Value> {
+    let mut sessions = HashMap::new();
+    let mut summaries = HashMap::new();
     for workspace in fs::read_dir(root).into_iter().flatten().flatten() {
         if !workspace.path().is_dir() || workspace.file_name() == "subagents" {
             continue;
@@ -971,81 +1006,124 @@ fn discover_session_logs(root: &Path, known: &std::collections::HashSet<String>)
             else {
                 continue;
             };
-            if known.contains(id) || sessions.iter().any(|session| session["sessionId"] == id) {
+            if sessions.contains_key(id) {
                 continue;
             }
             let Some(path) = find_log_path(&directory) else {
                 continue;
             };
-            let Ok(lines) = log_lines(&path) else {
-                continue;
-            };
-            let mut header = None;
-            let mut title = None;
-            let mut fallback = None;
-            for line in lines.map_while(Result::ok) {
-                let Ok(event) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
-                if header.is_none() {
-                    header = Some(event);
-                } else if event["type"] == "session/title" {
-                    title = event["data"]["title"]
-                        .as_str()
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_owned);
-                } else if fallback.is_none()
-                    && event["type"] == "user/message"
-                    && let Some(prompt) = first_user_prompt_text(&event)
-                {
-                    fallback = Some(fallback_session_title(&prompt));
-                    // A subsequent explicit title is uncommon. It is handled
-                    // on the normal title-enrichment pass after this cheap list.
-                    break;
-                }
-            }
-            let Some(header) = header else {
-                continue;
-            };
-            if header["type"] != "session"
-                || header["id"] != id
-                || header["delegationDepth"]
-                    .as_u64()
-                    .is_some_and(|depth| depth > 0)
-                || header["origin"] == "subagent"
+            let stamp = log_stamp(&path);
+            if let Some(summary) = previous
+                .remove(&path)
+                .filter(|entry| Some(entry.stamp) == stamp)
             {
+                sessions.insert(id.to_owned(), summary.row.clone());
+                summaries.insert(path, summary);
                 continue;
             }
-            let Some(cwd) = header["cwd"]
-                .as_str()
-                .map(str::trim)
-                .filter(|cwd| !cwd.is_empty())
-            else {
+            let checkpoint = checkpoints.get(id).filter(|checkpoint| {
+                stamp
+                    .zip(checkpoint.written_at)
+                    .is_some_and(|((modified, _), written)| written >= modified)
+            });
+            let Some((row, memoize)) = summarize_session_log(&path, id, checkpoint) else {
                 continue;
             };
-            sessions.push(json!({
-                "sessionId": id,
-                "cwd": cwd,
-                "createdAt": header["createdAt"],
-                "title": title.or(fallback),
-            }));
+            if memoize && let Some(stamp) = stamp.filter(|stamp| Some(*stamp) == log_stamp(&path)) {
+                summaries.insert(
+                    path,
+                    SessionLogSummary {
+                        stamp,
+                        row: row.clone(),
+                    },
+                );
+            }
+            sessions.insert(id.to_owned(), row);
         }
     }
-    sessions.sort_by(|left, right| {
-        let left_ms = left.get("createdAt").and_then(Value::as_u64).unwrap_or(0);
-        let right_ms = right.get("createdAt").and_then(Value::as_u64).unwrap_or(0);
-        right_ms.cmp(&left_ms)
-    });
+    *previous = summaries;
     sessions
 }
 
-fn scan_session_projection_cache() -> Vec<Value> {
-    let root = dsh_home().join("storages/session_projcache/sessions");
+fn summarize_session_log(
+    path: &Path,
+    id: &str,
+    checkpoint: Option<&SessionListCheckpoint>,
+) -> Option<(Value, bool)> {
+    let mut lines = log_lines(path).ok()?;
+    let header: Value = serde_json::from_str(&lines.next()?.ok()?).ok()?;
+    if header["type"] != "session"
+        || header["id"] != id
+        || header["delegationDepth"]
+            .as_u64()
+            .is_some_and(|depth| depth > 0)
+        || header["origin"] == "subagent"
+    {
+        return None;
+    }
+    let cwd = header["cwd"]
+        .as_str()
+        .map(str::trim)
+        .filter(|cwd| !cwd.is_empty())?;
+    if let Some(checkpoint) = checkpoint
+        && checkpoint.row.get("lastPromptAt").is_some()
+        && checkpoint.format_version == header["version"].as_u64()
+        && checkpoint.seeded == (header["isSeeded"] == true)
+        && checkpoint.row["createdAt"] == header["createdAt"]
+        && checkpoint.row["cwd"] == cwd
+    {
+        return Some((checkpoint.row.clone(), false));
+    }
+    let mut title = None;
+    let mut fallback = None;
+    let mut last_prompt_at = None;
+    let mut blank = true;
+    let mut complete = true;
+    for line in lines {
+        let Ok(line) = line else {
+            complete = false;
+            break;
+        };
+        let Ok(event) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        match event["type"].as_str() {
+            Some("turn/start") => blank = false,
+            Some("session/title") => {
+                title = event["data"]["title"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|title| !title.is_empty())
+                    .map(str::to_owned);
+            }
+            Some("user/message") => {
+                if event.pointer("/data/source/kind").and_then(Value::as_str) == Some("user")
+                    && let Some(time) = event["time"].as_u64()
+                {
+                    last_prompt_at = Some(time);
+                }
+                if fallback.is_none()
+                    && let Some(prompt) = first_user_prompt_text(&event)
+                {
+                    fallback = Some(fallback_session_title(&prompt));
+                }
+            }
+            _ => {}
+        }
+    }
+    Some((
+        json!({ "sessionId": id, "cwd": cwd, "createdAt": header["createdAt"],
+        "blank": complete.then_some(blank), "lastPromptAt": last_prompt_at, "title": title.or(fallback) }),
+        complete,
+    ))
+}
+
+fn scan_session_projection_cache(home: &Path) -> HashMap<String, SessionListCheckpoint> {
+    let root = home.join("storages/session_projcache/sessions");
     let Ok(entries) = fs::read_dir(&root) else {
-        return Vec::new();
+        return HashMap::new();
     };
-    let mut sessions = Vec::new();
+    let mut sessions = HashMap::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
@@ -1060,6 +1138,10 @@ fn scan_session_projection_cache() -> Vec<Value> {
         if !looks_like_session {
             continue;
         }
+        let written_at = entry
+            .metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok());
         let Ok(bytes) = fs::read(&path) else {
             continue;
         };
@@ -1082,15 +1164,9 @@ fn scan_session_projection_cache() -> Vec<Value> {
             .map(str::trim)
             .filter(|title| !title.is_empty())
             .map(str::to_string);
-        let created_at = entry
-            .metadata()
-            .ok()
-            .and_then(|meta| meta.modified().ok())
-            .and_then(|time| {
-                time.duration_since(std::time::UNIX_EPOCH)
-                    .ok()
-                    .map(|duration| duration.as_millis() as u64)
-            });
+        let identity = &value["record"]["identity"];
+        let created_at = identity["createdAt"].as_u64();
+        let format_version = identity["formatVersion"].as_u64();
         let mut row = json!({
             "sessionId": stem,
             "cwd": cwd,
@@ -1101,13 +1177,28 @@ fn scan_session_projection_cache() -> Vec<Value> {
         if let Some(created_at) = created_at {
             row["createdAt"] = json!(created_at);
         }
-        sessions.push(row);
+        if created_at.is_some()
+            && format_version.is_some()
+            && identity["cwd"] == cwd
+            && let Some(metadata) = value.pointer("/record/rows/sessionListMetadata")
+            && metadata["ver"] == 1
+            && metadata["val"]["blank"].is_boolean()
+            && let Some(time) = metadata["val"].get("lastPromptAt")
+            && (time.is_null() || time.is_u64())
+        {
+            row["lastPromptAt"] = time.clone();
+            row["blank"] = metadata["val"]["blank"].clone();
+        }
+        sessions.insert(
+            stem.to_owned(),
+            SessionListCheckpoint {
+                row,
+                written_at,
+                format_version,
+                seeded: identity["isSeeded"] == true,
+            },
+        );
     }
-    sessions.sort_by(|left, right| {
-        let left_ms = left.get("createdAt").and_then(Value::as_u64).unwrap_or(0);
-        let right_ms = right.get("createdAt").and_then(Value::as_u64).unwrap_or(0);
-        right_ms.cmp(&left_ms)
-    });
     sessions
 }
 
@@ -1140,17 +1231,91 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         let log = [
             json!({"type":"session","version":4,"id":id,"createdAt":1234,"cwd":cwd}),
-            json!({"type":"user/message","data":{"content":[{"type":"text","text":"打开 KWork"}]}}),
+            json!({"type":"user/message","time":1300,"data":{"source":{"kind":"user"},"content":[{"type":"text","text":"打开 KWork"}]}}),
+            json!({"type":"user/message","time":2400,"data":{"source":{"kind":"user"}}}),
+            json!({"type":"user/message","time":9600,"data":{"source":{"kind":"goal"}}}),
+            json!({"type":"assistant/message","time":9990}),
         ]
         .map(|row| row.to_string())
         .join("\n");
         let encoded = zstd::stream::encode_all(log.as_bytes(), 0).unwrap();
         fs::write(directory.join("session.v4.jsonl.zstd"), encoded).unwrap();
-        let rows = discover_session_logs(&sessions, &std::collections::HashSet::new());
+        let rows = discover_session_logs(&sessions, &HashMap::new(), &mut HashMap::new());
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["sessionId"], id);
-        assert_eq!(rows[0]["createdAt"], 1234);
-        assert_eq!(rows[0]["title"], "打开 KWork");
+        assert_eq!(rows[id]["sessionId"], id);
+        assert_eq!(rows[id]["createdAt"], 1234);
+        assert_eq!(rows[id]["lastPromptAt"], 2400);
+        assert_eq!(rows[id]["title"], "打开 KWork");
+    }
+
+    #[test]
+    fn recovers_activity_from_a_log_newer_than_its_checkpoint() {
+        use std::io::Write;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let home = tempfile::tempdir().unwrap();
+        let cwd = home.path().to_str().unwrap();
+        let id = "session-activity";
+        let sessions = home.path().join("sessions");
+        let directory = sessions.join(project_key(cwd)).join(id);
+        let cache = home.path().join("storages/session_projcache/sessions");
+        fs::create_dir_all(&directory).unwrap();
+        fs::create_dir_all(&cache).unwrap();
+        let mut log = fs::File::create(directory.join("session.v4.jsonl")).unwrap();
+        writeln!(
+            log,
+            "{}",
+            json!({"type":"session","version":4,"id":id,"createdAt":100,"cwd":cwd})
+        )
+        .unwrap();
+        let append_prompt = |log: &mut fs::File, time| {
+            writeln!(
+                log,
+                "{}",
+                json!({"type":"user/message","time":time,"data":{"source":{"kind":"user"}}})
+            )
+            .unwrap();
+        };
+        append_prompt(&mut log, 150);
+        let old = UNIX_EPOCH + Duration::from_secs(100);
+        let new = UNIX_EPOCH + Duration::from_secs(200);
+        log.set_modified(old).unwrap();
+        let mut checkpoint = fs::File::create(cache.join(format!("{id}.json"))).unwrap();
+        write!(
+            checkpoint,
+            "{}",
+            json!({"record":{
+                "identity":{"formatVersion":4,"createdAt":100,"cwd":cwd},
+                "rows":{"workingDirectory":{"val":cwd},"title":{"val":"Stored title"},
+                    "sessionListMetadata":{"ver":1,"val":{"blank":false,"lastPromptAt":150}}}
+            }})
+        )
+        .unwrap();
+        checkpoint.set_modified(new).unwrap();
+        let checkpoints = scan_session_projection_cache(home.path());
+        let mut summaries = HashMap::new();
+        let rows = discover_session_logs(&sessions, &checkpoints, &mut summaries);
+        assert_eq!(rows[id]["createdAt"], 100);
+        assert_eq!(rows[id]["title"], "Stored title");
+        assert_eq!(rows[id]["lastPromptAt"], 150);
+
+        append_prompt(&mut log, 350);
+        log.set_modified(new + Duration::from_secs(1)).unwrap();
+        let rows = discover_session_logs(&sessions, &checkpoints, &mut summaries);
+        assert_eq!(rows[id]["lastPromptAt"], 350);
+        let mut ordered = [
+            json!({"sessionId":"newer-created","createdAt":300}),
+            rows[id].clone(),
+        ];
+        sort_local_sessions(&mut ordered);
+        assert_eq!(ordered[0]["sessionId"], id);
+
+        append_prompt(&mut log, 450);
+        log.set_modified(new + Duration::from_secs(1)).unwrap();
+        assert_eq!(
+            discover_session_logs(&sessions, &checkpoints, &mut summaries)[id]["lastPromptAt"],
+            450
+        );
     }
 
     #[test]

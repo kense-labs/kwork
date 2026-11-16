@@ -249,8 +249,7 @@ impl DshApp {
             || self.shortcuts.open
             || self.confirm_permission.is_some()
             || self.drop_active
-            || self.workspace_rename.is_some()
-            || self.workspace_delete.is_some()
+            || self.workspace_dialog.is_some()
             || self.session_rename.is_some()
             || self.dock_drop_hint_pane() == Some(pane);
         let inert = viewer_open || self.terminal_shell_menu_rect(w, cx).is_some();

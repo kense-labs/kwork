@@ -4,14 +4,33 @@ use crate::{
     brand, bridge,
     state::validate_api_key,
     tokens::{Tokens, dsh},
-    web::{dock_action_button, invoke},
+    web::invoke,
 };
-use gpui::{App, Context, FontWeight, Subscription, Window, div, prelude::*, px};
+use gpui::{Context, Subscription, Window, div, prelude::*, px};
 use kui::components::button::Button;
 use kui::primitives::editor::{EditEvent, Editor, InputMode};
 use kui::primitives::glyph::{Glyph, icon};
 use kui::primitives::ops_surface::{column, editor, icon_btn, input, note, replace, row};
+use serde::Serialize;
 use serde_json::{Value, json};
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen(module = "/welcome-form.js")]
+extern "C" {
+    fn update_welcome_form(value: JsValue);
+    fn welcome_has_draft() -> bool;
+    pub(crate) fn listen_welcome_form(callback: &js_sys::Function);
+}
+
+#[derive(PartialEq, Eq, Serialize)]
+struct WelcomeForm {
+    dark: bool,
+    checking: bool,
+    saving: bool,
+    account_available: bool,
+    account_open: bool,
+    error: Option<String>,
+}
 
 #[derive(Clone, Copy)]
 pub enum WelcomeEvent {
@@ -27,6 +46,7 @@ pub struct Welcome {
     error: Option<String>,
     skipped: bool,
     api_key: gpui::Entity<Editor>,
+    web_form: Option<WelcomeForm>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -60,6 +80,7 @@ impl Welcome {
             error: None,
             skipped: false,
             api_key,
+            web_form: None,
             _subscriptions: vec![
                 submit,
                 cx.observe_window_appearance(w, |_, _, cx| cx.notify()),
@@ -76,9 +97,13 @@ impl Welcome {
     }
 
     pub fn use_saved_models(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        if self.should_show() && self.api_key.read(cx).value().is_empty() {
+        if self.should_show() && !welcome_has_draft() && self.api_key.read(cx).value().is_empty() {
             self.skip_key(w, cx);
         }
+    }
+
+    pub(crate) fn continue_with_account(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        self.skip_key(w, cx);
     }
 
     fn skip_key(&mut self, w: &mut Window, cx: &mut Context<Self>) {
@@ -146,11 +171,16 @@ impl Welcome {
     }
 
     fn save_api_key(&mut self, cx: &mut Context<Self>) {
+        let value = self.api_key.read(cx).value().to_owned();
+        self.save_key_value(&value, cx);
+    }
+
+    fn save_key_value(&mut self, value: &str, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
-        let value = self.api_key.read(cx).value().trim().to_string();
-        if let Err(error) = validate_api_key(&value) {
+        let value = value.trim();
+        if let Err(error) = validate_api_key(value) {
             self.error = Some(error.to_string());
             self.refresh(cx);
             return;
@@ -159,6 +189,52 @@ impl Welcome {
         self.error = None;
         invoke("save_api_key", json!({"value": value}));
         self.refresh(cx);
+    }
+
+    pub(crate) fn publish_form(
+        &mut self,
+        visible: bool,
+        checking_models: bool,
+        account_available: bool,
+        account_open: bool,
+        w: &Window,
+    ) {
+        let next = visible.then(|| WelcomeForm {
+            dark: dark_window(w),
+            checking: self.checking_key || checking_models,
+            saving: self.busy && !self.checking_key,
+            account_available,
+            account_open,
+            error: self.error.clone(),
+        });
+        if self.web_form != next
+            && let Ok(value) = serde_wasm_bindgen::to_value(&next)
+        {
+            self.web_form = next;
+            update_welcome_form(value);
+        }
+    }
+
+    pub(crate) fn handle_form_action(
+        &mut self,
+        action: &str,
+        key: &str,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.should_show() {
+            return;
+        }
+        match action {
+            "welcome-save" => self.save_key_value(key, cx),
+            "welcome-edit" if !self.busy && self.error.take().is_some() => self.refresh(cx),
+            "welcome-later" => self.skip_key(w, cx),
+            "welcome-providers" if !self.busy || self.checking_key => {
+                self.skip_key(w, cx);
+                cx.emit(WelcomeEvent::OpenModelProviders);
+            }
+            _ => {}
+        }
     }
 
     pub fn render_inline(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -276,198 +352,23 @@ impl Welcome {
                 .map(|error| div().text_size(px(12.)).text_color(p.danger).child(error)),
         )
     }
-
-    fn render_key(&self, p: Tokens, w: &Window, cx: &mut Context<Self>) -> (gpui::Div, gpui::Div) {
-        let editor = self.api_key.read(cx);
-        let can_save = !self.busy && !editor.value().trim().is_empty();
-        let configuring = self.busy && !self.checking_key;
-        let focused = editor.focus.is_focused(w);
-        let content = column()
-            .w(px(440.))
-            .max_w_full()
-            .items_center()
-            .gap(px(40.))
-            .child(welcome_heading(
-                "配置模型后开始使用",
-                Some("使用 DeepSeek API Key，或添加 OpenAI 兼容服务"),
-                p,
-            ))
-            .child(
-                div()
-                    .relative()
-                    .w_full()
-                    .child(
-                        row()
-                            .w_full()
-                            .h(px(48.))
-                            .px(px(14.))
-                            .rounded(px(12.))
-                            .border_1()
-                            .border_color(if focused {
-                                p.label_primary
-                            } else {
-                                p.border_l4
-                            })
-                            .child(self.api_key.clone()),
-                    )
-                    .children(self.error.clone().map(|error| {
-                        welcome_error(error, p)
-                            .absolute()
-                            .top(px(56.))
-                            .left_0()
-                            .w_full()
-                    })),
-            );
-        let actions = welcome_actions()
-            .child(dock_action_button(
-                welcome_button("save-api-key", "保存并继续", true, !can_save, p, cx),
-                cx.listener(move |this, _, _, cx| {
-                    if can_save {
-                        this.save_api_key(cx);
-                    }
-                }),
-            ))
-            .child(dock_action_button(
-                welcome_button(
-                    "configure-model-providers",
-                    "配置模型服务",
-                    false,
-                    configuring,
-                    p,
-                    cx,
-                ),
-                cx.listener(|this, _, w, cx| {
-                    if !this.busy || this.checking_key {
-                        this.skip_key(w, cx);
-                        cx.emit(WelcomeEvent::OpenModelProviders);
-                    }
-                }),
-            ))
-            .child(dock_action_button(
-                welcome_button("skip-key", "稍后配置", false, configuring, p, cx),
-                cx.listener(|this, _, w, cx| this.skip_key(w, cx)),
-            ));
-        (content, actions)
-    }
 }
 
-fn welcome_actions() -> gpui::Div {
-    column()
-        .relative()
-        .w(px(240.))
-        .h(px(164.))
-        .flex_none()
-        .gap(px(16.))
-}
-
-fn welcome_heading(title: &'static str, description: Option<&'static str>, p: Tokens) -> gpui::Div {
-    column()
-        .items_center()
-        .text_center()
-        .gap(px(8.))
-        .child(
-            div()
-                .text_size(px(20.))
-                .line_height(px(32.))
-                .font_weight(FontWeight::NORMAL)
-                .child(title),
-        )
-        .children(description.map(|description| {
-            div()
-                .text_size(px(16.))
-                .line_height(px(22.))
-                .font_weight(FontWeight::LIGHT)
-                .text_color(p.label_secondary)
-                .child(description)
-        }))
-}
-
-fn welcome_error(error: String, p: Tokens) -> gpui::Div {
-    div()
-        .text_size(px(14.))
-        .line_height(px(22.))
-        .text_color(p.label_primary)
-        .child(error)
-}
-
-fn welcome_button(
-    id: &'static str,
-    label: &'static str,
-    primary: bool,
-    disabled: bool,
-    p: Tokens,
-    cx: &App,
-) -> gpui::Stateful<gpui::Div> {
-    let (fill, hover, border, ink) = if primary {
-        (
-            p.button_primary_fill,
-            p.button_primary_hover,
-            gpui::transparent_black(),
-            p.label_primary_inverted,
-        )
-    } else {
-        (
-            p.button_elevated,
-            p.button_floating_hover,
-            p.border_l2,
-            p.label_primary,
-        )
-    };
-    row()
-        .id(id)
-        .relative()
-        .role(gpui::Role::Button)
-        .aria_label(label)
-        .tab_index(0)
-        .tab_stop(!disabled)
-        .w_full()
-        .h(px(44.))
-        .flex_none()
-        .justify_center()
-        .rounded(px(10.))
-        .border_1()
-        .border_color(border)
-        .bg(fill)
-        .text_color(ink)
-        .font_family(if crate::bridge::is_windows() {
-            "Segoe UI"
-        } else {
-            ".SystemUIFont"
-        })
-        .when_some(
-            crate::web::document_fonts::interface_family(cx),
-            |button, family| button.font_family(family),
-        )
-        .font_weight(FontWeight::MEDIUM)
-        .text_size(px(14.))
-        .line_height(px(22.))
-        .when(disabled, |button| button.opacity(0.4).cursor_not_allowed())
-        .when(!disabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|style| style.bg(hover))
-                .focus_visible(|style| {
-                    style.shadow(vec![
-                        gpui::BoxShadow::new(px(0.), px(0.), p.label_primary).spread_radius(px(5.)),
-                        gpui::BoxShadow::new(px(0.), px(0.), p.stage).spread_radius(px(3.)),
-                    ])
-                })
-        })
-        .child(label)
+fn dark_window(w: &Window) -> bool {
+    matches!(
+        w.appearance(),
+        gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
+    )
 }
 
 impl Render for Welcome {
-    fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let dark = matches!(
-            w.appearance(),
-            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
-        );
+    fn render(&mut self, w: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let dark = dark_window(w);
         let p = if dark {
             Tokens::dark()
         } else {
             Tokens::light()
         };
-        let (content, actions) = self.render_key(p, w, cx);
         let tint = if bridge::has_mac_window_material() {
             match w.appearance() {
                 gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark => {
@@ -484,19 +385,9 @@ impl Render for Welcome {
             .items_center()
             .px(px(16.))
             .pt(px(74.))
-            .pb(px(82.))
             .bg(tint)
             .text_color(p.label_primary)
             .font_family("Montserrat")
             .child(brand::wordmark(40., 34., dark))
-            .child(
-                row()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .justify_center()
-                    .child(content),
-            )
-            .child(actions)
     }
 }

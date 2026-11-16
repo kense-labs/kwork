@@ -1411,6 +1411,9 @@ dependencies = [
  "url",
  "uuid",
  "webkit2gtk",
+ "webview2-com",
+ "windows",
+ "windows-core",
  "zip",
  "zstd",
 ]

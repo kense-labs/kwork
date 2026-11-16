@@ -60,6 +60,7 @@ impl Turn {
 #[derive(Default)]
 pub(crate) struct TurnProcess {
     turns: BTreeMap<u64, Turn>,
+    latest_begun_turn: u64,
     assistants: HashMap<String, Anchor>,
     tools: HashMap<String, Anchor>,
     retries: HashMap<String, Anchor>,
@@ -199,7 +200,10 @@ impl TurnProcess {
     ) {
         let turn = self.turns.entry(anchor.turn).or_default();
         match kind {
-            "turn/start" => turn.start_time = time.or(turn.start_time),
+            "turn/start" => {
+                self.latest_begun_turn = self.latest_begun_turn.max(anchor.turn);
+                turn.start_time = time.or(turn.start_time);
+            }
             "step/start" => turn.last_step = turn.last_step.max(step.unwrap_or_default()),
             "turn/end" if turn.end.as_ref().is_none_or(|end| end.seq <= anchor.seq) => {
                 turn.end = Some(End {
@@ -268,13 +272,15 @@ impl TurnProcess {
         Some(self.turns.get(&turn)?.end.as_ref()?.kind)
     }
 
-    /// Latest durable completion actually received by this conversation view.
+    /// A later turn start also proves an earlier turn has ended, even when its
+    /// completion lies before the loaded history page.
     pub(crate) fn received_turn(&self) -> u64 {
         self.turns
             .iter()
             .rev()
             .find_map(|(turn, state)| state.end.as_ref().map(|_| *turn))
             .unwrap_or(0)
+            .max(self.latest_begun_turn.saturating_sub(1))
     }
 
     pub(crate) fn tool_time(&self, id: &str) -> Option<u64> {
@@ -650,5 +656,15 @@ mod tests {
         assert_eq!(layout.turn(0), Some(1));
         assert_eq!(layout.controls[&0].answer_step, 2);
         assert!(layout.hidden(0) && !layout.hidden(1));
+    }
+
+    #[test]
+    fn a_later_turn_start_counts_as_reading_evidence_without_the_previous_page() {
+        let mut process = TurnProcess::default();
+        process.observe_live(&json!({"type":"turn/start","turn":4,"seq":90}));
+        process.observe_live(&json!({"type":"turn/end","turn":2,"seq":40}));
+        assert_eq!(process.received_turn(), 3);
+        process.observe_live(&json!({"type":"turn/end","turn":4,"seq":100}));
+        assert_eq!(process.received_turn(), 4);
     }
 }

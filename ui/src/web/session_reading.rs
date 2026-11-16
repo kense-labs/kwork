@@ -62,33 +62,40 @@ impl DshApp {
         });
     }
 
-    fn acknowledge_visible_session(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        if !w.is_window_active()
-            || self.focused_right_pane(w, cx).is_some()
-            || self.shortcuts.open
-            || self.show_settings
-            || self.show_welcome
-            || self.page != WorkspacePage::Conversation
-            || self.subagent_view.is_some()
-            || self.confirm_permission.is_some()
-            || self.workspace_rename.is_some()
-            || self.workspace_delete.is_some()
-            || self.session_rename.is_some()
-            || self.image_viewer.is_some()
-            || self.file_open_error.is_some()
-            || self.stats_dialog.is_some()
-            || self.turn_usage_dialog.is_some()
-            || self.session_feedback.visible()
-            || self.session_downloads.visible()
-            || !self.conversation.acp_open
-        {
+    pub(super) fn reading_view_visible(&self, w: &Window, cx: &App) -> bool {
+        w.is_window_active()
+            && w.is_visible()
+            && self.page == WorkspacePage::Conversation
+            && self.conversation.acp_open
+            && self.focused_right_pane(w, cx).is_none()
+            && !self.shortcuts.open
+            && !self.show_settings
+            && !self.show_welcome
+            && self.subagent_view.is_none()
+            && self.confirm_permission.is_none()
+            && self.workspace_dialog.is_none()
+            && self.session_rename.is_none()
+            && self.image_viewer.is_none()
+            && self.file_open_error.is_none()
+            && self.stats_dialog.is_none()
+            && self.turn_usage_dialog.is_none()
+            && !self.session_feedback.visible()
+            && !self.session_downloads.visible()
+    }
+
+    fn acknowledge_visible_session(&mut self, w: &Window, cx: &App) {
+        if !self.reading_view_visible(w, cx) {
             return;
         }
-        let Some(id) = self.active_session.clone() else {
+        let Some(id) = self
+            .active_session
+            .as_ref()
+            .filter(|id| !self.archived_sessions.contains(*id))
+        else {
             return;
         };
         let received = self.conversation.turn_process.received_turn();
-        if let Some(args) = self.session_reading.acknowledge(&id, true, true, received) {
+        if let Some(args) = self.session_reading.acknowledge(id, true, true, received) {
             invoke_with_reply("session_read_state", "session_read_ack", args);
         }
     }

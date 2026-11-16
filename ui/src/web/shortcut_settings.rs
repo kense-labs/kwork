@@ -371,6 +371,11 @@ impl DshApp {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        let approval_key = if input.phase == 0 {
+            self.handle_approval_shortcut(&input, w, cx)
+        } else {
+            None
+        };
         let ShortcutInput {
             combo,
             code,
@@ -389,7 +394,10 @@ impl DshApp {
                 draft.pending = None;
                 draft.blocked = false;
             }
-            return false;
+            return approval_key.unwrap_or(false);
+        }
+        if let Some(consumed) = approval_key {
+            return consumed;
         }
         let down = phase == 0;
         if self.shortcuts.draft.is_some() && self.shortcuts.recorder.is_focused(w) {
@@ -402,7 +410,7 @@ impl DshApp {
             self.shortcuts.held.release(code);
             return self.shortcuts.consumed.remove(code);
         }
-        if self.team_disable.is_some() {
+        if self.team_disable.is_some() || self.account_quota_modal_open() {
             return false;
         }
         if repeat && combo == "Escape" && self.show_settings {

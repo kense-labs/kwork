@@ -330,7 +330,7 @@ impl DshApp {
                     let visible = app.active_session.as_deref() == Some(session.as_str())
                         && app.page == WorkspacePage::Conversation
                         && !app.show_settings
-                        && app.conversation.permission.is_none()
+                        && app.conversation.approvals.is_empty()
                         && app.conversation.plan_reviews.is_empty()
                         && app
                             .conversation
@@ -451,7 +451,7 @@ impl DshApp {
         if self.active_session.as_deref() == Some(session)
             && self.page == WorkspacePage::Conversation
             && !self.show_settings
-            && self.conversation.permission.is_none()
+            && self.conversation.approvals.is_empty()
             && self.conversation.plan_reviews.is_empty()
             && self.conversation.visible_question().is_none()
             && self.focused_right_pane(w, cx).is_none()
@@ -858,7 +858,7 @@ impl DshApp {
                 if app.active_session == session
                     && app.page == WorkspacePage::Conversation
                     && !app.show_settings
-                    && app.conversation.permission.is_none()
+                    && app.conversation.approvals.is_empty()
                     && app.conversation.plan_reviews.is_empty()
                     && app.conversation.visible_question().is_some_and(|panel| {
                         panel.id == id && panel.index == index && !panel.minimized

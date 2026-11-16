@@ -154,19 +154,34 @@ impl BrowserTab {
 }
 
 impl DshApp {
-    pub(super) fn advance_browser_selection(
+    pub(super) fn advance_replacement_selection(
         &self,
         prefix: &str,
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(tab) = self.sidebar.browsers.values().find(|tab| {
-            let editor = tab.input.read(cx);
-            editor.focus.is_focused(w) && !editor.is_composing()
-        }) else {
+        let rename = if self.session_rename.is_some() {
+            Some(&self.session_rename_editor)
+        } else if self
+            .workspace_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.action == WorkspaceDialogAction::Rename)
+        {
+            Some(&self.workspace_rename_editor)
+        } else {
+            None
+        };
+        let Some(input) = rename
+            .into_iter()
+            .chain(self.sidebar.browsers.values().map(|tab| &tab.input))
+            .find(|input| {
+                let editor = input.read(cx);
+                editor.focus.is_focused(w) && !editor.is_composing()
+            })
+        else {
             return;
         };
-        tab.input.update(cx, |editor, cx| {
+        input.update(cx, |editor, cx| {
             if let Some(selection) = editor.selected_text_range(false, w, cx) {
                 let start = selection.range.start;
                 let end = start + prefix.encode_utf16().count();
@@ -725,6 +740,9 @@ impl DshApp {
             .collect();
         // A child WKWebView draws above the GPUI canvas, including its drawer mask.
         if !self.sidebar_drawer_covers_window()
+            && !self.account_platform_open()
+            && !self.account_quota_modal_open()
+            && !self.desktop_onboarding_visible()
             && !self.session_downloads.visible()
             && !self.session_feedback.visible()
             && self.floats_on_screen(cx)

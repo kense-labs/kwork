@@ -56,6 +56,7 @@ pub(crate) struct WebWindowInner {
     pub(crate) browser_window: web_sys::Window,
     pub(crate) canvas: web_sys::HtmlCanvasElement,
     pub(crate) ime_mirror: ImeMirror,
+    ime_focus: Cell<Option<gpui::FocusId>>,
     pub(crate) viewport: RefCell<WebViewport>,
     pub(crate) has_device_pixel_support: bool,
     pub(crate) is_mac: bool,
@@ -219,6 +220,7 @@ impl WebWindow {
             browser_window,
             canvas,
             ime_mirror,
+            ime_focus: Cell::new(None),
             viewport: RefCell::new(viewport),
             has_device_pixel_support,
             is_mac,
@@ -781,7 +783,13 @@ impl PlatformWindow for WebWindow {
     }
 
     fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
+        let focus = input_handler.focus_id();
         self.inner.state.borrow_mut().input_handler = Some(input_handler);
+        if !self.inner.touch_input && self.inner.ime_focus.replace(focus) != focus {
+            // The old field's selection no longer belongs to the active editor.
+            self.inner.ime_mirror.reject_selection_import();
+            ImeMirror::schedule_sync(&self.inner);
+        }
     }
 
     fn take_input_handler(&mut self) -> Option<PlatformInputHandler> {
@@ -870,9 +878,13 @@ impl PlatformWindow for WebWindow {
             }
             TextInputStateChange::FocusLost => {
                 self.inner.ime_mirror.set_read_only(true);
+                self.inner.ime_focus.set(None);
             }
             TextInputStateChange::SelectionChanged | TextInputStateChange::ContentChanged => {}
         }
+        // Programmatic edits and focus changes also have to reach the native
+        // textbox. Defer the sync past GPUI's current window and editor borrow.
+        ImeMirror::schedule_sync(&self.inner);
     }
 
     fn prompt(

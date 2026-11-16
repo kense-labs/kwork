@@ -36,9 +36,13 @@ export function dshKeyboardFocusVisible() {
 }
 
 export function dshListenKeys(callback) {
+    let compositionEnded = false;
     window.addEventListener('pointerdown', () => { keyboardFocusVisible = false; }, true);
     const dispatch = (event, phase) => {
-        const composing = event.isComposing || event.key === 'Dead' || event.getModifierState('AltGraph');
+        if (event.target instanceof Element && event.target.closest('#model-accessibility, #approval-accessibility, #queue-accessibility, #composer-submit-accessibility, #welcome-setup, #model-provider-form, #deepseek-account-launcher, #deepseek-account-form, #account-platform-view, #desktop-onboarding, #account-notifications, #account-quota-dialog')) return;
+        const composing = event.isComposing || event.keyCode === 229 || event.key === 'Dead'
+            || event.getModifierState('AltGraph')
+            || (phase === 0 && compositionEnded && ['Enter', 'Escape'].includes(event.key));
         if (phase === 0 && !composing && (['Tab', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)
             || event.key.startsWith('Arrow'))) keyboardFocusVisible = true;
         const combo = (event.metaKey ? 'meta+' : '') + (event.ctrlKey ? 'ctrl+' : '')
@@ -51,10 +55,17 @@ export function dshListenKeys(callback) {
         }
     };
     window.addEventListener('keydown', event => dispatch(event, 0), true);
-    window.addEventListener('keyup', event => dispatch(event, 1), true);
-    const reset = () => callback('', '', 0, 2, false, false);
+    window.addEventListener('keyup', event => {
+        compositionEnded = false;
+        dispatch(event, 1);
+    }, true);
+    const reset = () => {
+        compositionEnded = false;
+        callback('', '', 0, 2, false, false);
+    };
     window.addEventListener('blur', reset);
     window.addEventListener('compositionstart', reset, true);
+    window.addEventListener('compositionend', () => { compositionEnded = true; }, true);
     window.addEventListener('pointerdown', reset, true);
 
 }
@@ -210,7 +221,7 @@ export function dshBrowserAddress(value) {
     return { address: url.href, title: url.hostname };
 }
 
-export function dshListenBrowserSelection(advance) {
+export function dshListenTextReplacement(advance) {
     document.addEventListener('beforeinput', event => {
         const input = event.target;
         if (!(input instanceof HTMLTextAreaElement) || input.readOnly
@@ -288,15 +299,56 @@ export function dshOpenUrl(url) {
     } catch (error) {}
 }
 
+// Ordinary File objects remain in the WebView until the owning draft is removed.
+const draftFiles = new Map();
+const inlineImages = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+export function dshDiscardDraftFile(id) {
+    draftFiles.delete(id);
+}
+
+export async function dshSubmitDraft(command, field, args) {
+    const uploads = [];
+    const { sessionId } = args;
+    const stage = operation => dshInvoke('stage_prompt_file', { sessionId, operation });
+    try {
+        const sources = args[field].map(block => {
+            if (block.type !== 'file') return [block, null];
+            const file = draftFiles.get(block.draftId);
+            if (!file) throw new Error('附件已不可读，请重新选择。');
+            return [block, file];
+        });
+        const content = [];
+        for (const [block, file] of sources) {
+            if (!file) {
+                content.push(block);
+                continue;
+            }
+            const { id } = await stage({ kind: 'begin', name: file.name, size: file.size });
+            uploads.push(id);
+            const chunkSize = 256 * 1024;
+            for (let offset = 0; offset < file.size; offset += chunkSize) {
+                const bytes = new Uint8Array(await file.slice(offset, offset + chunkSize).arrayBuffer());
+                await stage({ kind: 'append', id, offset, chunk: Array.from(bytes) });
+            }
+            content.push({ type: 'file', uploadId: id });
+        }
+        return await dshInvoke(command, { ...args, [field]: content });
+    } finally {
+        await Promise.allSettled(uploads.map(id => stage({ kind: 'discard', id })));
+    }
+}
+
 async function fileToDraft(file) {
     const item = {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        id: dshRandomId(),
         name: file.name || 'pasted-image.png',
         size: file.size || 0,
         mime: file.type || '',
-        kind: (file.type || '').startsWith('image/') ? 'image' : 'file',
+        kind: inlineImages.has(file.type) ? 'image' : 'file',
         preview: null,
     };
+    if (item.kind === 'file') draftFiles.set(item.id, file);
     if (item.kind === 'image' && file.size <= 4 * 1024 * 1024) {
         try {
             item.preview = await new Promise((ok, err) => {
@@ -363,9 +415,11 @@ export function dshListenFiles(callback) {
         emit('drag', { active: false });
         const files = Array.from(event.dataTransfer.files || []);
         if (!files.length) return;
+        const batch = dshRandomId();
+        emit('files_begin', { batch });
         const items = [];
         for (const file of files) items.push(await fileToDraft(file));
-        emit('files', { items });
+        emit('files', { batch, items });
     });
     window.addEventListener('paste', async event => {
         const items = Array.from(event.clipboardData?.items || []);
@@ -378,9 +432,11 @@ export function dshListenFiles(callback) {
         }
         if (!files.length) return;
         event.preventDefault();
+        const batch = dshRandomId();
+        emit('files_begin', { batch });
         const drafts = [];
         for (const file of files) drafts.push(await fileToDraft(file));
-        emit('files', { items: drafts });
+        emit('files', { batch, items: drafts });
     });
 }
 
@@ -411,6 +467,12 @@ extern "C" {
 
     #[wasm_bindgen(js_name = dshKeyboardFocusVisible)]
     pub(crate) fn keyboard_focus_visible() -> bool;
+
+    #[wasm_bindgen(js_name = dshSubmitDraft)]
+    fn submit_draft_js(command: &str, field: &str, args: JsValue) -> js_sys::Promise;
+
+    #[wasm_bindgen(js_name = dshDiscardDraftFile)]
+    pub(crate) fn discard_draft_file(id: &str);
 
     #[wasm_bindgen(js_name = dshListenFiles)]
     fn listen_files_js(callback: &js_sys::Function);
@@ -481,8 +543,8 @@ extern "C" {
     #[wasm_bindgen(catch, js_name = dshBrowserAddress)]
     pub(crate) fn browser_address(input: &str) -> Result<JsValue, JsValue>;
 
-    #[wasm_bindgen(js_name = dshListenBrowserSelection)]
-    pub(crate) fn listen_browser_selection(advance: &js_sys::Function);
+    #[wasm_bindgen(js_name = dshListenTextReplacement)]
+    pub(crate) fn listen_text_replacement(advance: &js_sys::Function);
 
     #[wasm_bindgen(js_name = dshCopySessionMarkdown)]
     pub(crate) fn copy_session_markdown(session_id: &str, cwd: &str) -> js_sys::Promise;
@@ -545,11 +607,41 @@ pub(crate) fn report_async_error(context: &str, error: &str) {
 
 pub async fn invoke(command: &str, args: Value) -> Result<Value, String> {
     let args = serde_wasm_bindgen::to_value(&args).map_err(|error| error.to_string())?;
+    invoke_with_args(command, args).await
+}
+
+pub(super) async fn invoke_json(command: &str, args: Value) -> Result<Value, String> {
+    invoke_with_args(command, json_args(&args)?).await
+}
+
+async fn invoke_with_args(command: &str, args: JsValue) -> Result<Value, String> {
     let result = wasm_bindgen_futures::JsFuture::from(invoke_js(command, args)).await;
     match result {
         Ok(value) => serde_wasm_bindgen::from_value(value).map_err(|error| error.to_string()),
         Err(error) => Err(js_error(error)),
     }
+}
+
+pub(super) async fn submit_inbox_prompt(args: Value) -> Result<Value, String> {
+    submit_draft("queue_prompt", "prompt", args).await
+}
+
+pub(super) async fn submit_session_command(args: Value) -> Result<Value, String> {
+    submit_draft("execute_session_command", "attachments", args).await
+}
+
+async fn submit_draft(command: &str, field: &str, args: Value) -> Result<Value, String> {
+    let args = json_args(&args)?;
+    let value = wasm_bindgen_futures::JsFuture::from(submit_draft_js(command, field, args))
+        .await
+        .map_err(js_error)?;
+    serde_wasm_bindgen::from_value(value).map_err(|error| error.to_string())
+}
+
+fn json_args(args: &Value) -> Result<JsValue, String> {
+    use serde::Serialize;
+    args.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .map_err(|error| error.to_string())
 }
 
 pub async fn terminal_font() -> Option<Vec<u8>> {

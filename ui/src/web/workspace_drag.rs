@@ -1,4 +1,4 @@
-//! In-window Workspace dragging over a browser-local display order.
+//! In-window Workspace dragging with registry-owned order when available.
 
 use super::*;
 use crate::right_dock::drag_threshold;
@@ -49,7 +49,7 @@ impl WorkspaceRowGeometry {
         smallest_row_at(self.0.borrow().iter(), position).map(|(cwd, _)| cwd.clone())
     }
 
-    fn bounds(&self, cwd: &str) -> Option<Bounds<Pixels>> {
+    pub(super) fn bounds(&self, cwd: &str) -> Option<Bounds<Pixels>> {
         self.0.borrow().get(cwd).copied()
     }
 
@@ -101,6 +101,9 @@ impl WorkspaceRowGeometry {
 
 impl DshApp {
     pub(super) fn full_workspace_order(&self) -> Vec<String> {
+        if let Some(paths) = self.workspace_registry.paths() {
+            return paths;
+        }
         let mut known = Vec::new();
         for cwd in self
             .sessions
@@ -122,6 +125,8 @@ impl DshApp {
         cx: &mut Context<Self>,
     ) {
         if cwd.is_empty()
+            || self.workspace_registry.pending
+            || self.workspace_registry.available() && !self.connected()
             || !self.search_editor.read(cx).value().trim().is_empty()
             || super::session_context_menu::mac_control_click(event.modifiers)
         {
@@ -137,15 +142,15 @@ impl DshApp {
 
     fn workspace_drop_at(
         &self,
+        hit: &str,
         position: Point<Pixels>,
         geometry: &WorkspaceRowGeometry,
         gesture: &WorkspaceDragGesture,
     ) -> Option<WorkspaceDrop> {
-        let hit = geometry.hit(position)?;
         let order = self.full_workspace_order();
         let hierarchy = geometry.rendered_ids();
         let nested = self.workspace_group_by == WorkspaceGroupBy::WorkspaceTree;
-        let cwd = workspace_drop_target(&order, &hierarchy, &gesture.cwd, &hit, nested)?;
+        let cwd = workspace_drop_target(&order, &hierarchy, &gesture.cwd, hit, nested)?;
         let bounds = geometry.bounds(&cwd)?;
         Some(WorkspaceDrop {
             cwd,
@@ -175,7 +180,10 @@ impl DshApp {
         if starting && !drag_threshold(f32::from(delta.x), f32::from(delta.y)) {
             return;
         }
-        let over = self.workspace_drop_at(event.position, geometry, gesture);
+        let over = match geometry.hit(event.position) {
+            Some(hit) => self.workspace_drop_at(&hit, event.position, geometry, gesture),
+            None => gesture.over.clone(),
+        };
         let gesture = self
             .workspace_drag_gesture
             .as_mut()
@@ -201,9 +209,10 @@ impl DshApp {
         else {
             return;
         };
-        let over = self
-            .workspace_drop_at(position, geometry, &gesture)
-            .or(gesture.over);
+        let over = match geometry.hit(position) {
+            Some(hit) => self.workspace_drop_at(&hit, position, geometry, &gesture),
+            None => gesture.over.clone(),
+        };
         if let Some(over) = over {
             let order = self.full_workspace_order();
             let hierarchy = geometry.rendered_ids();
@@ -216,8 +225,13 @@ impl DshApp {
                 over.half == DropHalf::After,
                 nested,
             ) {
-                self.workspace_order = next;
-                self.save_workspace_preferences(cx);
+                if self.workspace_registry.available() {
+                    let anchor = next.iter().skip_while(|path| **path != gesture.cwd).nth(1);
+                    self.move_registered_workspace(&gesture.cwd, anchor.map(String::as_str), cx);
+                } else {
+                    self.workspace_order = next;
+                    self.save_workspace_preferences(cx);
+                }
             }
         }
         cx.stop_propagation();

@@ -2,15 +2,19 @@
 //! same Cordis services used by the official Harness.
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { createReadStream, existsSync, readFileSync } from 'node:fs';
+import { lstat, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { AgentTerminalAttachment, prepareTerminalProfile, terminalInfo } from './agent-terminal-bridge.mjs';
 import { pathToFileURL } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
+
+let notificationScope = randomUUID();
+let legacyNotificationAccount;
+const notificationEvents = new Set(['displayed', 'cta_clicked', 'dismissed']);
 
 const [service, profileEntry, ...patchFiles] = process.argv.slice(2);
 const require = createRequire(join(service, 'apps/cli/package.json'));
@@ -63,8 +67,20 @@ const ready = runProfile({
   args: [],
 }).then(async runtime => {
   startSessionReadStatus(runtime.ctx);
+  try {
+    await registerSessionListMetadata(runtime.ctx);
+  } catch (error) {
+    console.error(`KWork: 无法登记会话活动投影：${error?.message ?? error}`);
+  }
   observeSessionUpdates(runtime.ctx);
   observeModelProviders(runtime.ctx);
+  observeDeepSeekAccount(runtime.ctx);
+  observePlatformSession(runtime.ctx);
+  runtime.ctx.on('settings/document-updated', namespace => {
+    if (namespace === 'ui-conversation') {
+      process.stdout.write('{"jsonrpc":"2.0","method":"_dsh/gpui/composer-preference-changed"}\n');
+    }
+  });
   observePluginInstall(runtime.ctx);
   // KWork registers its linked terminal packages before the first launch. ACP
   // computes its interception map before reading them, so publish that public
@@ -76,6 +92,17 @@ const ready = runProfile({
     console.error(`KWork: Agent 终端不可用：${error?.message ?? error}`);
   }
   await startSchedule(runtime.ctx);
+  try {
+    await importWorkspaceGroups(runtime.ctx);
+  } catch (error) {
+    console.error(`KWork: 工作区导入未完成：${error?.message ?? error}`);
+  }
+  try {
+    await importPinnedSessions(runtime.ctx);
+  } catch (error) {
+    console.error(`KWork: 置顶会话导入未完成：${error?.message ?? error}`);
+  }
+  observeWorkspaceRegistry(runtime.ctx);
   return runtime;
 });
 
@@ -94,12 +121,23 @@ const pluginCenterMethod = '_dsh/gpui/plugin-center';
 const pluginInstallMethod = '_dsh/gpui/plugin-install';
 const scheduleMethod = '_dsh/gpui/schedule';
 const openHostSessionMethod = '_dsh/gpui/session/open';
+const searchSessionsMethod = '_dsh/gpui/session/search';
+const modelCatalogMethod = '_dsh/gpui/model-catalog';
+const deepSeekAccountMethod = '_dsh/gpui/deepseek-account';
+const accountNotificationsMethod = '_dsh/gpui/account-notifications';
+const platformSessionMethod = '_dsh/gpui/account-platform-session';
 const sessionArchiveMethod = '_dsh/gpui/session/archive';
+const workspaceRegistryMethod = '_dsh/gpui/workspace-registry';
 const sessionReadStateMethod = '_dsh/gpui/session/read-state';
 const modelProviderMethods = new Set([
   '_dsh/gpui/providers/list', '_dsh/gpui/providers/save',
-  '_dsh/gpui/providers/remove', '_dsh/gpui/providers/discover',
+  '_dsh/gpui/providers/remove', '_dsh/gpui/providers/discover', '_dsh/gpui/providers/authorization',
 ]);
+const providerAuthAttempts = new Map();
+const providerAuthLogouts = new Set();
+let accountCallback;
+let accountCallbackFiber;
+let accountLoginService;
 const questionStateMethod = '_dsh/gpui/session/questions';
 const questionDecisionMethod = '_dsh/gpui/session/question-decision';
 // The ACP prompt slot is single-flight, so a message composed while the agent
@@ -107,6 +145,7 @@ const questionDecisionMethod = '_dsh/gpui/session/question-decision';
 // (official ComposerSubmissionPolicy): `queue` appends a turn, `steer` joins
 // the running turn at its next step boundary.
 const queuePromptMethod = '_dsh/gpui/session/queue-prompt';
+const composerPreferenceMethod = '_dsh/gpui/composer-preference';
 const inboxStateMethod = '_dsh/gpui/session/inbox-state';
 const inboxActionMethod = '_dsh/gpui/session/inbox-action';
 // The composer's GoalBar reads the same live goal view the official client
@@ -151,8 +190,10 @@ const extensionMethods = [
   permissionModeMethod, sessionCommandsMethod, executeSessionCommandMethod,
   runtimeSettingsMethod, webSettingsMethod, pluginCenterMethod, pluginInstallMethod,
   questionStateMethod, questionDecisionMethod, scheduleMethod, openHostSessionMethod, sessionArchiveMethod,
+  workspaceRegistryMethod,
+  searchSessionsMethod, modelCatalogMethod, deepSeekAccountMethod, accountNotificationsMethod, platformSessionMethod,
   sessionReadStateMethod,
-  queuePromptMethod, inboxStateMethod, inboxActionMethod, goalStateMethod, goalActionMethod,
+  queuePromptMethod, composerPreferenceMethod, inboxStateMethod, inboxActionMethod, goalStateMethod, goalActionMethod,
   teamStateMethod,
   terminalWatchMethod, terminalInputMethod, terminalAttachMethod, terminalDetachMethod,
   terminalCloseMethod, terminalRenameMethod,
@@ -375,6 +416,10 @@ async function importArchivedSessions(ctx) {
       ctx.logger.warn('KWork archive migration skipped missing Session %s', sessionId);
     }
   }
+  await writeWorkspaceMigrationMarker(marker);
+}
+
+async function writeWorkspaceMigrationMarker(marker) {
   await mkdir(dirname(marker), { recursive: true });
   const temporary = marker + '.' + randomUUID() + '.tmp';
   try {
@@ -383,6 +428,171 @@ async function importArchivedSessions(ctx) {
   } finally {
     await rm(temporary, { force: true });
   }
+}
+
+async function readWorkspacePreferences(file) {
+  try {
+    return JSON.parse(await readFile(file, 'utf8'));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    return null;
+  }
+}
+
+async function importWorkspaceGroups(ctx) {
+  const path = process.env.KWORK_WORKSPACE_PREFERENCES;
+  const registry = ctx.get('workspaceRegistry');
+  if (!path || !registry) return;
+  const marker = join(resolveDshHome(), 'kwork-workspace-groups-v1.json');
+  if ((await readWorkspacePreferences(marker))?.version === 1) return;
+  const preferences = await readWorkspacePreferences(path);
+  const paths = value => Array.isArray(value) ? value.filter(item => typeof item === 'string') : [];
+  const hidden = new Set(paths(preferences?.hidden));
+  const added = new Set(paths(preferences?.addedWorkspaces).filter(path => isAbsolute(path) && !hidden.has(path)));
+  const ordered = new Set([...paths(preferences?.workspaceOrder).filter(path => added.has(path)), ...added]);
+  // Registry.create prepends new paths and leaves the order of existing entries alone.
+  for (const path of [...ordered].reverse()) {
+    let info;
+    try {
+      info = await stat(path);
+    } catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes(error.code)) continue;
+      throw error;
+    }
+    if (!info.isDirectory()) continue;
+    const title = preferences?.aliases?.[path];
+    await registry.create(path, typeof title === 'string' && title.trim() ? title.trim() : undefined);
+  }
+  await writeWorkspaceMigrationMarker(marker);
+}
+
+async function importPinnedSessions(ctx) {
+  const path = process.env.KWORK_WORKSPACE_PREFERENCES;
+  const registry = ctx.get('workspaceRegistry');
+  if (!path || !registry) return;
+  const marker = join(resolveDshHome(), 'kwork-session-pins-v1.json');
+  if ((await readWorkspacePreferences(marker))?.version === 1) return;
+  const pins = (await readWorkspacePreferences(path))?.pinned;
+  if (Array.isArray(pins)) {
+    const eligible = [...new Set(pins)].filter(id => typeof id === 'string' && id
+      && !registry.pinnedSessionIds.includes(id) && !registry.archivedSessionIds.includes(id));
+    // A pin is prepended. Import in reverse so an interrupted import can resume in order.
+    for (const id of eligible.reverse()) {
+      try {
+        await registry.pinSession(id);
+      } catch (error) {
+        if (!['WorkspaceUnknownSessionError', 'WorkspaceArchivedSessionPinError'].includes(error.name)) throw error;
+      }
+    }
+  }
+  await writeWorkspaceMigrationMarker(marker);
+}
+
+let workspaceRegistrySequence = 0;
+let workspaceMutationTail = Promise.resolve();
+
+function enqueueWorkspaceOperation(operation) {
+  const task = workspaceMutationTail.then(operation);
+  workspaceMutationTail = task.then(() => undefined, () => undefined);
+  return task;
+}
+
+function workspaceRegistrySnapshot(registry) {
+  return {
+    available: true,
+    sequence: ++workspaceRegistrySequence,
+    items: registry.list().map(({ id, path, title, createdAt, sessionIds }) => ({
+      id, path, title, createdAt: Date.parse(createdAt), sessionIds: [...sessionIds],
+    })),
+    archived: [...registry.archivedSessionIds],
+    pinned: [...registry.pinnedSessionIds],
+  };
+}
+
+function observeWorkspaceRegistry(ctx) {
+  if (!ctx.get('workspaceRegistry')) return;
+  let pending = false;
+  ctx.on('domain/changed', change => {
+    if (pending || change.domain !== 'workspace') return;
+    pending = true;
+    // The official registry updates its cache after the event. A deletion
+    // can also publish its pending order before the record is removed.
+    setImmediate(() => {
+      enqueueWorkspaceOperation(() => {
+        pending = false;
+        const registry = ctx.get('workspaceRegistry');
+        if (registry) {
+          process.stdout.write(JSON.stringify({
+            jsonrpc: '2.0', method: '_dsh/gpui/workspace-registry-changed',
+            params: workspaceRegistrySnapshot(registry),
+          }) + '\n');
+        }
+      }).catch(error => {
+        console.error(`KWork: 工作区状态更新失败：${error?.message ?? error}`);
+      });
+    });
+  }, { global: true });
+}
+
+async function workspaceRegistryRequest(ctx, operation = {}) {
+  const registry = ctx.get('workspaceRegistry');
+  if (operation.action === 'snapshot') {
+    return registry ? workspaceRegistrySnapshot(registry) : { available: false };
+  }
+  if (!registry) throw new SessionOperationError('workspace/unavailable', '当前服务无法管理工作区。');
+  if (operation.action === 'initialize-default') {
+    const workspace = await registry.initializeDefault(async () => {
+      const documents = process.env.KWORK_DOCUMENTS_DIRECTORY;
+      if (!documents || !isAbsolute(documents)) {
+        throw new SessionOperationError('workspace/documents-unavailable', '无法读取系统文稿目录。');
+      }
+      return join(documents, 'deepseek-harness', 'default-workspace');
+    });
+    return { ...workspaceRegistrySnapshot(registry), path: workspace?.path ?? null, workspaceId: workspace?.id ?? null };
+  }
+  if (operation.action === 'create' && typeof operation.path === 'string' && isAbsolute(operation.path)) {
+    const workspace = await registry.create(operation.path);
+    return { ...workspaceRegistrySnapshot(registry), path: workspace.path };
+  }
+  if (operation.action === 'move' && typeof operation.id === 'string' && operation.id
+      && (operation.beforeId == null || typeof operation.beforeId === 'string' && operation.beforeId)) {
+    await registry.insertBefore(operation.id, operation.beforeId ?? undefined);
+    return workspaceRegistrySnapshot(registry);
+  }
+  if (typeof operation.id === 'string' && operation.id
+      && (operation.action === 'rename' || operation.action === 'delete')) {
+    const workspace = registry.get(operation.id);
+    if (!workspace) throw new SessionOperationError('workspace/not-found', '目标工作区已移除。');
+    if (operation.action === 'delete') {
+      if (!await registry.delete(workspace.id)) {
+        throw new SessionOperationError('workspace/not-found', '目标工作区已移除。');
+      }
+    } else {
+      const title = typeof operation.title === 'string' ? operation.title.trim() : '';
+      if (!title) throw new SessionOperationError('workspace/invalid-name', '请输入工作区名称。');
+      if (title !== workspace.title) {
+        if (registry.list().some(candidate => candidate.id !== workspace.id && candidate.title === title)) {
+          throw new SessionOperationError('workspace/name-conflict', `已存在名为“${title}”的工作区。`);
+        }
+        await workspace.setTitle(title);
+      }
+    }
+    return workspaceRegistrySnapshot(registry);
+  }
+  if (typeof operation.sessionId === 'string' && operation.sessionId) {
+    if (operation.action === 'attach-session' && typeof operation.id === 'string') {
+      const workspace = registry.get(operation.id);
+      if (!workspace) throw new SessionOperationError('workspace/not-found', '目标工作区已移除。');
+      await workspace.attachSession(operation.sessionId);
+      return workspaceRegistrySnapshot(registry);
+    }
+    if (operation.action === 'pin' || operation.action === 'unpin') {
+      if (operation.action === 'pin') await registry.pinSession(operation.sessionId);
+      else await registry.unpinSession(operation.sessionId);
+      return workspaceRegistrySnapshot(registry);
+    }
+  }
+  throw new SessionOperationError('workspace/action', '无效的工作区操作。');
 }
 
 async function sessionArchive(ctx, { action, sessionId, stopActivity } = {}) {
@@ -408,7 +618,7 @@ async function sessionArchive(ctx, { action, sessionId, stopActivity } = {}) {
       throw new SessionOperationError('workspace/action', '找不到这个会话操作。');
     }
   }
-  return { available: true, archived: [...registry.archivedSessionIds] };
+  return workspaceRegistrySnapshot(registry);
 }
 
 async function scheduleRequest(ctx, operation) {
@@ -1189,6 +1399,16 @@ async function forkSession(ctx, { sessionId, atSeq, allowMigration }) {
     if (boundary === undefined || events[boundary]?.seq !== boundary) {
       throw new SessionOperationError('session/fork-unavailable');
     }
+    const registry = ctx.get('workspaceRegistry');
+    const workspaces = await enqueueWorkspaceOperation(() => registry?.list() ?? []);
+    let workspace = workspaces.find(candidate => candidate.sessionIds.includes(sessionId));
+    if (!workspace && workspaces.length > 0 && header.origin === 'subagent') {
+      const lineage = await query.traceSession(sessionId);
+      for (const ancestor of lineage.ancestors) {
+        workspace = workspaces.find(candidate => candidate.sessionIds.includes(ancestor.header.id));
+        if (workspace) break;
+      }
+    }
     const local = join(service, 'packages/core/session', profileEntry.endsWith('.ts') ? 'src/fork.ts' : 'lib/fork.js');
     const entry = existsSync(local) ? local : require.resolve('@deepseek-ai/dsh-session/fork');
     const { buildForkSeed } = await import(pathToFileURL(entry).href);
@@ -1220,7 +1440,16 @@ async function forkSession(ctx, { sessionId, atSeq, allowMigration }) {
         // The sidebar can fork again immediately after this child goes cold.
         await checkpointTitle(ctx, child);
       }
-      return { sessionId: id, cwd: child.header.cwd, createdAt: child.header.createdAt, title };
+      const result = { sessionId: id, cwd: child.header.cwd, createdAt: child.header.createdAt, title };
+      if (workspace) {
+        try {
+          result.workspaceRegistry = await enqueueWorkspaceOperation(() =>
+            workspaceRegistryRequest(ctx, { action: 'attach-session', id: workspace.id, sessionId: id }));
+        } catch (error) {
+          result.workspaceAttachError = error instanceof Error ? error.message : String(error);
+        }
+      }
+      return result;
     } finally {
       // Persist the prefix and release the write lease before ACP resumes the child.
       await handle.dispose();
@@ -1248,8 +1477,11 @@ function contentBlocks(content) {
 const providerSettings = 'llm-pi-ai';
 const managedProvider = /^kwork-[a-f0-9-]{36}$/;
 const managedCredential = /^KWORK_[A-F0-9]{32}_API_KEY$/;
-const compatibilityApis = new Set(['openai-completions', 'openai-responses']);
+const openAiProtocols = ['openai-completions', 'openai-responses'];
+const geminiProtocol = 'google-generative-ai';
+const editableProtocols = new Set([...openAiProtocols, 'anthropic-messages', geminiProtocol]);
 let providerMutationTail = Promise.resolve();
+let providerSchemaClass;
 
 function providerError(message) {
   return new SessionOperationError('providers/invalid', message);
@@ -1258,22 +1490,197 @@ function providerError(message) {
 function providerConfiguration(ctx) {
   const config = ctx.get('settings')?.describe().find(form => form.ns === providerSettings);
   if (!config || !ctx.get('credentials')) throw providerError('当前 dsh-acp 不支持编辑模型服务。');
-  return { profiles: config.value.providers ?? {}, revision: config.revision };
+  return { profiles: config.value.providers ?? {}, revision: config.revision, config };
 }
 
-async function publicProviders(ctx, profiles) {
-  return Promise.all(Object.entries(profiles).filter(([id]) => managedProvider.test(id))
-    .map(async ([id, profile]) => {
+function schemaEntryFor(tools) {
+  const manifest = createRequire(tools).resolve('@deepseek-ai/schemastery/package.json');
+  const entry = JSON.parse(readFileSync(manifest, 'utf8')).exports['.'].import;
+  return join(dirname(manifest), entry);
+}
+
+async function providerProfileSchema(ctx, config) {
+  try {
+    if (!providerSchemaClass) {
+      const base = createRequire(require.resolve('@deepseek-ai/dsh-base/package.json'));
+      providerSchemaClass = (await import(pathToFileURL(schemaEntryFor(base.resolve('@deepseek-ai/dsh-tools'))).href)).default;
+    }
+    return new providerSchemaClass(config.schema).dict?.providers?.inner?.dict;
+  } catch (error) {
+    ctx.logger.warn('KWork could not read the provider settings schema: %s', String(error));
+    return undefined;
+  }
+}
+
+function providerProtocols(schema) {
+  const protocols = (schema?.api?.list ?? []).map(node => node.value)
+    .filter(value => editableProtocols.has(value));
+  return protocols.length ? protocols : openAiProtocols;
+}
+
+function providerRetrySpec(schema) {
+  const number = (node, fallbackMin) => {
+    const { min = fallbackMin, max, default: value } = node?.meta ?? {};
+    return [min, max, value].every(Number.isFinite) ? { min, max, value } : null;
+  };
+  const branches = (schema?.list ?? []).map(node => [node.dict?.mode?.value, node.dict]);
+  const modes = new Map(branches);
+  const normal = modes.get('normal');
+  const always = modes.get('always');
+  if (!normal || !always) return null;
+  const backoff = branch => {
+    const fields = branch.backoff?.dict;
+    const spec = {
+      initialDelayMs: number(fields?.initialDelayMs, Number.MIN_VALUE),
+      maxDelayMs: number(fields?.maxDelayMs, Number.MIN_VALUE),
+      jitterRatio: number(fields?.jitterRatio),
+    };
+    return Object.values(spec).every(Boolean) ? spec : null;
+  };
+  const maxRetries = number(normal.maxRetries);
+  const choices = (normal.retryableCodes?.inner?.list ?? [])
+    .filter(node => node.type === 'const' && typeof node.value === 'string').map(node => node.value);
+  const defaultCodes = normal.retryableCodes?.meta?.default;
+  const normalBackoff = backoff(normal);
+  const alwaysBackoff = backoff(always);
+  if (!maxRetries || !normalBackoff || !alwaysBackoff || !Array.isArray(defaultCodes) || !defaultCodes.length) return null;
+  // Earlier Harness versions enforce positive delays in the resolver and
+  // expose a plain string array. Keep those routes editable with the official choices.
+  return { maxRetries, choices: choices.length ? choices : [
+    'EMPTY_RESPONSE', 'MALFORMED_RESPONSE', 'QUOTA', 'RATE_LIMIT', 'SERVER', 'STREAM_CLOSED', 'TIMEOUT', 'TRANSPORT',
+  ], defaultCodes, normalBackoff, alwaysBackoff };
+}
+
+async function publicProviders(ctx, { profiles, config }) {
+  return Promise.all(customProviderIds(ctx, profiles)
+    .map(async id => {
+      const profile = profiles[id];
       const keyConfigured = typeof profile.apiKeyEnv === 'string' &&
-        (await ctx.credentials.describe(profile.apiKeyEnv)).configured;
+        (await ctx.credentials.describe(profile.apiKeyEnv).catch(() => undefined))?.configured === true;
       return {
         id, name: profile.displayName ?? id, baseUrl: profile.baseURL, protocol: profile.api,
-        models: (profile.models ?? []).map(({ id, name, contextWindow, maxTokens, input }) => ({
-          id, name, contextWindow, maxTokens, inputModalities: input,
-        })),
-        keyConfigured, available: !profile.apiKeyEnv || keyConfigured,
+        defaultInput: profile.defaultInput,
+        retryPolicy: config.user?.providers?.[id]?.retryPolicy,
+        inheritedRetryPolicy: config.base?.providers?.[id]?.retryPolicy,
+        editable: providerCanEdit(config, id),
+        removable: userOwnsProvider(config, id),
+        canClearKey: canClearProviderKey(config, id, profile),
+        models: publicProviderModels(profile.models),
+        keyConfigured, available: keyConfigured || !profile.apiKeyEnv && profile.api !== geminiProtocol,
       };
     }));
+}
+
+function publicProviderModels(models) {
+  return (models ?? []).map(({ id, name, contextWindow, maxTokens, input, reasoningEfforts }) => ({
+    id, name, contextWindow, maxTokens, inputModalities: input,
+    // Keep the ordering of the editable rows across the IPC boundary.
+    reasoningEfforts: typeof reasoningEfforts === 'object'
+      ? Object.entries(reasoningEfforts ?? {}) : reasoningEfforts,
+  }));
+}
+
+function isPiAiProvider(entry) {
+  return entry.settingsNs === providerSettings && entry.settingsPath?.length === 2 &&
+    entry.settingsPath[0] === 'providers' && entry.settingsPath[1] === entry.provider;
+}
+
+function installedProviders(ctx) {
+  return (ctx.llm?.listConfigurableProviders?.() ?? [])
+    .filter(entry => entry.declared === false && isPiAiProvider(entry));
+}
+
+function customProviderIds(ctx, profiles) {
+  const directory = ctx.llm?.listConfigurableProviders?.();
+  const declared = directory?.filter(entry => entry.declared === true && isPiAiProvider(entry))
+    .map(entry => entry.provider);
+  return (declared ?? Object.keys(profiles).filter(id => managedProvider.test(id)))
+    .filter(id => Object.hasOwn(profiles, id) && editableProtocols.has(profiles[id].api) && typeof profiles[id].baseURL === 'string');
+}
+
+function providerCanEnterKey(entry, profile) {
+  return Boolean(profile?.apiKeyEnv) || entry.nativeAuth?.oauth !== true || entry.nativeAuth.env.length > 0;
+}
+
+async function providerSettingsSnapshot(ctx, current) {
+  const { profiles, config, revision } = current;
+  const providers = await publicProviders(ctx, current);
+  const active = new Set(ctx.llm.listProviders().map(entry => entry.id));
+  const store = ctx.credentials;
+  const records = new Map((await store.listRecords?.().catch(() => []) ?? []).map(entry => [entry.key, entry.kind]));
+  const loginFlows = new Map((ctx.get('authorization')?.list() ?? []).map(flow => [flow.key, flow]));
+  const infos = new Map();
+  const describe = ref => {
+    if (!infos.has(ref)) infos.set(ref, store.describe(ref).catch(() => undefined));
+    return infos.get(ref);
+  };
+  const catalog = await Promise.all(installedProviders(ctx).map(async entry => {
+    const id = entry.provider;
+    const profile = Object.hasOwn(profiles, id) ? profiles[id] : undefined;
+    const user = config.user?.providers?.[id];
+    const base = config.base?.providers?.[id];
+    const ref = profile?.apiKeyEnv;
+    const keyInfo = ref ? await describe(ref) : undefined;
+    const env = (ref ? [ref] : entry.nativeAuth?.env ?? [])
+      .filter(name => /^[A-Z_][A-Z0-9_]*$/i.test(name) && !entry.baseURLEnv?.includes(name));
+    const detected = keyInfo?.configured ?? (await Promise.all(env.map(describe))).some(info => info?.configured === true);
+    const editable = !profile || providerCanEdit(config, id);
+    const loginKey = `${providerSettings}/${id}`;
+    const login = loginFlows.get(loginKey);
+    return {
+      id, name: entry.displayName,
+      baseUrl: (editable ? user?.baseURL : profile?.baseURL) ?? '',
+      catalog: {
+        defaultBaseUrl: base?.baseURL ?? entry.defaultBaseURL ?? '',
+        endpointEnv: entry.baseURLEnv ?? [], authEnv: env.filter(name => !/oauth/i.test(name) && !managedCredential.test(name)),
+        authDetected: detected,
+        oauth: entry.nativeAuth?.oauth === true,
+        oauthConfigured: records.get(loginKey) === 'grant',
+        signedIn: records.has(loginKey), loginMethods: login?.methods ?? [], loginRunning: login?.inFlight ?? false,
+        apiKeyAllowed: providerCanEnterKey(entry, profile),
+        diagnostic: entry.error,
+        inheritedModels: publicProviderModels(base?.models),
+        modelsOverridden: Object.hasOwn(user ?? {}, 'models'),
+      },
+      keyConfigured: keyInfo?.configured ?? false,
+      canClearKey: canClearProviderKey(config, id, profile) && keyInfo?.writable === true,
+      available: active.has(id) && (!ref || keyInfo?.configured === true),
+      editable, removable: userOwnsProvider(config, id),
+      defaultInput: profile?.defaultInput,
+      models: publicProviderModels(profile?.models),
+      retryPolicy: user?.retryPolicy, inheritedRetryPolicy: base?.retryPolicy,
+    };
+  }));
+  const catalogProviders = [];
+  for (const provider of catalog) {
+    (Object.hasOwn(profiles, provider.id) ? providers : catalogProviders).push(provider);
+  }
+  return { providers, catalogProviders, revision };
+}
+
+function userOwnsProvider(config, id) {
+  return Object.hasOwn(config.user?.providers ?? {}, id) && !Object.hasOwn(config.base?.providers ?? {}, id);
+}
+
+function providerCanEdit(config, id) {
+  return Object.hasOwn(config.user?.providers ?? {}, id) || Object.hasOwn(config.base?.providers ?? {}, id);
+}
+
+function canClearProviderKey(config, id, profile) {
+  return config.base?.providers?.[id]?.apiKeyEnv === undefined &&
+    (profile?.apiKeyEnv === undefined || profile.apiKeyEnv === config.user?.providers?.[id]?.apiKeyEnv);
+}
+
+function referencesCredential(value, ref) {
+  if (value === ref) return true;
+  return value !== null && typeof value === 'object' && Object.values(value).some(child => referencesCredential(child, ref));
+}
+
+async function removeUnusedProviderKey(ctx, id, ref) {
+  const derived = `${id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`;
+  if (typeof ref !== 'string' || !(ref === derived || managedCredential.test(ref))) return;
+  if (ctx.settings.describe().some(form => [form.value, form.base, form.user].some(value => referencesCredential(value, ref)))) return;
+  if ((await ctx.credentials.describe(ref)).writable) await ctx.credentials.unset(ref);
 }
 
 // A configured compatible route is the startup choice only when the built-in
@@ -1285,17 +1692,27 @@ async function chooseCompatibleDefault(ctx, agent, profiles, preferred, signal) 
   if (!settings || !credentials) return;
   const forms = settings.describe();
   const providers = profiles ?? forms.find(form => form.ns === providerSettings)?.value?.providers ?? {};
-  const ids = Object.keys(providers).filter(id => managedProvider.test(id) && providers[id].models?.length);
-  if (!ids.length) return;
+  const installed = new Set(installedProviders(ctx).map(entry => entry.provider));
+  const registered = new Set(ctx.llm.listProviders().map(entry => entry.id));
+  const ids = [...customProviderIds(ctx, providers).filter(id => providers[id].models?.length),
+    ...Object.keys(providers).filter(id => installed.has(id) && registered.has(id))];
   const official = forms.find(form => form.ns === 'llm-deepseek')?.value;
-  if (ctx.llm.listProviders().some(provider => provider.id === 'deepseek-official') &&
+  if (registered.has('deepseek-official') &&
       (await credentials.describe(official?.apiKeyEnv ?? 'DEEPSEEK_API_KEY')).configured) return;
+  if (registered.has('deepseek-account') && (await ctx.get('deepseekAccount')?.getState?.().catch(() => null))?.status === 'credential-stored') {
+    ids.unshift('deepseek-account');
+  }
   const preferredIndex = ids.indexOf(preferred);
   if (preferredIndex > 0) ids.unshift(ids.splice(preferredIndex, 1)[0]);
   for (const provider of ids) {
     const profile = providers[provider];
-    if (profile.apiKeyEnv && !(await credentials.describe(profile.apiKeyEnv)).configured) continue;
-    for (const { id: model } of profile.models) {
+    if (profile?.apiKeyEnv ? !(await credentials.describe(profile.apiKeyEnv)).configured : profile?.api === geminiProtocol) continue;
+    let models = profile?.models;
+    if (installed.has(provider) || provider === 'deepseek-account') {
+      try { models = await ctx.llm.listModels(provider, signal); }
+      catch { signal?.throwIfAborted(); continue; }
+    }
+    for (const { id: model } of models ?? []) {
       try { await ctx.llm.resolveModelInfo(provider, model, signal); }
       catch { signal?.throwIfAborted(); continue; }
       agent.model.select({ provider, model });
@@ -1304,64 +1721,355 @@ async function chooseCompatibleDefault(ctx, agent, profiles, preferred, signal) 
   }
 }
 
-function readProviderDraft(params) {
+function readProviderDraft(params, protocols) {
+  const protocol = params.protocol;
+  if (!protocols.includes(protocol)) throw providerError('请选择当前 Harness Host 支持的接口协议。');
+  return { protocol, baseUrl: readProviderBaseUrl(params.baseUrl, protocol), key: readProviderKey(params.apiKey) };
+}
+
+function readProviderBaseUrl(value, protocol) {
+  const address = typeof value === 'string' ? value.trim() : '';
   let url;
-  try { url = new URL(params.baseUrl?.trim()); }
+  try { url = new URL(address); }
   catch { throw providerError('请输入有效的 HTTP 或 HTTPS API 地址。'); }
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+  if (!/^https?:\/\//i.test(address) || /\s/.test(address) || url.username || url.password || /[?#]/.test(url.href)) {
     throw providerError('API 地址不能包含用户名、密码、查询参数或片段。');
   }
   const baseUrl = url.href.replace(/\/+$/, '');
-  if (/\/(?:chat\/completions|responses|models)$/.test(baseUrl)) {
+  const path = url.pathname.replace(/\/+$/, '');
+  if (/\/(?:chat\/completions|responses|models)$/.test(path) ||
+      protocol === 'anthropic-messages' && /\/v1\/messages$/.test(path) ||
+      protocol === geminiProtocol && /\/models\/[^/]+:(?:streamGenerateContent|generateContent)$/.test(path)) {
     throw providerError('请填写 API 基础地址，例如 https://example.com/v1。');
   }
-  const protocol = params.protocol;
-  if (!compatibilityApis.has(protocol)) throw providerError('请选择 OpenAI 兼容协议。');
-  const key = params.apiKey;
+  return baseUrl;
+}
+
+function readProviderKey(key) {
   if (key !== undefined && (typeof key !== 'string' || key.length > 8192 ||
       !/^[\x21-\x7e]+$/.test(key) || /^[A-Z0-9_]+=[^=]/.test(key) || /^(['"`]).*\1$/.test(key))) {
     throw providerError('请填写原始 API Key。');
   }
-  return { baseUrl, protocol, key };
+  return key;
 }
 
 function sameProviderOrigin(current, baseUrl) {
-  if (!current?.baseURL) return false;
+  if (!current?.baseURL || !URL.canParse(current.baseURL)) return false;
   return new URL(current.baseURL).origin === new URL(baseUrl).origin;
 }
 
-function configuredModels(items, existing) {
-  if (!Array.isArray(items) || items.length < 1 || items.length > 512) {
-    throw providerError('请添加 1 到 512 个模型。');
+async function requireProtocolKey(ctx, draft, current, clearKey) {
+  if (draft.protocol !== geminiProtocol || draft.key !== undefined) return;
+  if (!clearKey && sameProviderOrigin(current, draft.baseUrl) && current.apiKeyEnv &&
+      (await ctx.credentials.describe(current.apiKeyEnv)).configured) return;
+  throw providerError('请输入 Gemini API 密钥后继续。');
+}
+
+function configuredModels(items, existing, protocol, catalog = false) {
+  if (!Array.isArray(items) || (!catalog && !items.length) || items.length > 512) {
+    throw providerError(catalog ? '最多可添加 512 个模型。' : '请添加 1 到 512 个模型。');
   }
   const seen = new Set();
+  const previousById = new Map(existing?.map(model => [model.id, model]));
   return items.map(item => {
     const id = typeof item?.id === 'string' ? item.id.trim() : '';
-    if (!id || id.length > 512 || /[\x00-\x20\x7f]/.test(id) || seen.has(id)) {
+    if (!id || id.length > 512 || /[\p{White_Space}\x00-\x20\x7f]/u.test(id) || seen.has(id)) {
       throw providerError('模型 ID 必须唯一，且不能包含空格。');
     }
     seen.add(id);
-    const previous = existing?.find(model => model.id === id);
-    const result = { ...previous, id };
+    // New drafts identify their saved row independently of the editable ID.
+    // Older clients identify rows by ID and used null for untouched fields.
+    const editable = Object.hasOwn(item, 'sourceId');
+    const source = editable ? item.sourceId : id;
+    if (source !== null && typeof source !== 'string') throw providerError('无法找到模型草稿对应的配置。');
+    const result = { ...previousById.get(source), id };
+    if (editable && item.name === null) delete result.name;
     if (typeof item.name === 'string' && item.name.trim()) result.name = item.name.trim().slice(0, 512);
     for (const field of ['contextWindow', 'maxTokens']) {
-      if (Number.isSafeInteger(item[field]) && item[field] > 0) result[field] = item[field];
+      if (editable && item[field] === null) delete result[field];
+      else if (Number.isSafeInteger(item[field]) && item[field] > 0) result[field] = item[field];
+      else if (editable && Object.hasOwn(item, field)) throw providerError('请填写有效的模型令牌数。');
     }
     if (Array.isArray(item.inputModalities)) {
       result.input = item.inputModalities.filter(value => value === 'text' || value === 'image');
+    }
+    if (Object.hasOwn(item, 'reasoningEfforts')) {
+      if (item.reasoningEfforts === null) delete result.reasoningEfforts;
+      else result.reasoningEfforts = configuredReasoningEfforts(item.reasoningEfforts);
+    }
+    if (protocol === 'google-generative-ai' && result.reasoningEfforts &&
+        Object.entries(result.reasoningEfforts).some(([level, wire]) =>
+          !['minimal', 'low', 'medium', 'high'].includes(level) || wire !== level)) {
+      throw providerError('Gemini API 仅接受 minimal、low、medium 和 high 档位，参数值须与档位名相同。');
     }
     return result;
   });
 }
 
-function modelProviderOperation(ctx, method, params) {
+function configuredReasoningEfforts(efforts) {
+  if (efforts === false) return false;
+  const levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  const checked = new Map();
+  if (!Array.isArray(efforts)) throw providerError('推理等级配置无效。');
+  for (const entry of efforts) {
+    if (!Array.isArray(entry) || entry.length !== 2) throw providerError('推理档位配置无效。');
+    const [level, wire] = entry;
+    if (!levels.includes(level) || checked.has(level)) throw providerError('推理档位必须有效且唯一。');
+    if (!(typeof wire === 'string' && wire.length > 0) && !(level === 'off' && wire === null)) {
+      throw providerError('思考档位的 API 参数值不能为空。');
+    }
+    checked.set(level, wire);
+  }
+  if (![...checked.keys()].some(level => level !== 'off')) {
+    throw providerError('至少添加一个 Off 以外的档位，或关闭推理等级。');
+  }
+  return Object.fromEntries(checked);
+}
+
+function installedProvider(ctx, id) {
+  const entry = installedProviders(ctx).find(entry => entry.provider === id);
+  if (!entry) throw providerError('找不到这个内置服务商。');
+  return entry;
+}
+
+function providerLoginUrl(raw) {
+  if (typeof raw !== 'string' || raw.length > 16384 || !URL.canParse(raw)) return undefined;
+  const url = new URL(raw);
+  if (url.username || url.password) return undefined;
+  if (url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) {
+    return url.href;
+  }
+  return undefined;
+}
+
+function providerLoginPrompt(attempt, prompt) {
+  const signal = prompt.signal ? AbortSignal.any([prompt.signal, attempt.controller.signal]) : attempt.controller.signal;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  if (attempt.view.status !== 'running') return Promise.reject(new Error('Login attempt ended'));
+  if (attempt.pending) return Promise.reject(new Error('A login prompt is already active'));
+  return new Promise((resolve, reject) => {
+    const id = randomUUID();
+    const view = { id, kind: prompt.kind, message: prompt.message, placeholder: prompt.placeholder, options: prompt.options };
+    const clear = () => {
+      signal.removeEventListener('abort', withdraw);
+      attempt.pending = undefined;
+      delete attempt.view.prompt;
+      attempt.view.revision++;
+    };
+    const finish = (error, value) => {
+      clear();
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const withdraw = () => finish(signal.reason ?? new Error('Login prompt withdrawn'));
+    attempt.pending = { id, view, finish };
+    attempt.view.prompt = view;
+    attempt.view.revision++;
+    signal.addEventListener('abort', withdraw, { once: true });
+  });
+}
+
+function providerLoginNotice(attempt, notice) {
+  if (attempt.controller.signal.aborted || attempt.view.status !== 'running') return;
+  const view = attempt.view;
+  const url = providerLoginUrl(notice.url);
+  if (url) {
+    view.url = url;
+    view.code = notice.code;
+    view.instruction = notice.message;
+  } else {
+    view.message = notice.message;
+  }
+  view.revision++;
+}
+
+function startProviderLogin(ctx, key, method) {
+  const authorization = ctx.get('authorization');
+  const flow = authorization?.describe(key);
+  if (!flow) throw providerError('当前 Host 没有为此服务商提供登录。');
+  if (!flow.methods.some(entry => entry.id === method)) throw providerError('请选择可用的登录方式。');
+  if (inputEnded || flow.inFlight || providerAuthAttempts.get(key)?.view.status === 'running' || providerAuthLogouts.has(key)) {
+    throw providerError('该服务商已有登录操作在进行。');
+  }
+  const view = { id: randomUUID(), revision: 0, status: 'running' };
+  const attempt = { controller: new AbortController(), view, pending: undefined };
+  providerAuthAttempts.set(key, attempt);
+  const finish = (status, credentialKind) => {
+    attempt.pending?.finish(new Error('Login attempt ended'));
+    attempt.view = { id: view.id, revision: view.revision + 1, status, credentialKind };
+  };
+  void authorization.begin({ key, method, signal: attempt.controller.signal, interaction: {
+    notify: notice => providerLoginNotice(attempt, notice),
+    prompt: prompt => providerLoginPrompt(attempt, prompt),
+  } }).then(async outcome => {
+    const record = outcome.status === 'authorized'
+      ? await ctx.credentials.describeRecord(key).catch(() => undefined) : undefined;
+    finish(outcome.status, record?.kind ?? (outcome.status === 'authorized' ? (method === 'oauth' ? 'grant' : 'api-key') : undefined));
+  }).catch(() => finish('failed'));
+  return view;
+}
+
+async function providerAuthorization(ctx, params) {
+  const entry = installedProvider(ctx, params.id);
+  const key = `${providerSettings}/${entry.provider}`;
+  const attempt = providerAuthAttempts.get(key);
+  if (params.action === 'start') return startProviderLogin(ctx, key, params.method);
+  if (params.action === 'logout') {
+    if (attempt?.view.status === 'running' || ctx.get('authorization')?.describe(key)?.inFlight || providerAuthLogouts.has(key)) {
+      throw providerError('请先结束正在进行的登录。');
+    }
+    providerAuthLogouts.add(key);
+    try {
+      await ctx.credentials.deleteRecord(key);
+      return { revision: 0, status: 'signed-out' };
+    } catch {
+      throw providerError('退出登录失败，请重试。');
+    } finally {
+      providerAuthLogouts.delete(key);
+    }
+  }
+  if (!['status', 'cancel', 'answer'].includes(params.action)) throw providerError('无法识别这个登录操作。');
+  if (!attempt || attempt.view.id !== params.attempt) {
+    if (params.action === 'answer') throw providerError('该登录提示已失效。');
+    return { id: params.attempt, revision: Number.MAX_SAFE_INTEGER, status: 'expired' };
+  }
+  if (params.action === 'cancel') {
+    if (attempt.view.status === 'running') attempt.controller.abort();
+  } else if (params.action === 'answer') {
+    const pending = attempt.pending;
+    if (!pending || pending.id !== params.prompt) throw providerError('该登录提示已失效。');
+    const value = params.value;
+    if (typeof value !== 'string' || !value.trim() || value.length > 16384 ||
+        (pending.view.kind === 'select' && !pending.view.options?.some(option => option.id === value))) {
+      throw providerError('请输入有效的登录信息。');
+    }
+    pending.finish(undefined, value);
+  }
+  return attempt.view;
+}
+
+function throwProviderWriteError(error) {
+  if (error instanceof SessionOperationError) throw error;
+  if (error?.code === 'SETTINGS_CONFLICT') throw providerError('模型服务配置已更新。请刷新列表并重新选择服务商。');
+  if (String(error?.message).includes('overridden by a home patch or command-line overlay')) {
+    throw providerError('该模型服务由启动参数或全局配置覆盖。请在对应的配置中修改。');
+  }
+  if (String(error?.message ?? error).includes('retryPolicy')) throw providerError('重试策略无效，请检查错误码和退避设置。');
+  throw providerError('保存模型服务失败。请检查配置后重试。');
+}
+
+async function writeInstalledProvider(ctx, { profiles, revision, config }, params, removing) {
+  const entry = installedProvider(ctx, params.id);
+  const id = entry.provider;
+  const profile = Object.hasOwn(profiles, id) ? profiles[id] : undefined;
+  if (params.expectedRevision !== undefined && params.expectedRevision !== revision) {
+    throwProviderWriteError({ code: 'SETTINGS_CONFLICT' });
+  }
+  if (removing && !userOwnsProvider(config, id)) throw providerError('部署配置中的服务商由 Host 管理。');
+  if (profile && !removing && !providerCanEdit(config, id)) throw providerError('该服务商由启动参数或全局配置管理。');
+
+  const path = ['providers', id];
+  const ops = [];
+  const set = (field, value) => ops.push({ op: 'set', path: [...path, field], value });
+  const unset = field => ops.push({ op: 'unset', path: [...path, field] });
+  let newRef;
+  try {
+    if (removing) {
+      ops.push({ op: 'unset', path });
+    } else {
+      const user = config.user?.providers?.[id];
+      const base = config.base?.providers?.[id];
+      const key = readProviderKey(params.apiKey);
+      if (key !== undefined && !providerCanEnterKey(entry, profile)) throw providerError('此服务商使用原生登录认证。');
+      if (!profile) ops.push({ op: 'set', path, value: {} });
+
+      if (Object.hasOwn(params, 'baseUrl')) {
+        if (typeof params.baseUrl !== 'string') throw providerError('请输入有效的 HTTP 或 HTTPS API 地址。');
+        const address = params.baseUrl.trim();
+        const url = address && readProviderBaseUrl(address, profile?.api);
+        if (address !== (user?.baseURL ?? '')) {
+          const before = profile?.baseURL ?? entry.defaultBaseURL;
+          const after = url || base?.baseURL || entry.defaultBaseURL;
+          if (profile?.apiKeyEnv && key === undefined && !params.clearKey && before !== after &&
+              (!after || !sameProviderOrigin({ baseURL: before }, after))) {
+            throw providerError('更改服务地址后，请重新输入此地址的 API Key，或选择清除原密钥。');
+          }
+          if (url) set('baseURL', url);
+          else unset('baseURL');
+        }
+      }
+      if (Object.hasOwn(params, 'models')) {
+        if (params.models === null) unset('models');
+        else set('models', configuredModels(params.models, params.modelsFromDefault ? base?.models : profile?.models, undefined, true));
+      }
+      if (Object.hasOwn(params, 'retryPolicy')) {
+        if (params.retryPolicy === null) unset('retryPolicy');
+        else set('retryPolicy', params.retryPolicy);
+      }
+      if (key !== undefined) {
+        newRef = 'KWORK_' + randomUUID().replaceAll('-', '').toUpperCase() + '_API_KEY';
+        await ctx.credentials.set(newRef, key);
+        set('apiKeyEnv', newRef);
+      } else if (params.clearKey && profile?.apiKeyEnv) {
+        if (!canClearProviderKey(config, id, profile)) throw providerError('此服务商继承了部署密钥。');
+        unset('apiKeyEnv');
+      }
+    }
+    if (ops.length) await ctx.settings.mutate(providerSettings, ops, revision);
+  } catch (error) {
+    if (newRef) await ctx.credentials.unset(newRef).catch(() => {});
+    throwProviderWriteError(error);
+  }
+  return finishProviderWrite(ctx, params, id, removing, profile?.apiKeyEnv);
+}
+
+async function finishProviderWrite(ctx, params, id, removing, oldRef) {
+  const updated = providerConfiguration(ctx);
+  if (oldRef && updated.profiles[id]?.apiKeyEnv !== oldRef) {
+    await removeUnusedProviderKey(ctx, id, oldRef).catch(() => {});
+  }
+  if (!removing && typeof params.sessionId === 'string') {
+    const agent = ctx.get('agents')?.get(params.sessionId);
+    if (agent?.status === 'idle' && !agent.session.requestHeader()) {
+      await chooseCompatibleDefault(ctx, agent, updated.profiles, id).catch(error => {
+        ctx.logger.warn('KWork could not select the compatible model: %s', String(error));
+      });
+    }
+  }
+  // A model list can change without changing the registered routes.
+  try { ctx.emit('llm/adapters-updated'); }
+  catch { ctx.logger.warn('KWork could not refresh the model picker'); }
+  return { id, ...await providerSettingsSnapshot(ctx, updated) };
+}
+
+async function modelProviderOperation(ctx, method, params) {
+  if (method === '_dsh/gpui/providers/authorization') {
+    return providerAuthorization(ctx, params).catch(error => {
+      if (error instanceof SessionOperationError) throw error;
+      throw providerError('无法完成此登录操作，请重试。');
+    });
+  }
   if (method === '_dsh/gpui/providers/list') {
-    return publicProviders(ctx, providerConfiguration(ctx).profiles);
+    const current = providerConfiguration(ctx);
+    if (!params.includeRetrySettings) return publicProviders(ctx, current);
+    const schema = await providerProfileSchema(ctx, current.config);
+    return { ...await providerSettingsSnapshot(ctx, current), protocols: providerProtocols(schema), retryPolicySpec: providerRetrySpec(schema?.retryPolicy) };
   }
   if (method === '_dsh/gpui/providers/discover') {
-    const { profiles } = providerConfiguration(ctx);
-    const { baseUrl, protocol, key } = readProviderDraft(params);
-    const current = managedProvider.test(params.id) ? profiles[params.id] : undefined;
+    if (params.catalog === true) {
+      const entry = installedProvider(ctx, params.id);
+      // The installed catalog answers from its own registry. Sending only
+      // the route ID keeps endpoint overrides and credentials out of this read.
+      return ctx.llm.discoverModels(providerSettings, { provider: entry.provider }, AbortSignal.timeout(12000))
+        .catch(() => { throw providerError('无法读取内置模型目录，请重试或手动添加模型 ID。'); });
+    }
+    const { profiles, config } = providerConfiguration(ctx);
+    const schema = await providerProfileSchema(ctx, config);
+    const draft = readProviderDraft(params, providerProtocols(schema));
+    const { baseUrl, protocol, key } = draft;
+    const current = customProviderIds(ctx, profiles).includes(params.id) ? profiles[params.id] : undefined;
+    if (params.id !== undefined && !current) throw providerError('找不到这个自定义服务商。');
+    await requireProtocolKey(ctx, draft, current, params.clearKey);
     const provider = params.clearKey || !sameProviderOrigin(current, baseUrl) ? undefined : params.id;
     return ctx.llm.discoverModels(providerSettings, {
       provider, api: protocol, baseURL: baseUrl, apiKey: key,
@@ -1371,13 +2079,25 @@ function modelProviderOperation(ctx, method, params) {
   }
 
   const operation = providerMutationTail.then(async () => {
-    const { profiles, revision } = providerConfiguration(ctx);
+    const snapshot = providerConfiguration(ctx);
+    const { profiles, revision, config } = snapshot;
     const removing = method === '_dsh/gpui/providers/remove';
+    if (params.catalog === true) return writeInstalledProvider(ctx, snapshot, params, removing);
+    const editing = removing || params.id !== undefined;
     const id = params.id ?? (removing ? '' : 'kwork-' + randomUUID());
-    if (!managedProvider.test(id) || ((removing || params.id) && !Object.hasOwn(profiles, id))) {
-      throw providerError('找不到这个 KWork 服务商。');
+    if (editing && !customProviderIds(ctx, profiles).includes(id)) {
+      throw providerError('找不到这个自定义服务商。');
     }
-    const current = profiles[id];
+    if (editing && params.expectedRevision !== undefined && params.expectedRevision !== revision) {
+      throw providerError('模型服务配置已更新。请刷新列表并重新选择服务商。');
+    }
+    if (removing && !userOwnsProvider(config, id)) {
+      throw providerError('部署配置中的服务商由 Host 管理。');
+    }
+    if (editing && !removing && !providerCanEdit(config, id)) {
+      throw providerError('该服务商由启动参数或全局配置管理。');
+    }
+    const current = editing ? profiles[id] : undefined;
     const oldRef = current?.apiKeyEnv;
     const path = ['providers', id];
     let newRef;
@@ -1385,57 +2105,365 @@ function modelProviderOperation(ctx, method, params) {
       if (removing) {
         await ctx.settings.mutate(providerSettings, [{ op: 'unset', path }], revision);
       } else {
-        const { baseUrl, protocol, key } = readProviderDraft(params);
+        const schema = await providerProfileSchema(ctx, config);
+        const draft = readProviderDraft(params, providerProtocols(schema));
+        const { baseUrl, protocol, key } = draft;
+        await requireProtocolKey(ctx, draft, current, params.clearKey);
         const name = typeof params.name === 'string' ? params.name.trim() : '';
-        if (!name || name.length > 80) throw providerError('请输入不超过 80 个字符的服务商名称。');
-        const models = configuredModels(params.models, current?.models);
-        let apiKeyEnv = params.clearKey || !sameProviderOrigin(current, baseUrl) ? undefined : oldRef;
+        if (!name || (name.length > 80 && name !== (current?.displayName ?? id))) {
+          throw providerError('请输入不超过 80 个字符的服务商名称。');
+        }
+        const models = configuredModels(params.models, current?.models, protocol);
+        const sameOrigin = sameProviderOrigin(current, baseUrl);
+        if (key === undefined && !canClearProviderKey(config, id, current) && (params.clearKey || !sameOrigin)) {
+          throw providerError('此服务商继承了部署密钥。更改地址来源时，请输入新的 API Key。');
+        }
+        let apiKeyEnv = params.clearKey || !sameOrigin ? undefined : oldRef;
         if (key !== undefined) {
           newRef = 'KWORK_' + randomUUID().replaceAll('-', '').toUpperCase() + '_API_KEY';
           await ctx.credentials.set(newRef, key);
           apiKeyEnv = newRef;
-        } else if (oldRef && !params.clearKey && !sameProviderOrigin(current, baseUrl)) {
+        } else if (oldRef && !params.clearKey && !sameOrigin) {
           throw providerError('更改服务地址后，请重新输入此地址的 API Key，或选择清除原密钥。');
         }
-        const value = { ...current, displayName: name, api: protocol, baseURL: baseUrl, models };
-        delete value.apiKeyEnv;
-        if (apiKeyEnv) value.apiKeyEnv = apiKeyEnv;
-        await ctx.settings.mutate(providerSettings, [{ op: 'set', path, value }], revision);
+        if (!current) {
+          const value = { displayName: name, api: protocol, baseURL: baseUrl, models };
+          if (params.retryPolicy != null) value.retryPolicy = params.retryPolicy;
+          if (apiKeyEnv) value.apiKeyEnv = apiKeyEnv;
+          await ctx.settings.mutate(providerSettings, [{ op: 'set', path, value }], revision);
+        } else {
+          // Edit only fields changed by this form. The effective descriptor
+          // can include inherited defaults and redact deployment-owned fields.
+          const ops = [];
+          const set = (field, value) => ops.push({ op: 'set', path: [...path, field], value });
+          const unset = field => ops.push({ op: 'unset', path: [...path, field] });
+          if (name !== (current.displayName ?? id)) set('displayName', name);
+          if (protocol !== current.api) set('api', protocol);
+          if (params.baseUrl.trim() !== current.baseURL) set('baseURL', baseUrl);
+          if (JSON.stringify(models) !== JSON.stringify(current.models)) set('models', models);
+          if (Object.hasOwn(params, 'retryPolicy')) {
+            if (params.retryPolicy === null) unset('retryPolicy');
+            else set('retryPolicy', params.retryPolicy);
+          }
+          if (apiKeyEnv !== oldRef) {
+            if (apiKeyEnv === undefined) unset('apiKeyEnv');
+            else set('apiKeyEnv', apiKeyEnv);
+          }
+          if (ops.length) await ctx.settings.mutate(providerSettings, ops, revision);
+        }
       }
     } catch (error) {
       if (newRef) await ctx.credentials.unset(newRef).catch(() => {});
-      if (error instanceof SessionOperationError) throw error;
-      throw providerError('保存模型服务失败。请重新打开设置后再试。');
+      throwProviderWriteError(error);
     }
-    const updated = providerConfiguration(ctx).profiles;
-    if (managedCredential.test(oldRef) && updated[id]?.apiKeyEnv !== oldRef) {
-      await ctx.credentials.unset(oldRef).catch(() => {});
-    }
-    if (!removing && typeof params.sessionId === 'string') {
-      const agent = ctx.get('agents')?.get(params.sessionId);
-      if (agent?.status === 'idle' && !agent.session.requestHeader()) {
-        await chooseCompatibleDefault(ctx, agent, updated, id).catch(error => {
-          ctx.logger.warn('KWork could not select the compatible model: %s', String(error));
-        });
-      }
-    }
-    // Updating an existing profile's model list may leave the adapter route set
-    // unchanged. ACP sessions still need a fresh model picker in this case.
-    try { ctx.emit('llm/adapters-updated'); }
-    catch { ctx.logger.warn('KWork could not refresh the model picker'); }
-    return { id, providers: await publicProviders(ctx, updated) };
+    return finishProviderWrite(ctx, params, id, removing, oldRef);
   });
   providerMutationTail = operation.then(() => undefined, () => undefined);
   return operation;
 }
 
+async function deepSeekCallbackOrigin(ctx) {
+  const mounted = ctx.get('webServer');
+  if (!mounted) {
+    accountCallback ??= (async () => {
+      const local = join(service, 'packages/host/webserver', profileEntry.endsWith('.ts') ? 'src/index.ts' : 'lib/index.js');
+      const entry = existsSync(local) ? local : require.resolve('@deepseek-ai/dsh-host-webserver');
+      const { default: WebServer } = await import(pathToFileURL(entry).href);
+      const fiber = ctx.plugin(WebServer, { host: '127.0.0.1', port: 0 });
+      accountCallbackFiber = fiber;
+      await fiber;
+    })().catch(async error => {
+      await accountCallbackFiber?.dispose().catch(() => {});
+      accountCallbackFiber = undefined;
+      accountCallback = undefined;
+      throw error;
+    });
+    await accountCallback;
+  } else if (accountCallback) {
+    await accountCallback;
+  }
+  const origin = ctx.get('webServer')?.getOrigin();
+  if (!/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):[1-9]\d*$/.test(origin)) {
+    throw new SessionOperationError('account/callback', '未能启动 DeepSeek 登录所需的本机回调。');
+  }
+  return origin;
+}
+
+function accountWireState(ctx, state) {
+  const attempt = state.attempt ? { ...state.attempt, authorizeUrl: providerLoginUrl(state.attempt.authorizeUrl) } : null;
+  return {
+    available: true,
+    platformEmbedded: typeof ctx.get('deepseekAccount')?.getPlatformSession === 'function',
+    notifications: state.status === 'credential-stored' ? notificationCapability(ctx) : null,
+    modelReady: state.status === 'credential-stored' && ctx.llm?.listProviders().some(route => route.id === 'deepseek-account'),
+    state: { status: state.status, attempt, links: {
+      usageUrl: providerLoginUrl(state.links?.usageUrl), topUpUrl: providerLoginUrl(state.links?.topUpUrl),
+    } },
+  };
+}
+
+function notificationCapability(ctx) {
+  const account = ctx.get('deepseekAccount');
+  if (!account) return null;
+  const modern = ['getNotifications', 'getNotificationContent', 'reportNotificationEvent']
+    .every(name => typeof account[name] === 'function');
+  const legacy = ['getUnnotifiedBonuses', 'ackBonusNotified'].every(name => typeof account[name] === 'function');
+  if (!modern && !legacy) return null;
+  const configuration = ctx.get('configEditor')?.configuration?.()
+    .find(({ entry }) => entry.options.id === 'ui-account-notifications');
+  const configured = configuration?.entry.fiber?.effectiveConfig?.notificationPollIntervalMs;
+  const pollIntervalMs = Number.isSafeInteger(configured) && configured > 0 && configured <= 2_147_483_647
+    ? configured : 600_000;
+  return { scope: notificationScope, mode: modern ? 'modern' : 'bonus', pollIntervalMs };
+}
+
+function notificationForClient(notice) {
+  if (!notice || typeof notice.id !== 'string' || typeof notice.title !== 'string'
+    || typeof notice.body !== 'string' || !Array.isArray(notice.actions)) return null;
+  const actions = notice.actions.flatMap(action => {
+    if (!action || typeof action.label !== 'string' || !['primary', 'secondary'].includes(action.style)) return [];
+    const target = action.target;
+    if (target?.type !== 'dismiss' && (target?.type !== 'app_route' || target.name !== 'account')) return [];
+    return [{ label: action.label, style: action.style, target: target.type === 'dismiss' ? 'dismiss' : 'account' }];
+  });
+  return {
+    id: notice.id, title: notice.title, body: notice.body, actions,
+    displayUntil: typeof notice.displayUntil === 'string' && notice.displayUntil ? notice.displayUntil : null,
+  };
+}
+
+async function accountNotifications(ctx, params) {
+  const account = ctx.get('deepseekAccount');
+  const capability = notificationCapability(ctx);
+  const scope = params.scope;
+  if (!capability || scope !== capability.scope) return null;
+  const version = typeof params.version === 'string' && /^[\dA-Za-z.+-]{1,64}$/.test(params.version) ? params.version : '0.1.0';
+  const locale = typeof params.locale === 'string' && /^[a-z]{2,3}(?:[-_][a-zA-Z0-9]{2,8}){0,3}$/i.test(params.locale)
+    ? params.locale : 'zh-CN';
+  const offset = params.timezoneOffsetSeconds;
+  const client = { version, locale, timezoneOffsetSeconds: Number.isSafeInteger(offset) && Math.abs(offset) <= 86_400
+    ? offset : -new Date().getTimezoneOffset() * 60 };
+  try {
+    if (params.action === 'list') {
+      if (capability.mode === 'modern') {
+        const batch = await account.getNotifications(client);
+        if (notificationScope !== scope || batch == null) return null;
+        return { nextPollAfterSeconds: batch.nextPollAfterSeconds, notifications: batch.notifications.map(notificationForClient).filter(Boolean) };
+      }
+      const batch = await account.getUnnotifiedBonuses(client);
+      if (notificationScope !== scope || batch == null) return null;
+      legacyNotificationAccount = batch.accountId;
+      const chinese = /^zh(?:[-_]|$)/i.test(locale);
+      return { nextPollAfterSeconds: capability.pollIntervalMs / 1000, notifications: batch.bonuses.map(bonus => ({
+        id: bonus.orderId, title: bonus.title || (chinese ? '赠金到账' : 'Bonus credited'), body: bonus.message, displayUntil: bonus.expiresAt || null,
+        actions: [{ label: chinese ? '查看余额' : 'View balance', style: 'primary', target: 'account' }],
+      })) };
+    }
+    if (typeof params.id !== 'string') return null;
+    if (params.action === 'content' && capability.mode === 'modern') {
+      const notice = await account.getNotificationContent(params.id, client);
+      return notificationScope === scope && notice?.id === params.id ? notificationForClient(notice) : null;
+    }
+    if (params.action === 'report' && notificationEvents.has(params.event)) {
+      if (capability.mode === 'modern') {
+        return await account.reportNotificationEvent(params.id, params.event, client);
+      }
+      if (params.event === 'displayed' && legacyNotificationAccount != null) {
+        return await account.ackBonusNotified(legacyNotificationAccount, params.id, client);
+      }
+      return false;
+    }
+    return null;
+  } catch {
+    if (notificationScope !== scope) return null;
+    throw new SessionOperationError('account/notifications', '账号通知请求失败。');
+  }
+}
+
+function runningAccountTasks(ctx, account) {
+  return account.hasRunningAccountTasks?.() ?? (ctx.get('agents')?.list().some(agent =>
+    agent.status === 'running' && agent.session.requestContext()?.provider === 'deepseek-account') ?? false);
+}
+
+async function deepSeekAccountOperation(ctx, params) {
+  const account = ctx.get('deepseekAccount');
+  if (typeof account?.getState !== 'function' || typeof account.startSignIn !== 'function') return { available: false };
+  const version = typeof params.version === 'string' && /^[\dA-Za-z.+-]{1,64}$/.test(params.version) ? params.version : '0.1.0';
+  const client = { version, locale: 'zh-CN', timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60 };
+  try {
+    let state;
+    if (params.action === 'start') {
+      const origin = await deepSeekCallbackOrigin(ctx);
+      if (inputEnded) throw new SessionOperationError('account/closed', '登录连接已关闭。');
+      accountLoginService = account;
+      state = await account.startSignIn(client, origin, 'desktop');
+    } else if (params.action === 'cancel') {
+      state = await account.cancelSignIn(typeof params.attempt === 'string' ? params.attempt : '');
+    } else if (params.action === 'signout') {
+      if (params.approveRunning !== true && await runningAccountTasks(ctx, account)) {
+        return { ...accountWireState(ctx, await account.getState()), runningTasks: true, needsConfirmation: true };
+      }
+      state = await account.signOut(client);
+    } else if (params.action === 'check-signout') {
+      return { ...accountWireState(ctx, await account.getState()), runningTasks: await runningAccountTasks(ctx, account) };
+    } else if (params.action === 'details') {
+      const [profile, balance] = await Promise.allSettled([account.getProfile(client), account.getBalance(client)]);
+      return { ...accountWireState(ctx, await account.getState()), details: {
+        profile: profile.status === 'fulfilled' ? profile.value : { status: 'failed' },
+        balance: balance.status === 'fulfilled' ? balance.value : { status: 'failed' },
+      } };
+    } else if (params.action === 'status') {
+      state = await account.getState();
+      if (state.status === 'credential-stored' && typeof params.sessionId === 'string') {
+        const agent = ctx.get('agents')?.get(params.sessionId);
+        if (agent?.status === 'idle' && !agent.session.requestHeader()) {
+          await chooseCompatibleDefault(ctx, agent, undefined, 'deepseek-account').catch(() => {});
+        }
+      }
+    } else {
+      throw new SessionOperationError('account/action', '无法识别此账号操作。');
+    }
+    return accountWireState(ctx, state);
+  } catch (error) {
+    if (error instanceof SessionOperationError) throw error;
+    throw new SessionOperationError('account/unavailable', 'DeepSeek 账号操作失败，请重试。');
+  }
+}
+
+function observeDeepSeekAccount(ctx) {
+  const publish = async reason => {
+    const state = await ctx.get('deepseekAccount')?.getState?.().catch(() => null);
+    const ready = state ? accountWireState(ctx, state).modelReady : false;
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: '_dsh/gpui/deepseek-account-changed', params: { ready, reason } }) + '\n');
+  };
+  ctx.on('credentials/record-updated', key => {
+    if (key !== 'deepseek-account-platform/default') return;
+    notificationScope = randomUUID();
+    legacyNotificationAccount = undefined;
+    void readPlatformSession();
+    void publish('changed').catch(() => {});
+  }, { global: true });
+  for (const reason of ['session-expired', 'model-sign-in-required']) {
+    ctx.on(`deepseek-account/${reason}`, () => { void publish(reason).catch(() => {}); }, { global: true });
+  }
+}
+
+let platformSessionSource;
+let platformSession = null;
+let platformSessionRead = Promise.resolve(null);
+
+function updatePlatformSession(next) {
+  const previous = platformSession;
+  platformSession = next;
+  if (previous && (previous.token !== next?.token || previous.origin !== next?.origin
+    || previous.embeddedPageDist !== next?.embeddedPageDist
+    || JSON.stringify(previous.requestHeaders) !== JSON.stringify(next?.requestHeaders)
+    || (previous.userId && previous.userId !== next?.userId))) {
+    // This private event carries no token, account ID, or deployment headers.
+    process.stdout.write('{"jsonrpc":"2.0","method":"_dsh/gpui/account-platform-session-revoked"}\n');
+  }
+}
+
+function readPlatformSession() {
+  const source = platformSessionSource;
+  if (!source) return Promise.resolve(null);
+  // A concurrent open and identity update must publish in the same order.
+  const read = platformSessionRead.then(async () => {
+    if (platformSessionSource !== source) return null;
+    const next = await source.account.getPlatformSession().catch(() => null) ?? null;
+    if (platformSessionSource !== source) return null;
+    updatePlatformSession(next);
+    return next;
+  });
+  platformSessionRead = read.catch(() => null);
+  return platformSessionRead;
+}
+
+function observePlatformSession(ctx) {
+  ctx.inject(['deepseekAccount'], accountCtx => {
+    const account = accountCtx.get('deepseekAccount');
+    if (typeof account?.getPlatformSession !== 'function' || typeof account.watch !== 'function') return;
+    accountCtx.effect(() => {
+      const lifetime = new AbortController();
+      const source = { account, lifetime };
+      platformSessionSource = source;
+      const clear = () => {
+        if (platformSessionSource !== source) return;
+        platformSessionSource = undefined;
+        platformSessionRead = Promise.resolve(null);
+        updatePlatformSession(null);
+      };
+      const updates = (async () => {
+        try {
+          for await (const _state of account.watch(lifetime.signal, true)) {
+            if (lifetime.signal.aborted) break;
+            await readPlatformSession();
+          }
+        } catch {
+          if (!lifetime.signal.aborted) console.error('KWork: 平台账号状态订阅结束。');
+        } finally {
+          clear();
+        }
+      })();
+      return async () => {
+        lifetime.abort();
+        clear();
+        await updates;
+      };
+    });
+  });
+}
+
+// The stock ACP configuration reply discards individual provider failures.
+// Read the same registry and validate the same routes as Harness modelCatalog.
+async function readModelCatalog(ctx) {
+  const llm = ctx.get('llm');
+  if (!llm) return { available: false };
+  const account = await ctx.get('deepseekAccount')?.getState?.().catch(() => null);
+  const providers = llm.listProviders().filter(provider => provider.id !== 'deepseek-account' || account?.status === 'credential-stored');
+  const catalog = await Promise.all(providers.map(async ({ id, name }) => {
+    try {
+      const models = await llm.listModels(id);
+      const options = await Promise.all(models.map(async model => {
+        await llm.resolveModelInfo(id, model.id);
+        return {
+          value: JSON.stringify([id, model.id]),
+          name: model.name,
+          ...(model.description === undefined ? {} : { description: model.description }),
+        };
+      }));
+      return { group: { group: id, name, options } };
+    } catch (error) {
+      return { failure: { id, name, message: error instanceof Error ? error.message : String(error) } };
+    }
+  }));
+  return {
+    available: true,
+    groups: catalog.flatMap(entry => entry.group?.options.length ? [entry.group] : []),
+    failures: catalog.flatMap(entry => entry.failure ? [entry.failure] : []),
+  };
+}
+
 function observeModelProviders(ctx) {
+  let scheduled = false;
+  const notifyCatalogChanged = () => {
+    if (scheduled) return;
+    scheduled = true;
+    setImmediate(() => {
+      scheduled = false;
+      process.stdout.write('{"jsonrpc":"2.0","method":"_dsh/gpui/model-catalog-changed"}\n');
+    });
+  };
+  for (const event of [
+    'llm/adapters-updated', 'llm/models-updated', 'settings/document-updated',
+    'credentials/record-updated', 'credentials/reference-updated', 'authorization/settled',
+  ]) ctx.on(event, notifyCatalogChanged, { global: true });
   ctx.on('llm-pi-ai/request-headers', (request, headers, next) => {
     if (managedProvider.test(request.provider) && !headers.has('authorization')) {
       const profile = providerConfiguration(ctx).profiles[request.provider];
       // The OpenAI SDK requires an Authorization value even for a local
       // gateway without a key. This placeholder carries no credential.
-      if (profile && !profile.apiKeyEnv) headers.set('authorization', 'Bearer kwork-no-key');
+      if (profile && openAiProtocols.includes(profile.api) && !profile.apiKeyEnv) headers.set('authorization', 'Bearer kwork-no-key');
     }
     return next();
   }, { global: true });
@@ -1473,12 +2501,10 @@ async function mountQuestionTool(ctx) {
   if (!ctx.get('userQuestions') || ctx.get('tools')?.get('ask_user_question') || typeof bundledAskUser !== 'string') return;
   const base = createRequire(require.resolve('@deepseek-ai/dsh-base/package.json'));
   const tools = base.resolve('@deepseek-ai/dsh-tools');
-  const schemaPackage = createRequire(tools).resolve('@deepseek-ai/schemastery/package.json');
-  const schemaEntry = JSON.parse(readFileSync(schemaPackage, 'utf8')).exports['.'].import;
   const dependencies = {
     '@deepseek-ai/dsh-tools': tools,
     '@deepseek-ai/dsh-user-questions': base.resolve('@deepseek-ai/dsh-user-questions'),
-    '@deepseek-ai/schemastery': join(dirname(schemaPackage), schemaEntry),
+    '@deepseek-ai/schemastery': schemaEntryFor(tools),
   };
   // The vendor module is the installed Harness build. Bind it to this
   // profile's service instances instead of importing a second Cordis runtime.
@@ -1711,8 +2737,25 @@ function sessionCommands(ctx, { sessionId }) {
   }));
 }
 
+const commandFileReceipts = new WeakMap();
+
+function commandReceiptStore(ctx, commands) {
+  // Cordis can return a fresh service proxy on each lookup.
+  let receipts = commandFileReceipts.get(ctx);
+  if (!receipts) {
+    receipts = new Map();
+    commands.registerFileReceiptResolver((agent, id) => {
+      const receipt = receipts.get(id);
+      return receipt?.agent === agent ? receipt.file : undefined;
+    });
+    commandFileReceipts.set(ctx, receipts);
+  }
+  return receipts;
+}
+
 async function executeSessionCommand(ctx, { sessionId, line, attachments }) {
-  if (typeof line !== 'string' || !line.trimStart().startsWith('/')) {
+  const name = typeof line === 'string' ? /^\/([a-z][a-z0-9_-]*)(?=$|[\t\n\r ])/.exec(line)?.[1] : undefined;
+  if (!name) {
     throw new SessionOperationError('command/invalid', '无效的斜杠指令。');
   }
   const agent = ctx.get('agents')?.get(sessionId);
@@ -1720,19 +2763,66 @@ async function executeSessionCommand(ctx, { sessionId, line, attachments }) {
   if (!agent || !commands) {
     throw new SessionOperationError('command/unavailable', '当前会话不支持该指令。');
   }
-  const submitted = Array.isArray(attachments) ? attachments : [];
-  const execution = await commands.execute(agent, line, submitted, new AbortController().signal);
-  if (!execution) {
-    throw new SessionOperationError('command/unknown', `未知指令：${line.trim().split(/\s+/)[0]}`);
+  const submitted = Array.isArray(attachments) ? attachments.slice() : [];
+  const files = submitted.flatMap((block, index) => block?.type === 'file' ? [{ block, index }] : []);
+  const signal = new AbortController().signal;
+  const fileUploads = ctx.get('fileUploads');
+  const batchId = files.length > 0 && fileUploads ? randomUUID() : undefined;
+  const minted = [];
+  let localReceipts;
+  try {
+    if (files.length > 0) {
+      const descriptor = commands.list(agent).find(command => command.name === name);
+      if (!descriptor) throw new SessionOperationError('command/unknown', `未知指令 /${name}。`);
+      if (descriptor.input?.attachments !== true) {
+        throw new SessionOperationError('command/rejected', `/${name} 不支持附件。`);
+      }
+      const reject = message => new SessionOperationError('command/attachment-invalid', message);
+      const sources = await Promise.all(files.map(({ block }) => stagedPromptFile(block, reject)));
+      const store = ctx.get('attachments');
+      if (!fileUploads) {
+        if (!store || typeof commands.registerFileReceiptResolver !== 'function') {
+          throw reject('当前服务不支持指令文件附件。');
+        }
+        localReceipts = commandReceiptStore(ctx, commands);
+      }
+      for (const [position, source] of sources.entries()) {
+        const receiptId = await readStagedFile(source, async (data, fileName) => {
+          if (fileUploads) {
+            const { receiptId, file } = await fileUploads.uploadStream({ sessionId, data, name: fileName, signal });
+            fileUploads.bindPrompt(agent, [receiptId], batchId).commit();
+            if (file.bytes !== source.size) throw reject('附件长度与上传时不符。');
+            return receiptId;
+          }
+          const file = await store.saveFileStream({ data, name: fileName, signal });
+          if (file.bytes !== source.size) throw reject('附件长度与上传时不符。');
+          const id = randomUUID();
+          localReceipts.set(id, { agent, file });
+          minted.push(id);
+          return id;
+        });
+        submitted[files[position].index] = { type: 'file', receiptId };
+      }
+      if (ctx.get('agents')?.get(sessionId) !== agent) {
+        throw reject('上传期间会话已关闭，草稿已保留。');
+      }
+    }
+    const execution = await commands.execute(agent, line, submitted, signal);
+    if (!execution) throw new SessionOperationError('command/unknown', `未知指令 /${name}。`);
+    if (execution.result.kind === 'error') {
+      throw new SessionOperationError('command/rejected', execution.result.text || '指令执行失败。');
+    }
+    const planning = name === 'plan' ? ctx.get('planMode')?.get(agent) : undefined;
+    return {
+      kind: 'success',
+      text: execution.result.text ?? '',
+      commandId: execution.commandId,
+      ...(planning === undefined ? {} : { planActive: planning.pending ?? planning.active }),
+    };
+  } finally {
+    if (batchId !== undefined) fileUploads.retirePrompt(agent, batchId);
+    for (const id of minted) localReceipts.delete(id);
   }
-  if (execution.result.kind === 'error') {
-    throw new SessionOperationError('command/rejected', execution.result.text || '指令执行失败。');
-  }
-  return {
-    kind: 'success',
-    text: execution.result.text ?? '',
-    commandId: execution.commandId,
-  };
 }
 
 async function permissionMode(ctx, { sessionId, preset, acknowledged }) {
@@ -1799,14 +2889,38 @@ function queueRejected(message) {
   return new SessionOperationError('session/queue-invalid', message);
 }
 
+async function stagedPromptFile(block, reject) {
+  const directory = process.env.KWORK_PROMPT_FILES;
+  if (!directory || typeof block.stagingId !== 'string'
+    || !/^file-[A-Za-z0-9]{16}$/.test(block.stagingId)
+    || !Number.isSafeInteger(block.size) || block.size < 0 || typeof block.name !== 'string') {
+    throw reject('附件暂存无效，请重新发送。');
+  }
+  const path = join(directory, block.stagingId);
+  const info = await lstat(path).catch(() => undefined);
+  if (!info?.isFile() || info.size !== block.size) {
+    throw reject('附件上传未完成，请重新发送。');
+  }
+  return { path, name: block.name, size: block.size };
+}
+
+async function readStagedFile({ path, name }, read) {
+  const data = createReadStream(path);
+  try {
+    return await read(data, name);
+  } finally {
+    data.destroy();
+  }
+}
+
 /**
  * Admit one composer payload into ordered core content.
- * Mirrors `admitAcpPrompt`: validate every block first, persist the image batch
- * as durable attachments, then rebuild the text/image order around the refs.
+ * Validate every block first, persist the attachments, then rebuild their order.
  */
 async function queuePromptContent(ctx, agent, blocks) {
   if (!Array.isArray(blocks) || blocks.length === 0) throw queueRejected('排队消息内容为空。');
   const images = [];
+  const files = [];
   for (const block of blocks) {
     if (block?.type === 'text') {
       if (typeof block.text !== 'string') throw queueRejected('排队消息的文本块无效。');
@@ -1824,11 +2938,15 @@ async function queuePromptContent(ctx, agent, blocks) {
       images.push({ data, mediaType });
       continue;
     }
-    throw queueRejected('排队消息只支持文本和图片。');
+    if (block?.type === 'file') {
+      files.push(await stagedPromptFile(block, queueRejected));
+      continue;
+    }
+    throw queueRejected('消息包含未知的附件类型。');
   }
+  const attachments = ctx.get('attachments');
   let refs = [];
   if (images.length > 0) {
-    const attachments = ctx.get('attachments');
     const selection = agent.model.current();
     if (attachments === undefined || selection === undefined) {
       throw queueRejected('当前会话未准备好接收图片，请稍后重试。');
@@ -1848,9 +2966,21 @@ async function queuePromptContent(ctx, agent, blocks) {
       throw queueRejected(error instanceof Error ? error.message : String(error));
     }
   }
+  const fileRefs = [];
+  if (files.length > 0 && !attachments) throw queueRejected('当前服务没有可用的附件存储。');
+  for (const file of files) {
+    try {
+      const attachment = await readStagedFile(file, (data, name) => attachments.saveFileStream({ data, name }));
+      if (attachment.bytes !== file.size) throw new Error('附件长度与上传时不符。');
+      fileRefs.push(attachment);
+    } catch (error) {
+      throw queueRejected(error instanceof Error ? error.message : String(error));
+    }
+  }
   const content = [];
   let pendingText = '';
   let imageIndex = 0;
+  let fileIndex = 0;
   for (const block of blocks) {
     if (block.type === 'text') {
       pendingText += block.text;
@@ -1860,17 +2990,19 @@ async function queuePromptContent(ctx, agent, blocks) {
       content.push({ type: 'text', text: pendingText });
       pendingText = '';
     }
-    content.push({ type: 'image', attachment: refs[imageIndex++] });
+    if (block.type === 'file') content.push({ type: 'file', attachment: fileRefs[fileIndex++] });
+    else content.push({ type: 'image', attachment: refs[imageIndex++] });
   }
   if (pendingText.length > 0) content.push({ type: 'text', text: pendingText });
   return content;
 }
 
 async function watchTerminals(ctx, { sessionId, request, active = true }) {
-  if (!active) {
+  const terminals = ctx.get('terminalController');
+  if (!active || !terminals) {
     terminalWatches.get(sessionId)?.controller.abort();
     terminalWatches.delete(sessionId);
-    return [];
+    return active ? { available: false } : [];
   }
   if (active !== true) {
     const watch = terminalWatches.get(sessionId);
@@ -1887,11 +3019,6 @@ async function watchTerminals(ctx, { sessionId, request, active = true }) {
   const controller = new AbortController();
   const record = { request, controller, result: [], retained: new Map(), holds: [] };
   terminalWatches.set(sessionId, record);
-  const terminals = ctx.get('terminalController');
-  if (!terminals) {
-    terminalWatches.delete(sessionId);
-    throw new SessionOperationError('terminal/unavailable', '当前 ACP 服务未启用 Agent 终端。');
-  }
   // The current controller publishes the authoritative roster as a stream.
   // Retain only terminals represented by open sidebar tabs, independently of
   // their output attachments; detach never releases that window hold.
@@ -2026,6 +3153,43 @@ function liveAgent(ctx, sessionId) {
   return agent;
 }
 
+async function composerPreference(ctx, requested) {
+  const settings = ctx.get('settings');
+  const read = () => settings?.describe().find(form => form.ns === 'ui-conversation');
+  let form = read();
+  if (!form) return { available: false };
+  if (requested != null && requested !== 'queue' && requested !== 'steer') {
+    throw new SessionOperationError('conversation/busy-enter', '不支持的发送行为。');
+  }
+  if (requested != null && requested !== form.value.busyEnter) {
+    await settings.mutate('ui-conversation', [{ op: 'set', path: ['busyEnter'], value: requested }], form.revision);
+    form = read();
+  }
+  return { available: true, mode: form?.value.busyEnter === 'steer' ? 'steer' : 'queue' };
+}
+
+function promptAttachmentRefs(content) {
+  return content.flatMap(block => {
+    if (!['image', 'file'].includes(block.type) || !block.attachment?.attachmentId) return [];
+    const { attachmentId, mediaType, name, bytes } = block.attachment;
+    return [{ type: block.type, attachmentId, mediaType, name, bytes }];
+  });
+}
+
+function inboxRow(message, mode) {
+  return {
+    itemId: message.id,
+    mode,
+    text: contentBlocks(message.content),
+    editText: message.content.every(block => block.type === 'text')
+      ? message.content.map(block => block.text).join('') : null,
+    hasImage: message.content.some(block => block.type === 'image'),
+    attachments: promptAttachmentRefs(message.content),
+    sourceKind: message.source?.kind ?? 'user',
+    requestId: message.source?.kind === 'user' ? message.source.rpcId : undefined,
+  };
+}
+
 /** Pending Inbox rows in display order: queued turns first, then next-step steering. */
 function inboxRows(ctx, agent) {
   let state;
@@ -2036,16 +3200,9 @@ function inboxRows(ctx, agent) {
   }
   const queued = state?.['next-turn'] ?? agent.inbox.nextTurn;
   const steering = state?.['next-step'] ?? agent.inbox.nextStep;
-  const row = (message, mode) => ({
-    itemId: message.id,
-    mode,
-    text: contentBlocks(message.content),
-    hasImage: Array.isArray(message.content) && message.content.some(block => block?.type === 'image'),
-    sourceKind: message.source?.kind ?? 'user',
-  });
   return [
-    ...queued.map(message => row(message, 'queue')),
-    ...steering.map(message => row(message, 'steer')),
+    ...queued.map(message => inboxRow(message, 'queue')),
+    ...steering.map(message => inboxRow(message, 'steer')),
   ];
 }
 
@@ -2053,13 +3210,19 @@ async function queuePrompt(ctx, params) {
   const agent = liveAgent(ctx, params.sessionId);
   const content = await queuePromptContent(ctx, agent, params.prompt);
   const { createUserMessage } = await llmApi();
-  const message = createUserMessage({ content, source: { kind: 'user' } });
+  const source = typeof params.requestId === 'string' && params.requestId
+    ? { kind: 'user', rpcId: params.requestId }
+    : { kind: 'user' };
+  const message = createUserMessage({ content, source });
+  if (ctx.get('agents')?.get(params.sessionId) !== agent) {
+    throw new SessionOperationError('session/not-found', '上传期间会话已关闭，草稿已保留。');
+  }
   // Steering only owns the running turn; an idle agent takes the same message
   // as the next turn instead of losing it (official `resolveSubmitMode`).
   const steering = params.mode === 'steer' && agent.status === 'running';
   if (steering) agent.steer(message);
   else agent.followup(message);
-  return { itemId: message.id, mode: steering ? 'steer' : 'queue' };
+  return inboxRow(message, steering ? 'steer' : 'queue');
 }
 
 function inboxState(ctx, params) {
@@ -2070,12 +3233,26 @@ function inboxState(ctx, params) {
   return { requestSeq, running: agent.status === 'running', items: inboxRows(ctx, agent) };
 }
 
-function inboxAction(ctx, params) {
+async function inboxAction(ctx, params) {
+  const freezeMessage = params.action === 'edit' ? (await llmApi()).freezeMessage : undefined;
   const agent = liveAgent(ctx, params.sessionId);
   const queued = agent.inbox.nextTurn.find(message => message.id === params.itemId);
   const steering = agent.inbox.nextStep.find(message => message.id === params.itemId);
   if (queued === undefined && steering === undefined) {
     throw new SessionOperationError('session/queue-item', '排队消息已不在队列中。');
+  }
+  if (params.action === 'edit') {
+    if (queued === undefined || !queued.content.every(block => block.type === 'text')) {
+      throw queueRejected('包含非文本内容，暂不支持编辑。');
+    }
+    if (typeof params.text !== 'string' || params.text.trim() === '') {
+      throw queueRejected('排队消息内容为空。');
+    }
+    const edited = freezeMessage({ ...queued, content: [{ type: 'text', text: params.text }] });
+    if (!agent.inbox.replace(params.itemId, edited)) {
+      throw new SessionOperationError('session/queue-item', '排队消息已不在队列中。');
+    }
+    return { item: inboxRow(edited, 'queue') };
   }
   if (params.action === 'remove') {
     return { removed: agent.inbox.remove(params.itemId) };
@@ -2105,9 +3282,14 @@ function currentGoalView(ctx, agent) {
   }
 }
 
+let goalSequence = 0;
+
+function goalSnapshot(ctx, agent) {
+  return { goal: currentGoalView(ctx, agent), sequence: ++goalSequence };
+}
+
 function goalState(ctx, params) {
-  const agent = liveAgent(ctx, params.sessionId);
-  return { goal: currentGoalView(ctx, agent) };
+  return goalSnapshot(ctx, liveAgent(ctx, params.sessionId));
 }
 
 function goalAction(ctx, params) {
@@ -2120,12 +3302,11 @@ function goalAction(ctx, params) {
   if (current === undefined) {
     throw new SessionOperationError('session/goal-missing', '当前会话没有进行中的目标。');
   }
-  // Every mutation is compare-and-set on the revision the client saw, so a
-  // stale bar cannot overwrite a newer goal.
-  const ref = {
-    id: current.id,
-    revision: Number.isSafeInteger(params.revision) ? params.revision : current.revision,
-  };
+  const { goalId, revision } = params;
+  if (typeof goalId !== 'string' || goalId.length === 0 || !Number.isSafeInteger(revision)) {
+    throw new SessionOperationError('session/goal-invalid', '缺少目标身份或版本。');
+  }
+  const ref = { id: goalId, revision };
   switch (params.action) {
     case 'pause': goals.pause(agent, ref); break;
     case 'resume': goals.resume(agent, ref); break;
@@ -2140,7 +3321,7 @@ function goalAction(ctx, params) {
     default:
       throw new SessionOperationError('session/goal-invalid', '不支持的目标操作。');
   }
-  return { goal: currentGoalView(ctx, agent) };
+  return goalSnapshot(ctx, agent);
 }
 
 /** Read or save Team mode through the root Session's actual Cordis services. */
@@ -2159,7 +3340,8 @@ async function teamState(ctx, params) {
       hasUsedModel: values.modelSelection === undefined ? null : values.modelSelection.lastUsed !== null,
     };
   };
-  if (params.enabled === undefined) return reply({ available: true, team: read() });
+  // Tauri serializes an omitted Option<bool> as null in its ACP envelope.
+  if (params.enabled == null) return reply({ available: true, team: read() });
   if (typeof params.enabled !== 'boolean') {
     throw new SessionOperationError('team/invalid-selection', '智能体团队协作设置无效。');
   }
@@ -2168,6 +3350,30 @@ async function teamState(ctx, params) {
   // synchronously before this reply, so always return a fresh authoritative cut.
   await ctx.get('agentTeams').setEnabled(agent, params.enabled);
   return reply({ available: true, team: read() });
+}
+
+async function registerSessionListMetadata(ctx) {
+  const projections = ctx.get('sessionProjections');
+  const key = 'sessionListMetadata';
+  if (!projections || projections.summaryKeys().has(key)) return;
+  const manager = createRequire(require.resolve('@deepseek-ai/dsh-plugin-manager'));
+  const { z } = await import(pathToFileURL(manager.resolve('zod')).href);
+  const schema = z.object({ blank: z.boolean(), lastPromptAt: z.number().nullable() });
+  // The ACP profile does not mount ApiSessionList. Persist the same row its
+  // Workspace UI reads so KWork and Harness can share the projection cache.
+  await projections.register({
+    key,
+    stateSchema: schema,
+    init: () => ({ blank: true, lastPromptAt: null }),
+    apply: (state, event) => {
+      const blank = state.blank && event.type !== 'turn/start';
+      const lastPromptAt = event.type === 'user/message' && event.data.source?.kind === 'user'
+        ? event.time : state.lastPromptAt;
+      return blank === state.blank && lastPromptAt === state.lastPromptAt ? state : { blank, lastPromptAt };
+    },
+    wire: { viewSchema: schema, view: state => state },
+    stateVersion: 1,
+  });
 }
 
 function observeSessionUpdates(ctx) {
@@ -2188,13 +3394,15 @@ function observeSessionUpdates(ctx) {
   };
   ctx.on('agent/status', ({ agent, status }) => notifyAgentStatus(agent, status === 'running'), { global: true });
   ctx.on('agent/disposed', ({ agent }) => notifyAgentStatus(agent, false), { global: true });
-  // A goal created, paused, resumed, edited, blocked, or cleared commits one
-  // `goal/change`; forwarding the fresh live view keeps the composer strip in
-  // step without polling.
-  ctx.on('goal/changed', ({ agent }) => notify(agent.id, {
+  const publishGoal = agent => notify(agent.id, {
     sessionUpdate: 'gpui_goal_changed',
-    goal: currentGoalView(ctx, agent),
-  }), { global: true });
+    ...goalSnapshot(ctx, agent),
+  });
+  ctx.on('goal/changed', ({ agent }) => publishGoal(agent), { global: true });
+  ctx.on('goal/activation-changed', ({ sessionId }) => {
+    const agent = ctx.get('agents')?.get(sessionId);
+    if (agent !== undefined) publishGoal(agent);
+  }, { global: true });
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
     if (frame.type === 'chunk') {
       const chunk = frame.chunk;
@@ -2270,9 +3478,11 @@ function observeSessionUpdates(ctx) {
         notify(session.id, {
           sessionUpdate: 'gpui_user_message',
           messageId: data.id,
+          requestId: source === 'user' ? data.source.rpcId : undefined,
           content: contentBlocks(data.content),
           hasImage: images.length > 0,
           images,
+          files: promptAttachmentRefs(Array.isArray(data.content) ? data.content : []).filter(block => block.type === 'file'),
           time: event.time,
           seq: event.seq,
         });
@@ -2516,6 +3726,84 @@ function observeSessionUpdates(ctx) {
   });
 }
 
+const searchResultLimit = 20;
+const searchMessageTypes = ['user/message', 'assistant/message'];
+let latestSessionSearch;
+
+async function searchSessions(ctx, { query, generation } = {}) {
+  const empty = { items: [], hasMore: false };
+  if (!Number.isSafeInteger(generation) || generation < 1) {
+    throw new SessionOperationError('session/search', 'Invalid search generation');
+  }
+  if (generation <= (latestSessionSearch?.generation ?? 0)) return empty;
+  latestSessionSearch?.controller.abort();
+  const controller = new AbortController();
+  latestSessionSearch = { generation, controller };
+  if (query === null) return empty;
+  if (typeof query !== 'string' || !query.trim() || query.length > 500 || query.includes('\0')) {
+    throw new SessionOperationError('session/search', 'Invalid search query');
+  }
+  const provider = ctx.get('sessionQuery');
+  if (!provider) return empty;
+  const { signal } = controller;
+  try {
+    const records = await provider.listSessions(signal);
+    signal.throwIfAborted();
+    const visibleIds = new Set(records.filter(record => record.header.cwd !== undefined)
+      .map(record => record.header.id));
+    if (visibleIds.size === 0) return empty;
+
+    const items = new Map();
+    const seenCursors = new Set();
+    let cursor;
+    let limit = searchResultLimit;
+    for (let calls = 0; calls < 100; calls++) {
+      let page;
+      try {
+        page = await provider.searchSessions({
+          query: query.trim(),
+          eventFilters: [
+            { kind: 'type', values: searchMessageTypes },
+            { kind: 'surface', values: ['current'] },
+          ],
+          limit,
+          ...(cursor === undefined ? {} : { cursor }),
+        }, { signal });
+      } catch (error) {
+        signal.throwIfAborted();
+        if (cursor === undefined && error?.code === 'SESSION_QUERY_INVALID_LIMIT' && limit > 1) {
+          limit = Math.floor(limit / 2);
+          continue;
+        }
+        if (cursor !== undefined && error?.code === 'SESSION_QUERY_STALE_CURSOR') {
+          items.clear();
+          seenCursors.clear();
+          cursor = undefined;
+          continue;
+        }
+        throw error;
+      }
+      signal.throwIfAborted();
+      if (page.items.length > limit) throw new Error('Session search provider exceeded page limit');
+      for (const { header, bestMatch } of page.items) {
+        const sessionId = header.id;
+        if (!visibleIds.has(sessionId) || items.has(sessionId) || bestMatch.sessionId !== sessionId
+          || bestMatch.surface !== 'current' || !searchMessageTypes.includes(bestMatch.type)) continue;
+        if (items.size === searchResultLimit) return { items: [...items.values()], hasMore: true };
+        items.set(sessionId, { sessionId, snippet: Array.from(bestMatch.snippet).slice(0, 240).join('') });
+      }
+      cursor = page.nextCursor;
+      if (cursor === undefined) return { items: [...items.values()], hasMore: false };
+      if (seenCursors.has(cursor)) throw new Error('Session search provider repeated a continuation cursor');
+      seenCursors.add(cursor);
+    }
+    throw new Error('Session search provider exceeded its work budget');
+  } catch (error) {
+    if (signal.aborted || error?.code === 'SESSION_QUERY_SEARCH_DISABLED') return empty;
+    throw error;
+  }
+}
+
 async function extension({ id, method, params }) {
   let response;
   try {
@@ -2535,7 +3823,21 @@ async function extension({ id, method, params }) {
         throw new SessionOperationError('session/activate', error instanceof Error ? error.message : String(error));
       }
     } else if (method === sessionArchiveMethod) {
-      response = { result: await sessionArchive(ctx, params) };
+      response = { result: await enqueueWorkspaceOperation(() => sessionArchive(ctx, params)) };
+    } else if (method === workspaceRegistryMethod) {
+      response = { result: await enqueueWorkspaceOperation(() => workspaceRegistryRequest(ctx, params?.operation)) };
+    } else if (method === searchSessionsMethod) {
+      response = { result: await searchSessions(ctx, params) };
+    } else if (method === modelCatalogMethod) {
+      response = { result: await readModelCatalog(ctx) };
+    } else if (method === deepSeekAccountMethod) {
+      response = { result: await deepSeekAccountOperation(ctx, params ?? {}) };
+    } else if (method === accountNotificationsMethod) {
+      response = { result: await accountNotifications(ctx, params ?? {}) };
+    } else if (method === platformSessionMethod) {
+      // Private stdio response consumed by the desktop process. Account UI
+      // commands return only accountWireState and never forward this snapshot.
+      response = { result: await readPlatformSession() };
     } else if (method === sessionReadStateMethod) {
       response = { result: await sessionReadState(ctx, params) };
     } else if (method === scheduleMethod) {
@@ -2544,6 +3846,8 @@ async function extension({ id, method, params }) {
       response = { result: await runtimeSettings(ctx, params) };
     } else if (method === webSettingsMethod) {
       response = { result: await webSettings(ctx, params) };
+    } else if (method === composerPreferenceMethod) {
+      response = { result: await composerPreference(ctx, params?.mode) };
     } else if (method === pluginCenterMethod) {
       response = { result: await pluginCenterRequest(ctx, params) };
     } else if (method === pluginInstallMethod) {
@@ -2575,7 +3879,7 @@ async function extension({ id, method, params }) {
     } else if (method === inboxStateMethod) {
       response = { result: inboxState(ctx, params) };
     } else if (method === inboxActionMethod) {
-      response = { result: inboxAction(ctx, params) };
+      response = { result: await inboxAction(ctx, params) };
     } else if (method === goalStateMethod) {
       response = { result: goalState(ctx, params) };
     } else if (method === goalActionMethod) {
@@ -2626,10 +3930,11 @@ async function extension({ id, method, params }) {
 async function forward() {
   try {
     for (;;) {
-      const line = inputLines.length ? inputLines.shift() : inputEnded ? undefined : await new Promise(resolve => {
-        inputWake = () => resolve(inputLines.shift());
-      });
-      inputWake = undefined;
+      if (!inputLines.length && !inputEnded) {
+        await new Promise(resolve => { inputWake = resolve; });
+        inputWake = undefined;
+      }
+      const line = inputLines.shift();
       if (line === undefined) break;
       if (extensionMethods.some(method => line.includes(method))) {
         let request;
@@ -2663,4 +3968,12 @@ try {
     console.error('dsh-gpui ACP bridge:', error);
   }
   process.exit(1);
+} finally {
+  platformSessionSource?.lifetime.abort();
+  for (const attempt of providerAuthAttempts.values()) attempt.controller.abort();
+  const account = await accountLoginService?.getState().catch(() => null);
+  if (account?.attempt && ['initializing', 'waiting-browser', 'exchanging', 'committing'].includes(account.attempt.phase)) {
+    await accountLoginService.cancelSignIn(account.attempt.id).catch(() => {});
+  }
+  await accountCallbackFiber?.dispose().catch(() => {});
 }

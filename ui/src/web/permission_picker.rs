@@ -71,6 +71,10 @@ impl PermissionMode {
     pub(super) fn changing(&self) -> bool {
         self.pending == Some(PermissionRequestKind::Change)
     }
+
+    pub(super) fn can_retry(&self) -> bool {
+        self.state.is_none() && self.pending.is_none() && self.error.is_some()
+    }
 }
 
 pub(super) struct PermissionMenu {
@@ -94,6 +98,14 @@ impl PermissionMenu {
 }
 
 impl DshApp {
+    pub(super) fn retry_permission_mode(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if self.conversation.permission_mode.can_retry() {
+            self.request_permission_mode();
+            self.focus_command_picker(w, cx);
+            cx.notify();
+        }
+    }
+
     pub(super) fn toggle_permission_menu(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         if self.conversation.permission_mode.changing() || self.confirm_permission.is_some() {
             return;
@@ -118,6 +130,16 @@ impl DshApp {
         }
         let focused =
             self.permission_menu.trigger.is_focused(w) || self.permission_menu.row.is_focused(w);
+        self.navigate_permission_menu(combo, focused, w, cx)
+    }
+
+    pub(super) fn navigate_permission_menu(
+        &mut self,
+        combo: &str,
+        focused: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if combo == "Escape" || (combo == "shift+Tab" && focused) {
             self.composer_menu = None;
             self.permission_menu.trigger.focus(w, cx);
@@ -210,22 +232,21 @@ impl DshApp {
     }
 
     pub(super) fn choose_permission(&mut self, id: String, w: &mut Window, cx: &mut Context<Self>) {
-        let from_picker = self.composer_menu == Some(ComposerMenu::PermissionChoices);
-        if !from_picker {
-            self.composer_menu = None;
-            self.permission_menu.trigger.focus(w, cx);
-        }
         let mode = &self.conversation.permission_mode;
-        if mode.pending.is_some() {
+        if mode.pending.is_some() || self.confirm_permission.is_some() {
             return;
         }
         let current = mode
             .state
             .as_ref()
             .is_some_and(|state| state.current_value == id);
+        let from_picker = self.composer_menu == Some(ComposerMenu::PermissionChoices);
+        if !from_picker {
+            self.composer_menu = None;
+            self.permission_menu.trigger.focus(w, cx);
+        }
         if matches!(id.as_str(), "danger-full-access" | "auto") && (from_picker || !current) {
-            self.confirm_permission = Some(id);
-            self.full_access_acknowledged = false;
+            self.open_permission_confirmation(id, w, cx);
         } else if current {
             if from_picker {
                 self.finish_command_picker(w, cx);

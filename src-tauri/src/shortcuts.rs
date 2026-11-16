@@ -1,6 +1,8 @@
 //! Atomic shortcut preferences and the accepted native routing table.
 
-use crate::shortcut_bindings::{Document, Edit, Keymap, Platform, Snapshot};
+#[cfg(any(target_os = "macos", test))]
+use crate::shortcut_bindings::Keymap;
+use crate::shortcut_bindings::{Document, Edit, Platform, Snapshot};
 use std::{
     fs,
     io::{self, Write},

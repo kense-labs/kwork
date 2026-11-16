@@ -4,12 +4,13 @@ use super::menu_groups::{MenuHeading, MenuViewport, heading_space};
 use super::*;
 
 pub(super) struct CommandPicker {
-    input: gpui::Entity<Editor>,
-    active: usize,
+    pub(super) input: gpui::Entity<Editor>,
+    pub(super) active: usize,
     viewport: MenuViewport,
     token: Option<String>,
     pub(super) settling: bool,
-    model_error: Option<String>,
+    pub(super) model_error: Option<String>,
+    permission_retry: gpui::FocusHandle,
     _subscription: Subscription,
 }
 
@@ -35,6 +36,7 @@ impl CommandPicker {
             token: None,
             settling: false,
             model_error: None,
+            permission_retry: cx.focus_handle(),
             _subscription: subscription,
         }
     }
@@ -55,13 +57,13 @@ impl CommandPicker {
     }
 }
 
-struct CommandChoice {
-    value: String,
-    label: String,
-    detail: Option<String>,
+pub(super) struct CommandChoice {
+    pub(super) value: String,
+    pub(super) label: String,
+    pub(super) detail: Option<String>,
     group: Option<(usize, String)>,
-    experimental: bool,
-    current: bool,
+    pub(super) experimental: bool,
+    pub(super) current: bool,
 }
 
 impl DshApp {
@@ -86,6 +88,9 @@ impl DshApp {
         self.command_picker.model_error = None;
         self.command_picker.viewport.reset();
         self.composer_menu = Some(menu);
+        if menu == ComposerMenu::CommandModels {
+            self.load_model_catalog(w, cx);
+        }
         if menu == ComposerMenu::PermissionChoices
             && self.conversation.permission_mode.state.is_none()
         {
@@ -104,13 +109,19 @@ impl DshApp {
         self.command_picker.highlight(&options, active);
     }
 
+    pub(super) fn refresh_command_model_highlight(&mut self, cx: &App) {
+        if self.command_picker.input.read(cx).value().is_empty() {
+            self.highlight_current_command_option(ComposerMenu::CommandModels, cx);
+        }
+    }
+
     pub(super) fn focus_command_picker(&self, w: &mut Window, cx: &mut Context<Self>) {
         self.command_picker
             .input
             .update(cx, |editor, cx| editor.focus(w, cx));
     }
 
-    fn dismiss_command_picker(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn dismiss_command_picker(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         self.composer_menu = None;
         self.command_picker.settling = false;
         self.command_picker.token = None;
@@ -125,7 +136,7 @@ impl DshApp {
         self.dismiss_command_picker(w, cx);
     }
 
-    fn choose_command_option(
+    pub(super) fn choose_command_option(
         &mut self,
         menu: ComposerMenu,
         value: String,
@@ -200,8 +211,39 @@ impl DshApp {
         if self.confirm_permission.is_some() {
             return false;
         }
+        self.navigate_command_picker(menu, combo, false, w, cx)
+    }
+
+    pub(super) fn navigate_command_picker(
+        &mut self,
+        menu: ComposerMenu,
+        combo: &str,
+        native: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let options = self.command_options(menu, cx);
         let count = options.len();
+        if !native
+            && menu == ComposerMenu::CommandModels
+            && self.handle_model_catalog_retry_key(combo, count == 0, w, cx)
+        {
+            return true;
+        }
+        if !native
+            && menu == ComposerMenu::PermissionChoices
+            && self.conversation.permission_mode.can_retry()
+        {
+            let retry = &self.command_picker.permission_retry;
+            if retry.is_focused(w) && matches!(combo, "Enter" | "Tab") {
+                self.retry_permission_mode(w, cx);
+                return true;
+            }
+            if combo == "Tab" {
+                retry.focus(w, cx);
+                return true;
+            }
+        }
         let active = self.command_picker.active.min(count.saturating_sub(1));
         let ready = !self.command_picker_busy(menu) && count > 0;
         match combo {
@@ -234,19 +276,14 @@ impl DshApp {
         }
     }
 
-    fn command_options(&self, menu: ComposerMenu, cx: &App) -> Vec<CommandChoice> {
-        let query = self
-            .command_picker
-            .input
-            .read(cx)
-            .value()
-            .trim()
-            .to_lowercase();
+    pub(super) fn command_options(&self, menu: ComposerMenu, cx: &App) -> Vec<CommandChoice> {
+        let input = self.command_picker.input.read(cx);
+        let query = input.value();
         if menu == ComposerMenu::CommandModels {
             let current = self
                 .config_option("model")
                 .and_then(|option| option["currentValue"].as_str());
-            let groups = self.filtered_model_groups(&query);
+            let groups = self.command_model_groups(query);
             let ungrouped = groups.len() == 1 && groups[0].0 == "模型";
             return groups
                 .into_iter()
@@ -263,6 +300,7 @@ impl DshApp {
                 })
                 .collect();
         }
+        let query = query.trim().to_lowercase();
         let Some(state) = self.conversation.permission_mode.state.as_ref() else {
             return Vec::new();
         };
@@ -306,7 +344,8 @@ impl DshApp {
             Some("正在加载选项…")
         } else if busy {
             Some("正在应用…")
-        } else if error.is_none() && options.is_empty() {
+        } else if error.is_none() && options.is_empty() && !(model && self.model_catalog.loading())
+        {
             Some(if !model {
                 "无选项"
             } else if self.model_choice_groups("model").is_empty() {
@@ -422,6 +461,9 @@ impl DshApp {
                     .flex_none()
                     .child(self.command_picker.input.clone()),
             )
+            .when(model, |panel| {
+                panel.child(self.render_model_catalog_notices(cx))
+            })
             .children(status.map(|text| {
                 div()
                     .px(px(8.))
@@ -438,17 +480,22 @@ impl DshApp {
                     .text_size(px(12.))
                     .text_color(p.danger)
                     .child(div().flex_1().min_w_0().truncate().child(error.clone()))
-                    .when(!model && mode.state.is_none(), |row| {
-                        row.child(
-                            Button::new("reload-permissions")
-                                .label("重试")
-                                .ghost()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.request_permission_mode();
-                                    cx.notify();
-                                }))
-                                .into_themed(cx),
-                        )
+                    .when(!model && mode.can_retry(), |row| {
+                        row.child(super::dock_action_button(
+                            div()
+                                .id("reload-permissions")
+                                .role(gpui::Role::Button)
+                                .aria_label("重试加载权限")
+                                .track_focus(&self.command_picker.permission_retry)
+                                .tab_stop(true)
+                                .px(px(4.))
+                                .cursor_pointer()
+                                .rounded(px(4.))
+                                .hover(|style| style.bg(p.hover))
+                                .focus_visible(|style| style.bg(p.hover))
+                                .child("重试"),
+                            cx.listener(|this, _, w, cx| this.retry_permission_mode(w, cx)),
+                        ))
                     })
             }))
             .child(self.command_picker.viewport.render(list, headings))

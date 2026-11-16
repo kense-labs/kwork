@@ -1000,6 +1000,7 @@ pub fn visible<'a>(
     query: &str,
 ) -> Vec<Visible<'a>> {
     let first_turn_content = first_turn_content(records);
+    let folded_turns = folded_turns(records, folded, &first_turn_content);
     let global_fold = |record: &Record| {
         global_fold(
             record,
@@ -1039,14 +1040,10 @@ pub fn visible<'a>(
                 }
                 parent = ancestor.parent_call.as_deref();
             }
-            let turn_hidden = first_turn_content
-                .get(&record.turn)
-                .is_some_and(|key| *key != record.key)
-                && records.iter().any(|candidate| {
-                    Some(candidate.key.as_str()) == first_turn_content.get(&record.turn).copied()
-                        && candidate.has_children
-                        && is_folded(candidate)
-                });
+            let turn_hidden = folded_turns.contains(&record.turn)
+                && first_turn_content
+                    .get(&record.turn)
+                    .is_some_and(|key| *key != record.key);
             let hidden = hidden_by_call || turn_hidden;
             let matched = matches(record, query);
             if hidden && !(searching && (matched || collapsed)) {
@@ -1112,18 +1109,24 @@ pub fn visible<'a>(
     folded
 }
 
-/// Global expansion clears only its own domain; per-record expansion materializes exceptions.
-pub(crate) fn turn_folded(records: &[Record], folded: &HashSet<String>, turn: u64) -> bool {
-    let Some(key) = first_turn_content(records).get(&turn).copied() else {
-        return false;
-    };
-    records.iter().any(|record| {
-        record.key == key
-            && record.has_children
-            && (folded.contains("$turn") || folded.contains(key))
-    })
+pub(crate) fn folded_turns(
+    records: &[Record],
+    folded: &HashSet<String>,
+    first: &HashMap<u64, &str>,
+) -> HashSet<u64> {
+    records
+        .iter()
+        .filter_map(|record| {
+            (record.has_children
+                && first.get(&record.turn) == Some(&record.key.as_str())
+                && global_fold(record, true) == "$turn"
+                && (folded.contains("$turn") || folded.contains(&record.key)))
+            .then_some(record.turn)
+        })
+        .collect()
 }
 
+/// Global expansion clears only its own domain; per-record expansion materializes exceptions.
 pub(crate) fn toggle_global_fold(folded: &mut HashSet<String>, records: &[Record], domain: &str) {
     let first_in_turn = first_turn_content(records);
     let keys: Vec<String> = records
@@ -1257,18 +1260,6 @@ mod tests {
     }
 
     #[test]
-    fn wasm_scroll_listener_never_overwrites_gpui_wheel_position() {
-        let source = include_str!("web/trajectory.rs");
-        let scroll = source
-            .split(".track_scroll(&self.trajectory.scroll)")
-            .nth(1)
-            .expect("trajectory scroll listener");
-        assert!(scroll.find(".on_scroll(") < scroll.find(".child(body)"));
-        assert!(scroll.contains("scroll.offset().y + delta"));
-        assert!(!scroll.contains("scroll.set_offset"));
-    }
-
-    #[test]
     fn turn_folds_keep_the_first_content_record_and_show_its_summary() {
         let state = project(&events());
         let rows = visible(&state.records, &HashSet::from(["$turn".to_owned()]), "");
@@ -1281,17 +1272,15 @@ mod tests {
         assert!(state.records[0].has_children);
 
         let rows = visible(&state.records, &HashSet::from(["u".to_owned()]), "");
-        assert!(turn_folded(
-            &state.records,
-            &HashSet::from(["u".to_owned()]),
-            1
-        ));
-        assert!(!turn_folded(&state.records, &HashSet::new(), 1));
-        assert!(!turn_folded(
-            &state.records,
-            &HashSet::from(["$turn".to_owned()]),
-            2
-        ));
+        let first = first_turn_content(&state.records);
+        assert!(
+            folded_turns(&state.records, &HashSet::from(["u".to_owned()]), &first,).contains(&1)
+        );
+        assert!(folded_turns(&state.records, &HashSet::new(), &first).is_empty());
+        assert!(
+            !folded_turns(&state.records, &HashSet::from(["$turn".to_owned()]), &first,)
+                .contains(&2)
+        );
         assert_eq!(rows.len(), 2);
         assert!(rows[1].collapsed);
         let rows = visible(&state.records, &HashSet::new(), "");

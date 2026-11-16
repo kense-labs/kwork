@@ -76,6 +76,7 @@ fn ensure_utf8_locale(cmd: &mut CommandBuilder) {
     cmd.env("LANG", locale);
 }
 
+#[cfg(any(unix, test))]
 fn is_utf8_locale(value: &str) -> bool {
     let upper = value.to_ascii_uppercase();
     upper.contains("UTF-8") || upper.contains("UTF8")
@@ -83,6 +84,7 @@ fn is_utf8_locale(value: &str) -> bool {
 
 /// The first non-empty variable in precedence order decides whether the shell
 /// will treat multi-byte characters as printable.
+#[cfg(any(unix, test))]
 fn needs_utf8_locale(vars: &[(&str, Option<String>)]) -> bool {
     for (_, value) in vars {
         if let Some(value) = value.as_deref().filter(|value| !value.is_empty()) {
