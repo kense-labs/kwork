@@ -75,6 +75,13 @@ impl MessageFeedback {
     }
 }
 
+pub(super) struct FeedbackSubmission {
+    pub(super) rating: Rating,
+    pub(super) draft: u64,
+    pub(super) note: String,
+    pub(super) category: Option<&'static str>,
+}
+
 impl DshApp {
     pub(super) fn prepare_rating_rows(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         for message in self.conversation.entries.iter().filter_map(|entry| {
@@ -175,20 +182,17 @@ impl DshApp {
     pub(super) fn submit_message_feedback(
         &mut self,
         message: String,
-        rating: Rating,
-        draft: u64,
-        note: String,
-        category: Option<&'static str>,
+        submission: FeedbackSubmission,
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.queue_message_feedback(
             message,
             Action::Submit {
-                draft,
-                rating,
-                note,
-                category,
+                draft: submission.draft,
+                rating: submission.rating,
+                note: submission.note,
+                category: submission.category,
             },
             w,
             cx,
@@ -391,11 +395,11 @@ fn apply_mutation(
 ) -> Result<(), String> {
     let reply = reply?;
     let update = |items: &mut HashMap<String, Item>, value: &Value| {
-        if let Ok(item) = serde_json::from_value::<Item>(value.clone()) {
-            if item.message_id == message {
-                items.insert(message.clone(), item);
-                return Ok(());
-            }
+        if let Ok(item) = serde_json::from_value::<Item>(value.clone())
+            && item.message_id == message
+        {
+            items.insert(message.clone(), item);
+            return Ok(());
         }
         Err("feedback-failed".to_string())
     };
@@ -407,13 +411,13 @@ fn apply_mutation(
         return update(items, &reply["value"]);
     }
     let code = error_code(&reply);
-    if code == "version-conflict" {
-        if let Some(current) = reply["error"].get("current") {
-            if current.is_null() {
-                items.remove(&message);
-            } else {
-                update(items, current)?;
-            }
+    if code == "version-conflict"
+        && let Some(current) = reply["error"].get("current")
+    {
+        if current.is_null() {
+            items.remove(&message);
+        } else {
+            update(items, current)?;
         }
     }
     Err(code)

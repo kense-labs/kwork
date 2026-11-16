@@ -353,18 +353,34 @@ impl DshApp {
             self.run_application_shortcut(command, None, w, cx);
         }
     }
+}
 
+pub(super) struct ShortcutInput {
+    pub(super) combo: String,
+    pub(super) code: String,
+    pub(super) modifiers: u8,
+    pub(super) phase: u8,
+    pub(super) repeat: bool,
+    pub(super) composing: bool,
+}
+
+impl DshApp {
     pub(super) fn handle_shortcut_input(
         &mut self,
-        combo: &str,
-        code: &str,
-        modifiers: u8,
-        phase: u8,
-        repeat: bool,
-        composing: bool,
+        input: ShortcutInput,
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        let ShortcutInput {
+            combo,
+            code,
+            modifiers,
+            phase,
+            repeat,
+            composing,
+        } = input;
+        let combo = combo.as_str();
+        let code = code.as_str();
         if phase == 2 || composing {
             self.shortcuts.held.clear();
             self.shortcuts.consumed.clear();

@@ -186,7 +186,17 @@ impl DshApp {
             FeedbackTarget::Message {
                 id: message,
                 rating,
-            } => self.submit_message_feedback(message, rating, id, text, category, w, cx),
+            } => self.submit_message_feedback(
+                message,
+                super::message_feedback::FeedbackSubmission {
+                    rating,
+                    draft: id,
+                    note: text,
+                    category,
+                },
+                w,
+                cx,
+            ),
         }
     }
 

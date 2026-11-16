@@ -524,7 +524,7 @@ impl DshApp {
                     let Some(snapshot) = &form.snapshot else {
                         return;
                     };
-                    if form.busy || form.selectors[capability.slot()].as_ref() != Some(&select) {
+                    if form.busy || form.selectors[capability.slot()].as_ref() != Some(select) {
                         return;
                     }
                     if let Some(id) = &event.0 {
@@ -606,7 +606,7 @@ impl DshApp {
                             return;
                         };
                         if form.busy
-                            || form.billing_selectors[capability.slot()].as_ref() != Some(&select)
+                            || form.billing_selectors[capability.slot()].as_ref() != Some(select)
                         {
                             return;
                         }

@@ -45,8 +45,50 @@ impl DshApp {
         cx: &mut Context<Self>,
     ) {
         let goal = parse_goal_view(&update["goal"]);
+        let selected = self.active_session.as_deref() == Some(session);
+        let revision = goal.as_ref().map(|goal| goal.revision);
+        let active = goal
+            .as_ref()
+            .is_some_and(|goal| goal.phase == crate::goal::GoalPhase::Active);
         self.apply_goal_reply(session, Ok(goal));
         cx.notify();
+        // A new goal revision may have opened an autonomous round that already
+        // failed before this client saw it (the ACP event can be emitted before
+        // the conversation is attached). Re-read the durable history once while
+        // the session is idle; the replayed `turn/end` failure keeps its row and
+        // the strip's `goal_error` explains the failed round.
+        if !selected || !active {
+            return;
+        }
+        let first_sync = self
+            .session_conversation(session)
+            .is_some_and(|conversation| conversation.goal_synced_revision != revision);
+        if !first_sync {
+            return;
+        }
+        if let Some(conversation) = self.conversation_mut(session) {
+            conversation.goal_synced_revision = revision;
+        }
+        let session = session.to_owned();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(2))
+                .await;
+            this.update(cx, |app, cx| {
+                if app.active_session.as_deref() != Some(session.as_str())
+                    || app
+                        .session_conversation(&session)
+                        .is_none_or(|conversation| {
+                            conversation.running || conversation.history_loading
+                        })
+                {
+                    return;
+                }
+                app.request_session_history(cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn apply_goal_reply(

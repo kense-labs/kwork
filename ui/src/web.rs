@@ -43,11 +43,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 
+type KeyListener = Closure<dyn FnMut(String, String, u8, u8, bool, bool) -> bool>;
+
 struct Host {
     app: AsyncApp,
     window: WindowHandle<DshApp>,
     _event_listener: Closure<dyn FnMut(String)>,
-    _key_listener: Closure<dyn FnMut(String, String, u8, u8, bool, bool) -> bool>,
+    _key_listener: KeyListener,
     _file_listener: Closure<dyn FnMut(String)>,
     _dock_cancel_listener: Closure<dyn FnMut()>,
     _browser_selection_listener: Closure<dyn FnMut(String)>,
@@ -135,14 +137,23 @@ pub fn start() {
                 });
             }
         });
-        let key_listener = Closure::<dyn FnMut(String, String, u8, u8, bool, bool) -> bool>::new(
+        let key_listener = KeyListener::new(
             |combo: String, code: String, modifiers, phase, repeat, composing| {
                 with_host(|host| {
                     host.app.update(|cx| {
                         host.window
                             .update(cx, |app, w, cx| {
                                 app.handle_shortcut_input(
-                                    &combo, &code, modifiers, phase, repeat, composing, w, cx,
+                                    shortcut_settings::ShortcutInput {
+                                        combo,
+                                        code,
+                                        modifiers,
+                                        phase,
+                                        repeat,
+                                        composing,
+                                    },
+                                    w,
+                                    cx,
                                 )
                             })
                             .unwrap_or(false)
@@ -2596,10 +2607,10 @@ impl DshApp {
             if let Some(steps) = stats.get("ttftSteps").and_then(Value::as_u64) {
                 conversation.stats_ttft_steps = steps;
             }
-            if let Some(ms) = stats.get("decodeMs").and_then(Value::as_f64) {
-                if ms > 0. {
-                    conversation.decode_ms = ms;
-                }
+            if let Some(ms) = stats.get("decodeMs").and_then(Value::as_f64)
+                && ms > 0.
+            {
+                conversation.decode_ms = ms;
             }
             if let Some(tokens) = stats
                 .get("decodeTokens")
@@ -2610,10 +2621,9 @@ impl DshApp {
                         .and_then(Value::as_f64)
                         .map(|v| v as u64)
                 })
+                && tokens > 0
             {
-                if tokens > 0 {
-                    conversation.decode_tokens = tokens;
-                }
+                conversation.decode_tokens = tokens;
             }
         }
         // Official tokenUsage projection (whole-log totals) wins over window fold.
@@ -2962,8 +2972,7 @@ impl DshApp {
             .collect();
         self.dispatch_inbox_prompt(
             session,
-            display,
-            prompt,
+            OutgoingPrompt { display, prompt },
             mode,
             Some(CommandSubmission {
                 draft,
@@ -2980,8 +2989,7 @@ impl DshApp {
     fn dispatch_inbox_prompt(
         &mut self,
         session: String,
-        display: String,
-        prompt: Vec<Value>,
+        display: OutgoingPrompt,
         mode: crate::submit::SubmitMode,
         submission: Option<CommandSubmission>,
         w: &mut Window,
@@ -2997,7 +3005,7 @@ impl DshApp {
                 "queue_prompt",
                 json!({
                     "sessionId": session,
-                    "prompt": prompt,
+                    "prompt": display.prompt,
                     "mode": mode.as_str(),
                 }),
             )
@@ -3012,7 +3020,11 @@ impl DshApp {
                         if let Some(item_id) = reply["itemId"].as_str() {
                             let accepted =
                                 crate::submit::SubmitMode::from_wire(reply["mode"].as_str());
-                            conversation.push_inbox_row(item_id.to_owned(), accepted, display);
+                            conversation.push_inbox_row(
+                                item_id.to_owned(),
+                                accepted,
+                                display.display,
+                            );
                         }
                         // 只有真正投递成功才清空草稿与附件。
                         if let Some(CommandSubmission {
@@ -3156,10 +3168,10 @@ impl DshApp {
             return;
         };
         conversation.finish_turn(end);
-        if end == TurnEnd::MaxTokens {
-            if let Some(turn) = conversation.last_turn_number() {
-                conversation.push_turn_notice(crate::state::turn_max_tokens_entry(turn, None));
-            }
+        if end == TurnEnd::MaxTokens
+            && let Some(turn) = conversation.last_turn_number()
+        {
+            conversation.push_turn_notice(crate::state::turn_max_tokens_entry(turn, None));
         }
         // Pending messages belong to the Host Inbox now: it opens the next turn
         // on its own, so the client must not flush anything here. A failed
@@ -3579,17 +3591,15 @@ impl DshApp {
                 cx.notify();
             }
             // Per-turn token usage for the 本轮用量 panels.
-            "turn_token_usage" => match result {
-                Ok(reply) => {
-                    if let Some(session) = owner
-                        && let Some(conversation) = self.conversation_mut(session)
-                    {
-                        conversation.turn_usage = crate::state::turn_usage_map(&reply);
-                        cx.notify();
-                    }
+            "turn_token_usage" => {
+                if let Ok(reply) = result
+                    && let Some(session) = owner
+                    && let Some(conversation) = self.conversation_mut(session)
+                {
+                    conversation.turn_usage = crate::state::turn_usage_map(&reply);
+                    cx.notify();
                 }
-                Err(_) => {}
-            },
+            }
             // One user-message picture finished decoding into a data URL: patch it
             // into every visible row that references the attachment.
             "read_attachment" => match result {
@@ -4097,6 +4107,27 @@ impl DshApp {
             }
             conversation.begin_turn();
         }
+        // Official TurnErrorItem rows must not depend on the client's local
+        // running flag: a goal round can open and fail before the session view
+        // was marked running, and the old guard silently dropped the failure.
+        if update["sessionUpdate"] == "turn_end"
+            && let Some(turn) = update["turn"].as_u64()
+            && let Some(entry) = crate::state::turn_failure_entry(
+                turn,
+                &update["reasonObject"],
+                update["time"].as_f64(),
+            )
+            && !conversation
+                .entries
+                .iter()
+                .any(|existing| existing.key == entry.key)
+        {
+            let failure = entry.text.clone();
+            conversation.entries.push(entry);
+            if conversation.goal.is_some() {
+                conversation.goal_error = Some(format!("目标轮次失败：{failure}"));
+            }
+        }
         if let Some(reason) = effect.turn_ended.as_deref()
             && conversation.running
         {
@@ -4114,24 +4145,8 @@ impl DshApp {
                 (_, "max_tokens") => TurnEnd::MaxTokens,
                 _ => TurnEnd::Completed,
             };
-            // Official TurnErrorItem: a terminal failure records why the turn
-            // stopped, so a quota or auth problem is not just "处理失败".
-            if let Some(turn) = update["turn"].as_u64()
-                && let Some(entry) = crate::state::turn_failure_entry(
-                    turn,
-                    &update["reasonObject"],
-                    update["time"].as_f64(),
-                )
-                && !conversation
-                    .entries
-                    .iter()
-                    .any(|existing| existing.key == entry.key)
-            {
-                conversation.entries.push(entry);
-            }
             self.finish_session_turn(session, end, cx);
         }
-        if started {}
         if effect.turn_triggered
             && let Some(summary) = self
                 .sessions

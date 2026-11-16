@@ -195,6 +195,82 @@ fn emit(app: &AppHandle, kind: &str, payload: Value) {
     }
 }
 
+/// A copy of the user's KWork API key, kept beside the Harness store.
+///
+/// Both the official Harness desktop app and KWork share
+/// `$DSH_HOME/.credentials.yaml`. A rewrite from either process (token refresh,
+/// migration, layout change) can drop the `DEEPSEEK_API_KEY` ref; without a
+/// local copy the next goal round then fails with MISSING_CREDENTIAL. KWork only
+/// writes this copy after an explicit save and restores it when the shared
+/// store reports the key missing, so the user does not have to re-enter it.
+fn api_key_backup_path() -> Option<PathBuf> {
+    resolve_dsh_home()
+        .ok()
+        .map(|home| home.join("kwork").join("api-key.backup"))
+}
+
+fn read_api_key_backup() -> Option<String> {
+    let path = api_key_backup_path()?;
+    let value = std::fs::read_to_string(path).ok()?;
+    let value = value.trim().to_owned();
+    (!value.is_empty()).then_some(value)
+}
+
+fn write_api_key_backup(value: &str) {
+    let Some(path) = api_key_backup_path() else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if let Err(error) = std::fs::create_dir_all(parent) {
+        eprintln!("dsh-gpui api key backup dir: {error}");
+        return;
+    }
+    if let Err(error) = std::fs::write(&path, value) {
+        eprintln!("dsh-gpui api key backup: {error}");
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
+fn clear_api_key_backup() {
+    if let Some(path) = api_key_backup_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Re-store the local backup when the shared credential document lost the key.
+async fn restore_api_key_if_missing(connection: &AuthConnection, status: Value) -> Value {
+    if status
+        .pointer("/apiKey/configured")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return status;
+    }
+    let Some(value) = read_api_key_backup() else {
+        return status;
+    };
+    match connection
+        .request("saveApiKey", json!({"value": value}))
+        .await
+    {
+        Ok(restored) => {
+            eprintln!("dsh-gpui: restored the shared API key from the KWork backup");
+            restored
+        }
+        Err(error) => {
+            eprintln!("dsh-gpui: could not restore the API key backup: {error}");
+            status
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn start_auth(
     service_path: Option<String>,
@@ -208,7 +284,7 @@ pub async fn start_auth(
     }
     let connection = AuthConnection::spawn(service_path, app).await?;
     let status = match connection.request("status", json!({})).await {
-        Ok(status) => status,
+        Ok(status) => restore_api_key_if_missing(&connection, status).await,
         Err(error) => {
             connection.stop().await;
             return Err(error);
@@ -220,26 +296,33 @@ pub async fn start_auth(
 
 #[tauri::command]
 pub async fn auth_status(service: State<'_, AuthService>) -> Result<Value, String> {
-    connection(&service)
-        .await?
-        .request("status", json!({}))
-        .await
+    let connection = connection(&service).await?;
+    let status = connection.request("status", json!({})).await?;
+    Ok(restore_api_key_if_missing(&connection, status).await)
 }
 
 #[tauri::command]
 pub async fn save_api_key(value: String, service: State<'_, AuthService>) -> Result<Value, String> {
-    connection(&service)
+    let result = connection(&service)
         .await?
         .request("saveApiKey", json!({"value": value}))
-        .await
+        .await;
+    if result.is_ok() {
+        write_api_key_backup(value.trim());
+    }
+    result
 }
 
 #[tauri::command]
 pub async fn remove_api_key(service: State<'_, AuthService>) -> Result<Value, String> {
-    connection(&service)
+    let result = connection(&service)
         .await?
         .request("removeApiKey", json!({}))
-        .await
+        .await;
+    if result.is_ok() {
+        clear_api_key_backup();
+    }
+    result
 }
 
 async fn connection(service: &AuthService) -> Result<Arc<AuthConnection>, String> {

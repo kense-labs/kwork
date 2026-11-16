@@ -12,6 +12,14 @@ use gpui::svg;
 
 pub(super) const RIGHT_DOCK_HEADER_HEIGHT: f32 = 38.;
 
+struct StartCard<T: IntoElement> {
+    id: &'static str,
+    title: &'static str,
+    description: Option<&'static str>,
+    artwork: T,
+    shortcut: Option<&'static str>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum DockResize {
     Outer,
@@ -448,9 +456,7 @@ impl DshApp {
                 .role(gpui::Role::Tab)
                 .aria_label(label.clone())
                 .when_some(
-                    agent_terminal
-                        .clone()
-                        .and_then(|info| crate::agent_terminals::agent_terminal_badge(&info)),
+                    agent_terminal.and_then(crate::agent_terminals::agent_terminal_badge),
                     |chip, (badge, hint)| {
                         chip.aria_label(format!("{label}，{hint}"))
                             .tooltip(move |_, cx| {
@@ -675,9 +681,8 @@ impl DshApp {
     ) {
         self.sidebar.surface.layout.select(pane, tab);
         self.focus_dock_pane(pane, w, cx);
-        match tab {
-            RightPanelTab::Terminal(key) => self.focus_terminal(key, w, cx),
-            _ => {}
+        if let RightPanelTab::Terminal(key) = tab {
+            self.focus_terminal(key, w, cx);
         }
         cx.notify();
     }
@@ -851,54 +856,62 @@ impl DshApp {
             .child(
                 self.start_card(
                     pane,
-                    "files",
-                    "工作区文件",
-                    Some("浏览会话工作区的文件"),
-                    svg()
-                        .data(include_bytes!("../../assets/start-files.svg"))
-                        .text_color(gpui::Hsla::from(gpui::rgb(0xffbf58)))
-                        .size(px(22.))
-                        .flex_none(),
-                    Some("⌘ P"),
+                    StartCard {
+                        id: "files",
+                        title: "工作区文件",
+                        description: Some("浏览会话工作区的文件"),
+                        artwork: svg()
+                            .data(include_bytes!("../../assets/start-files.svg"))
+                            .text_color(gpui::Hsla::from(gpui::rgb(0xffbf58)))
+                            .size(px(22.))
+                            .flex_none(),
+                        shortcut: Some("⌘ P"),
+                    },
                     cx,
                 ),
             )
             .child(
                 self.start_card(
                     pane,
-                    "terminal",
-                    "新建终端",
-                    Some("在会话工作区运行命令"),
-                    svg()
-                        .data(include_bytes!("../../assets/start-terminal-guide.svg"))
-                        .text_color(gpui::rgb(0x679efe))
-                        .size(px(26.))
-                        .flex_none(),
-                    Some("⌃ `"),
+                    StartCard {
+                        id: "terminal",
+                        title: "新建终端",
+                        description: Some("在会话工作区运行命令"),
+                        artwork: svg()
+                            .data(include_bytes!("../../assets/start-terminal-guide.svg"))
+                            .text_color(gpui::rgb(0x679efe))
+                            .size(px(26.))
+                            .flex_none(),
+                        shortcut: Some("⌃ `"),
+                    },
                     cx,
                 ),
             )
             .child(self.start_card(
                 pane,
-                "browser",
-                "浏览器",
-                Some("浏览网页"),
-                icon(Glyph::Globe, 20., p.state_business_primary),
-                Some("⌘ T"),
+                StartCard {
+                    id: "browser",
+                    title: "浏览器",
+                    description: Some("浏览网页"),
+                    artwork: icon(Glyph::Globe, 20., p.state_business_primary),
+                    shortcut: Some("⌘ T"),
+                },
                 cx,
             ))
             .child(
                 self.start_card(
                     pane,
-                    "tools",
-                    "更多工具",
-                    None,
-                    svg()
-                        .data(include_bytes!("../../assets/start-tools.svg"))
-                        .size(px(24.))
-                        .flex_none()
-                        .text_color(p.secondary),
-                    None,
+                    StartCard {
+                        id: "tools",
+                        title: "更多工具",
+                        description: None,
+                        artwork: svg()
+                            .data(include_bytes!("../../assets/start-tools.svg"))
+                            .size(px(24.))
+                            .flex_none()
+                            .text_color(p.secondary),
+                        shortcut: None,
+                    },
                     cx,
                 ),
             );
@@ -1127,16 +1140,19 @@ impl DshApp {
         .child(dock_sidebar_glyph().text_color(p.secondary))
     }
 
-    fn start_card(
+    fn start_card<T: IntoElement>(
         &self,
         pane: DockPaneId,
-        id: &'static str,
-        title: &'static str,
-        description: Option<&'static str>,
-        artwork: impl IntoElement,
-        shortcut: Option<&'static str>,
+        card: StartCard<T>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let StartCard {
+            id,
+            title,
+            description,
+            artwork,
+            shortcut,
+        } = card;
         let p = dsh(cx);
         let terminal = id == "terminal";
         let label = description.map_or_else(

@@ -2072,8 +2072,6 @@ impl DshApp {
         let error = self.file_open_error.clone()?;
         let p = dsh(cx);
         let width = (f32::from(w.viewport_size().width) - 48.).clamp(0., 420.);
-        let retry_label = if error.reveal { "重试" } else { "重试" };
-        let _ = retry_label;
         Some(
             div()
                 .id("file-open-error")
@@ -2300,18 +2298,22 @@ impl DshApp {
             render_entry(
                 entry,
                 self.conversation.expanded_entries.contains(&entry.key),
-                self.copied_mark.as_deref(),
-                &self.conversation.wrapped_code,
-                self.content_font_delta,
                 show_thought_preview,
                 turn_live,
-                super::conversation::MarkdownCache {
-                    highlights: &self.conversation.markdown_highlights,
-                    math: &self.conversation.markdown_math,
-                    expanded_diffs: &self.conversation.expanded_diffs,
+                MarkdownOptions {
+                    copied_mark: self.copied_mark.as_deref(),
+                    wrapped_code: &self.conversation.wrapped_code,
+                    font_delta: self.content_font_delta,
+                    selection: None,
+                    mentions: self.conversation.mention_vocab.get(&entry.key),
+                    settled: true,
+                    cache: super::conversation::MarkdownCache {
+                        highlights: &self.conversation.markdown_highlights,
+                        math: &self.conversation.markdown_math,
+                        expanded_diffs: &self.conversation.expanded_diffs,
+                    },
+                    active_session: self.active_session.as_deref(),
                 },
-                self.active_session.as_deref(),
-                self.conversation.mention_vocab.get(&entry.key),
                 &self.workspace,
                 cx,
             )
@@ -5101,7 +5103,7 @@ impl DshApp {
                 .when_some(
                     self.conversation
                         .acp_open
-                        .then(|| self.conversation.team.as_ref())
+                        .then_some(self.conversation.team.as_ref())
                         .flatten(),
                     |card, team| {
                         card.child(self.model_root_row(
@@ -6713,17 +6715,20 @@ fn settings_section(label: &'static str, content: impl IntoElement, cx: &App) ->
 fn render_entry(
     entry: &ChatEntry,
     expanded: bool,
-    copied_mark: Option<&str>,
-    wrapped_code: &std::collections::HashSet<String>,
-    font_delta: i32,
     show_thought_preview: bool,
     turn_live: bool,
-    cache: super::conversation::MarkdownCache<'_>,
-    active_session: Option<&str>,
-    mentions: Option<&crate::mentions::FileMentionVocabulary>,
+    options: MarkdownOptions<'_>,
     workspace: &str,
     cx: &mut Context<DshApp>,
 ) -> gpui::Div {
+    let MarkdownOptions {
+        copied_mark,
+        font_delta,
+        mentions,
+        cache,
+        active_session,
+        ..
+    } = options;
     let p = dsh(cx);
     match entry.role {
         EntryRole::Plan => super::plan::plan_card(entry, cx),
@@ -6830,14 +6835,11 @@ fn render_entry(
         EntryRole::Assistant => div().w_full().child(render_markdown(
             &entry.text,
             &format!("md-{}", entry.key),
-            copied_mark,
-            wrapped_code,
-            font_delta,
-            None,
-            mentions,
-            !turn_live,
-            cache,
-            active_session,
+            MarkdownOptions {
+                mentions,
+                settled: !turn_live,
+                ..options
+            },
             cx,
         )),
         EntryRole::Thought => {
@@ -6896,14 +6898,11 @@ fn render_entry(
                         render_markdown(
                             &entry.text,
                             &format!("thought-{}", entry.key),
-                            copied_mark,
-                            wrapped_code,
-                            font_delta,
-                            None,
-                            None,
-                            !turn_live,
-                            cache,
-                            active_session,
+                            MarkdownOptions {
+                                mentions: None,
+                                settled: !turn_live,
+                                ..options
+                            },
                             cx,
                         ),
                     ))
@@ -7459,14 +7458,16 @@ fn render_compaction(
                 .child(render_markdown(
                     &body,
                     &format!("md-compaction-{key}"),
-                    None,
-                    &std::collections::HashSet::new(),
-                    0,
-                    None,
-                    None,
-                    true,
-                    cache,
-                    active_session,
+                    MarkdownOptions {
+                        copied_mark: None,
+                        wrapped_code: &std::collections::HashSet::new(),
+                        font_delta: 0,
+                        selection: None,
+                        mentions: None,
+                        settled: true,
+                        cache,
+                        active_session,
+                    },
                     cx,
                 )),
         );
@@ -7535,7 +7536,7 @@ fn render_deliverables(
             .text_color(p.faint)
             .hover(|style| style.text_color(p.secondary))
             .child(if open {
-                format!("收起")
+                "收起".to_string()
             } else {
                 format!("全部 {} 个文件", files.len())
             })
@@ -9147,19 +9148,34 @@ fn render_markdown_image(
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct MarkdownOptions<'a> {
+    pub(super) copied_mark: Option<&'a str>,
+    pub(super) wrapped_code: &'a std::collections::HashSet<String>,
+    pub(super) font_delta: i32,
+    pub(super) selection: Option<&'a super::document_selection::SelectionLayout>,
+    pub(super) mentions: Option<&'a crate::mentions::FileMentionVocabulary>,
+    pub(super) settled: bool,
+    pub(super) cache: super::conversation::MarkdownCache<'a>,
+    pub(super) active_session: Option<&'a str>,
+}
+
 pub(super) fn render_markdown(
     source: &str,
     block_id: &str,
-    copied_mark: Option<&str>,
-    wrapped_code: &std::collections::HashSet<String>,
-    font_delta: i32,
-    selection: Option<&super::document_selection::SelectionLayout>,
-    mentions: Option<&crate::mentions::FileMentionVocabulary>,
-    settled: bool,
-    cache: super::conversation::MarkdownCache<'_>,
-    active_session: Option<&str>,
+    options: MarkdownOptions<'_>,
     cx: &mut Context<DshApp>,
 ) -> gpui::Div {
+    let MarkdownOptions {
+        copied_mark,
+        wrapped_code,
+        font_delta,
+        selection,
+        mentions,
+        settled,
+        cache,
+        active_session,
+    } = options;
     let p = dsh(cx);
     let body = 14. + font_delta as f32;
     let body_lh = body + 10.;
@@ -9185,11 +9201,19 @@ pub(super) fn render_markdown(
         };
         previous_list = is_list;
         let selected = selection.map(|layout| (layout, separator));
+        let inline = MarkdownInline {
+            p,
+            muted: false,
+            body,
+            body_lh,
+            selection: selected,
+            mentions,
+            settled,
+            cache,
+        };
         let code_id = format!("{block_id}-{index}");
         list = match block {
-            Block::Paragraph(text) => list.child(render_inline_rich(
-                &text, &code_id, p, false, body, body_lh, selected, mentions, settled, cache, cx,
-            )),
+            Block::Paragraph(text) => list.child(render_inline_rich(&text, &code_id, inline, cx)),
             Block::Heading(level, text) => {
                 let (size, line_height, weight, top) = if selection.is_some() {
                     let delta = font_delta as f32;
@@ -9242,8 +9266,13 @@ pub(super) fn render_markdown(
                             .line_height(px(body_lh))
                             .text_color(p.secondary)
                             .child(render_inline_rich(
-                                &text, &code_id, p, true, body, body_lh, selected, mentions,
-                                settled, cache, cx,
+                                &text,
+                                &code_id,
+                                MarkdownInline {
+                                    muted: true,
+                                    ..inline
+                                },
+                                cx,
                             )),
                     ),
             ),
@@ -9266,10 +9295,12 @@ pub(super) fn render_markdown(
                                 format!("{index}.")
                             }),
                     )
-                    .child(div().flex_1().min_w_0().child(render_inline_rich(
-                        &text, &code_id, p, false, body, body_lh, selected, mentions, settled,
-                        cache, cx,
-                    ))),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(render_inline_rich(&text, &code_id, inline, cx)),
+                    ),
             ),
             Block::Table { headers, rows } => {
                 let mut table = column()
@@ -9278,10 +9309,7 @@ pub(super) fn render_markdown(
                     .border(px(0.5))
                     .border_color(p.line)
                     .overflow_hidden();
-                table = table.child(render_table_row(
-                    &headers, &code_id, true, p, body, body_lh, selected, mentions, settled, cache,
-                    cx,
-                ));
+                table = table.child(render_table_row(&headers, &code_id, true, inline, cx));
                 for (row_index, row_cells) in rows.iter().enumerate() {
                     table = table.child(
                         div()
@@ -9293,13 +9321,10 @@ pub(super) fn render_markdown(
                                 row_cells,
                                 &format!("{code_id}-{row_index}"),
                                 false,
-                                p,
-                                body,
-                                body_lh,
-                                selection.map(|layout| (layout, "\n")),
-                                mentions,
-                                settled,
-                                cache,
+                                MarkdownInline {
+                                    selection: selection.map(|layout| (layout, "\n")),
+                                    ..inline
+                                },
                                 cx,
                             )),
                     );
@@ -9361,12 +9386,28 @@ pub(super) fn render_markdown(
                     ),
                 }
             }
-            Block::Math { text, raw, display } => list.child(render_math_block(
-                &text, &raw, display, body, &code_id, settled, cache, p, cx,
-            )),
-            Block::Code { lang, text } if crate::markdown::is_math_fence(&lang) => list.child(
-                render_math_block(&text, &text, true, body, &code_id, settled, cache, p, cx),
-            ),
+            Block::Math { text, raw, display } => list.child(render_math_block(MarkdownMath {
+                text: &text,
+                raw: &raw,
+                display,
+                font_size: body,
+                key: &code_id,
+                settled,
+                cache,
+                p,
+            })),
+            Block::Code { lang, text } if crate::markdown::is_math_fence(&lang) => {
+                list.child(render_math_block(MarkdownMath {
+                    text: &text,
+                    raw: &text,
+                    display: true,
+                    font_size: body,
+                    key: &code_id,
+                    settled,
+                    cache,
+                    p,
+                }))
+            }
             Block::Code { lang, text } => {
                 // 官方：diff / patch 围栏以统一 diff 行代替普通代码内容。
                 let is_diff = matches!(lang.to_lowercase().as_str(), "diff" | "patch");
@@ -9550,19 +9591,26 @@ fn markdown_leaf(text: String, selection: MarkdownSelection<'_>) -> gpui::AnyEle
     super::document_selection::SelectionLayout::text(layout, text, prefix, gpui::StyledText::new)
 }
 
+#[derive(Clone, Copy)]
+struct MarkdownInline<'a> {
+    p: crate::tokens::Tokens,
+    muted: bool,
+    body: f32,
+    body_lh: f32,
+    selection: MarkdownSelection<'a>,
+    mentions: Option<&'a crate::mentions::FileMentionVocabulary>,
+    settled: bool,
+    cache: super::conversation::MarkdownCache<'a>,
+}
+
 fn render_table_row(
     cells: &[String],
     block_id: &str,
     header: bool,
-    p: crate::tokens::Tokens,
-    body: f32,
-    body_lh: f32,
-    selected: MarkdownSelection<'_>,
-    mentions: Option<&crate::mentions::FileMentionVocabulary>,
-    settled: bool,
-    cache: super::conversation::MarkdownCache<'_>,
+    inline: MarkdownInline<'_>,
     cx: &mut Context<DshApp>,
 ) -> gpui::Div {
+    let MarkdownInline { p, .. } = inline;
     let mut line = row().w_full().items_stretch();
     for (index, cell) in cells.iter().enumerate() {
         line = line.child(
@@ -9582,16 +9630,12 @@ fn render_table_row(
                 .child(render_inline_rich(
                     cell,
                     &format!("{block_id}-{index}"),
-                    p,
-                    false,
-                    body,
-                    body_lh,
-                    selected.map(|(layout, separator)| {
-                        (layout, if index == 0 { separator } else { "\t" })
-                    }),
-                    mentions,
-                    settled,
-                    cache,
+                    MarkdownInline {
+                        selection: inline.selection.map(|(layout, separator)| {
+                            (layout, if index == 0 { separator } else { "\t" })
+                        }),
+                        ..inline
+                    },
                     cx,
                 )),
         );
@@ -9640,37 +9684,36 @@ fn inline_code_plain(
     base: gpui::Div,
     text: String,
     bold: bool,
-    selected: Option<(&super::document_selection::SelectionLayout, &'static str)>,
-    p: crate::tokens::Tokens,
-    muted: bool,
-    body: f32,
-    body_lh: f32,
+    inline: MarkdownInline<'_>,
 ) -> gpui::Div {
     let _ = bold;
-    base.text_size(px(body))
-        .line_height(px(body_lh))
-        .text_color(if muted { p.secondary } else { p.secondary })
+    base.text_size(px(inline.body))
+        .line_height(px(inline.body_lh))
+        .text_color(inline.p.secondary)
         .px(px(4.))
         .rounded(px(4.))
-        .bg(p.md_inline_code)
+        .bg(inline.p.md_inline_code)
         .font_family("monospace")
-        .text_size(px((body - 2.).max(11.)))
-        .child(markdown_leaf(text, selected))
+        .text_size(px((inline.body - 2.).max(11.)))
+        .child(markdown_leaf(text, inline.selection))
 }
 
 fn render_inline_rich(
     text: &str,
     block_id: &str,
-    p: crate::tokens::Tokens,
-    muted: bool,
-    body: f32,
-    body_lh: f32,
-    selection: MarkdownSelection<'_>,
-    mentions: Option<&crate::mentions::FileMentionVocabulary>,
-    settled: bool,
-    cache: super::conversation::MarkdownCache<'_>,
+    inline: MarkdownInline<'_>,
     cx: &mut Context<DshApp>,
 ) -> gpui::Div {
+    let MarkdownInline {
+        p,
+        muted,
+        body,
+        body_lh,
+        selection,
+        mentions,
+        settled,
+        cache,
+    } = inline;
     let parts = if settled {
         crate::markdown::inline_parts_settled(text)
     } else {
@@ -9737,11 +9780,10 @@ fn render_inline_rich(
                                 div(),
                                 text,
                                 bold,
-                                selected,
-                                p,
-                                muted,
-                                body,
-                                body_lh,
+                                MarkdownInline {
+                                    selection: selected,
+                                    ..inline
+                                },
                             ))
                         }
                     } else {
@@ -10135,17 +10177,28 @@ fn render_tool_image_card(
 }
 
 /// Display TeX as a measured vector image; incomplete or invalid TeX stays literal.
-fn render_math_block(
-    text: &str,
-    raw: &str,
+struct MarkdownMath<'a> {
+    text: &'a str,
+    raw: &'a str,
     display: bool,
     font_size: f32,
-    key: &str,
+    key: &'a str,
     settled: bool,
-    cache: super::conversation::MarkdownCache<'_>,
+    cache: super::conversation::MarkdownCache<'a>,
     p: crate::tokens::Tokens,
-    _cx: &mut Context<DshApp>,
-) -> gpui::Div {
+}
+
+fn render_math_block(math: MarkdownMath<'_>) -> gpui::Div {
+    let MarkdownMath {
+        text,
+        raw,
+        display,
+        font_size,
+        key,
+        settled,
+        cache,
+        p,
+    } = math;
     let formula = super::document_math::typeset(cache.math, key, text, display, font_size, settled);
     let mut block = column()
         .w_full()

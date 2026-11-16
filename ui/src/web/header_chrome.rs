@@ -626,7 +626,7 @@ impl DshApp {
         cx: &mut Context<Self>,
     ) -> OpenHeaderMenu {
         let header = kind == HeaderMenu::Session;
-        let mut focus = || cx.focus_handle().tab_stop(true);
+        let focus = || cx.focus_handle().tab_stop(true);
         let now = bridge::monotonic_ms();
         let mut menu = OpenHeaderMenu {
             kind,
@@ -638,10 +638,10 @@ impl DshApp {
             trigger,
             app_rows: Vec::new(),
             app_scroll: ScrollHandle::new(),
-            copy: header.then(&mut focus),
-            download: header.then(&mut focus),
+            copy: header.then(focus),
+            download: header.then(focus),
             open_in: None,
-            feedback: header.then(&mut focus),
+            feedback: header.then(focus),
             submenu_back: None,
             submenu: None,
             submenu_placement: Rc::new(Cell::new(None)),

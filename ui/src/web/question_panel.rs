@@ -1336,18 +1336,20 @@ impl DshApp {
                         render_markdown(
                             detail,
                             "question-detail",
-                            None,
-                            &HashSet::new(),
-                            0,
-                            None,
-                            None,
-                            true,
-                            super::conversation::MarkdownCache {
-                                highlights: &self.conversation.markdown_highlights,
-                                math: &self.conversation.markdown_math,
-                                expanded_diffs: &self.conversation.expanded_diffs,
+                            super::workspace::MarkdownOptions {
+                                copied_mark: None,
+                                wrapped_code: &HashSet::new(),
+                                font_delta: 0,
+                                selection: None,
+                                mentions: None,
+                                settled: true,
+                                cache: super::conversation::MarkdownCache {
+                                    highlights: &self.conversation.markdown_highlights,
+                                    math: &self.conversation.markdown_math,
+                                    expanded_diffs: &self.conversation.expanded_diffs,
+                                },
+                                active_session: self.active_session.as_deref(),
                             },
-                            self.active_session.as_deref(),
                             cx,
                         )
                         .w_auto()

@@ -616,7 +616,6 @@ impl DshApp {
                 continue;
             }
             let at_end = tab.viewport.record_scroll();
-            if tab.viewer == Viewer::Markdown && tab.text.is_some() {}
             if tab.request.is_some() || tab.watch.as_ref().is_some_and(|watch| watch.pending) {
                 continue;
             }
@@ -1163,18 +1162,20 @@ impl DshApp {
                     source = source.child(render_markdown(
                         markdown,
                         &format!("document-{key}"),
-                        self.copied_mark.as_deref(),
-                        &self.conversation.wrapped_code,
-                        self.content_font_delta,
-                        Some(&selection),
-                        None,
-                        true,
-                        super::conversation::MarkdownCache {
-                            highlights: &self.conversation.markdown_highlights,
-                            math: &self.conversation.markdown_math,
-                            expanded_diffs: &self.conversation.expanded_diffs,
+                        super::workspace::MarkdownOptions {
+                            copied_mark: self.copied_mark.as_deref(),
+                            wrapped_code: &self.conversation.wrapped_code,
+                            font_delta: self.content_font_delta,
+                            selection: Some(&selection),
+                            mentions: None,
+                            settled: true,
+                            cache: super::conversation::MarkdownCache {
+                                highlights: &self.conversation.markdown_highlights,
+                                math: &self.conversation.markdown_math,
+                                expanded_diffs: &self.conversation.expanded_diffs,
+                            },
+                            active_session: self.active_session.as_deref(),
                         },
-                        self.active_session.as_deref(),
                         cx,
                     ));
                 } else if let Some(code) = code {

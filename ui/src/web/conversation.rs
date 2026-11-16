@@ -162,6 +162,13 @@ pub(super) struct Conversation {
     pub(super) goal_busy: bool,
     /// Last rejected goal verb, shown inside the strip (official `actionError`).
     pub(super) goal_error: Option<String>,
+    /// Durable goal revision already reconciled against history.
+    ///
+    /// Autonomous rounds can open and fail before the client has marked the
+    /// conversation running; a missed `turn_end` would leave the strip stuck on
+    /// "进行中的目标". After a goal revision changes, KWork re-reads history once
+    /// while idle so the failure row (or the round's content) cannot be lost.
+    pub(super) goal_synced_revision: Option<u64>,
     /// Direct children this session spawned (official subagent catalog).
     pub(super) subagents: Vec<crate::subagents::SubagentRow>,
     /// Whether the composer's subagent list is expanded.
@@ -284,7 +291,7 @@ impl Conversation {
         if failed {
             return;
         }
-        if !self.pending_changed_files.iter().any(|seen| *seen == path) {
+        if !self.pending_changed_files.contains(&path) {
             self.pending_changed_files.push(path);
         }
     }
@@ -330,11 +337,11 @@ impl Conversation {
             .usage
             .map(|(used, _)| used.saturating_sub(self.turn_usage_base.unwrap_or(0)))
             .filter(|used| *used > 0);
-        if let Some(tokens) = used {
-            if seconds > 0.05 {
-                self.decode_tokens = self.decode_tokens.saturating_add(tokens);
-                self.decode_ms += f64::from(seconds) * 1000.;
-            }
+        if let Some(tokens) = used
+            && seconds > 0.05
+        {
+            self.decode_tokens = self.decode_tokens.saturating_add(tokens);
+            self.decode_ms += f64::from(seconds) * 1000.;
         }
         self.turn_started = None;
         self.last_event_ms = None;

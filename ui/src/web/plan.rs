@@ -449,8 +449,7 @@ impl DshApp {
             // 繁忙时同样交给 Host Inbox：/plan 的后续消息不能只存在客户端内存里。
             self.dispatch_inbox_prompt(
                 session.to_owned(),
-                prompt.display,
-                prompt.prompt,
+                prompt,
                 crate::submit::DEFAULT_BUSY_ENTER,
                 None,
                 w,
@@ -729,18 +728,20 @@ impl DshApp {
                 .child(render_markdown(
                     &plan.markdown,
                     &format!("plan-{key}"),
-                    self.copied_mark.as_deref(),
-                    &self.conversation.wrapped_code,
-                    0,
-                    None,
-                    None,
-                    true,
-                    super::conversation::MarkdownCache {
-                        highlights: &self.conversation.markdown_highlights,
-                        math: &self.conversation.markdown_math,
-                        expanded_diffs: &self.conversation.expanded_diffs,
+                    super::workspace::MarkdownOptions {
+                        copied_mark: self.copied_mark.as_deref(),
+                        wrapped_code: &self.conversation.wrapped_code,
+                        font_delta: 0,
+                        selection: None,
+                        mentions: None,
+                        settled: true,
+                        cache: super::conversation::MarkdownCache {
+                            highlights: &self.conversation.markdown_highlights,
+                            math: &self.conversation.markdown_math,
+                            expanded_diffs: &self.conversation.expanded_diffs,
+                        },
+                        active_session: self.active_session.as_deref(),
                     },
-                    self.active_session.as_deref(),
                     cx,
                 )),
         )

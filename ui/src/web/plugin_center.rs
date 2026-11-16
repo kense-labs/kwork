@@ -10,6 +10,16 @@ use gpui::{Div, Entity, FocusHandle, Stateful};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, LazyLock};
 
+struct PluginCard<'a> {
+    id: gpui::ElementId,
+    title: &'a str,
+    summary: &'a str,
+    artwork: Artwork,
+    detail: Detail,
+    end: Option<Div>,
+    badges: Vec<(&'static str, bool)>,
+}
+
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 enum Config {
@@ -719,13 +729,15 @@ impl DshApp {
                                 .child(column().gap(px(2.)).children(configs.map(|config| {
                                     let (id, title, summary, artwork) = config.info();
                                     self.plugin_card(
-                                        id.into(),
-                                        title,
-                                        summary,
-                                        artwork,
-                                        Detail::Config(config),
-                                        None,
-                                        Vec::new(),
+                                        PluginCard {
+                                            id: id.into(),
+                                            title,
+                                            summary,
+                                            artwork,
+                                            detail: Detail::Config(config),
+                                            end: None,
+                                            badges: Vec::new(),
+                                        },
                                         cx,
                                     )
                                 }))),
@@ -845,17 +857,19 @@ impl DshApp {
                     .children(bundles.into_iter().map(|bundle| {
                         let switch = self.bundle_switch(bundle, w, cx);
                         self.plugin_card(
-                            gpui::ElementId::Name(bundle.name.clone().into()),
-                            bundle.title(),
-                            bundle.description.as_deref().unwrap_or(""),
-                            Artwork::Default,
-                            Detail::Bundle(bundle.name.clone()),
-                            Some(switch),
-                            bundle.badges(
-                                snapshot.package_status(bundle),
-                                self.latest_plugin_update(&bundle.name, bundle.title())
-                                    .is_some(),
-                            ),
+                            PluginCard {
+                                id: gpui::ElementId::Name(bundle.name.clone().into()),
+                                title: bundle.title(),
+                                summary: bundle.description.as_deref().unwrap_or(""),
+                                artwork: Artwork::Default,
+                                detail: Detail::Bundle(bundle.name.clone()),
+                                end: Some(switch),
+                                badges: bundle.badges(
+                                    snapshot.package_status(bundle),
+                                    self.latest_plugin_update(&bundle.name, bundle.title())
+                                        .is_some(),
+                                ),
+                            },
                             cx,
                         )
                     })),
@@ -1250,17 +1264,16 @@ impl DshApp {
         )
     }
 
-    fn plugin_card(
-        &self,
-        id: gpui::ElementId,
-        title: &str,
-        summary: &str,
-        artwork: Artwork,
-        detail: Detail,
-        end: Option<Div>,
-        badges: Vec<(&'static str, bool)>,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    fn plugin_card(&self, card: PluginCard<'_>, cx: &mut Context<Self>) -> Div {
+        let PluginCard {
+            id,
+            title,
+            summary,
+            artwork,
+            detail,
+            end,
+            badges,
+        } = card;
         let p = dsh(cx);
         let link = super::dock_action_button(
             row()
