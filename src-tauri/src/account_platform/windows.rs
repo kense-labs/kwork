@@ -93,13 +93,11 @@ pub(super) async fn configure<R: Runtime>(
         view,
         "未能配置平台页面的请求。",
         move |core, send| {
-            let cookie = headers.get("cookie").cloned();
+            let with_cookie = headers.contains_key("cookie");
             let installed = navigation::install(&core, origin.clone(), report)
-                .and_then(|()| network::install(&core, origin.clone(), headers));
-            if installed.is_ok()
-                && let Some(cookie) = cookie
-            {
-                cookie_requests::install(&core, origin, cookie, send)
+                .and_then(|()| network::install(&core, origin.clone(), headers.clone()));
+            if installed.is_ok() && with_cookie {
+                cookie_requests::install(&core, origin, headers, send)
             } else {
                 let _ = send.send(installed);
                 Ok(())

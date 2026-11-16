@@ -1,6 +1,6 @@
 //! Platform deployment and client headers for the real WebView2 request.
 
-use super::super::{cookies, uncredentialed};
+use super::super::uncredentialed;
 use std::collections::BTreeMap;
 use url::{Origin, Url};
 use webview2_com::{
@@ -32,9 +32,16 @@ pub(super) fn install(
     origin: Origin,
     mut deployment: BTreeMap<String, String>,
 ) -> WinResult<()> {
-    let deployment_cookie = deployment.remove("cookie");
-    deployment.remove(TIME_ZONE);
-    deployment.extend(IDENTITY.map(|(name, value)| (name.into(), value.into())));
+    // Password storage is disabled for either request transport.
+    // SAFETY: The settings belong to this live COM core.
+    let settings = unsafe { core.Settings() }?.cast::<ICoreWebView2Settings4>()?;
+    unsafe { settings.SetIsPasswordAutosaveEnabled(false) }?;
+    if deployment.contains_key("cookie") {
+        // cookie_requests owns ALL header edits in this mode. Mixing both
+        // interceptors lets WebView2 replace the later Cookie override.
+        return Ok(());
+    }
+    add_identity_headers(&mut deployment);
     let environment = core.cast::<ICoreWebView2_2>()?;
     // SAFETY: The live core is on its creating COM apartment. This environment
     // creates a synthetic rejection if editing a request fails.
@@ -43,7 +50,7 @@ pub(super) fn install(
         let Some(args) = args else {
             return Ok(());
         };
-        if rewrite(&args, &origin, &deployment, deployment_cookie.as_deref()).is_err() {
+        if rewrite(&args, &origin, &deployment).is_err() {
             // SAFETY: A body is optional for this synthetic empty response.
             // The strings are static and the environment is on its owning apartment.
             let rejection = unsafe {
@@ -74,17 +81,18 @@ pub(super) fn install(
     // SAFETY: The core owns the handler for the lifetime of this dedicated child.
     unsafe { core.add_WebResourceRequested(&handler, &mut subscription) }?;
 
-    // SAFETY: The settings belong to this live COM core.
-    let settings = unsafe { core.Settings() }?.cast::<ICoreWebView2Settings4>()?;
-    // SAFETY: The dedicated platform profile never saves form passwords.
-    unsafe { settings.SetIsPasswordAutosaveEnabled(false) }
+    Ok(())
+}
+
+pub(super) fn add_identity_headers(deployment: &mut BTreeMap<String, String>) {
+    deployment.remove(TIME_ZONE);
+    deployment.extend(IDENTITY.map(|(name, value)| (name.into(), value.into())));
 }
 
 fn rewrite(
     args: &ICoreWebView2WebResourceRequestedEventArgs,
     origin: &Origin,
     deployment: &BTreeMap<String, String>,
-    cookie: Option<&str>,
 ) -> WinResult<()> {
     // SAFETY: This callback owns the live request arguments through the whole call.
     let request = unsafe { args.Request() }?;
@@ -110,23 +118,6 @@ fn rewrite(
         }
         remove_header(&headers, TIME_ZONE)?;
         remove_header(&headers, "x-dsh-auth-token")?;
-    }
-    if let Some(cookie) = cookie {
-        let base = get_header(&headers, "cookie")?;
-        let updated = if trusted {
-            cookies::merge(base.as_deref().unwrap_or_default(), cookie)
-        } else if let Some(base) = &base {
-            cookies::strip_deployment(base, cookie)
-        } else {
-            return Ok(());
-        };
-        if base.as_deref() != Some(&updated) {
-            if updated.is_empty() {
-                remove_header(&headers, "cookie")?;
-            } else {
-                set_header(&headers, "cookie", &updated)?;
-            }
-        }
     }
     Ok(())
 }
@@ -165,7 +156,7 @@ fn remove_header(headers: &ICoreWebView2HttpRequestHeaders, name: &str) -> WinRe
     Ok(())
 }
 
-fn timezone_seconds() -> i32 {
+pub(super) fn timezone_seconds() -> i32 {
     let mut zone = TIME_ZONE_INFORMATION::default();
     // SAFETY: This Win32 API fills our writable result structure synchronously.
     let season = unsafe { GetTimeZoneInformation(&mut zone) };
