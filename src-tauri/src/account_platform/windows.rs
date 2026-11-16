@@ -16,6 +16,7 @@ use webview2_com::{
 };
 use windows_core::{Interface, PWSTR, Result as WinResult, w};
 
+mod cookie_requests;
 mod navigation;
 mod network;
 
@@ -92,10 +93,17 @@ pub(super) async fn configure<R: Runtime>(
         view,
         "未能配置平台页面的请求。",
         move |core, send| {
+            let cookie = headers.get("cookie").cloned();
             let installed = navigation::install(&core, origin.clone(), report)
-                .and_then(|()| network::install(&core, origin, headers));
-            let _ = send.send(installed);
-            Ok(())
+                .and_then(|()| network::install(&core, origin.clone(), headers));
+            if installed.is_ok()
+                && let Some(cookie) = cookie
+            {
+                cookie_requests::install(&core, origin, cookie, send)
+            } else {
+                let _ = send.send(installed);
+                Ok(())
+            }
         },
     )
     .await?;
