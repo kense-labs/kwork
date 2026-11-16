@@ -192,6 +192,7 @@ async function startDesktop(binary, host, home, documents) {
   const env = {
     ...process.env, DSH_HOME: home, DSH_ACP_PATH: host, KWORK_DOCUMENTS_DIRECTORY: documents,
     DSH_TELEMETRY_DISABLED: '1',
+    WEBVIEW2_USER_DATA_FOLDER: join(home, 'webview2'),
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=' + new URL(debuggerURL).port,
   };
   delete env.DEEPSEEK_API_KEY;

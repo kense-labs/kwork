@@ -19,7 +19,9 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # The Server 2025 image's Evergreen WebView2 has a DevTools startup regression.
+    # https://github.com/actions/runner-images/issues/14738
+    runs-on: windows-2022
     env:
       KWORK_UI_BUILD: always
       # First Windows pipeline: skip the optional wasm-opt size pass (it needs
