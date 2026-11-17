@@ -23,6 +23,13 @@ KWork 是 Rust/GPUI 客户端，通过 ACP 与 Host 通信；官方客户端是 
 - 官方 Host 的真实工具回归检查了提问事件、拒绝修改过的选项标签、回答结算和计划批准后退出计划模式。证据见 `/private/tmp/kwork-yolo-real-question-v2/result.json` 和 `/private/tmp/kwork-yolo-real-plan/result.json`。手动退出计划模式失败时会在按钮旁显示提示，保留重试入口。
 - 会话切换、轨迹折叠、正文裁切、文件行号跳转、设置回退、窄窗和深色效果分别在浏览器回归中检查。最新隔离 Mac WKWebView 冷启动成功，菜单展示四项官方预设，并成功从标准模式切到极简模式。原生截图见 `/private/tmp/kwork-yolo-native/final-minimal.png`。
 - 官方 rc.3 的独立安装验证四种真实预设、新会话显式选择、空白会话切换、首次提示后锁定、关闭再恢复及按预设执行自动化。结果见 `/private/tmp/kwork-yolo-flat-preset-run/result.json`。设置回归另覆盖配置 YAML、说明页、默认写入冲突及重试、创造模式入口和窄窗，见 `/private/tmp/kwork-yolo-final-agent-presets`。
+- 账号平台页面撤销后，设置窗口会恢复焦点和键盘操作。回归覆盖撤销、返回、退出登录和迟到账号响应。证据见 `/private/tmp/kwork-yolo-account-focus-accepted`。
+
+### Windows x64 安装版
+
+用量和充值接入官方 Electron Platform 渲染器。KWork 通过本机私有命名管道发送页面授权，并在交换数据前校验子进程 PID。NSIS 和便携版均包含固定版本的渲染器。运行时按账号保留页面偏好，每次访问清理认证数据。
+
+提交 `cabf35eb3fed2122fa9fac8f2150a6afbf586172` 在 [Windows runner 44106890521](https://github.com/kense-labs/kwork/actions/runs/44106890521) 通过独立渲染器、官方 rc.3 Host 依赖、Chromium 视觉和 NSIS 安装版回归。安装版使用真实 Host 验证预设列表、配置 YAML、新会话指定预设和会话内切换。测试账号页面覆盖跨域导航拒绝、断线重试、Worker 与部署 Cookie、充值后余额刷新、退出清理和重启后偏好保留。
 
 ### 2026-11-17 macOS 合入范围与剩余差异
 
