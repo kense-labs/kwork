@@ -56,11 +56,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           bun scripts/build-account-platform-electron.mjs --windows-bundle
 
-      - name: Verify the Electron renderer in isolation
-        if: github.event_name == 'workflow_dispatch'
-        timeout-minutes: 5
-        run: bun scripts/account-platform-electron-smoke.mjs
-
       - name: Build GPUI/WASM frontend
         run: bun run ui:build
 
@@ -80,6 +75,11 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         timeout-minutes: 10
         run: bun scripts/account-platform-windows-smoke.mjs target/release/KWork.exe
+
+      - name: Verify the Electron renderer in isolation
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
+        timeout-minutes: 5
+        run: node scripts/account-platform-electron-smoke.mjs
 
       - name: Upload installer and portable app
         uses: actions/upload-artifact@v4

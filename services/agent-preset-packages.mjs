@@ -21,7 +21,11 @@ async function packageAt(anchor, name) {
 export async function resolvePresetPackages({ service, runtime, terminalRuntime, roots }) {
   const installed = new Map();
   const packageRoot = join(service, 'packages');
-  for (const group of await readdir(packageRoot, { withFileTypes: true })) {
+  const groups = await readdir(packageRoot, { withFileTypes: true }).catch(error => {
+    if (error.code !== 'ENOENT') throw error;
+    return [];
+  });
+  for (const group of groups) {
     if (!group.isDirectory() || group.name === 'node_modules') continue;
     for (const entry of await readdir(join(packageRoot, group.name), { withFileTypes: true })) {
       if ((!entry.isDirectory() && !entry.isSymbolicLink()) || entry.name === 'node_modules') continue;

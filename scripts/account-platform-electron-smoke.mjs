@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -61,7 +61,7 @@ const profile = join(artifacts, 'profile');
 
 async function start() {
   const environment = { ...process.env }; delete environment.ELECTRON_RUN_AS_NODE;
-  child = spawn(executable, [join(helper, 'dist'), `--kwork-platform-data=${profile}`, '--kwork-client-version=0.1.0'],
+  child = spawn(executable, [join(helper, 'dist'), `--kwork-platform-data=${profile}`, '--kwork-client-version=0.1.0', '--enable-logging=stderr'],
     { env: environment, stdio: ['pipe', 'pipe', 'pipe'] });
   const messages = [], errors = [];
   child.stderr.on('data', data => errors.push(data.toString()));
@@ -69,12 +69,13 @@ async function start() {
     try { messages.push(JSON.parse(line)); } catch { errors.push(line); }
   });
   child.on('error', error => errors.push(String(error)));
+  const details = () => JSON.stringify({ exitCode: child.exitCode, signal: child.signalCode, messages, errors });
   await waitFor(() => messages.some(message => message.event === 'ready') || child.exitCode !== null, 'helper startup timeout');
-  assert.ok(messages.some(message => message.event === 'ready'), `helper must start: ${errors.join('')}`);
+  assert.ok(messages.some(message => message.event === 'ready'), `helper must start: ${details()}`);
   return async request => {
     child.stdin.write(JSON.stringify(request) + '\n');
     await waitFor(() => messages.some(message => message.id === request.id && 'ok' in message) || child.exitCode !== null, `request ${request.action} timed out`);
-    assert.equal(messages.find(message => message.id === request.id && 'ok' in message)?.ok, true, `${request.action} succeeds: ${errors.join('')}`);
+    assert.equal(messages.find(message => message.id === request.id && 'ok' in message)?.ok, true, `${request.action} succeeds: ${details()}`);
     if (request.action === 'close') {
       await waitFor(() => child.exitCode !== null, 'helper exits after cleanup'); assert.equal(child.exitCode, 0);
     }

@@ -192,7 +192,6 @@ async function startDesktop(binary, host, home, documents) {
   const env = {
     ...process.env, DSH_HOME: home, DSH_ACP_PATH: host, KWORK_DOCUMENTS_DIRECTORY: documents,
     DSH_TELEMETRY_DISABLED: '1',
-    KWORK_PLATFORM_TRACE: '1',
     WEBVIEW2_USER_DATA_FOLDER: join(home, 'webview2'),
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=' + new URL(debuggerURL).port,
   };
@@ -269,6 +268,7 @@ async function verify(binary, host, home, documents, fixture) {
   const count = (path) => fixture.records.filter(entry => entry.path === path).length;
   try {
     let account = await accountSettings(desktop.page, true);
+    await verifyAgentPresets(desktop.page, documents);
     let platform = desktop.page.locator('#account-platform-view');
     const retry = button(platform, '重试');
     await account.getByRole('link', { name: '查询用量', exact: true }).click();
@@ -321,6 +321,36 @@ async function verify(binary, host, home, documents, fixture) {
   assert(external.every(entry => !entry.ordinary && !entry.route && !entry.deployment && !entry.auth && !entry.client),
     'The official request policy strips Cookie and other injected headers on cross-origin redirects');
   console.log('Windows embedded Electron smoke passed: recovery, usage, top-up, worker requests, redirect isolation and profile storage after restart.');
+}
+
+async function verifyAgentPresets(page, cwd) {
+  const shell = page.locator('#settings-shell');
+  await button(shell.getByRole('navigation'), 'Agent 预设').click();
+  const panel = shell.locator('#settings-agent-presets');
+  await panel.getByRole('heading', { name: 'Agent 预设', exact: true }).waitFor();
+  await panel.getByRole('button', { name: '查看配置: 标准模式', exact: true }).click();
+  const config = page.getByRole('dialog', { name: '查看配置 · 标准模式', exact: true });
+  await config.locator('pre').waitFor();
+  await page.keyboard.press('Escape');
+  await config.waitFor({ state: 'hidden' });
+
+  const result = await page.evaluate(async (cwd) => {
+    const invoke = window.__TAURI__.core.invoke;
+    const preset = request => invoke('agent_preset_settings', { request });
+    const roster = await preset({ operation: 'list' });
+    const created = await invoke('new_session', { cwd, agentPreset: 'minimal' });
+    const switched = await preset({ operation: 'select', id: 'standard', sessionId: created.sessionId });
+    const live = await preset({ operation: 'session', sessionId: created.sessionId });
+    return { ids: roster.presets.filter(option => !option.broken).map(option => option.id),
+      created: created.agentPreset, switched: switched.agentPreset, live };
+  }, cwd);
+  for (const id of ['standard', 'ptc', 'minimal', 'cordis']) assert(result.ids.includes(id), id);
+  assert.equal(result.created, 'minimal');
+  assert.equal(result.switched, 'standard');
+  assert.deepEqual(result.live, { agentPreset: 'standard', canSelect: true });
+  await button(shell.getByRole('navigation'), '账号与余额').click();
+  await page.locator('#deepseek-account-form').getByText('Platform Fixture', { exact: true }).waitFor();
+  console.log('Windows Agent presets passed: official list, YAML, explicit creation, in-session selection.');
 }
 
 if (import.meta.main) {

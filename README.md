@@ -76,13 +76,16 @@ On a Windows machine:
 
 ```sh
 bun install --no-save
+bun install --cwd services/account-platform-electron --frozen-lockfile --ignore-scripts
+node services/account-platform-electron/node_modules/electron/install.js
+bun scripts/build-account-platform-electron.mjs --windows-bundle
 bun run ui:build
 bun x tauri build --bundles nsis
 ```
 
 `just dev` and `scripts/dev-app.sh` are macOS-only; use `bun run dev` for the development client. The app still needs a companion `dsh-acp` checkout at runtime — set `DSH_ACP_PATH` and `DSH_NODE` (for example `C:\Program Files\nodejs\node.exe`) in Settings or the environment.
 
-`.github/workflows/windows.yml` builds the NSIS installer and the portable `target/release/KWork.exe` on a `windows-latest` runner and uploads both as the `KWork-Windows-x64` artifact.
+`.github/workflows/windows.yml` builds the NSIS installer and portable app in the `KWork-Windows-x64` artifact. Keep `account-platform/` next to the portable `KWork.exe`. The runtime powers the embedded usage and top-up pages. The NSIS installer includes that directory.
 
 ### Embedded Node modules
 

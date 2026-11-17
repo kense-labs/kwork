@@ -171,7 +171,8 @@ try {
   await assert.rejects(request('session/new', { cwd: workspace, mcpServers: [], _meta: { 'kwork.agentPreset': 'missing' } }));
   await writeFile(join(output, 'result.json'), JSON.stringify({ passed: true, official, initial, minimal, resumed,
     checks: ['pre-publication composition', 'default persistence', 'existing session unchanged', 'explicit selection',
-      'scoped tools without leaks', 'selection projection survives close/resume', 'first turn locks selection', 'unknown preset refused'] }, null, 2));
+      'scoped tools without leaks', 'selection projection survives close/resume', 'first turn locks selection', 'unknown preset refused',
+      ...official ? ['scheduled delivery uses the selected preset'] : []] }, null, 2));
   console.log(JSON.stringify({ passed: true, output }));
 } finally {
   for (const task of pending.values()) clearTimeout(task.timer);
