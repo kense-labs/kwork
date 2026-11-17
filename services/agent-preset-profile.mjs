@@ -114,7 +114,11 @@ export async function prepareAgentPresetProfile({ service, home, terminalRuntime
     // A user-defined row wins. Preserve every expression in the shipped YAML.
     const presetText = Object.entries(packaged.presets).filter(([id]) => !ids.has('preset-' + id)).map(([, text]) => text).join('\n');
     const patchText = patches.map(row => '- ' + JSON.stringify(row)).join('\n') + '\n' + presetText;
-    const bindings = [...sources].filter(([name, value]) => roots.includes(name) && name === value.manifest.name);
+    // The replacement ACP module is relocated outside the Host's node_modules.
+    // Bind its direct imports as well as the packages referenced by preset YAML.
+    const linkedNames = new Set([...roots, ...Object.keys(acp.manifest.dependencies ?? {}),
+      ...Object.keys(acp.manifest.peerDependencies ?? {})]);
+    const bindings = [...sources].filter(([name, value]) => linkedNames.has(name) && name === value.manifest.name);
     const generation = join(ownedRoot, hash(JSON.stringify({ service, runtime, patchText, acp: packaged.acp,
       bindings: bindings.map(([name, value]) => [name, value.dir]) })));
     const replacement = join(generation, 'node_modules', acpName);

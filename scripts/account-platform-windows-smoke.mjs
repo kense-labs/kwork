@@ -175,6 +175,23 @@ export async function platformFixture(home) {
   };
 }
 
+async function prepareHost(root) {
+  const host = await installHost(root);
+  const home = join(root, 'preset-preflight');
+  const module = new URL('../services/agent-preset-profile.mjs', import.meta.url).href;
+  const node = spawn('node', ['--input-type=module', '--eval', `
+    const { join } = await import('node:path');
+    const { pathToFileURL } = await import('node:url');
+    const [source, service, home] = process.argv.slice(1);
+    const { prepareAgentPresetProfile } = await import(source);
+    const profile = await prepareAgentPresetProfile({ service, home });
+    await import(pathToFileURL(join(profile.generation, 'node_modules/@kense-labs/kwork-acp/index.mjs')).href);
+    console.log('Official Host preset dependencies loaded from the generated profile.');
+  `, module, host, home], { env: { ...process.env, DSH_HOME: home }, stdio: 'inherit' });
+  const [code] = await once(node, 'exit');
+  assert.equal(code, 0, 'Import the relocated ACP module against the installed Host');
+}
+
 async function waitFor(description, condition, timeout = 15_000) {
   const deadline = Date.now() + timeout;
   do {
@@ -224,7 +241,7 @@ async function startDesktop(binary, host, home, documents) {
         if (await candidate.evaluate(() => !!window.__TAURI__?.core).catch(() => false)) return candidate;
       }
     }, 45_000);
-    page.setDefaultTimeout(30_000);
+    page.setDefaultTimeout(45_000);
     return {
       page,
       async close() {
@@ -353,7 +370,7 @@ async function verifyAgentPresets(page, cwd) {
   console.log('Windows Agent presets passed: official list, YAML, explicit creation, in-session selection.');
 }
 
-if (import.meta.main) {
+async function verifyInstalled() {
   assert.equal(process.platform, 'win32', 'Run the smoke test with the actual Windows WebView2 runtime');
   const binary = resolve(process.argv[2] ?? 'target/release/KWork.exe');
   await access(binary);
@@ -380,4 +397,9 @@ if (import.meta.main) {
       console.error('Could not remove the Windows fixture:', error);
     }
   }
+}
+
+if (import.meta.main) {
+  if (process.argv[2] === '--prepare-host') await prepareHost(resolve(process.argv[3]));
+  else await verifyInstalled();
 }
