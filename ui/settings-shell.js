@@ -106,7 +106,12 @@ function mount() {
   root.addEventListener('focusin', event => {
     if (event.target instanceof HTMLElement) lastShellFocus = event.target;
   });
-  new MutationObserver(syncModalOwnership).observe(document.body, { childList: true });
+  new MutationObserver(syncModalOwnership).observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['hidden', 'aria-modal', 'role'],
+  });
   document.body.append(root);
   place();
 }

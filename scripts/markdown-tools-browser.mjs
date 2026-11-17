@@ -4,7 +4,7 @@ import { runDocumentAndQuestionCase } from './document-question-browser.mjs';
 import { markdownFixture, runChatMarkdownCase } from './chat-markdown-browser.mjs';
 import { createServer } from 'node:http';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, extname, join, normalize, resolve } from 'node:path';
+import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inflateSync } from 'node:zlib';
 import { chromium } from 'playwright-core';
@@ -33,7 +33,7 @@ const server = createServer(async (request, response) => {
   try {
     const relative = decodeURIComponent(new URL(request.url, 'http://localhost').pathname).replace(/^\/+/, '') || 'index.html';
     const path = join(root, 'ui/dist', normalize(relative));
-    if (!path.startsWith(join(root, 'ui/dist') + '/')) throw new Error('invalid path');
+    if (!path.startsWith(join(root, 'ui/dist') + sep)) throw new Error('invalid path');
     const body = await readFile(path);
     response.writeHead(200, { 'Content-Type': mime[extname(path)] || 'application/octet-stream',
       ...(['chat-markdown', 'document-question', 'plan-preview'].includes(mode) ? { 'Content-Security-Policy': nativeCsp } : {}) });

@@ -185,9 +185,9 @@ export function account_platform_status(id, status, shell) {
     visit.closed = visit.closing = true;
     clearTimeout(visit.timeout);
     paint(visit);
-    queueMicrotask(() => {
+    setTimeout(() => {
       if (active === visit && visit.id === id) dispatch?.('account-platform-revoked', '');
-    });
+    }, 0);
     return;
   }
   if (visit.closing || visit.status === 'failed') return;
