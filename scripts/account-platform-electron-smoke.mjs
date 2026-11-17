@@ -1,9 +1,12 @@
 /** Actual Electron Platform lifecycle; all credentials and endpoints are fixtures. */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { createServer as createPipeServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -61,19 +64,36 @@ const profile = join(artifacts, 'profile');
 
 async function start() {
   const environment = { ...process.env }; delete environment.ELECTRON_RUN_AS_NODE;
-  child = spawn(executable, [join(helper, 'dist'), `--kwork-platform-data=${profile}`, '--kwork-client-version=0.1.0', '--enable-logging=stderr'],
-    { env: environment, stdio: ['pipe', 'pipe', 'pipe'] });
+  const usePipe = process.platform === 'win32';
+  const pipePath = '\\\\.\\pipe\\kwork-account-' + randomUUID();
+  const pipeServer = usePipe ? createPipeServer() : undefined;
+  let pipe;
+  if (pipeServer) {
+    pipeServer.once('connection', socket => { pipe = socket; pipeServer.close(); });
+    pipeServer.listen(pipePath);
+    await once(pipeServer, 'listening');
+  }
+  const args = [join(helper, 'dist'), `--kwork-platform-data=${profile}`, '--kwork-client-version=0.1.0', '--enable-logging=stderr'];
+  if (usePipe) args.push(`--kwork-platform-pipe=${pipePath}`);
+  child = spawn(executable, args, { env: environment, stdio: [usePipe ? 'ignore' : 'pipe', usePipe ? 'ignore' : 'pipe', 'pipe'] });
   const messages = [], errors = [];
   child.stderr.on('data', data => errors.push(data.toString()));
-  createInterface({ input: child.stdout }).on('line', line => {
+  let spawnError;
+  child.on('error', error => { spawnError = error; errors.push(String(error)); });
+  const details = () => JSON.stringify({ exitCode: child.exitCode, signal: child.signalCode, messages, errors });
+  if (pipeServer) {
+    try {
+      await waitFor(() => pipe || child.exitCode !== null || spawnError, 'private pipe connection timeout');
+      assert.ok(pipe, `helper must connect: ${details()}`);
+    } finally { if (pipeServer.listening) pipeServer.close(); }
+  }
+  createInterface({ input: pipe ?? child.stdout }).on('line', line => {
     try { messages.push(JSON.parse(line)); } catch { errors.push(line); }
   });
-  child.on('error', error => errors.push(String(error)));
-  const details = () => JSON.stringify({ exitCode: child.exitCode, signal: child.signalCode, messages, errors });
   await waitFor(() => messages.some(message => message.event === 'ready') || child.exitCode !== null, 'helper startup timeout');
   assert.ok(messages.some(message => message.event === 'ready'), `helper must start: ${details()}`);
   return async request => {
-    child.stdin.write(JSON.stringify(request) + '\n');
+    (pipe ?? child.stdin).write(JSON.stringify(request) + '\n');
     await waitFor(() => messages.some(message => message.id === request.id && 'ok' in message) || child.exitCode !== null, `request ${request.action} timed out`);
     assert.equal(messages.find(message => message.id === request.id && 'ok' in message)?.ok, true, `${request.action} succeeds: ${details()}`);
     if (request.action === 'close') {

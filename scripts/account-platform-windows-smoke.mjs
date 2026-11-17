@@ -257,7 +257,7 @@ async function accountSettings(page, firstBoot) {
   }
   await page.locator('#deepseek-account-launcher > button').click();
   await page.getByRole('menuitem', { name: '设置', exact: true }).click();
-  await button(page.locator('#composer-submit-accessibility'), '账号与余额').dispatchEvent('click');
+  await button(page.locator('#settings-shell').getByRole('navigation'), '账号与余额').click();
   const form = page.locator('#deepseek-account-form');
   await form.getByText('Platform Fixture', { exact: true }).waitFor();
   return form;

@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, realpath, lstat, readlink, rename, rmdir, symlink, unlink } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolvePresetPackages } from './agent-preset-packages.mjs';
 
 const bundleName = '@kense-labs/kwork-agent-presets';
@@ -63,6 +63,9 @@ const modelRows = ['tool-plugin-manager', 'tool-bash', 'tool-pwsh', 'tool-jobs',
   'tool-working-directory', 'tool-agent-team'];
 
 export async function prepareAgentPresetProfile({ service, home, terminalRuntime }) {
+  // Rust's Windows canonicalize returns verbatim paths. Node's package search
+  // expects regular drive or UNC paths when walking an ancestor hierarchy.
+  service = fileURLToPath(pathToFileURL(service));
   const packaged = await assets();
   const anchor = join(service, 'apps/cli/package.json');
   const require = createRequire(anchor);

@@ -1,7 +1,10 @@
-/** Private stdin/stdout bridge for KWork's owned account-page child window. */
+/** Private transport for KWork's owned account-page child window. */
 import { app, BrowserWindow, ipcMain } from 'electron'
+import { once } from 'node:events'
+import { createConnection } from 'node:net'
 import { createInterface } from 'node:readline'
 import { isAbsolute, join } from 'node:path'
+import type { Writable } from 'node:stream'
 import { DesktopPlatformView, PLATFORM_IPC } from './vendor/platform-view.ts'
 import type { PlatformLocale } from './vendor/platform-ipc.ts'
 import type { PlatformSession } from './vendor/types.ts'
@@ -11,7 +14,9 @@ function argument(name: string): string | undefined {
 }
 const directory = argument('--kwork-platform-data')
 const version = argument('--kwork-client-version')
+const pipePath = argument('--kwork-platform-pipe')
 if (!directory || !isAbsolute(directory) || !version) process.exit(2)
+if (process.platform === 'win32' && !pipePath?.startsWith('\\\\.\\pipe\\kwork-account-')) process.exit(2)
 app.setPath('userData', directory)
 process.env.DSH_CLIENT_VERSION = version
 app.enableSandbox()
@@ -20,7 +25,8 @@ app.on('window-all-closed', () => {})
 
 type Request = { id: number; action: string; account?: PlatformSession; page?: 'usage' | 'top-up';
   locale?: PlatformLocale; width?: number; height?: number }
-function send(message: object): void { process.stdout.write(`${JSON.stringify(message)}\n`) }
+let output: Writable
+function send(message: object): void { output.write(`${JSON.stringify(message)}\n`) }
 let closing = false
 let locale: PlatformLocale = 'zh_CN'
 let owner: BrowserWindow | undefined
@@ -38,10 +44,16 @@ async function close(id?: number): Promise<void> {
   try { await current?.dispose() } catch { ok = false }
   owner?.destroy()
   if (id !== undefined) send({ id, ok })
-  process.stdout.write('', () => app.exit(ok ? 0 : 1))
+  output.write('', () => app.exit(ok ? 0 : 1))
 }
 
 async function run(): Promise<void> {
+const pipe = pipePath ? createConnection(pipePath) : undefined
+if (pipe) {
+  await once(pipe, 'connect')
+  pipe.on('error', () => { void close() })
+}
+output = pipe ?? process.stdout
 await app.whenReady()
 owner = new BrowserWindow({ width: 1, height: 1, show: false, frame: false, skipTaskbar: true,
   useContentSize: true, backgroundColor: '#ffffff',
@@ -111,7 +123,7 @@ async function handle(request: Request): Promise<void> {
 // The HWND is only for the trusted host's SetParent/SetWindowPos calls. No
 // credentials are written to arguments, temporary files, or diagnostic output.
 send({ event: 'ready', pid: process.pid, handle: owner.getNativeWindowHandle().toString('hex') })
-const input = createInterface({ input: process.stdin, crlfDelay: Infinity })
+const input = createInterface({ input: pipe ?? process.stdin, crlfDelay: Infinity })
 input.on('line', line => {
   try { void handle(JSON.parse(line)).catch(() => { void close() }) }
   catch { void close() }

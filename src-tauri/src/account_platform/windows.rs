@@ -2,16 +2,21 @@
 
 use super::{Bounds, Page, PlatformGrant};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, path::PathBuf, process::Stdio, time::Duration};
+use std::{
+    collections::BTreeMap, os::windows::io::AsRawHandle, path::PathBuf, process::Stdio,
+    time::Duration,
+};
 use tauri::{Manager, Runtime, Webview};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStdin, Command},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, WriteHalf},
+    net::windows::named_pipe::{NamedPipeServer, ServerOptions},
+    process::{Child, Command},
     sync::oneshot,
     time::timeout,
 };
 use windows::Win32::{
-    Foundation::HWND,
+    Foundation::{HANDLE, HWND},
+    System::Pipes::GetNamedPipeClientProcessId,
     UI::WindowsAndMessaging::{
         GWL_STYLE, GetParent, GetWindowLongPtrW, GetWindowThreadProcessId, HWND_TOP,
         SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetParent,
@@ -26,7 +31,7 @@ const CLOSE_ID: u64 = 2;
 
 pub(super) struct PlatformView {
     child: Child,
-    input: ChildStdin,
+    input: WriteHalf<NamedPipeServer>,
     handle: usize,
     pid: u32,
     _temporary: Option<tempfile::TempDir>,
@@ -92,9 +97,16 @@ impl PlatformView {
         std::fs::create_dir_all(&directory).map_err(|_| "未能创建独立的平台页面存储。")?;
         let mut data_arg = std::ffi::OsString::from("--kwork-platform-data=");
         data_arg.push(&directory);
+        let pipe_path = format!(r"\\.\pipe\kwork-account-{}", uuid::Uuid::new_v4());
+        let pipe = ServerOptions::new()
+            .first_pipe_instance(true)
+            .reject_remote_clients(true)
+            .create(&pipe_path)
+            .map_err(|_| "无法创建平台页面的通信通道。")?;
         let mut child = Command::new(executable)
             .arg(entry)
             .arg(data_arg)
+            .arg(format!("--kwork-platform-pipe={pipe_path}"))
             .arg(concat!(
                 "--kwork-client-version=",
                 env!("CARGO_PKG_VERSION")
@@ -103,15 +115,28 @@ impl PlatformView {
             .env_remove("ELECTRON_RUN_AS_NODE")
             .env_remove("ELECTRON_ENABLE_LOGGING")
             .env_remove("NODE_OPTIONS")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
             .map_err(|_| "无法启动用量与充值组件。")?;
         let pid = child.id().ok_or("无法验证用量与充值组件进程。")?;
-        let input = child.stdin.take().ok_or("无法连接用量与充值组件。")?;
-        let output = child.stdout.take().ok_or("无法读取用量与充值组件。")?;
+        tokio::select! {
+            connected = timeout(WAIT, pipe.connect()) => {
+                connected.map_err(|_| "连接用量与充值组件超时。")?
+                    .map_err(|_| "无法连接用量与充值组件。")?;
+            }
+            _ = child.wait() => return Err("用量与充值组件提前关闭。".into()),
+        }
+        let mut peer = 0;
+        // SAFETY: this is the connected server handle and peer outlives the call.
+        let peer_result =
+            unsafe { GetNamedPipeClientProcessId(HANDLE(pipe.as_raw_handle()), &mut peer) };
+        if peer_result.is_err() || peer != pid {
+            return Err("无法验证用量与充值组件的连接。".into());
+        }
+        let (output, input) = tokio::io::split(pipe);
         let mut lines = BufReader::new(output).lines();
         let (ready, receive) = oneshot::channel();
         tauri::async_runtime::spawn(async move {
