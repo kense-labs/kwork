@@ -7,6 +7,7 @@ import { MarkdownDelegateProvider } from './vendor/harness-primitives/markdown/M
 import { stageCanvasOverlay } from './document-html.js';
 import { trajectoryFileDrag } from './trajectory-output';
 import { markdownMenuBindings, prepareMarkdownMenu, retainMarkdownMenu } from './chat-context-menu';
+import { useMarkdownFileImages } from './chat-file-images';
 import './chat-markdown.css';
 
 type Rect = [number, number, number, number];
@@ -50,6 +51,7 @@ export function beginChatMarkdownFrames() {
   });
 }
 function Body({ source }: { source: Source }) {
+  const fileImages = useMarkdownFileImages(source.session,source.text,source.streaming,source.images);
   const delegate = useMemo(() => {
     const getTriggerProps = markdownMenuBindings(source.session);
     const openFile = (path: string, options?: { line?: number }) => send(source.session, 'file', { path, ...options });
@@ -64,11 +66,11 @@ function Body({ source }: { source: Source }) {
     return { openFile, fileMentions, getTriggerProps,
       openExternalLink: (url: string) => send(source.session, 'url', { url }),
       pathImages: { resolve: (value: string) => source.images.find(image => image.authored === value)?.url },
-      fileImages: { resolve: (path: string) => source.images.find(image => image.path === path)?.url,
+      fileImages: { resolve: (path: string) => fileImages.get(path),
         fileDrag: trajectoryFileDrag,
         labels: { dialog: '原图预览', close: '关闭原图预览', open: '查看原图', loading: '图片加载中…', failed: '图片加载失败' } },
     };
-  }, [source.session, source.workspace, source.mentions, source.images]);
+  }, [source.session, source.workspace, source.mentions, source.images, fileImages]);
   return <MarkdownDelegateProvider {...delegate}>
     <MarkdownText text={source.text} streaming={source.streaming} labels={labels}
       fileMentions={delegate.fileMentions} pathImages={delegate.pathImages}

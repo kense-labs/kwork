@@ -74,6 +74,49 @@ export async function runChatMarkdownCase(page, artifacts, sessionId) {
   await writeFile(join(artifacts,'markdown-geometry.json'),JSON.stringify({initial,geometry,code,sessionId},null,2));
   await verifyStreamingAdapter(page, artifacts);
   await verifyContextMenus(page, artifacts);
+  await verifyImagePreviews(page, artifacts);
+}
+
+async function verifyImagePreviews(page, artifacts) {
+  const test=await page.context().browser().newPage({viewport:{width:1100,height:900}});
+  try {
+    await test.route('**/markdown-image-test',route=>route.fulfill({contentType:'text/html',headers:{'Content-Security-Policy':nativeCsp},body:'<!doctype html><link rel="stylesheet" href="/trajectory-json.css"><body></body>'}));
+    await test.goto(new URL('/markdown-image-test',page.url()).href);
+    await test.evaluate(async bytes=>{
+      window.__imageCalls=[];window.__imageCreated=[];window.__imageRevoked=[];
+      const create=URL.createObjectURL.bind(URL),revoke=URL.revokeObjectURL.bind(URL);
+      URL.createObjectURL=blob=>{const url=create(blob);window.__imageCreated.push(url);return url;};
+      URL.revokeObjectURL=url=>{window.__imageRevoked.push(url);revoke(url);};
+      window.__TAURI__={core:{invoke:async(name,args)=>{
+        window.__imageCalls.push({name,args});
+        if(name==='resolve_session_document')return{path:'/live/'+args.path,cwd:'/live'};
+        if(name==='document_file'){
+          if(args.path.includes('late.png'))await new Promise(resolve=>window.__finishImageRead=resolve);
+          return{absolutePath:args.path,data:bytes};
+        }
+      }}};
+      const adapter=await import('/trajectory-json.js');adapter.listenTrajectoryJson(()=>{});
+      window.__imageRender=(session,text)=>{
+        const source={session,text,streaming:false,compact:false,mentions:[],images:[]};
+        const height=adapter.measureChatMarkdown('image-files',JSON.stringify(source),600,true);
+        adapter.stageChatMarkdown('image-files',[30,30,630,30+height],[0,0,1100,900],false);
+      };
+      window.__imageRender('image-session','[图片文件](preview-only.png)\n\n![相对图片](nested/picture.png)');
+    },[...await readFile(new URL('../src-tauri/icons/64x64.png',import.meta.url))]);
+    await test.waitForFunction(()=>document.querySelector('[data-chat-markdown] img')?.naturalWidth===64);
+    await test.getByRole('button',{name:'图片文件',exact:true}).focus();
+    const preview=test.getByRole('img',{name:'preview-only.png',exact:true});
+    await preview.waitFor();
+    await test.waitForFunction(()=>[...document.images].some(image=>image.alt==='preview-only.png'&&image.naturalWidth===64));
+    await test.screenshot({path:join(artifacts,'markdown-image-file-hover.png')});
+    assert.ok((await test.evaluate(()=>window.__imageCalls)).some(call=>call.name==='document_file'&&call.args.path==='/live/nested/picture.png'));
+    await test.evaluate(()=>window.__imageRender('late-session','[延迟图片](late.png)'));
+    await test.waitForFunction(()=>!!window.__finishImageRead);
+    await test.evaluate(()=>{window.__imageRender('new-session','新会话');window.__finishImageRead();});
+    await test.waitForFunction(()=>window.__imageCreated.length===window.__imageRevoked.length);
+    assert.equal(await test.locator('img').count(),0,'late old-session image is discarded and object URLs are released');
+    await writeFile(join(artifacts,'markdown-image-file-reads.json'),JSON.stringify(await test.evaluate(()=>window.__imageCalls),null,2));
+  } finally {await test.close();}
 }
 
 async function verifyMenuDockNavigation(page, body, artifacts) {

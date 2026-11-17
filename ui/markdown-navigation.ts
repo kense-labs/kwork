@@ -1,3 +1,4 @@
+import { parseGfmWithMath } from './vendor/harness-primitives/markdown/parse';
 /** Markdown destinations use the same parser and URL policy as Harness 39163dd. */
 import { normalizeUri } from 'micromark-util-sanitize-uri';
 import { isExplicitFilePath, parseFileLink } from './vendor/harness-primitives/markdown/file-link';
@@ -31,4 +32,23 @@ export function markdownDestination(value: string): { path: string; line?: numbe
     if (['javascript:', 'vbscript:', 'data:', 'blob:'].includes(new URL(url).protocol)) return undefined;
     return { url };
   } catch { return undefined; }
+}
+
+/** Use the rendering grammar, including reference links, without scanning code fences. */
+export function markdownImagePaths(text: string): string[] {
+  const tree = parseGfmWithMath(text);
+  const definitions = new Map<string, string>();
+  const walk = (node: any, visit: (node: any) => void) => {
+    visit(node); for (const child of node.children ?? []) walk(child, visit);
+  };
+  walk(tree, node => { if (node.type === 'definition') definitions.set(node.identifier.toUpperCase(), node.url); });
+  const paths = new Set<string>();
+  walk(tree, node => {
+    const image = node.type === 'image' || node.type === 'imageReference';
+    if (!image && node.type !== 'link' && node.type !== 'linkReference') return;
+    const url = node.url ?? definitions.get(node.identifier?.toUpperCase());
+    const file = typeof url === 'string' ? parseFileLink(url) : undefined;
+    if (file && (image || classifyLinkPath(file.path) === 'image')) paths.add(file.path);
+  });
+  return [...paths];
 }
