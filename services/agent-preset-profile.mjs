@@ -1,8 +1,8 @@
 /** Install the official preset plane as an owned, atomic ACP profile bundle. */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, realpath, lstat, readlink, rename, rm, symlink } from 'node:fs/promises';
+import { mkdir, readFile, realpath, lstat, readlink, rename, rmdir, symlink, unlink } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { resolvePresetPackages } from './agent-preset-packages.mjs';
 
@@ -11,6 +11,37 @@ const acpName = '@kense-labs/kwork-acp';
 const marker = 'agent-presets-v1';
 const hash = value => createHash('sha256').update(value).digest('hex');
 const asUrl = path => pathToFileURL(path).href;
+const onWindows = process.platform === 'win32';
+const linkDirectory = (source, link) => symlink(source, link, onWindows ? 'junction' : 'dir');
+const removeDirectoryLink = onWindows ? rmdir : unlink;
+
+async function publishGeneration(link, generation, ownedRoot) {
+  let previous;
+  try {
+    if (!(await lstat(link)).isSymbolicLink()) throw Error('Agent 预设包路径已被其他配置使用，未覆盖。');
+    previous = resolve(dirname(link), await readlink(link));
+    const inside = relative(ownedRoot, previous);
+    if (!inside || inside === '..' || inside.startsWith('..' + sep) || isAbsolute(inside)) {
+      throw Error('Agent 预设包路径已被其他配置使用，未覆盖。');
+    }
+    if (relative(generation, previous) === '') return;
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const temporary = link + '.' + randomUUID();
+  await linkDirectory(generation, temporary);
+  try {
+    if (onWindows && previous) {
+      // Win32 rename cannot replace a junction. Retain the old link until the
+      // staged generation has been published under the profile write lock.
+      const backup = temporary + '.previous';
+      await rename(link, backup);
+      try { await rename(temporary, link); }
+      catch (error) { await rename(backup, link); throw error; }
+      await removeDirectoryLink(backup);
+    } else await rename(temporary, link);
+  } finally {
+    await removeDirectoryLink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; });
+  }
+}
 
 async function assets() {
   if (typeof bundledPresetAssets !== 'undefined') return bundledPresetAssets;
@@ -88,9 +119,9 @@ export async function prepareAgentPresetProfile({ service, home, terminalRuntime
     for (const [name, source] of bindings) {
       const link = join(generation, 'node_modules', name);
       await mkdir(dirname(link), { recursive: true });
-      try { await symlink(source.dir, link, 'dir'); }
+      try { await linkDirectory(source.dir, link); }
       catch (error) {
-        if (error.code !== 'EEXIST' || await realpath(link) !== source.dir) throw error;
+        if (error.code !== 'EEXIST' || relative(await realpath(link), source.dir) !== '') throw error;
       }
     }
     await writeFileAtomic(join(replacement, 'index.mjs'), packaged.acp, { mode: 0o600 });
@@ -107,15 +138,7 @@ export async function prepareAgentPresetProfile({ service, home, terminalRuntime
       dsh: { bundle: { patch: './cordis.patch.yml' } } }), { mode: 0o600 });
     const link = join(profile.dir, 'node_modules', bundleName);
     await mkdir(dirname(link), { recursive: true });
-    try {
-      const existing = await lstat(link);
-      if (!existing.isSymbolicLink() || !(await readlink(link)).startsWith(ownedRoot + '/')) {
-        throw Error('Agent 预设包路径已被其他配置使用，未覆盖。');
-      }
-    } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    const temporary = link + '.' + randomUUID();
-    await symlink(generation, temporary, 'dir');
-    try { await rename(temporary, link); } finally { await rm(temporary, { force: true }); }
+    await publishGeneration(link, generation, ownedRoot);
     const manifest = boot.readProfileManifest('dsh', profile.dir);
     const bundles = manifest.dsh?.profile?.bundles ?? [];
     if (!bundles.includes(bundleName)) {

@@ -11,7 +11,7 @@
 import { useEffect } from 'react'
 import type { SnapshotStore } from '../harness-settings-models/snapshot-store'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { IconAgentPresetOutlineRegular } from './primitives'
+import { IconAgentPresetOutlineRegular } from '../harness-primitives/icons/index.tsx'
 // Type-only: pulls the ui-conversation SlotMap merge (the header actions).
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry/types'

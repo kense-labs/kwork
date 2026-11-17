@@ -143,6 +143,7 @@ fn start_highlight(request: HighlightRequest, cx: &mut Context<DshApp>) {
 #[derive(Default)]
 pub(super) struct Conversation {
     pub(super) acp_open: bool,
+    pub(super) has_agent_preset: bool,
     next_local_id: u64,
     pub(super) draft: String,
     pub(super) draft_workspace: Option<String>,

@@ -90,16 +90,39 @@ impl Task {
     rename_all_fields = "camelCase"
 )]
 enum Target {
-    Session { session_id: String },
-    NewOnce { session_id: String },
-    New,
+    Session {
+        session_id: String,
+    },
+    NewOnce {
+        session_id: String,
+        #[serde(default)]
+        create: CreateTarget,
+    },
+    New {
+        #[serde(default)]
+        create: CreateTarget,
+    },
+}
+
+#[derive(Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateTarget {
+    cwd: Option<String>,
+    agent_preset: Option<String>,
 }
 
 impl Target {
     fn session_id(&self) -> Option<&str> {
         match self {
-            Self::Session { session_id } | Self::NewOnce { session_id } => Some(session_id),
-            Self::New => None,
+            Self::Session { session_id } | Self::NewOnce { session_id, .. } => Some(session_id),
+            Self::New { .. } => None,
+        }
+    }
+
+    fn create(&self) -> Option<&CreateTarget> {
+        match self {
+            Self::NewOnce { create, .. } | Self::New { create } => Some(create),
+            Self::Session { .. } => None,
         }
     }
 }
@@ -320,7 +343,14 @@ impl Draft {
                 json!({"kind":"session","sessionId":self.session.as_ref().ok_or("请选择投递会话。")?})
             }
             destination => {
-                json!({"kind":if destination == Destination::New {"new"} else {"new_once"},"create":{"cwd":cwd}})
+                let mut create = json!({"cwd":cwd});
+                if let Some(previous) = self.original.as_ref().and_then(|task| task.target.create())
+                    && previous.cwd.as_deref().unwrap_or("") == cwd
+                    && let Some(preset) = &previous.agent_preset
+                {
+                    create["agentPreset"] = json!(preset);
+                }
+                json!({"kind":if destination == Destination::New {"new"} else {"new_once"},"create":create})
             }
         };
         let Some(task) = &self.original else {
@@ -350,9 +380,8 @@ impl Draft {
             (Target::Session { session_id }, Destination::Session) => {
                 self.session.as_ref() != Some(session_id)
             }
-            (Target::NewOnce { .. }, Destination::NewOnce) | (Target::New, Destination::New) => {
-                false
-            }
+            (Target::NewOnce { .. }, Destination::NewOnce)
+            | (Target::New { .. }, Destination::New) => false,
             _ => true,
         };
         if target_changed {
@@ -484,7 +513,7 @@ impl DshApp {
         let destination = match original.as_ref().map(|task| &task.target) {
             Some(Target::Session { .. }) => Destination::Session,
             Some(Target::NewOnce { .. }) => Destination::NewOnce,
-            Some(Target::New) => Destination::New,
+            Some(Target::New { .. }) => Destination::New,
             None if can_create_session => Destination::NewOnce,
             None => Destination::Session,
         };
@@ -1507,7 +1536,7 @@ impl DshApp {
         body.child(match &task.target {
             Target::Session { session_id } => self.automation_session_link(session_id, cx),
             Target::NewOnce { .. } => note("首次运行时创建会话，后续继续使用该会话。", cx),
-            Target::New => note("每次运行时创建新会话。", cx),
+            Target::New { .. } => note("每次运行时创建新会话。", cx),
         })
     }
 

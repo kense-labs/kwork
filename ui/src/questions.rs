@@ -1,14 +1,16 @@
-//! Draft and countdown state for the Harness question composer.
+//! Host question payloads and countdown state for the Harness composer.
 
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Question {
     pub(crate) id: String,
     pub(crate) question: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) header: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) detail: Option<String>,
     #[serde(default)]
     pub(crate) options: Vec<Choice>,
@@ -16,99 +18,11 @@ pub(crate) struct Question {
     pub(crate) multi_select: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 pub(crate) struct Choice {
     pub(crate) label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) description: Option<String>,
-}
-
-impl Choice {
-    pub(crate) fn display(&self) -> (&str, bool) {
-        let trimmed = self.label.trim_end();
-        let suffix = trimmed
-            .strip_suffix(')')
-            .and_then(|text| text.rsplit_once('('))
-            .or_else(|| {
-                trimmed
-                    .strip_suffix('）')
-                    .and_then(|text| text.rsplit_once('（'))
-            });
-        if let Some((label, marker)) = suffix
-            && (marker.eq_ignore_ascii_case("recommended") || marker == "推荐")
-        {
-            return (label.trim_end(), true);
-        }
-        (&self.label, false)
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct Draft {
-    pub(crate) selected: Vec<String>,
-    pub(crate) custom: String,
-    pub(crate) skipped: bool,
-}
-
-impl Draft {
-    pub(crate) fn new(question: &Question) -> Self {
-        let choices = if question.multi_select {
-            question.options.len()
-        } else {
-            1
-        };
-        let selected = question
-            .options
-            .iter()
-            .take(choices)
-            .filter(|choice| choice.display().1)
-            .map(|choice| choice.label.clone())
-            .collect();
-        Self {
-            selected,
-            ..Self::default()
-        }
-    }
-
-    pub(crate) fn choose(&mut self, label: String, multi_select: bool) {
-        self.skipped = false;
-        if multi_select {
-            if let Some(index) = self.selected.iter().position(|choice| *choice == label) {
-                self.selected.remove(index);
-            } else {
-                self.selected.push(label);
-            }
-        } else {
-            self.selected = vec![label];
-            self.custom.clear();
-        }
-    }
-
-    pub(crate) fn type_answer(&mut self, text: String, multi_select: bool) {
-        if !multi_select {
-            self.selected.clear();
-        }
-        self.custom = text;
-        self.skipped = false;
-    }
-
-    pub(crate) fn skip(&mut self) {
-        *self = Self {
-            skipped: true,
-            ..Self::default()
-        };
-    }
-
-    pub(crate) fn answered(&self) -> bool {
-        !self.selected.is_empty() || !self.custom.trim().is_empty()
-    }
-
-    pub(crate) fn payload(&self, question: &Question) -> Value {
-        let mut answer = json!({"id": question.id, "selected": self.selected});
-        if !self.skipped && !self.custom.trim().is_empty() {
-            answer["custom"] = self.custom.trim().into();
-        }
-        answer
-    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -143,36 +57,6 @@ impl Clock {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn recommended_display_preserves_the_labels_sent_to_the_host() {
-        let mut question: Question = serde_json::from_value(json!({
-            "id":"one","question":"Where?",
-            "options":[{"label":"Local （推荐）"},{"label":"Remote (RECOMMENDED)"}]
-        }))
-        .unwrap();
-        let mut draft = Draft::new(&question);
-        assert_eq!(question.options[0].display(), ("Local", true));
-        assert_eq!(
-            draft.payload(&question),
-            json!({"id":"one","selected":["Local （推荐）"]})
-        );
-        draft.type_answer(" manual ".into(), false);
-        assert_eq!(
-            draft.payload(&question),
-            json!({"id":"one","selected":[],"custom":"manual"})
-        );
-        question.multi_select = true;
-        let mut draft = Draft::new(&question);
-        draft.type_answer("also this".into(), true);
-        draft.choose(question.options[0].label.clone(), true);
-        assert_eq!(
-            draft.payload(&question),
-            json!({"id":"one","selected":["Remote (RECOMMENDED)"],"custom":"also this"})
-        );
-        draft.skip();
-        assert_eq!(draft.payload(&question), json!({"id":"one","selected":[]}));
-    }
 
     #[test]
     fn focus_holds_remaining_time_and_release_resumes_it() {

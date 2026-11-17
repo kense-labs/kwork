@@ -1,41 +1,6 @@
 //! Assistant 消息 Markdown 投影，对齐官方 ui-chat / ui-primitives 的常见块级与行内形态。
 //! 覆盖：标题、段落、引用、分隔线、列表、表格、代码块、图片占位、粗体/行内代码/链接。
 
-use std::ops::Range;
-
-/// Byte ranges of the leading YAML and the Markdown body after its closing line.
-pub(crate) fn frontmatter_bounds(text: &str) -> Option<(Range<usize>, usize)> {
-    let (opening, remainder) = text.split_once('\n')?;
-    let opening = opening.strip_prefix('\u{feff}').unwrap_or(opening);
-    if marker(opening, true) != "---" {
-        return None;
-    }
-    let start = text.len() - remainder.len();
-    let mut offset = 0;
-    for line in remainder.split_inclusive('\n') {
-        let bare = line.strip_suffix('\n').unwrap_or(line);
-        if matches!(marker(bare, bare.len() != line.len()), "---" | "...") {
-            let source = &remainder[..offset];
-            let source = source
-                .strip_suffix("\r\n")
-                .or_else(|| source.strip_suffix('\n'))
-                .unwrap_or(source);
-            return Some((start..start + source.len(), start + offset + line.len()));
-        }
-        offset += line.len();
-    }
-    None
-}
-
-fn marker(line: &str, terminated: bool) -> &str {
-    let line = if terminated {
-        line.strip_suffix('\r').unwrap_or(line)
-    } else {
-        line
-    };
-    line.trim_end_matches([' ', '\t'])
-}
-
 /// One block-level markdown element.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Block {
@@ -807,8 +772,8 @@ pub(crate) fn code_spans(code: &str, lang: &str) -> Vec<CodeSpan> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Block, CodeToken, InlinePart, code_spans, frontmatter_bounds, image_destinations,
-        inline_parts, inline_parts_settled, parse_markdown, parse_markdown_settled,
+        Block, CodeToken, InlinePart, code_spans, image_destinations, inline_parts,
+        inline_parts_settled, parse_markdown, parse_markdown_settled,
     };
 
     #[test]
@@ -929,34 +894,6 @@ mod tests {
                 .collect();
             assert_eq!(joined, text, "{text:?} round-trips as plain text");
         }
-    }
-
-    #[test]
-    fn frontmatter_delimiters_must_start_the_document_and_close_on_a_full_line() {
-        for text in [
-            "\n---\nkey: value\n---",
-            " ---\n---",
-            "---\nkey: value",
-            "---\r\nkey: value\r\n---\r",
-        ] {
-            assert_eq!(frontmatter_bounds(text), None, "{text:?}");
-        }
-        let text = "\u{feff}--- \t\r\n中文: 值\r\n...\t\r\n# Body\r\n---";
-        let (yaml, body) = frontmatter_bounds(text).unwrap();
-        assert_eq!(&text[yaml], "中文: 值");
-        assert_eq!(&text[body..], "# Body\r\n---");
-    }
-
-    #[test]
-    fn frontmatter_accepts_empty_yaml_and_a_closer_at_a_page_boundary() {
-        let page = "---\n--- \t";
-        let (yaml, body) = frontmatter_bounds(page).unwrap();
-        assert!(yaml.is_empty());
-        assert_eq!(body, page.len());
-        let complete = format!("{page}\n# Body");
-        let (appended_yaml, appended_body) = frontmatter_bounds(&complete).unwrap();
-        assert_eq!(appended_yaml, yaml);
-        assert_eq!(&complete[appended_body..], "# Body");
     }
 
     #[test]

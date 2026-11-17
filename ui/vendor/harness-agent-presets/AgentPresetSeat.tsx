@@ -16,8 +16,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ObservableSnapshot, SnapshotStore } from '../harness-settings-models/snapshot-store'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import {
-  IconAgentPresetOutlineRegular, IconChevronDownOutlineRegular, IconWarningOutlineRegular, Menu, Toast,
-} from './primitives'
+  IconAgentPresetOutlineRegular, IconChevronDownOutlineRegular, IconWarningOutlineRegular,
+} from '../harness-primitives/icons/index.tsx'
+import { Menu } from '../harness-primitives/Menu.tsx'
+import { Toast } from '../harness-primitives/Toast.tsx'
 // Type-only: pulls the ui-conversation SlotMap merge (the hero seat).
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { AgentPresetSeatState } from './seat-store.ts'

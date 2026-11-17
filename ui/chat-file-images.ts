@@ -6,9 +6,16 @@ import { invokeFileAction } from './native-file-actions';
 
 export function useMarkdownFileImages(session: string, text: string, streaming: boolean,
   seeds: readonly {path:string;url:string}[]): ReadonlyMap<string,string> {
-  const state = useMemo(() => ({urls:new Map<string,string>(), owned:new Set<string>(), failed:new Set<string>()}), [session]);
-  const [, changed] = useState(0);
   const paths = useMemo(() => streaming ? [] : markdownImagePaths(text), [text,streaming]);
+  const resolve = useMemo(() => async (path: string) =>
+    (await invokeFileAction('resolve_session_document', { sessionId: session, path })).path as string, [session]);
+  return useLocalMarkdownImages(paths, resolve, seeds);
+}
+
+export function useLocalMarkdownImages(paths: readonly string[], resolve: (path: string) => string | Promise<string>,
+  seeds: readonly {path:string;url:string}[] = []): ReadonlyMap<string,string> {
+  const state = useMemo(() => ({urls:new Map<string,string>(), owned:new Set<string>(), failed:new Set<string>()}), [resolve]);
+  const [, changed] = useState(0);
   // A canonical signature avoids restarting reads when a stream only appends prose.
   const signature = JSON.stringify(paths);
   const seeded = new Map(seeds.map(image => [image.path,image.url]));
@@ -20,9 +27,9 @@ export function useMarkdownFileImages(session: string, text: string, streaming: 
       while (pending.length && !lifetime.signal.aborted) {
         const path = pending.shift()!;
         try {
-          const resolved = await invokeFileAction('resolve_session_document', {sessionId:session,path});
+          const absolutePath = await resolve(path);
           if (lifetime.signal.aborted) return;
-          const result = await invokeFileAction('document_file', {path:resolved.path,read:true});
+          const result = await invokeFileAction('document_file', {path:absolutePath,read:true});
           if (lifetime.signal.aborted) return;
           const url = URL.createObjectURL(new Blob([new Uint8Array(result.data)], {type:mime.getType(path) ?? ''}));
           state.owned.add(url);state.urls.set(path,url);changed(value=>value+1);
@@ -31,9 +38,10 @@ export function useMarkdownFileImages(session: string, text: string, streaming: 
         }
       }
     };
-    for (let index=0;index<Math.min(4,pending.length);index++) void read();
+    const workers = Math.min(4, pending.length);
+    for (let index=0;index<workers;index++) void read();
     return () => lifetime.abort();
-  }, [state,session,signature,seedSignature]);
+  }, [state,resolve,signature,seedSignature]);
   useEffect(() => () => {
     for (const url of state.owned) URL.revokeObjectURL(url);
     state.owned.clear();state.urls.clear();state.failed.clear();

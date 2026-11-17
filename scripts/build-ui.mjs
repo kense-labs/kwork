@@ -312,7 +312,7 @@ try {
   const { outputFiles, metafile: preview } = await build({
     absWorkingDir: root,
     entryPoints: [
-      'ui/document-highlight.js', 'ui/document-frontmatter.js',
+      'ui/document-highlight.js',
       'ui/document-math.js',
       'ui/document-fonts.js', 'ui/document-fonts-worker.js',
       'ui/document-html.js', 'ui/session-metadata-search.ts',

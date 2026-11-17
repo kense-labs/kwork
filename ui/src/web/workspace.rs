@@ -136,11 +136,11 @@ impl DshApp {
                                 .map(|card| card.into_any_element())
                                 .unwrap_or_else(|| div().into_any_element())
                         } else if plan {
-                            self.render_plan_review(self.composer_width(w), w, cx)
+                            self.render_plan_review(self.composer_width(w), cx)
                                 .map(|card| card.into_any_element())
                                 .unwrap_or_else(|| div().into_any_element())
                         } else if question {
-                            self.render_questions(self.composer_width(w), w, cx)
+                            self.render_questions(self.composer_width(w), cx)
                                 .map(|card| card.into_any_element())
                                 .unwrap_or_else(|| div().into_any_element())
                         } else {
@@ -163,9 +163,9 @@ impl DshApp {
                         main = if approval {
                             main.children(self.render_permission(w, cx))
                         } else if plan {
-                            main.children(self.render_plan_review(self.composer_width(w), w, cx))
+                            main.children(self.render_plan_review(self.composer_width(w), cx))
                         } else if question {
-                            main.children(self.render_questions(self.composer_width(w), w, cx))
+                            main.children(self.render_questions(self.composer_width(w), cx))
                         } else {
                             let settling = self.conversation_is_settling();
                             main.child(
@@ -1890,7 +1890,9 @@ impl DshApp {
                             }),
                     )
                     .when(!blank && self.active_session.is_some(), |element| {
-                        element.child(self.render_conversation_header_actions(cx))
+                        element
+                            .children(self.agent_preset_anchor(false, cx))
+                            .child(self.render_conversation_header_actions(cx))
                     })
                     .when(corner, |element| {
                         element.child(self.render_start_panel_toggle(false, cx))
@@ -2154,53 +2156,59 @@ impl DshApp {
                             .mt(px(4.))
                             .gap(px(HERO_COMPOSER_GAP))
                             .child(
-                                row().w_full().pl(px(20.)).pr(px(16.)).gap(px(4.)).child(
-                                    row()
-                                        .relative()
-                                        .min_w_0()
-                                        .max_w(px(360.))
-                                        .child(dock_action_button(
-                                            row()
-                                                .id("hero-workspace")
-                                                .role(gpui::Role::Button)
-                                                .aria_expanded(self.show_workspace_menu)
-                                                .tab_index(0)
-                                                .h(px(HERO_WORKSPACE_HEIGHT))
-                                                .min_w_0()
-                                                .px(px(8.))
-                                                .gap(px(4.))
-                                                .rounded(px(8.))
-                                                .cursor_pointer()
-                                                .when(self.show_workspace_menu, |element| {
-                                                    element.bg(p.hover)
-                                                })
-                                                .hover(|style| style.bg(p.hover))
-                                                .child(icon(Glyph::Folder, 16., p.ink))
-                                                .child(
-                                                    div()
-                                                        .min_w_0()
-                                                        .truncate()
-                                                        .text_size(px(13.))
-                                                        .line_height(px(20.))
-                                                        .font_weight(FontWeight::MEDIUM)
-                                                        .child(workspace_label),
-                                                )
-                                                .child(icon(Glyph::Down, 12., p.faint)),
-                                            cx.listener(|this, _, _, cx| {
-                                                if this.workspace_registry.is_empty() {
-                                                    this.request_workspace_picker();
-                                                } else {
-                                                    this.show_workspace_menu =
-                                                        !this.show_workspace_menu;
-                                                }
-                                                this.composer_menu = None;
-                                                cx.notify();
+                                row()
+                                    .w_full()
+                                    .pl(px(20.))
+                                    .pr(px(16.))
+                                    .gap(px(4.))
+                                    .child(
+                                        row()
+                                            .relative()
+                                            .min_w_0()
+                                            .max_w(px(360.))
+                                            .child(dock_action_button(
+                                                row()
+                                                    .id("hero-workspace")
+                                                    .role(gpui::Role::Button)
+                                                    .aria_expanded(self.show_workspace_menu)
+                                                    .tab_index(0)
+                                                    .h(px(HERO_WORKSPACE_HEIGHT))
+                                                    .min_w_0()
+                                                    .px(px(8.))
+                                                    .gap(px(4.))
+                                                    .rounded(px(8.))
+                                                    .cursor_pointer()
+                                                    .when(self.show_workspace_menu, |element| {
+                                                        element.bg(p.hover)
+                                                    })
+                                                    .hover(|style| style.bg(p.hover))
+                                                    .child(icon(Glyph::Folder, 16., p.ink))
+                                                    .child(
+                                                        div()
+                                                            .min_w_0()
+                                                            .truncate()
+                                                            .text_size(px(13.))
+                                                            .line_height(px(20.))
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .child(workspace_label),
+                                                    )
+                                                    .child(icon(Glyph::Down, 12., p.faint)),
+                                                cx.listener(|this, _, _, cx| {
+                                                    if this.workspace_registry.is_empty() {
+                                                        this.request_workspace_picker();
+                                                    } else {
+                                                        this.show_workspace_menu =
+                                                            !this.show_workspace_menu;
+                                                    }
+                                                    this.composer_menu = None;
+                                                    cx.notify();
+                                                }),
+                                            ))
+                                            .when(self.show_workspace_menu, |anchor| {
+                                                anchor.child(self.render_hero_workspace_menu(cx))
                                             }),
-                                        ))
-                                        .when(self.show_workspace_menu, |anchor| {
-                                            anchor.child(self.render_hero_workspace_menu(cx))
-                                        }),
-                                ),
+                                    )
+                                    .children(self.agent_preset_anchor(true, cx)),
                             )
                             .child(self.render_composer(w, cx, true)),
                     ),
@@ -6190,7 +6198,9 @@ impl DshApp {
                     settings_section("内置插件", inventory, cx)
                 }
             }
-            SettingsPage::AgentPresets if bridge::is_mac() => super::settings_shell::agent_presets(),
+            SettingsPage::AgentPresets if bridge::is_mac() || bridge::is_windows() => {
+                super::settings_shell::agent_presets()
+            }
             SettingsPage::AgentPresets => settings_section(
                 "Agent 预设",
                 column()
@@ -6547,7 +6557,6 @@ fn render_entry(
 ) -> gpui::Div {
     let MarkdownOptions {
         copied_mark,
-        font_delta,
         mentions,
         cache,
         active_session,
@@ -6555,9 +6564,24 @@ fn render_entry(
     } = options;
     let p = dsh(cx);
     match entry.role {
-        EntryRole::Plan => super::plan::plan_card(entry, cx),
+        EntryRole::Plan => super::chat_markdown::entry_surface(
+            &entry.key,
+            "planCard",
+            &json!({"callId":entry.external_id, "title":entry.title}),
+            options,
+            cx,
+        ),
         EntryRole::QuestionReply => {
-            super::question_panel::render_question_reply(entry, copied_mark, font_delta, cx)
+            let mut reply = serde_json::from_str::<crate::questions::QuestionReply>(&entry.input)
+                .map(|reply| json!(reply))
+                .unwrap_or_else(|_| json!({"questions": [], "answers": []}));
+            reply["callId"] = json!(entry.external_id.as_deref().unwrap_or(&entry.key));
+            reply["outcome"] = json!("answered");
+            reply["text"] = json!(entry.text);
+            if let Some(time) = entry.at_ms {
+                reply["time"] = json!(time);
+            }
+            super::chat_markdown::entry_surface(&entry.key, "questionReply", &reply, options, cx)
         }
         EntryRole::User if entry.title == "goal" || entry.title.starts_with("trigger:") => {
             render_turn_trigger(entry, expanded, cx)

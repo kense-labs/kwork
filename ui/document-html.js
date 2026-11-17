@@ -166,11 +166,11 @@ export function coverCanvasOverlays(cover) {
 
 // React controls sit above the canvas. Cut out the actual painted menu region,
 // just as HTML previews do, instead of hiding an entire toolbar or inspector.
-export function stageCanvasOverlay(key, host, bounds) {
-  batch?.overlays.set(key, { host, bounds });
+export function stageCanvasOverlay(key, host, bounds, paneCovers, documentKey) {
+  batch?.overlays.set(key, { host, bounds, paneCovers, documentKey });
 }
 
-function clipCanvasOverlays(overlays, covers) {
+function clipCanvasOverlays(overlays, sharedCovers, overlayCovers, covers) {
   for (const [key, entry] of overlayClips) {
     if (overlays.get(key)?.host !== entry.host) {
       entry.host.style.clipPath = '';
@@ -179,8 +179,9 @@ function clipCanvasOverlays(overlays, covers) {
       overlayClips.delete(key);
     }
   }
-  for (const [key, { host, bounds }] of overlays) {
-    const intersecting = covers.filter(cover => hasArea(intersect(cover.bounds, bounds)));
+  for (const [key, { host, bounds, paneCovers, documentKey }] of overlays) {
+    const intersecting = [...sharedCovers, ...(paneCovers ?? overlayCovers), ...(covers.get(documentKey) ?? [])]
+      .filter(cover => hasArea(intersect(cover.bounds, bounds)));
     let entry = overlayClips.get(key);
     if (!intersecting.length) {
       if (entry) {
@@ -313,7 +314,7 @@ function createFrame(key, source) {
 }
 
 function commit({ visible, covers, sharedCovers, overlayCovers, overlays }) {
-  clipCanvasOverlays(overlays, [...sharedCovers, ...overlayCovers]);
+  clipCanvasOverlays(overlays, sharedCovers, overlayCovers, covers);
   for (const [key, entry] of frames) {
     if (visible.get(key)?.document !== entry.source) {
       entry.lifetime.abort();

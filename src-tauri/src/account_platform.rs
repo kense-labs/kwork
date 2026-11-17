@@ -7,18 +7,21 @@ use std::{
     collections::BTreeMap,
     sync::atomic::{AtomicU64, Ordering},
 };
-#[cfg(not(windows))]
-use tauri::webview::PageLoadEvent;
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, State, Webview, WebviewUrl,
+    AppHandle, Emitter, Manager, Runtime, State, Webview,
     http::{HeaderName, HeaderValue},
-    webview::{NewWindowResponse, PermissionResponse, WebviewBuilder},
 };
+#[cfg(not(windows))]
+use tauri::{
+    LogicalPosition, LogicalSize, WebviewUrl,
+    webview::{NewWindowResponse, PageLoadEvent, PermissionResponse, WebviewBuilder},
+};
+#[cfg(not(windows))]
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex;
 use url::{Host, Url};
 
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", test))]
 mod cookies;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -69,7 +72,7 @@ struct Visit {
     #[cfg(any(target_os = "macos", windows))]
     storage: Option<[u8; 16]>,
     #[cfg(windows)]
-    temporary_profile: Option<tempfile::TempDir>,
+    native: Option<windows::PlatformView>,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -89,6 +92,7 @@ impl Bounds {
             .ok_or_else(|| "平台页面布局无效。".into())
     }
 
+    #[cfg(not(windows))]
     fn present<R: Runtime>(self, view: &Webview<R>) -> tauri::Result<()> {
         if self.width < 1. || self.height < 1. {
             return view.hide();
@@ -186,6 +190,7 @@ fn uncredentialed(url: &Url) -> bool {
     url.username().is_empty() && url.password().is_none()
 }
 
+#[cfg(not(windows))]
 fn label(shell: u64, id: u32) -> String {
     format!("dsh-account-platform-{shell}-{id}")
 }
@@ -196,25 +201,25 @@ impl PlatformState {
             return Ok(());
         };
         #[cfg(windows)]
-        let mut cleanup = Ok(());
-        if let Some(view) = app.get_webview(&label(self.shell, visit.id)) {
-            let _ = view.hide();
-            #[cfg(windows)]
-            if visit.storage.is_some() {
-                cleanup = windows::retire(&view).await;
-            }
-            if view.close().is_err() {
-                self.active = Some(visit);
-                return Err("未能关闭平台页面。".into());
+        {
+            let _ = app;
+            if let Some(native) = visit.native {
+                native.close().await?;
             }
         }
-        #[cfg(windows)]
-        drop(visit.temporary_profile);
-        #[cfg(windows)]
-        cleanup?;
-        #[cfg(target_os = "macos")]
-        if let Some(storage) = visit.storage {
-            macos::sanitize(app, storage).await?;
+        #[cfg(not(windows))]
+        {
+            if let Some(view) = app.get_webview(&label(self.shell, visit.id)) {
+                let _ = view.hide();
+                if view.close().is_err() {
+                    self.active = Some(visit);
+                    return Err("未能关闭平台页面。".into());
+                }
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(storage) = visit.storage {
+                macos::sanitize(app, storage).await?;
+            }
         }
         Ok(())
     }
@@ -288,7 +293,7 @@ fn defer_shutdown<R: Runtime>(
                 state
                     .active
                     .as_ref()
-                    .is_none_or(|visit| visit.storage.is_none())
+                    .is_none_or(|visit| !cfg!(windows) && visit.storage.is_none())
             }) =>
         {
             return false;
@@ -379,6 +384,7 @@ pub(crate) fn process_terminated<R: Runtime>(view: &Webview<R>) -> bool {
     true
 }
 
+#[cfg(not(windows))]
 fn page_loaded<R: Runtime>(app: &AppHandle<R>, shell: u64, id: u32) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -422,12 +428,45 @@ async fn page_failed<R: Runtime>(app: &AppHandle<R>, shell: u64, id: u32) {
         // Native profile cleanup may take seconds. Hide the failed document and
         // expose Retry immediately; the state lock still serializes a new visit
         // behind cleanup so its profile cannot race the preceding document.
+        #[cfg(target_os = "macos")]
         if let Some(view) = app.get_webview(&label(shell, id)) {
             let _ = view.hide();
         }
         surface_status(app, shell, id, "failed");
         let _ = state.clear(app).await;
     }
+}
+
+#[cfg(windows)]
+fn report_electron_page<R: Runtime>(owner: Webview<R>, shell: u64, id: u32, loaded: bool) {
+    tauri::async_runtime::spawn(async move {
+        let app = owner.app_handle();
+        let service = app.state::<AccountPlatform>();
+        let mut state = service.state.lock().await;
+        let epoch = service.epoch.load(Ordering::Acquire);
+        if state.shell != shell || current_browser_shell(app) != shell {
+            return;
+        }
+        let Some(visit) = state
+            .active
+            .as_mut()
+            .filter(|visit| visit.id == id && visit.epoch == epoch)
+        else {
+            return;
+        };
+        if loaded
+            && visit
+                .native
+                .as_ref()
+                .is_some_and(|native| native.present(&owner, visit.bounds).is_ok())
+        {
+            visit.loaded = true;
+            surface_status(app, shell, id, "loaded");
+        } else {
+            surface_status(app, shell, id, "failed");
+            let _ = state.clear(app).await;
+        }
+    });
 }
 
 #[tauri::command]
@@ -461,6 +500,13 @@ pub(crate) async fn account_platform_view(
         Request::Bounds { id, bounds } => {
             if let Some(visit) = state.active.as_mut().filter(|visit| visit.id == id) {
                 visit.bounds = bounds.validate()?;
+                #[cfg(windows)]
+                if visit.loaded
+                    && let Some(native) = &visit.native
+                {
+                    native.present(&webview, visit.bounds)?;
+                }
+                #[cfg(not(windows))]
                 if visit.loaded
                     && let Some(view) = app.get_webview(&label(shell, id))
                 {
@@ -486,7 +532,7 @@ pub(crate) async fn account_platform_view(
         #[cfg(any(target_os = "macos", windows))]
         storage: None,
         #[cfg(windows)]
-        temporary_profile: None,
+        native: None,
     });
     drop(state);
 
@@ -525,81 +571,94 @@ pub(crate) async fn account_platform_view(
                 return Ok(());
             }
         }
-        #[cfg(windows)]
-        let storage = grant.storage_id(&address);
-        #[cfg(any(target_os = "macos", windows))]
-        let visit = state
-            .active
-            .as_mut()
-            .expect("opening visit retained under lock");
-        #[cfg(any(target_os = "macos", windows))]
-        {
+        #[cfg(target_os = "macos")]
+        if let Some(visit) = state.active.as_mut() {
             visit.storage = storage;
         }
         let headers = platform_headers(
             std::mem::take(&mut grant.request_headers),
             cfg!(any(target_os = "macos", windows)),
         );
-        let view = mount(
-            &webview,
-            shell,
-            id,
-            &address,
-            &grant.token,
-            &headers,
-            #[cfg(target_os = "macos")]
-            storage,
-            #[cfg(windows)]
-            windows::profile_directory(app, storage, &mut visit.temporary_profile)?,
-        )
-        .await?;
         #[cfg(windows)]
-        let result = windows::configure(&view, address.origin(), headers).await?;
-        #[cfg(windows)]
-        if storage.is_some() {
-            windows::sanitize(&view).await?;
-        }
-        if current_browser_shell(app) != shell
-            || platform.epoch.load(Ordering::Acquire) != epoch
-            || !platform.accepts_visits()
         {
-            state.revoke(app, id).await;
-            return Ok(());
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let owner = app.clone();
-            let failed = macos::navigate(&view, address, headers, move || {
-                let platform = owner.state::<AccountPlatform>();
-                current_browser_shell(&owner) == shell
-                    && platform.epoch.load(Ordering::Acquire) == epoch
-                    && platform.accepts_visits()
+            let storage = grant.storage_id(&address);
+            let owner = webview.clone();
+            let native = windows::PlatformView::spawn(&webview, storage, move |loaded| {
+                report_electron_page(owner.clone(), shell, id, loaded);
             })
             .await?;
+            let visit = state
+                .active
+                .as_mut()
+                .expect("opening visit retained under lock");
+            visit.storage = storage;
+            visit.native = Some(native);
+            if current_browser_shell(app) != shell
+                || platform.epoch.load(Ordering::Acquire) != epoch
+                || !platform.accepts_visits()
+            {
+                state.revoke(app, id).await;
+                return Ok(());
+            }
+            let visit = state
+                .active
+                .as_mut()
+                .expect("opening visit retained under lock");
+            visit
+                .native
+                .as_mut()
+                .expect("renderer installed")
+                .open(page, visit.bounds, grant, headers)
+                .await?;
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
-                if failed.await.is_ok() {
-                    page_failed(&app, shell, id).await;
-                }
+                tokio::time::sleep(std::time::Duration::from_secs(45)).await;
+                page_failed(&app, shell, id).await;
             });
             Ok(())
         }
-        #[cfg(windows)]
+        #[cfg(not(windows))]
         {
-            view.navigate(address).map_err(|_| "未能加载平台页面。")?;
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                match result.await {
-                    Ok(true) => page_loaded(&app, shell, id),
-                    Ok(false) => page_failed(&app, shell, id).await,
-                    Err(_) => {}
-                }
-            });
-            Ok(())
+            let view = mount(
+                &webview,
+                shell,
+                id,
+                &address,
+                &grant.token,
+                &headers,
+                #[cfg(target_os = "macos")]
+                storage,
+            )
+            .await?;
+            if current_browser_shell(app) != shell
+                || platform.epoch.load(Ordering::Acquire) != epoch
+                || !platform.accepts_visits()
+            {
+                state.revoke(app, id).await;
+                return Ok(());
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let owner = app.clone();
+                let failed = macos::navigate(&view, address, headers, move || {
+                    let platform = owner.state::<AccountPlatform>();
+                    current_browser_shell(&owner) == shell
+                        && platform.epoch.load(Ordering::Acquire) == epoch
+                        && platform.accepts_visits()
+                })
+                .await?;
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if failed.await.is_ok() {
+                        page_failed(&app, shell, id).await;
+                    }
+                });
+                Ok(())
+            }
+            #[cfg(not(any(target_os = "macos", windows)))]
+            view.navigate(address)
+                .map_err(|_| "未能加载平台页面。".into())
         }
-        #[cfg(not(any(target_os = "macos", windows)))]
-        view.navigate(address)
-            .map_err(|_| "未能加载平台页面。".into())
     }
     .await;
     if result.is_err() {
@@ -608,6 +667,7 @@ pub(crate) async fn account_platform_view(
     result
 }
 
+#[cfg(not(windows))]
 async fn mount<R: Runtime>(
     owner: &Webview<R>,
     shell: u64,
@@ -616,18 +676,15 @@ async fn mount<R: Runtime>(
     token: &str,
     headers: &BTreeMap<String, String>,
     #[cfg(target_os = "macos")] storage: Option<[u8; 16]>,
-    #[cfg(windows)] profile: windows::ProfileDirectory,
 ) -> Result<Webview<R>, String> {
     let app = owner.app_handle().clone();
     let origin = address.origin();
     let navigation_origin = origin.clone();
     let blank = Url::parse("about:blank").expect("constant blank URL");
-    let fetch_headers = (!cfg!(windows)).then(|| {
-        headers
-            .iter()
-            .filter(|(name, _)| name.as_str() != "cookie")
-            .collect::<BTreeMap<_, _>>()
-    });
+    let fetch_headers = headers
+        .iter()
+        .filter(|(name, _)| name.as_str() != "cookie")
+        .collect::<BTreeMap<_, _>>();
     let bootstrap = json!({
         "origin": origin.ascii_serialization(), "token": token,
         "headers": fetch_headers,
@@ -668,11 +725,6 @@ async fn mount<R: Runtime>(
     } else {
         builder
     };
-    #[cfg(windows)]
-    let builder = builder
-        .incognito(profile.temporary)
-        .data_directory(profile.path)
-        .general_autofill_enabled(false);
     let view = owner
         .window()
         .add_child(

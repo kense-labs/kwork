@@ -67,10 +67,16 @@ if (process.env.KWORK_TERMINAL_MODULE) {
     delete process.env.KWORK_TERMINAL_MODULE;
   }
 }
+let presetStartupError;
 if (process.env.KWORK_AGENT_PRESETS_MODULE) {
-  const presets = await import(pathToFileURL(process.env.KWORK_AGENT_PRESETS_MODULE).href);
-  await presets.prepareAgentPresetProfile({ service, home: resolveDshHome(),
-    terminalRuntime: process.env.KWORK_TERMINAL_RUNTIME });
+  try {
+    const presets = await import(pathToFileURL(process.env.KWORK_AGENT_PRESETS_MODULE).href);
+    await presets.prepareAgentPresetProfile({ service, home: resolveDshHome(),
+      terminalRuntime: process.env.KWORK_TERMINAL_RUNTIME });
+  } catch (error) {
+    presetStartupError = error instanceof Error ? error.message : String(error);
+    console.error(`KWork: Agent 预设不可用：${presetStartupError}`);
+  }
 }
 const ready = runProfile({
   environment: loadLayeredEnv('dsh', service),
@@ -940,9 +946,9 @@ function pluginPresentation() {
 // Official host/plugin-inventory readPluginInventory, 39163dd (DeepSeek MIT).
 // The ACP profile does not need to mount the web Remote gateway: read the same
 // Loader and optional preset roster directly, without plugin-manager filtering.
-async function agentPresetSettings(ctx, request = {}) {
+async function agentPresetSettings(ctx, request = {}, startupError) {
   const registry = ctx.get('agentPresets');
-  if (!registry) throw new Error('Agent 预设服务尚未就绪，请重试。');
+  if (!registry) throw new Error(startupError ?? 'Agent 预设服务尚未就绪，请重试。');
   const settings = ctx.get('settings');
   const document = () => settings?.describe({ redactSecrets: true }).find(row => row.ns === 'agent-preset-registry');
   const snapshot = async () => ({ ...await registry.remoteExportList(),
@@ -4281,7 +4287,7 @@ async function extension({ id, method, params }) {
     } else if (method === pluginInventoryMethod) {
       response = { result: await pluginInventory(ctx) };
     } else if (method === agentPresetSettingsMethod) {
-      response = { result: await agentPresetSettings(ctx, params) };
+      response = { result: await agentPresetSettings(ctx, params, presetStartupError) };
     } else if (method === pluginInstallMethod) {
       response = { result: await pluginInstallRequest(ctx, params?.operation) };
     } else if (modelProviderMethods.has(method)) {

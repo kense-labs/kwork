@@ -555,6 +555,7 @@ enum PendingAction {
         cwd: String,
         workspace_id: Option<String>,
         draft: Option<&'static str>,
+        agent_preset: Option<String>,
     },
     Resume(SessionSummary),
 }
@@ -2251,6 +2252,7 @@ impl DshApp {
                     cwd,
                     workspace_id,
                     draft,
+                    agent_preset: session_agent_preset::staged_agent_preset(),
                 },
                 cx,
             );
@@ -2416,10 +2418,13 @@ impl DshApp {
         self.opening_session_events.clear();
         match &action {
             PendingAction::New {
-                cwd, workspace_id, ..
+                cwd,
+                workspace_id,
+                agent_preset,
+                ..
             } => invoke(
                 "new_session",
-                json!({"cwd": cwd, "workspaceId": workspace_id}),
+                json!({"cwd": cwd, "workspaceId": workspace_id, "agentPreset": agent_preset}),
             ),
             PendingAction::Resume(session) => invoke(
                 "resume_session",
@@ -2444,6 +2449,8 @@ impl DshApp {
         self.error = None;
         self.activate_session(session, w, cx);
         self.conversation.acp_open = reply.is_some();
+        self.conversation.has_agent_preset =
+            reply.is_some_and(|reply| reply["agentPreset"].is_string());
         if reply.is_some() {
             self.request_permission_mode();
             invoke("plan_mode", json!({"sessionId": id}));
@@ -3127,6 +3134,14 @@ impl DshApp {
             || self.conversation.command_busy
             || self.conversation.inbox_submission.is_some()
         {
+            return;
+        }
+        if self
+            .active_session
+            .as_deref()
+            .is_some_and(session_agent_preset::selection_pending)
+        {
+            self.push_toast("Agent 预设切换中，请稍后发送。", cx);
             return;
         }
         // Client-owned commands open their own surface. Resolving the built-in
@@ -4273,7 +4288,7 @@ impl DshApp {
             "question_state" => match result {
                 Ok(reply) => {
                     if let (Some(session), Some(rows)) = (owner, reply.as_array()) {
-                        self.apply_question_state(session, rows, w, cx);
+                        self.apply_question_state(session, rows);
                     }
                 }
                 Err(error) => {
@@ -5702,7 +5717,6 @@ mod dock_strip;
 mod dock_tab_menu;
 mod document_code;
 pub(crate) mod document_fonts;
-mod document_frontmatter;
 mod document_html;
 mod document_math;
 mod document_selection;
@@ -5733,6 +5747,7 @@ mod provider_retry;
 mod question_panel;
 mod queue_attachments;
 mod runtime_settings;
+mod session_agent_preset;
 mod session_archive;
 mod session_context_menu;
 mod session_download;

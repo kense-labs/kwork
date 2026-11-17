@@ -5,9 +5,9 @@ import { AgentPresetSection } from './vendor/harness-agent-presets/AgentPresetSe
 import { AgentPresetSectionController } from './vendor/harness-agent-presets/section-store';
 import { zh } from './vendor/harness-agent-presets/locales';
 import { zh as common } from './vendor/harness-locale/zh';
-import { officialModelsEnabled } from './settings-models';
 
-type View = { visible: boolean; connected: boolean; generation: number; locked: boolean; developerTools: boolean };
+type View = { visible: boolean; connected: boolean; generation: number; locked: boolean; developerTools: boolean;
+  developerLoaded: boolean; blankSession?: string };
 let view: View;
 let holder: HTMLDivElement;
 let root: Root;
@@ -15,6 +15,7 @@ let bounds: number[];
 let dispatch: (action: string, value: string) => void;
 let owner: ReturnType<typeof createOwner> | undefined;
 let instance = 0;
+let listening = false;
 const dictionary = { ...common, ...zh };
 const t = (key: keyof typeof dictionary, values: Record<string, string> = {}) =>
   dictionary[key].replace(/\{([^}]+)\}/g, (match, name) => values[name] ?? match);
@@ -39,12 +40,35 @@ function createOwner() {
   const controller = new AgentPresetSectionController({ remote,
     configForms: { get: () => ({ getSnapshot: () => document }) }, locale: { bind: () => t },
   } as any);
-  const reconcile = () => controller.reconcileCodingTools(() => lifetime.active && view?.developerTools === false);
-  const load = async () => { await controller.load(); await reconcile(); };
-  return { lifetime, controller, load, reconcile, id: ++instance,
+  const shouldReset = () => lifetime.active && view?.developerLoaded === true && !view.developerTools;
+  let revision = 0;
+  let reconciling: Promise<void> | undefined;
+  const reconcile = () => {
+    revision++;
+    if (!shouldReset()) return;
+    reconciling ??= Promise.resolve().then(async () => {
+      try {
+        while (shouldReset()) {
+          const requested = revision;
+          await controller.load();
+          await controller.reconcileCodingTools(shouldReset);
+          if (requested === revision) return;
+        }
+      } finally { reconciling = undefined; }
+    });
+  };
+  return { lifetime, controller, load: () => controller.load(), reconcile, id: ++instance,
     useSnapshot: (select: (value: any) => any) => select(useSyncExternalStore(controller.store.subscribe, controller.store.getSnapshot)),
     read: (id: string) => controller.view(id), close: () => controller.closeView(),
-    save: (id: string) => controller.makeDefault(id),
+    save: (id: string) => {
+      const session = view?.blankSession;
+      return controller.makeDefault(id, async preset => {
+        if (!session || !lifetime.active || view?.blankSession !== session) return;
+        const state = (await invoke({operation:'session', sessionId:session})).value;
+        if (state.canSelect && state.agentPreset !== preset && view?.blankSession === session)
+          await invoke({operation:'select', sessionId:session, id:preset});
+      });
+    },
   };
 }
 
@@ -54,30 +78,41 @@ export function placeSettingsAgentPresets(left: number, top: number, width: numb
   if (holder) for (const [index, key] of ['left', 'top', 'width', 'height'].entries()) holder.style[key as any] = `${bounds[index]}px`;
 }
 export function updateSettingsAgentPresets(next: View) {
-  if (!officialModelsEnabled()) return;
+  const platform = document.documentElement.dataset.platform;
+  if (platform !== 'darwin' && platform !== 'win32') return;
   const previous = view; view = next;
+  if (!next.connected || previous?.generation !== next.generation) {
+    if (owner) owner.lifetime.active = false;
+    owner = undefined;
+  }
+  if (next.connected) {
+    owner ??= createOwner();
+    if (!previous?.connected || previous.generation !== next.generation
+      || previous.developerTools !== next.developerTools || previous.developerLoaded !== next.developerLoaded)
+      owner.reconcile();
+  }
+  if (!listening && next.connected) {
+    listening = true;
+    void (window as any).__TAURI__.event.listen('acp-event', ({ payload }: any) => {
+      if (payload.kind !== 'agent_presets_changed' && payload.kind !== 'client_preferences_changed') return;
+      if (view?.visible) void owner?.load();
+      owner?.reconcile();
+    });
+  }
   if (!holder && !next.visible) return;
   if (!holder) {
     holder = document.createElement('div'); holder.id = 'settings-agent-presets';
     holder.style.cssText = 'position:fixed;z-index:2;overflow:auto;overscroll-behavior:contain;pointer-events:auto;box-sizing:border-box;font-family:var(--dsw-font-family);color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px;--dsw-focus-ring-width:2px;';
     document.getElementById('settings-shell')!.append(holder); root = createRoot(holder);
-    void (window as any).__TAURI__.event.listen('acp-event', ({ payload }: any) => {
-      if (payload.kind === 'agent_presets_changed' || payload.kind === 'client_preferences_changed') void owner?.load();
-    });
   }
   holder.hidden = !next.visible;
-  if (!next.visible || !next.connected || previous?.generation !== next.generation || previous?.connected !== next.connected) {
-    if (owner) owner.lifetime.active = false;
-    owner = undefined; root.render(null);
-  }
-  if (next.visible && next.connected) {
-    owner ??= createOwner();
+  if (next.visible && owner) {
     const current = owner;
     root.render(<AgentPresetSection key={current.id} t={t} useAgentPresetSection={current.useSnapshot}
       useDeveloperTools={select => select(next.developerTools)} load={current.load}
       view={current.read} closeView={current.close} makeDefault={current.save}
+      startCreatorDraft={() => dispatch?.('settings-agent-preset-creator', '')}
       close={() => dispatch?.('settings-close', '')} />);
-    if (previous?.developerTools !== next.developerTools) void current.reconcile();
-  } else if (next.visible) root.render(<p role="status">连接服务后可查看 Agent 预设。</p>);
+  } else root.render(next.visible ? <p role="status">连接服务后可查看 Agent 预设。</p> : null);
   if (bounds) placeSettingsAgentPresets(...bounds as [number, number, number, number]);
 }

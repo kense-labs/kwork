@@ -35,7 +35,7 @@ export function markdownDestination(value: string): { path: string; line?: numbe
 }
 
 /** Use the rendering grammar, including reference links, without scanning code fences. */
-export function markdownImagePaths(text: string): string[] {
+export function markdownImageDestinations(text: string, includeLinks = false): string[] {
   const tree = parseGfmWithMath(text);
   const definitions = new Map<string, string>();
   const walk = (node: any, visit: (node: any) => void) => {
@@ -45,10 +45,18 @@ export function markdownImagePaths(text: string): string[] {
   const paths = new Set<string>();
   walk(tree, node => {
     const image = node.type === 'image' || node.type === 'imageReference';
-    if (!image && node.type !== 'link' && node.type !== 'linkReference') return;
+    if (!image && (!includeLinks || (node.type !== 'link' && node.type !== 'linkReference'))) return;
     const url = node.url ?? definitions.get(node.identifier?.toUpperCase());
-    const file = typeof url === 'string' ? parseFileLink(url) : undefined;
-    if (file && (image || classifyLinkPath(file.path) === 'image')) paths.add(file.path);
+    if (typeof url !== 'string') return;
+    const file = image ? undefined : parseFileLink(url);
+    if (image || (file && classifyLinkPath(file.path) === 'image')) paths.add(url);
   });
   return [...paths];
+}
+
+export function markdownImagePaths(text: string): string[] {
+  return [...new Set(markdownImageDestinations(text, true).flatMap(url => {
+    const file = parseFileLink(url);
+    return file ? [file.path] : [];
+  }))];
 }

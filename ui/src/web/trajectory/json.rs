@@ -129,6 +129,10 @@ impl DshApp {
             cx.notify();
             return;
         }
+        if action == "dock-preview-more" {
+            self.document_markdown_load_more(value, cx);
+            return;
+        }
         if matches!(action, "accessible" | "accessible-tab") {
             self.trajectory_accessibility_action(action, value, w, cx);
             return;

@@ -1,13 +1,11 @@
 //! Plan-mode controls and the Host's blocking plan review.
 
 use super::{
-    permission_dialog::dialog_action,
-    workspace::{TurnActionHint, composer_bg, dark, render_markdown, strip_md_markers},
+    workspace::{TurnActionHint, strip_md_markers},
     *,
 };
 use gpui::svg;
 
-const OPEN_PLAN: &str = "在侧边栏打开计划";
 const PLAN_MODE_HINT: &str = "计划模式已开启 — 点击关闭（/plan off）";
 
 use crate::submitted_plan::PlanDocument;
@@ -32,14 +30,10 @@ pub(super) struct PlanReview {
     id: String,
     call_id: Option<String>,
     question: String,
-    title: String,
     document: PlanDocument,
-    summary: String,
     approval_description: Option<String>,
     preview: Option<u64>,
     auto_opened: bool,
-    busy: bool,
-    error: Option<String>,
 }
 
 impl PlanReview {
@@ -56,14 +50,6 @@ impl PlanReview {
                 .filter(|title| !title.is_empty())
                 .unwrap_or_else(|| "计划".into()),
         };
-        let summary = blocks
-            .iter()
-            .find_map(|block| match block {
-                Block::Paragraph(text) => Some(strip_md_markers(text)),
-                _ => None,
-            })
-            .filter(|summary| *summary != title)
-            .unwrap_or_default();
         let call_id = update["callId"]
             .as_str()
             .filter(|id| !id.is_empty())
@@ -81,22 +67,12 @@ impl PlanReview {
             id: id.to_owned(),
             call_id,
             question: update["question"].as_str()?.to_owned(),
-            title,
             document,
-            summary,
             approval_description: update["approvalDescription"].as_str().map(str::to_owned),
             preview: None,
             auto_opened: false,
-            busy: false,
-            error: None,
         })
     }
-}
-
-#[derive(Clone, Copy)]
-enum Decision {
-    Discuss,
-    Approve,
 }
 
 impl DshApp {
@@ -210,7 +186,12 @@ impl DshApp {
         key
     }
 
-    fn open_submitted_plan(&mut self, call_id: &str, w: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_submitted_plan(
+        &mut self,
+        call_id: &str,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(entry) = self.conversation.entries.iter().find(|entry| {
             entry.role == EntryRole::Plan && entry.external_id.as_deref() == Some(call_id)
         }) else {
@@ -290,46 +271,20 @@ impl DshApp {
         .detach();
     }
 
-    fn decide_plan(&mut self, decision: Decision, cx: &mut Context<Self>) {
-        let (Some(session), Some(review)) = (
-            self.active_session.clone(),
-            self.conversation.plan_reviews.last_mut(),
-        ) else {
-            return;
-        };
-        if review.busy {
-            return;
+    pub(super) fn plan_review_preview_action(
+        &mut self,
+        value: &Value,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .conversation
+            .plan_reviews
+            .last()
+            .is_some_and(|review| value["requestId"].as_str() == Some(review.id.as_str()))
+        {
+            self.open_plan_preview(true, w, cx);
         }
-        review.busy = true;
-        review.error = None;
-        let id = review.id.clone();
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let decision = match decision {
-                Decision::Discuss => "discuss",
-                Decision::Approve => "approve",
-            };
-            let result = bridge::invoke(
-                "respond_plan_review",
-                json!({"sessionId": session, "requestId": id, "decision": decision}),
-            )
-            .await;
-            if let Err(error) = result {
-                let _ = this.update(cx, |this, cx| {
-                    if let Some(review) = this.conversation_mut(&session).and_then(|conversation| {
-                        conversation
-                            .plan_reviews
-                            .iter_mut()
-                            .find(|review| review.id == id)
-                    }) {
-                        review.busy = false;
-                        review.error = Some(error);
-                        cx.notify();
-                    }
-                });
-            }
-        })
-        .detach();
     }
 
     fn exit_plan_mode(&mut self, w: &mut Window, cx: &mut Context<Self>) {
@@ -439,323 +394,72 @@ impl DshApp {
         })
     }
 
-    pub(super) fn render_plan_review(
-        &self,
-        width: f32,
-        w: &Window,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::Div> {
+    pub(super) fn render_plan_review(&self, width: f32, cx: &Context<Self>) -> Option<gpui::Div> {
         let review = self.conversation.plan_reviews.last()?;
-        let p = dsh(cx);
-        let compact = f32::from(w.viewport_size().width) <= 720.;
-        let approve = dialog_action(
-            "approve-plan",
-            "同意执行",
-            true,
-            review.busy,
-            0.,
+        let session = self.active_session.as_deref()?;
+        let request = &review.id;
+        let mut approve = json!({"label":"approve"});
+        if let Some(description) = &review.approval_description {
+            approve["description"] = json!(description);
+        }
+        let payload = json!({
+            "kind":"plan", "requestId":request, "canHide":false, "liveKeys":[],
+            "questions":[{
+                "id":request, "question":review.question, "detail":review.document.markdown,
+                "options":[approve], "intent":{"kind":"plan-review","approve":"approve"},
+            }],
+            "snapshot":{"channel":"waterfall","closed":false,"waitState":"counting","state":"open"}
+        });
+        Some(super::chat_markdown::interaction(
+            session,
+            request,
+            width,
+            &payload,
+            self.trajectory_controls_hidden(),
             cx,
-            |this, _, cx| this.decide_plan(Decision::Approve, cx),
-        )
-        .when_some(
-            review.approval_description.clone(),
-            |button, description| {
-                button.tooltip(move |_, cx| {
-                    cx.new(|_| TurnActionHint(description.clone().into()))
-                        .into()
-                })
-            },
-        );
-        let discuss = dialog_action(
-            "discuss-plan",
-            "要求修改",
-            false,
-            review.busy,
-            0.,
-            cx,
-            |this, _, cx| this.decide_plan(Decision::Discuss, cx),
-        )
-        .flex_row_reverse()
-        .gap(px(6.))
-        .child(plan_icon(
-            include_bytes!("../../assets/plan-review-edit.svg"),
-            p.label_primary,
-        ));
-        let preview = dock_action_button(
-            row()
-                .id("open-plan-preview")
-                .role(gpui::Role::Button)
-                .aria_label(OPEN_PLAN)
-                .tab_index(0)
-                .gap(px(4.))
-                .cursor_pointer()
-                .text_color(p.label_secondary)
-                .hover(|style| style.text_color(p.label_primary))
-                .tooltip(|_, cx| cx.new(|_| TurnActionHint(OPEN_PLAN.into())).into())
-                .child("查看全文")
-                .child(plan_icon(
-                    include_bytes!("../../assets/header-chevron-right.svg"),
-                    p.label_secondary,
-                )),
-            cx.listener(|this, _, w, cx| this.open_plan_preview(true, w, cx)),
-        );
-        let dot = if review.busy {
-            crate::anim::state_spinner(10., 0., p.label_tertiary).into_any_element()
-        } else {
-            div()
-                .size(px(6.))
-                .rounded_full()
-                .bg(p.state_warn_primary)
-                .into_any_element()
-        };
-        Some(
-            row()
-                .w_full()
-                .flex_none()
-                .px(px(16.))
-                .pt(px(6.))
-                .pb(px(10.))
-                .justify_center()
-                .child(
-                    column()
-                        .id("plan-review")
-                        .role(gpui::Role::Group)
-                        .aria_label(review.question.clone())
-                        .w(px((width - 32.).max(0.)))
-                        .max_w_full()
-                        .gap_0()
-                        .overflow_hidden()
-                        .rounded(px(20.))
-                        .bg(composer_bg(cx))
-                        .shadow(crate::tokens::elevation_panel())
-                        .child(
-                            row()
-                                .w_full()
-                                .flex_none()
-                                .gap(px(8.))
-                                .px(px(16.))
-                                .py(px(12.))
-                                .rounded_t(px(20.))
-                                .bg(p.state_warn_tertiary)
-                                .text_color(p.state_warn_primary)
-                                .text_size(px(14.))
-                                .line_height(px(20.))
-                                .child(row().size(px(10.)).justify_center().child(dot))
-                                .child("计划待审")
-                                .child(div().flex_1())
-                                .child(preview),
-                        )
-                        .child(
-                            column()
-                                .w_full()
-                                .min_w_0()
-                                .gap(px(8.))
-                                .px(px(16.))
-                                .pt(px(14.))
-                                .pb(px(12.))
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(px(15.))
-                                        .line_height(px(22.))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(review.title.clone()),
-                                )
-                                .when(!review.summary.is_empty(), |summary| {
-                                    summary.child(
-                                        div()
-                                            .max_h(px(48.))
-                                            .overflow_hidden()
-                                            .text_size(px(14.))
-                                            .line_height(px(24.))
-                                            .text_color(p.label_secondary)
-                                            .child(review.summary.clone()),
-                                    )
-                                }),
-                        )
-                        .child(
-                            row()
-                                .w_full()
-                                .gap(px(12.))
-                                .px(px(if compact { 12. } else { 16. }))
-                                .pt(px(8.))
-                                .pb(px(if compact { 10. } else { 12. }))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .min_h(px(16.))
-                                        .text_color(p.danger)
-                                        .text_size(px(11.))
-                                        .line_height(px(16.))
-                                        .children(review.error.clone()),
-                                )
-                                .child(row().flex_none().gap(px(8.)).child(discuss).child(approve)),
-                        ),
-                ),
-        )
+        ))
     }
 
     pub(super) fn render_plan_document(
         &self,
+        pane: DockPaneId,
         key: u64,
         w: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        let plan = match self.sidebar.plans.get(&key) {
-            Some(PlanPreview::Ready(plan)) => plan,
-            state => {
-                let p = dsh(cx);
-                let mut message = column()
-                    .p(px(24.))
-                    .text_size(px(14.))
-                    .text_color(p.label_secondary);
-                message = match state {
-                    Some(PlanPreview::Failed(error)) => {
-                        message.child("无法读取计划").child(error.clone())
-                    }
-                    Some(PlanPreview::Missing) => {
-                        message.child("无法读取计划").child("未找到这份计划")
-                    }
-                    _ if self.sidebar.surface.plans.contains_key(&key) => {
-                        message.child("正在读取计划…")
-                    }
-                    _ => message.child("计划预览不可用"),
-                };
-                return message;
-            }
-        };
-        let compact = f32::from(w.viewport_size().width) <= 767.;
-        div().size_full().child(
-            div()
-                .id(gpui::ElementId::Name(format!("plan-preview-{key}").into()))
-                .size_full()
-                .overflow_y_scroll()
-                .px(px(if compact { 18. } else { 24. }))
-                .pt(px(if compact { 16. } else { 20. }))
-                .pb(px(if compact { 32. } else { 40. }))
-                .child(render_markdown(
-                    &plan.markdown,
-                    &format!("plan-{key}"),
-                    super::workspace::MarkdownOptions {
-                        dom: None,
-                        copied_mark: self.copied_mark.as_deref(),
-                        wrapped_code: &self.conversation.wrapped_code,
-                        font_delta: 0,
-                        selection: None,
-                        mentions: None,
-                        settled: true,
-                        cache: super::conversation::MarkdownCache {
-                            highlights: &self.conversation.markdown_highlights,
-                            math: &self.conversation.markdown_math,
-                            expanded_diffs: &self.conversation.expanded_diffs,
-                        },
-                        active_session: self.active_session.as_deref(),
-                    },
-                    cx,
-                )),
-        )
-    }
-}
-
-pub(super) fn plan_card(entry: &ChatEntry, cx: &mut Context<DshApp>) -> gpui::Div {
-    let Some(call_id) = entry.external_id.clone() else {
-        return div();
-    };
-    let p = dsh(cx);
-    let dark = dark(cx);
-    let fill = gpui::rgb(if dark { 0x212123 } else { 0xfafafa });
-    let hover = gpui::rgb(if dark { 0x292929 } else { 0xf5f5f5 });
-    div().w_full().child(dock_action_button(
-        row()
-            .id(gpui::ElementId::Name(entry.key.clone().into()))
-            .role(gpui::Role::Button)
-            .aria_label(format!("打开计划：{}", entry.title))
-            .tab_index(0)
-            .cursor_pointer()
-            .w_full()
-            .h(px(60.))
-            .px(px(10.))
-            .gap(px(10.))
-            .rounded(px(16.))
-            .border(px(0.5))
-            .border_color(p.border_l1)
-            .bg(fill)
-            .hover(move |style| style.bg(hover))
-            .child(
-                row()
-                    .size(px(40.))
-                    .flex_none()
-                    .justify_center()
-                    .rounded(px(10.))
-                    .border(px(0.5))
-                    .border_color(p.border_l1)
-                    .bg(gpui::white().opacity(if dark { 0.05 } else { 0.5 }))
-                    .child(markdown_file_icon()),
-            )
-            .child(
-                column()
-                    .flex_1()
-                    .min_w_0()
-                    .gap(px(2.))
-                    .child(
-                        div()
-                            .truncate()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_size(px(13.))
-                            .line_height(px(20.))
-                            .child(entry.title.clone()),
-                    )
-                    .child(
-                        div()
-                            .truncate()
-                            .text_color(p.label_tertiary)
-                            .text_size(px(10.))
-                            .line_height(px(16.))
-                            .child("计划 · Markdown"),
-                    ),
-            )
-            .child(
-                row()
-                    .flex_none()
-                    .h(px(28.))
-                    .px(px(8.))
-                    .rounded(px(8.))
-                    .border(px(0.5))
-                    .border_color(p.border_l3)
-                    .bg(p.button_floating)
-                    .text_size(px(12.))
-                    .line_height(px(18.))
-                    .child("打开"),
+        let call_id = self.sidebar.surface.plans.get(&key);
+        let (status, document, failure) = match self.sidebar.plans.get(&key) {
+            Some(PlanPreview::Ready(plan)) => ("ready", Some(plan), None),
+            Some(PlanPreview::Missing) => (
+                "failed",
+                None,
+                Some(json!({"code": "plan/not-found", "message": ""})),
             ),
-        cx.listener(move |this, _, w, cx| this.open_submitted_plan(&call_id, w, cx)),
-    ))
-}
-
-fn markdown_file_icon() -> gpui::Div {
-    div()
-        .relative()
-        .size(px(20.))
-        .child(
-            svg()
-                .data(include_bytes!("../../assets/files-other.svg"))
-                .size_full()
-                .text_color(gpui::rgb(0x4176e6)),
-        )
-        .child(
-            svg()
-                .data(include_bytes!("../../assets/files-other-fold.svg"))
-                .absolute()
-                .inset_0()
-                .text_color(gpui::white().opacity(0.7)),
-        )
-        .child(
-            svg()
-                .data(include_bytes!("../../assets/file-markdown-mark.svg"))
-                .absolute()
-                .inset_0()
-                .text_color(gpui::white()),
-        )
+            Some(PlanPreview::Failed(error)) => (
+                "failed",
+                None,
+                Some(json!({"code": "plan/read-failed", "message": error})),
+            ),
+            _ if call_id.is_some() => ("loading", None, None),
+            _ => ("none", None, None),
+        };
+        let session = self.active_session.as_deref().unwrap_or("");
+        let source = json!({
+            "session": session,
+            "key": key.to_string(),
+            "callId": call_id,
+            "document": document,
+            "status": status,
+            "failure": failure,
+        });
+        div().relative().size_full().child(self.plan_document_frame(
+            pane,
+            format!("{session}:{key}"),
+            source.to_string(),
+            w,
+            cx,
+        ))
+    }
 }
 
 fn plan_icon(artwork: &'static [u8], color: gpui::Hsla) -> gpui::Svg {

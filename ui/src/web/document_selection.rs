@@ -7,7 +7,6 @@ use gpui::{
     MouseUpEvent, Pixels, Point, SharedString, StyledText, TextLayout, canvas, fill, point, size,
 };
 use std::{
-    borrow::Cow,
     ops::Range,
     rc::{Rc, Weak},
     sync::Arc,
@@ -53,44 +52,6 @@ impl DocumentSelection {
         *self.state.borrow_mut() = SelectionState::default();
     }
 
-    pub(super) fn replace_leading_text(&self, before: usize, after: usize) {
-        if before == 0 && after == 0 {
-            return;
-        }
-        let mut state = self.state.borrow_mut();
-        let Some((anchor, head)) = state.endpoints else {
-            return;
-        };
-        // When the verbatim metadata unmounts, text in the Markdown body is still the same.
-        let body_start = state.layout.upgrade().and_then(|layout| {
-            let frame = layout.borrow();
-            let [fallback, body, ..] = frame.spans.as_slice() else {
-                return None;
-            };
-            (fallback.bytes.end == before).then_some(body.bytes.start)
-        });
-        state.endpoints = body_start
-            .filter(|&start| anchor.max(head) >= start)
-            .map(|start| {
-                let next = if after == 0 {
-                    0
-                } else {
-                    after + start - before
-                };
-                // A range endpoint in the replaced metadata moves before its new contents.
-                let rebase = |index| {
-                    if index < start {
-                        0
-                    } else {
-                        index - start + next
-                    }
-                };
-                (rebase(anchor), rebase(head))
-            });
-        state.drag = None;
-        state.layout = Weak::new();
-    }
-
     pub(super) fn cancel_drag(&self) {
         self.state.borrow_mut().drag = None;
     }
@@ -120,7 +81,7 @@ impl DocumentSelection {
                 true
             }
             "meta+c" | "meta+C" | "ctrl+c" | "ctrl+C" => {
-                let selected = layout.borrow().text(self.range(), TextSource::Authored);
+                let selected = layout.borrow().text(self.range());
                 if selected.is_empty() {
                     return false;
                 }
@@ -141,43 +102,7 @@ struct Span {
     prefix: &'static str,
     bytes: Range<usize>,
     text: SharedString,
-    line_endings: Option<LineEndings>,
     rows: Vec<VisualRow>,
-}
-
-enum TextSource {
-    Shaped,
-    Authored,
-}
-
-struct LineEndings {
-    original: SharedString,
-    hidden_cr: Vec<usize>,
-}
-
-impl LineEndings {
-    fn slice(&self, range: Range<usize>) -> Option<&str> {
-        let original = |offset| {
-            if offset == self.original.len() - self.hidden_cr.len() {
-                self.original.len()
-            } else {
-                offset
-                    + self
-                        .hidden_cr
-                        .partition_point(|position| *position < offset)
-            }
-        };
-        self.original
-            .get(original(range.start)..original(range.end))
-    }
-}
-
-pub(super) fn normalize_line_endings(text: &str) -> Cow<'_, str> {
-    if text.contains('\r') {
-        Cow::Owned(text.replace('\r', ""))
-    } else {
-        Cow::Borrowed(text)
-    }
 }
 
 struct VisualRow {
@@ -277,7 +202,7 @@ impl Frame {
             .map(|row| row.index(position.x, nearest))
     }
 
-    fn text(&self, selected: Range<usize>, source: TextSource) -> String {
+    fn text(&self, selected: Range<usize>) -> String {
         if selected.is_empty() {
             return String::new();
         }
@@ -297,14 +222,10 @@ impl Frame {
                 .end
                 .saturating_sub(span.bytes.start)
                 .min(span.text.len());
-            if from < to {
-                let piece = match (&source, &span.line_endings) {
-                    (TextSource::Authored, Some(original)) => original.slice(from..to),
-                    _ => span.text.get(from..to),
-                };
-                if let Some(piece) = piece {
-                    text.push_str(piece);
-                }
+            if from < to
+                && let Some(piece) = span.text.get(from..to)
+            {
+                text.push_str(piece);
             }
         }
         text
@@ -314,7 +235,7 @@ impl Frame {
         if matches!(unit, SelectionUnit::Character) {
             return index..index;
         }
-        let text = self.text(0..self.len(), TextSource::Shaped);
+        let text = self.text(0..self.len());
         unit_at(&text, index, unit)
     }
 }
@@ -396,22 +317,7 @@ impl SelectionLayout {
         let Some(selection) = selection else {
             return styled.into_any_element();
         };
-        selection.register_text(text, prefix, styled, None, None)
-    }
-
-    pub(super) fn authored_text(&self, text: &str, prefix: &'static str) -> gpui::AnyElement {
-        let display = normalize_line_endings(text);
-        let line_endings = matches!(display, Cow::Owned(_)).then(|| LineEndings {
-            original: text.to_owned().into(),
-            hidden_cr: text
-                .match_indices('\r')
-                .enumerate()
-                .map(|(count, (byte, _))| byte - count)
-                .collect(),
-        });
-        let display = SharedString::from(display.into_owned());
-        let styled = StyledText::new(display.clone());
-        self.register_text(display, prefix, styled, None, line_endings)
+        selection.register_text(text, prefix, styled, None)
     }
 
     pub(super) fn numbered_text(
@@ -422,7 +328,7 @@ impl SelectionLayout {
     ) -> gpui::AnyElement {
         let text = text.into();
         let styled = style(text.clone());
-        self.register_text(text, "", styled, Some(number_color), None)
+        self.register_text(text, "", styled, Some(number_color))
     }
 
     fn register_text(
@@ -431,7 +337,6 @@ impl SelectionLayout {
         prefix: &'static str,
         styled: StyledText,
         number_color: Option<gpui::Hsla>,
-        line_endings: Option<LineEndings>,
     ) -> gpui::AnyElement {
         let mut frame = self.frame.borrow_mut();
         let index = frame.spans.len();
@@ -441,7 +346,6 @@ impl SelectionLayout {
             prefix,
             bytes: start..start + text.len(),
             text,
-            line_endings,
             rows: Vec::new(),
         });
         SelectableText {
@@ -520,7 +424,7 @@ impl SelectionLayout {
         if !range.contains(&index) {
             return;
         }
-        let text = frame.text(range, TextSource::Authored);
+        let text = frame.text(range);
         if text.is_empty() {
             return;
         }

@@ -28,6 +28,7 @@ let current: DesktopPlatformView | undefined
 let opening = false
 let visitId: number | undefined
 let documentAlive = false
+let initialRedirectBlocked = false
 const preload = join(__dirname, 'preload.cjs')
 
 async function close(id?: number): Promise<void> {
@@ -48,7 +49,24 @@ owner = new BrowserWindow({ width: 1, height: 1, show: false, frame: false, skip
 })
 owner.setMenu(null)
 const platform = current = new DesktopPlatformView(preload, () => locale,
-  process.platform === 'win32' ? 'win32' : 'darwin', () => closing)
+  process.platform === 'win32' ? 'win32' : 'darwin', () => closing, (contents, origin) => {
+  documentAlive = true
+  contents.on('will-redirect', (event, url, _inPlace, isMainFrame) => {
+    if (!opening || !isMainFrame) return
+    const destination = new URL(url)
+    if (destination.origin !== origin || destination.username || destination.password) {
+      initialRedirectBlocked = true
+      event.preventDefault()
+    }
+  })
+  const failed = () => {
+    documentAlive = false
+    if (!closing && visitId !== undefined) send({ event: 'failed', id: visitId })
+  }
+  contents.once('preload-error', failed)
+  contents.once('render-process-gone', failed)
+  contents.once('destroyed', () => { documentAlive = false })
+})
 owner.on('resize', () => {
   if (!owner || owner.isDestroyed()) return
   const [width, height] = owner.getContentSize()
@@ -58,17 +76,6 @@ owner.on('closed', () => { if (!closing) void close() })
 ipcMain.on(PLATFORM_IPC.bootstrap, event => {
   try { event.returnValue = platform.bootstrap(event) }
   catch { event.returnValue = null }
-})
-app.on('web-contents-created', (_event, contents) => {
-  if (contents.getLastWebPreferences().preload !== preload) return
-  documentAlive = true
-  const failed = () => {
-    documentAlive = false
-    if (!closing && visitId !== undefined) send({ event: 'failed', id: visitId })
-  }
-  contents.once('preload-error', failed)
-  contents.once('render-process-gone', failed)
-  contents.once('destroyed', () => { documentAlive = false })
 })
 
 async function handle(request: Request): Promise<void> {
@@ -96,7 +103,7 @@ async function handle(request: Request): Promise<void> {
     owner!.setContentSize(Math.round(width!), Math.round(height!))
     platform.setSession(account)
     await platform.open(owner!, page, { x: 0, y: 0, width: Math.round(width!), height: Math.round(height!) })
-    if (!closing) send({ id, ok: documentAlive })
+    if (!closing) send({ id, ok: documentAlive && !initialRedirectBlocked })
   } catch { if (!closing) send({ id, ok: false }) }
   finally { opening = false }
 }

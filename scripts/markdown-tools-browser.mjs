@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { planFixture, runPlanPreviewCase } from './plan-preview-browser.mjs';
+import { runDocumentAndQuestionCase } from './document-question-browser.mjs';
 import { markdownFixture, runChatMarkdownCase } from './chat-markdown-browser.mjs';
 import { createServer } from 'node:http';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -19,7 +21,7 @@ const root = dirname(fileURLToPath(new URL('../package.json', import.meta.url)))
 process.chdir(root);
 const modeIndex = process.argv.indexOf('--mode');
 const mode = modeIndex >= 0 ? process.argv[modeIndex + 1] : 'all';
-assert.ok(['chat-markdown', 'file-links', 'ui-feedback', 'agent-presets', 'trajectory-blocks', 'settings-developer', 'fonts', 'settings-permission', 'settings-upload', 'plugin-inventory', 'models-official', 'all', 'image', 'inherited', 'theme', 'stream', 'turn-navigation', 'trajectory', 'trajectory-results', 'trajectory-program', 'trajectory-folds', 'trajectory-long', 'trajectory-narrow', 'trajectory-pages', 'trajectory-prompts', 'trajectory-timeline', 'settings', 'settings-shell', 'settings-partial', 'settings-readonly', 'settings-search', 'settings-fetch', 'appearance', 'plugins', 'workflow', 'team', 'permission', 'approval', 'queue', 'composer', 'composer-focus', 'attachments', 'welcome', 'provider-settings', 'provider-protocols', 'provider-authorization', 'deepseek-account', 'desktop-onboarding', 'account-notifications', 'account-quota', 'model-menu', 'model-catalog', 'model-accessibility', 'goal', 'reading', 'session-order', 'workspace-registry', 'workspace-actions', 'workspace-startup', 'workspace-search', 'workspace-accessibility', 'workspace-group-accessibility'].includes(mode), `unknown mode: ${mode}`);
+assert.ok(['document-question', 'plan-preview', 'chat-markdown', 'file-links', 'ui-feedback', 'agent-presets', 'trajectory-blocks', 'settings-developer', 'fonts', 'settings-permission', 'settings-upload', 'plugin-inventory', 'models-official', 'all', 'image', 'inherited', 'theme', 'stream', 'turn-navigation', 'trajectory', 'trajectory-results', 'trajectory-program', 'trajectory-folds', 'trajectory-long', 'trajectory-narrow', 'trajectory-pages', 'trajectory-prompts', 'trajectory-timeline', 'settings', 'settings-shell', 'settings-partial', 'settings-readonly', 'settings-search', 'settings-fetch', 'appearance', 'plugins', 'workflow', 'team', 'permission', 'approval', 'queue', 'composer', 'composer-focus', 'attachments', 'welcome', 'provider-settings', 'provider-protocols', 'provider-authorization', 'deepseek-account', 'desktop-onboarding', 'account-notifications', 'account-quota', 'model-menu', 'model-catalog', 'model-accessibility', 'goal', 'reading', 'session-order', 'workspace-registry', 'workspace-actions', 'workspace-startup', 'workspace-search', 'workspace-accessibility', 'workspace-group-accessibility'].includes(mode), `unknown mode: ${mode}`);
 const artifactArgument = process.argv.slice(2).find(argument => argument !== '--mode' && argument !== mode);
 const artifacts = resolve(artifactArgument || join(root, '.tools/verification/markdown-tools-browser', mode));
 await mkdir(artifacts, { recursive: true });
@@ -34,7 +36,7 @@ const server = createServer(async (request, response) => {
     if (!path.startsWith(join(root, 'ui/dist') + '/')) throw new Error('invalid path');
     const body = await readFile(path);
     response.writeHead(200, { 'Content-Type': mime[extname(path)] || 'application/octet-stream',
-      ...(mode === 'chat-markdown' ? { 'Content-Security-Policy': nativeCsp } : {}) });
+      ...(['chat-markdown', 'document-question', 'plan-preview'].includes(mode) ? { 'Content-Security-Policy': nativeCsp } : {}) });
     response.end(body);
   } catch (error) {
     if (response.headersSent) response.destroy(error);
@@ -115,6 +117,11 @@ const events = mode === 'inherited'
       { type: 'assistant/message', seq: 4, data: { turn: 1, step: 1, message: { id: 'child-answer', content: [{ type: 'text', text: '分叉后的新回复' }] } } },
       { type: 'turn/end', seq: 5, data: { turn: 1, reason: { kind: 'forked' } } },
     ]
+  : mode === 'document-question' ? [turnStart, userMessage,
+    {type:'assistant/message',seq:3,surfaceOp:'append',data:{message:{id:'preview',content:[{type:'text',text:'[打开文档](docs/guide.md)'}]}}}, turnEnd]
+  : mode === 'plan-preview' ? [turnStart, userMessage,
+    { type: 'tool/call', seq: 3, data: { callId: 'fixture-plan', name: 'exit_plan_mode', arguments: JSON.stringify({plan: planFixture}) } },
+    {...turnEnd, gpuiSubmittedPlans: [{callId: 'fixture-plan', title: '官方计划预览', markdown: planFixture}]}]
   : mode === 'chat-markdown' ? [turnStart, userMessage,
     {type:'assistant/message',seq:3,surfaceOp:'append',data:{message:{id:'markdown',content:[{type:'text',text:markdownFixture}]}}}, turnEnd]
   : mode === 'file-links' ? [turnStart, userMessage,
@@ -562,7 +569,14 @@ try {
             return { sessions: [] };
           }
           case 'peek_session_titles': return mode === 'session-order' ? {} : { [sessionId]: '公式与工具结果验收' };
-          case 'new_session': case 'resume_session': return {
+          case 'new_session':
+            if (mode === 'agent-presets' && args.agentPreset === 'cordis') {
+              window.__presetTest.sessions['preset-creator'] = 'cordis';
+              return {sessionId:'preset-creator', cwd, hostRunning:false, agentPreset:'cordis',
+                configOptions:[{id:'model',currentValue:'fixture-model'}]};
+            }
+            // Fall through to the common session reply.
+          case 'resume_session': return {
             sessionId: workspaceRegistry || startup || ['team', 'ui-feedback'].includes(mode) ? args.sessionId ?? (mode === 'team' ? sessionId : 'picked-session') : sessionId,
             cwd: args.cwd ?? cwd, configOptions: modelTests.includes(mode) ? modelConfig() : [
               { id: 'model', currentValue: 'fixture-model' },
@@ -655,6 +669,18 @@ try {
           case 'open_document_application': case 'open_url': return null;
           case 'save_file_bytes': return {status:args.mode==='saveAs'?'cancelled':'saved',path:'/fixture/downloads/'+args.name};
           case 'read_workspace_text': {
+            if (mode === 'document-question') {
+              const offset = args.offset;
+              const absolutePath = cwd + '/docs/guide.md';
+              const version = 'guide-1';
+              if (offset === 1) return {absolutePath, version, offset, eof: false, lines: 9,
+                text:'---\n标题: 示例\n版本: 1.0\n---\n# 分页文档\n\n![文件旁图片](preview%20image.png?version=1)\n\n第一段'};
+              if (!window.__verification.retryDocument) {
+                window.__verification.retryDocument = true;
+                throw Error('Fixture page failed');
+              }
+              return {absolutePath,version,offset,eof:true,lines:3,text:'\n文档最后一段 $E=mc^2$。\n'};
+            }
             const total = 120;
             const count = Math.min(40, total - args.offset + 1);
             return {absolutePath:cwd + '/' + args.path, version:'lines-v1', offset:args.offset, lines:count,
@@ -663,6 +689,19 @@ try {
           }
           case 'read_workspace_html': return { absolutePath: cwd + '/' + args.path, version: 'fixture-v1',
             source: '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><h1>完整预览</h1><p>右侧预览内容</p>' };
+          case 'respond_question': case 'respond_plan_review': {
+            const isPlan = name === 'respond_plan_review';
+            if (!window.__verification[name + "SucceededOnRetry"]) {
+              window.__verification[name + "SucceededOnRetry"] = true;
+              throw Error('验收夹具拒绝首次提交');
+            }
+            window.__verification.emit({kind:'session_update', sessionId:args.sessionId,
+              update:{sessionUpdate:isPlan ? 'gpui_plan_review' : 'gpui_questions', phase:'closed', requestId:args.requestId}});
+            return null;
+          }
+          case 'read_session_plans': return new Promise((resolve, reject) => {
+            window.__verification.settlePlan = reply => reply.error ? reject(reply.error) : resolve(reply);
+          });
           case 'load_session_history': {
             if (['ui-feedback', 'chat-markdown'].includes(mode) && args.sessionId === 'feedback-cold') {
               return new Promise(resolve => { window.__verification.finishColdHistory = () => resolve(history); });
@@ -964,7 +1003,11 @@ try {
     });
     await page.waitForFunction(() => window.__verification.calls.some(call => call.name === 'turn_token_usage'), null, { timeout: 20000 });
   }
-  if (mode === 'chat-markdown') {
+  if (mode === 'document-question') {
+    await runDocumentAndQuestionCase(page, artifacts, sessionId);
+  } else if (mode === 'plan-preview') {
+    await runPlanPreviewCase(page, artifacts, sessionId);
+  } else if (mode === 'chat-markdown') {
     await runChatMarkdownCase(page, artifacts, sessionId);
   } else if (mode === 'file-links') {
     await page.screenshot({path:join(artifacts,'file-links-initial.png')});
@@ -6016,7 +6059,11 @@ try {
     await themed.close();
   }
   assert.deepEqual(errors, [], 'WASM and MathJax must execute without browser errors');
-  const assertions = mode === 'chat-markdown'
+  const assertions = mode === 'plan-preview'
+    ? ['logged and temporary plan previews', 'code copy and wrap', 'narrow scrollbar', 'restored-plan pending and missing states', 'review failure and retry']
+    : mode === 'document-question'
+    ? ['YAML field order and literal values', 'pagination failure and retry', 'document-relative images after EOF', 'official question form', 'answer failure, retry and exact option label']
+    : mode === 'chat-markdown'
     ? ['official headings, tables, KaTeX, mixed inline wrapping', 'actual measured width and height beside preview', 'wheel routes to transcript', 'code wrapping', 'session DOM cleanup']
     : mode === 'file-links'
     ? ['ordinary Markdown HTML opens in preview', 'line navigation loads through page 81', 'same file reuses loaded document', 'outside-workspace path and percent-decoded filename', 'unsafe destination remains inert', 'source-line landing and fading mark screenshots']

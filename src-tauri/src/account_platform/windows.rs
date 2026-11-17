@@ -1,175 +1,258 @@
-//! Isolated WebView2 profiles for the embedded account pages.
+//! Own the account renderer process and place its native window inside KWork.
 
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
-use tauri::{AppHandle, Manager, Runtime, Webview};
-use tokio::sync::oneshot;
-use webview2_com::{
-    ClearBrowsingDataCompletedHandler, CoTaskMemPWSTR,
-    Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_BROWSING_DATA_KINDS, COREWEBVIEW2_BROWSING_DATA_KINDS_CACHE_STORAGE,
-        COREWEBVIEW2_BROWSING_DATA_KINDS_COOKIES, COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
-        COREWEBVIEW2_BROWSING_DATA_KINDS_FILE_SYSTEMS, COREWEBVIEW2_BROWSING_DATA_KINDS_INDEXED_DB,
-        COREWEBVIEW2_BROWSING_DATA_KINDS_SERVICE_WORKERS, COREWEBVIEW2_BROWSING_DATA_KINDS_WEB_SQL,
-        ICoreWebView2, ICoreWebView2_13, ICoreWebView2Profile2,
-    },
-    NavigationCompletedEventHandler,
+use super::{Bounds, Page, PlatformGrant};
+use serde_json::{Value, json};
+use std::{collections::BTreeMap, path::PathBuf, process::Stdio, time::Duration};
+use tauri::{Manager, Runtime, Webview};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::{Child, ChildStdin, Command},
+    sync::oneshot,
+    time::timeout,
 };
-use windows_core::{Interface, PWSTR, Result as WinResult, w};
+use windows::Win32::{
+    Foundation::HWND,
+    UI::WindowsAndMessaging::{
+        GWL_STYLE, GetParent, GetWindowLongPtrW, GetWindowThreadProcessId, HWND_TOP,
+        SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetParent,
+        SetWindowLongPtrW, SetWindowPos, WS_CHILD, WS_CLIPSIBLINGS, WS_POPUP,
+    },
+};
 
-mod cookie_requests;
-mod navigation;
-mod network;
+const WAIT: Duration = Duration::from_secs(20);
+const CLOSE_WAIT: Duration = Duration::from_secs(7);
+const OPEN_ID: u64 = 1;
+const CLOSE_ID: u64 = 2;
 
-pub(super) struct ProfileDirectory {
-    pub path: PathBuf,
-    pub temporary: bool,
+pub(super) struct PlatformView {
+    child: Child,
+    input: ChildStdin,
+    handle: usize,
+    pid: u32,
+    _temporary: Option<tempfile::TempDir>,
 }
 
-pub(super) fn profile_directory<R: Runtime>(
-    app: &AppHandle<R>,
-    account: Option<[u8; 16]>,
-    temporary: &mut Option<tempfile::TempDir>,
-) -> Result<ProfileDirectory, String> {
-    const ERROR: &str = "未能创建平台页面的独立存储。";
-    if let Some(id) = account {
-        let path = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|_| ERROR)?
-            .join("platform-accounts")
-            .join(uuid::Uuid::from_bytes(id).to_string());
-        std::fs::create_dir_all(&path).map_err(|_| ERROR)?;
-        return Ok(ProfileDirectory {
-            path,
-            temporary: false,
-        });
+fn hwnd(raw: usize) -> HWND {
+    HWND(raw as *mut std::ffi::c_void)
+}
+
+fn owns_window(raw: usize, pid: u32) -> bool {
+    let mut owner = 0;
+    // SAFETY: the handle is tested through User32 before any mutation.
+    let thread = unsafe { GetWindowThreadProcessId(hwnd(raw), Some(&mut owner)) };
+    thread != 0 && pid != 0 && pid == owner
+}
+
+fn decode_handle(value: &str) -> Option<usize> {
+    if value.len() != std::mem::size_of::<usize>() * 2 {
+        return None;
     }
-    let profile = tempfile::Builder::new()
-        .prefix("kwork-platform-")
-        .tempdir()
-        .map_err(|_| ERROR)?;
-    let path = profile.path().to_owned();
-    *temporary = Some(profile);
-    Ok(ProfileDirectory {
-        path,
-        temporary: true,
-    })
+    let mut bytes = [0; std::mem::size_of::<usize>()];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(value.get(index * 2..index * 2 + 2)?, 16).ok()?;
+    }
+    let raw = usize::from_le_bytes(bytes);
+    (raw != 0).then_some(raw)
 }
 
-type Completion = oneshot::Sender<WinResult<()>>;
-
-async fn on_webview<R: Runtime>(
-    view: &Webview<R>,
-    error: &str,
-    action: impl FnOnce(ICoreWebView2, Completion) -> WinResult<()> + Send + 'static,
-) -> Result<(), String> {
-    let (send, receive) = oneshot::channel();
-    view.with_webview(move |view| {
-        // SAFETY: Tauri hands over the live controller on its COM apartment.
-        let core = unsafe { view.controller().CoreWebView2() };
-        match core {
-            Ok(core) => {
-                let _ = action(core, send);
+impl PlatformView {
+    pub(super) async fn spawn<R: Runtime>(
+        owner: &Webview<R>,
+        storage: Option<[u8; 16]>,
+        report: impl Fn(bool) + Send + 'static,
+    ) -> Result<Self, String> {
+        let app = owner.app_handle();
+        let bundle = app
+            .path()
+            .resource_dir()
+            .map_err(|_| "找不到用量与充值组件。")?
+            .join("account-platform");
+        let executable = bundle.join("electron.exe");
+        let entry = bundle.join("resources").join("app");
+        if !executable.is_file() || !entry.join("main.cjs").is_file() {
+            return Err("用量与充值组件未安装，请重新安装 KWork。".into());
+        }
+        let (directory, temporary): (PathBuf, _) = match storage {
+            Some(id) => (
+                app.path()
+                    .app_local_data_dir()
+                    .map_err(|_| "找不到独立的平台页面存储。")?
+                    .join("account-platform-electron")
+                    .join(uuid::Uuid::from_bytes(id).to_string()),
+                None,
+            ),
+            None => {
+                let temporary = tempfile::Builder::new()
+                    .prefix("kwork-platform-")
+                    .tempdir()
+                    .map_err(|_| "未能创建独立的平台页面存储。")?;
+                (temporary.path().to_owned(), Some(temporary))
             }
-            Err(error) => {
-                let _ = send.send(Err(error));
+        };
+        std::fs::create_dir_all(&directory).map_err(|_| "未能创建独立的平台页面存储。")?;
+        let mut data_arg = std::ffi::OsString::from("--kwork-platform-data=");
+        data_arg.push(&directory);
+        let mut child = Command::new(executable)
+            .arg(entry)
+            .arg(data_arg)
+            .arg(concat!(
+                "--kwork-client-version=",
+                env!("CARGO_PKG_VERSION")
+            ))
+            .current_dir(bundle)
+            .env_remove("ELECTRON_RUN_AS_NODE")
+            .env_remove("ELECTRON_ENABLE_LOGGING")
+            .env_remove("NODE_OPTIONS")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|_| "无法启动用量与充值组件。")?;
+        let pid = child.id().ok_or("无法验证用量与充值组件进程。")?;
+        let input = child.stdin.take().ok_or("无法连接用量与充值组件。")?;
+        let output = child.stdout.take().ok_or("无法读取用量与充值组件。")?;
+        let mut lines = BufReader::new(output).lines();
+        let (ready, receive) = oneshot::channel();
+        tauri::async_runtime::spawn(async move {
+            let mut ready = Some(ready);
+            while let Ok(Some(line)) = lines.next_line().await {
+                let Ok(frame) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if frame["event"] == "ready"
+                    && let Some(ready) = ready.take()
+                {
+                    let handle = (frame["pid"].as_u64() == Some(u64::from(pid)))
+                        .then(|| frame["handle"].as_str().and_then(decode_handle))
+                        .flatten();
+                    let _ = ready.send(handle);
+                }
+                if frame["event"] == "failed" || frame["id"] == OPEN_ID {
+                    report(frame["ok"] == true);
+                }
+            }
+            report(false);
+        });
+        let handle = timeout(WAIT, receive)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+            .filter(|handle| owns_window(*handle, pid))
+            .ok_or("用量与充值组件启动失败。")?;
+        let parent = owner.window().hwnd().map_err(|_| "无法定位 KWork 窗口。")?;
+        // SAFETY: the child process just returned its verified HWND, while Tauri
+        // owns the parent. SetParent does not change the window style itself.
+        unsafe {
+            let child = hwnd(handle);
+            let style = GetWindowLongPtrW(child, GWL_STYLE);
+            SetWindowLongPtrW(
+                child,
+                GWL_STYLE,
+                (style & !(WS_POPUP.0 as isize)) | WS_CHILD.0 as isize | WS_CLIPSIBLINGS.0 as isize,
+            );
+            // The previous desktop parent is legitimately null.
+            let _ = SetParent(child, Some(parent));
+            if GetParent(child).ok() != Some(parent) {
+                return Err("无法在 KWork 窗口内显示平台页面。".into());
             }
         }
-    })
-    .map_err(|_| error.to_owned())?;
-    match tokio::time::timeout(Duration::from_secs(12), receive).await {
-        Ok(Ok(Ok(()))) => Ok(()),
-        _ => Err(error.into()),
+        Ok(Self {
+            child,
+            input,
+            handle,
+            pid,
+            _temporary: temporary,
+        })
     }
-}
 
-pub(super) async fn configure<R: Runtime>(
-    view: &Webview<R>,
-    origin: url::Origin,
-    headers: BTreeMap<String, String>,
-) -> Result<oneshot::Receiver<bool>, String> {
-    let (report, outcome) = oneshot::channel();
-    on_webview(
-        view,
-        "未能配置平台页面的请求。",
-        move |core, send| {
-            let with_cookie = headers.contains_key("cookie");
-            let installed = navigation::install(&core, origin.clone(), report)
-                .and_then(|()| network::install(&core, origin.clone(), headers.clone()));
-            if installed.is_ok() && with_cookie {
-                cookie_requests::install(&core, origin, headers, send)
-            } else {
-                let _ = send.send(installed);
-                Ok(())
+    pub(super) async fn open(
+        &mut self,
+        page: Page,
+        bounds: Bounds,
+        grant: PlatformGrant,
+        headers: BTreeMap<String, String>,
+    ) -> Result<(), String> {
+        self.send(json!({
+            "id":OPEN_ID, "action":"open", "locale":"zh_CN",
+            "page":match page { Page::Usage => "usage", Page::TopUp => "top-up" },
+            "width":bounds.width.max(1.), "height":bounds.height.max(1.),
+            "account":{
+                "origin":grant.origin, "token":grant.token, "userId":grant.user_id,
+                "embeddedPageDist":grant.embedded_page_dist, "requestHeaders":headers,
+            },
+        }))
+        .await
+    }
+
+    pub(super) fn present<R: Runtime>(
+        &self,
+        owner: &Webview<R>,
+        bounds: Bounds,
+    ) -> Result<(), String> {
+        let scale = owner
+            .window()
+            .scale_factor()
+            .map_err(|_| "未能取得平台页面缩放。")?;
+        self.place(bounds, scale, bounds.width >= 1. && bounds.height >= 1.)
+    }
+
+    fn place(&self, bounds: Bounds, scale: f64, visible: bool) -> Result<(), String> {
+        if !owns_window(self.handle, self.pid) {
+            return Err("用量与充值组件已关闭。".into());
+        }
+        let px = |value: f64| (value * scale).round() as i32;
+        let visibility = if visible {
+            SWP_SHOWWINDOW
+        } else {
+            SWP_HIDEWINDOW
+        };
+        // SAFETY: the handle still belongs to the owned helper process.
+        unsafe {
+            SetWindowPos(
+                hwnd(self.handle),
+                Some(HWND_TOP),
+                px(bounds.x),
+                px(bounds.y),
+                px(bounds.width).max(1),
+                px(bounds.height).max(1),
+                SWP_FRAMECHANGED | SWP_NOACTIVATE | visibility,
+            )
+        }
+        .map_err(|_| "未能调整平台页面布局。".into())
+    }
+
+    async fn send(&mut self, payload: Value) -> Result<(), String> {
+        let mut bytes = serde_json::to_vec(&payload).map_err(|_| "平台页面请求无效。")?;
+        bytes.push(b'\n');
+        timeout(Duration::from_secs(3), self.input.write_all(&bytes))
+            .await
+            .map_err(|_| "平台页面没有响应。")?
+            .map_err(|_| "无法向平台页面发送请求。".into())
+    }
+
+    pub(super) async fn close(mut self) -> Result<(), String> {
+        let _ = self.place(
+            Bounds {
+                x: 0.,
+                y: 0.,
+                width: 1.,
+                height: 1.,
+            },
+            1.,
+            false,
+        );
+        if self.child.try_wait().ok().flatten().is_some() {
+            return Ok(());
+        }
+        let _ = self.send(json!({"id":CLOSE_ID, "action":"close"})).await;
+        match timeout(CLOSE_WAIT, self.child.wait()).await {
+            Ok(Ok(status)) if status.success() => Ok(()),
+            _ => {
+                let _ = self.child.kill().await;
+                Err("未能正常关闭平台页面。".into())
             }
-        },
-    )
-    .await?;
-    Ok(outcome)
-}
-
-pub(super) async fn sanitize<R: Runtime>(view: &Webview<R>) -> Result<(), String> {
-    on_webview(
-        view,
-        "未能清理平台页面的登录数据。",
-        |core, send| {
-            let core = core.cast::<ICoreWebView2_13>()?;
-            // SAFETY: The core is live on the creating apartment and the returned
-            // profile refers only to this WebView's dedicated user data folder.
-            let profile = unsafe { core.Profile() }?.cast::<ICoreWebView2Profile2>()?;
-            let types = COREWEBVIEW2_BROWSING_DATA_KINDS(
-                COREWEBVIEW2_BROWSING_DATA_KINDS_FILE_SYSTEMS.0
-                    | COREWEBVIEW2_BROWSING_DATA_KINDS_INDEXED_DB.0
-                    | COREWEBVIEW2_BROWSING_DATA_KINDS_WEB_SQL.0
-                    | COREWEBVIEW2_BROWSING_DATA_KINDS_CACHE_STORAGE.0
-                    | COREWEBVIEW2_BROWSING_DATA_KINDS_COOKIES.0
-                    | COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE.0
-                    | COREWEBVIEW2_BROWSING_DATA_KINDS_SERVICE_WORKERS.0,
-            );
-            let callback = ClearBrowsingDataCompletedHandler::create(Box::new(move |result| {
-                let _ = send.send(result);
-                Ok(())
-            }));
-            // SAFETY: WebView2 retains the callback on this apartment until the
-            // requested data has been cleared. LocalStorage is outside the mask.
-            unsafe { profile.ClearBrowsingData(types, &callback) }
-        },
-    )
-    .await
-}
-
-pub(super) async fn retire<R: Runtime>(view: &Webview<R>) -> Result<(), String> {
-    // Keep the profile alive long enough for the cleanup to finish, after the
-    // prior document and its workers have been taken out of the page.
-    on_webview(view, "未能卸载平台页面。", |core, send| {
-        // SAFETY: `core` is a live WebView2 interface on this apartment.
-        unsafe { core.Stop() }?;
-        let mut send = Some(send);
-        let finished = NavigationCompletedEventHandler::create(Box::new(move |core, _| {
-            let (Some(core), Some(_)) = (core, send.as_ref()) else {
-                return Ok(());
-            };
-            let mut source = PWSTR::null();
-            // SAFETY: `source` provides an initialized writable PWSTR and frees
-            // the returned CoTaskMem string through its guard below.
-            let result = unsafe { core.Source(&mut source) };
-            let source = CoTaskMemPWSTR::from(source);
-            result?;
-            if source.to_string() == "about:blank"
-                && let Some(send) = send.take()
-            {
-                let _ = send.send(Ok(()));
-            }
-            Ok(())
-        }));
-        let mut subscription = 0;
-        // SAFETY: The runtime retains the registered callback until this closing
-        // view is destroyed. The writable event token lives through registration.
-        unsafe { core.add_NavigationCompleted(&finished, &mut subscription) }?;
-        // SAFETY: Static, null-terminated empty HTML never executes script or
-        // issues a network request. Navigation is dispatched on the apartment.
-        unsafe { core.NavigateToString(w!("<!doctype html>")) }
-    })
-    .await?;
-    sanitize(view).await
+        }
+    }
 }

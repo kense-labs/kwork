@@ -55,7 +55,8 @@ export class DesktopPlatformView {
    * @param blocked - Whether shell policy or an update prompt prevents opening a product view.
    */
   constructor(private readonly preload: string, private readonly getLocale: () => PlatformLocale,
-    private readonly platform: 'darwin' | 'win32', private readonly blocked: (owner: PlatformOwner) => boolean) {}
+    private readonly platform: 'darwin' | 'win32', private readonly blocked: (owner: PlatformOwner) => boolean,
+    private readonly observeDocument?: (contents: WebContentsView['webContents'], origin: string) => void) {}
 
   /** @param next - private Host credentials; identity enrichment preserves an already open temporary document. */
   setSession(next: PlatformSession | null): void {
@@ -146,6 +147,7 @@ export class DesktopPlatformView {
       nodeIntegration: false, webSecurity: true,
     } })
     this.view = view
+    this.observeDocument?.(view.webContents, account.origin)
     // External payment and documentation pages open without the embedded session or token.
     view.webContents.setWindowOpenHandler(({ url }) => {
       const destination = new URL(url)

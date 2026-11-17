@@ -169,6 +169,10 @@ export function update_settings_shell(next) {
   if (next.visible && !controls) mount();
   updateSettingsTheme({ visible: next.visible && next.page === 2, locked: next.locked || officialModelsEnabled() && !next.theme_writable,
     preference: next.theme, size: next.font_size, fonts: next.fonts });
+  updateSettingsAgentPresets({ visible: next.visible && next.page === 7, connected: next.connected,
+    generation: next.generation, locked: next.locked, developerTools: next.developer_tools,
+    developerLoaded: officialModelsEnabled() ? next.developer_loaded : !next.developer_loading,
+    blankSession: next.blank_preset_session });
   if (!controls) return;
   const { root, buttons } = controls;
   root.hidden = !next.visible;
@@ -177,7 +181,6 @@ export function update_settings_shell(next) {
   root.setAttribute('aria-owns', next.locked ? '' : next.page === 5 && !officialModelsEnabled() ? 'model-provider-form' : next.page === 0 ? 'deepseek-account-form' : '');
   updateSettingsModels({ visible: next.visible && next.page === 5, connected: next.connected, generation: next.generation, locked: next.locked });
   updateSettingsPlugins({ visible: next.visible && next.page === 6, connected: next.connected, generation: next.generation, locked: next.locked });
-  updateSettingsAgentPresets({ visible: next.visible && next.page === 7, connected: next.connected, generation: next.generation, locked: next.locked, developerTools: next.developer_tools });
   if (officialModelsEnabled()) updateSettingsDeveloper({ visible: next.visible && next.page === 2, locked: next.locked || !next.developer_writable, enabled: next.developer_tools, loading: next.developer_loading });
   if (officialModelsEnabled()) updateSettingsPermission({ visible: next.visible && next.page === 2, connected: next.connected, generation: next.generation, locked: next.locked });
   if (officialModelsEnabled()) updateSettingsUpload({ visible: next.visible && next.page === 2, connected: next.connected, generation: next.generation, locked: next.locked });

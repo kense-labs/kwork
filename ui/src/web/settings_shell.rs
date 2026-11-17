@@ -46,8 +46,10 @@ struct View {
     fonts: crate::font_preferences::FontPreferences,
     developer_tools: bool,
     developer_loading: bool,
+    developer_loaded: bool,
     theme_writable: bool,
     developer_writable: bool,
+    blank_preset_session: Option<String>,
 }
 
 pub(super) const PAGES: [SettingsPage; 9] = [
@@ -85,8 +87,14 @@ impl DshApp {
             fonts: document_fonts::preferences(cx).clone(),
             developer_tools: self.developer_tools,
             developer_loading: self.developer_tools_loading,
+            developer_loaded: self.settings_shell.developer_loaded,
             theme_writable: self.settings_shell.theme_writable,
             developer_writable: self.settings_shell.developer_writable,
+            blank_preset_session: (self.conversation.has_agent_preset
+                && self.conversation_header_is_blank()
+                && self.conversation.acp_open)
+                .then(|| self.active_session.clone())
+                .flatten(),
         };
         if self.settings_shell.view.as_ref() != Some(&next)
             && let Ok(value) = serde_wasm_bindgen::to_value(&next)
@@ -162,6 +170,12 @@ impl DshApp {
         }
         if action == "settings-close" {
             self.close_settings(cx);
+            return;
+        }
+        if action == "settings-agent-preset-creator"
+            && self.settings_page == SettingsPage::AgentPresets
+        {
+            self.start_creator_preset(w, cx);
             return;
         }
         if self.provider_navigation_locked() || self.account_confirmation_open() {

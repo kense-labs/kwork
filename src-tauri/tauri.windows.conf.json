@@ -13,6 +13,9 @@
     ]
   },
   "bundle": {
-    "targets": ["nsis"]
+    "targets": ["nsis"],
+    "resources": {
+      "../services/account-platform-electron/bundle/": "account-platform/"
+    }
   }
 }

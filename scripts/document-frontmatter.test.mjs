@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseFrontmatter } from '../ui/document-frontmatter.js';
+import { parseFields as parseFrontmatter } from '../ui/vendor/harness-document-markdown/frontmatter-field-values.ts';
 
 test('retains field order and the authored values of non-string YAML nodes', async () => {
   const source = [

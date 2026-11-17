@@ -5,10 +5,8 @@ use super::{
     dock_controls::{DockControl, dock_action_button},
     dock_files::{file_sheet_icon, files_folder_icon, files_header},
     document_code::{CodeSpan, HighlightSession, display_source, language_for_path, render_code},
-    document_frontmatter::Frontmatter,
     document_html,
     document_selection::{DocumentSelection, SelectionLayout},
-    workspace::render_markdown,
     workspace_watch::WorkspaceWatch,
     *,
 };
@@ -397,7 +395,6 @@ pub(super) struct DocumentTab {
     wrap: bool,
     viewer: Viewer,
     code: Option<CodeSource>,
-    frontmatter: Option<Frontmatter>,
     content_revision: u64,
     viewer_open: bool,
 }
@@ -420,7 +417,6 @@ impl DocumentTab {
             wrap: true,
             viewer: Viewer::for_path(path)[0],
             code: language_for_path(path).map(CodeSource::new),
-            frontmatter: None,
             content_revision: 0,
             viewer_open: false,
         }
@@ -538,13 +534,6 @@ impl DocumentTab {
                     text.eof = page.eof;
                 }
                 self.content_revision = request;
-                if let (Some(code), Some(text)) = (&self.code, &self.text)
-                    && code.language == "markdown"
-                    && Frontmatter::update(&mut self.frontmatter, &text.text)
-                    && self.viewer == Viewer::Markdown
-                {
-                    self.selection.clear();
-                }
             }
             Ok(_) => self.failure = Some(ReadFailure::Unavailable("返回的行号与请求不符".into())),
             Err(failure) => self.failure = Some(failure),
@@ -728,7 +717,6 @@ impl DshApp {
                 self.read_document(key, offset, cx);
             }
             self.highlight_document(key, cx);
-            self.parse_document_frontmatter(key, cx);
             if let Some(tab) = self.sidebar.documents.get(&key)
                 && let Some(text) = &tab.text
                 && text.eof
@@ -783,47 +771,6 @@ impl DshApp {
                 };
                 code.tokens = tokens;
                 if visible {
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-    }
-
-    fn parse_document_frontmatter(&self, key: u64, cx: &mut Context<Self>) {
-        let Some(session) = self.active_session.clone() else {
-            return;
-        };
-        let Some(tab) = self
-            .sidebar
-            .documents
-            .get(&key)
-            .filter(|tab| tab.viewer == Viewer::Markdown)
-        else {
-            return;
-        };
-        let (Some(metadata), Some(text)) = (&tab.frontmatter, &tab.text) else {
-            return;
-        };
-        let Some((request, parsed, verbatim_len)) = metadata.request(&text.text) else {
-            return;
-        };
-        cx.spawn(async move |this, cx| {
-            let Ok(result) = JsFuture::from(request).await else {
-                return;
-            };
-            let Some(parsed) = parsed.upgrade() else {
-                return;
-            };
-            let Some(fields_len) = parsed.finish(result) else {
-                return;
-            };
-            let _ = this.update(cx, |this, cx| {
-                if this.active_session.as_deref() == Some(session.as_str())
-                    && let Some(tab) = this.sidebar.documents.get(&key)
-                    && tab.viewer == Viewer::Markdown
-                {
-                    tab.selection.replace_leading_text(verbatim_len, fields_len);
                     cx.notify();
                 }
             });
@@ -936,6 +883,32 @@ impl DshApp {
         cx.notify();
     }
 
+    pub(super) fn document_markdown_load_more(&mut self, value: &str, cx: &mut Context<Self>) {
+        let Ok(event) = serde_json::from_str::<Value>(value) else {
+            return;
+        };
+        let Some(key) = event["key"]
+            .as_str()
+            .and_then(|key| key.parse::<u64>().ok())
+        else {
+            return;
+        };
+        if event["session"].as_str() != self.active_session.as_deref()
+            || !self.sidebar.documents.get(&key).is_some_and(|tab| {
+                tab.viewer == Viewer::Markdown
+                    && !tab.viewer_open
+                    && tab.metadata_failure().is_none()
+            })
+            || !self.sidebar.surface.layout.all_panes().any(|pane| {
+                pane.active() == RightPanelTab::Document(key)
+                    && self.dock_pane_on_screen(pane.id, cx)
+            })
+        {
+            return;
+        }
+        self.load_more_document(key, cx);
+    }
+
     fn load_more_document(&mut self, key: u64, cx: &mut Context<Self>) {
         if let Some(tab) = self.sidebar.documents.get(&key)
             && tab.request.is_none()
@@ -967,7 +940,6 @@ impl DshApp {
             tab.text = None;
             tab.html = None;
             tab.html_assets = None;
-            tab.frontmatter = None;
             tab.selection.clear();
             if let Some(code) = tab.code.as_mut() {
                 *code = CodeSource::new(code.language);
@@ -1152,7 +1124,7 @@ impl DshApp {
                             .bottom(px(8.))
                             .right(px(8.))
                             .h_auto()
-                            .when(viewer == Viewer::Html, |card| {
+                            .when(matches!(viewer, Viewer::Html | Viewer::Markdown), |card| {
                                 card.child(document_html::cover(key, 16.))
                             }),
                     )
@@ -1247,47 +1219,31 @@ impl DshApp {
                 }
             }
             if let Some(text) = &tab.text {
+                if tab.viewer == Viewer::Markdown {
+                    let session = self.active_session.as_deref().unwrap_or("");
+                    let source = json!({
+                        "session": session, "key": key.to_string(), "path": text.absolute_path,
+                        "text": text.text, "eof": text.eof, "pending": tab.request.is_some(),
+                        "failure": tab.failure.as_ref().map(ReadFailure::line),
+                        "canLoad": tab.metadata_failure().is_none(),
+                    });
+                    return body.relative().child(self.markdown_document_frame(
+                        pane,
+                        format!("{session}:{key}"),
+                        source.to_string(),
+                        tab.viewer_open,
+                        w,
+                        cx,
+                    ));
+                }
                 let selection = SelectionLayout::new(tab.selection.clone());
                 let code = tab.code.as_ref().filter(|_| tab.viewer == Viewer::Code);
-                let nowrap = !tab.wrap && tab.viewer != Viewer::Markdown;
+                let nowrap = !tab.wrap;
                 let mut source = column()
                     .gap_0()
                     .when(nowrap, |source| source.flex_none().min_w_full())
                     .when(!nowrap, |source| source.w_full().min_w_0());
-                if tab.viewer == Viewer::Markdown {
-                    let family =
-                        super::document_fonts::family(14. + self.content_font_delta as f32, cx);
-                    source = source
-                        .px(px(12.))
-                        .py(px(10.))
-                        .when_some(family, |source, family| source.font_family(family));
-                    let markdown = if let Some(metadata) = &tab.frontmatter {
-                        source = source.children(metadata.render(&text.text, &selection, w, cx));
-                        metadata.body(&text.text)
-                    } else {
-                        &text.text
-                    };
-                    source = source.child(render_markdown(
-                        markdown,
-                        &format!("document-{key}"),
-                        super::workspace::MarkdownOptions {
-                            dom: None,
-                            copied_mark: self.copied_mark.as_deref(),
-                            wrapped_code: &self.conversation.wrapped_code,
-                            font_delta: self.content_font_delta,
-                            selection: Some(&selection),
-                            mentions: None,
-                            settled: true,
-                            cache: super::conversation::MarkdownCache {
-                                highlights: &self.conversation.markdown_highlights,
-                                math: &self.conversation.markdown_math,
-                                expanded_diffs: &self.conversation.expanded_diffs,
-                            },
-                            active_session: self.active_session.as_deref(),
-                        },
-                        cx,
-                    ));
-                } else if let Some(code) = code {
+                if let Some(code) = code {
                     source = source.child(render_code(
                         display_source(&text.text),
                         &code.tokens,

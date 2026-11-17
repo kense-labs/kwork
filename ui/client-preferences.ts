@@ -5,7 +5,9 @@ let connected = false;
 let listening = false;
 let dispatch: (action: string, value: string) => void;
 export function listenClientPreferences(callback: typeof dispatch) { dispatch = callback; }
-const send = (action: string, value: unknown) => queueMicrotask(() => dispatch?.(action, typeof value === 'string' ? value : JSON.stringify(value)));
+// WKWebView can drain microtasks inside the Wasm import that publishes this
+// view. Deliver to GPUI in the next task, after its current App borrow ends.
+const send = (action: string, value: unknown) => setTimeout(() => dispatch?.(action, typeof value === 'string' ? value : JSON.stringify(value)), 0);
 export function updateClientPreferencesConnection(next: boolean) {
   if (!listening) {
     listening = true;
@@ -19,9 +21,9 @@ export function updateClientPreferencesConnection(next: boolean) {
   send('settings-client-preferences', { writable: false, available: [], namespaces: [] });
   if (next) {
     const current = createClientPreferencesController(request => (window as any).__TAURI__.core.invoke('client_preferences', { request }),
-      snapshot => queueMicrotask(() => {
+      snapshot => setTimeout(() => {
         if (owner === current) dispatch?.('settings-client-preferences', JSON.stringify(snapshot));
-      }));
+      }, 0));
     owner = current;
     void current.load().catch(() => { if (owner === current) send('settings-client-preferences-error', '读取界面偏好失败。'); });
   }

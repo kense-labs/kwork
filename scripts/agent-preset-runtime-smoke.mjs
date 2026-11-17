@@ -149,6 +149,21 @@ try {
     const planning = await request('_dsh/gpui/session/plan-mode', { sessionId: explicit.sessionId, active: true });
     assert.equal(planning.active, true);
     await assert.rejects(request('_dsh/gpui/session/plan-mode', { sessionId: first.sessionId, active: true }), /不支持/);
+    const schedule = operation => request('_dsh/gpui/schedule', {operation});
+    const task = await schedule({
+      action:'create', request:{
+        title:'Preset fixture', prompt:'Reply OK.',
+        timing:{kind:'at', at:new Date(Date.now() + 3_600_000).toISOString()},
+        target:{kind:'new_once',create:{cwd:workspace,agentPreset:'minimal'}},
+      },
+    });
+    assert.equal(task.target.create.agentPreset, 'minimal');
+    const scheduledSession = task.target.sessionId;
+    await schedule({action:'run',id:task.id});
+    const scheduled = await inspect(scheduledSession);
+    assert.equal(scheduled.header, 'minimal');
+    assert.equal(scheduled.composed, 'minimal');
+    assert.deepEqual(scheduled.tools, minimal.tools);
   }
   await request('session/prompt', { sessionId: first.sessionId, prompt: [{ type: 'text', text: 'Reply OK.' }] });
   await assert.rejects(presets({ operation: 'select', id: 'standard', sessionId: first.sessionId }), /already started|locked/);

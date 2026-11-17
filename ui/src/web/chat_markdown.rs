@@ -63,6 +63,46 @@ struct Markdown {
     dark: bool,
     viewport: Viewport,
 }
+
+pub(super) fn interaction(
+    session: &str,
+    request: &str,
+    width: f32,
+    payload: &Value,
+    hidden: bool,
+    cx: &Context<DshApp>,
+) -> gpui::Div {
+    div()
+        .w_full()
+        .max_w(px(width))
+        .min_w_0()
+        .flex_none()
+        .child(Markdown {
+            key: format!("{session}:interaction:{request}"),
+            source: json!({"session":session,"interaction":payload}).to_string(),
+            dark: super::workspace::dark(cx),
+            viewport: Viewport {
+                hidden,
+                composer: None,
+            },
+        })
+}
+
+pub(super) fn entry_surface(
+    key: &str,
+    kind: &str,
+    payload: &Value,
+    options: super::workspace::MarkdownOptions<'_>,
+    cx: &Context<DshApp>,
+) -> gpui::Div {
+    let session = options.active_session.unwrap_or("");
+    div().w_full().min_w_0().flex_none().child(Markdown {
+        key: format!("{session}:{kind}:{key}"),
+        source: json!({"session":session, kind:payload}).to_string(),
+        dark: super::workspace::dark(cx),
+        viewport: options.dom.unwrap_or_default(),
+    })
+}
 impl IntoElement for Markdown {
     type Element = Self;
     fn into_element(self) -> Self {
@@ -157,12 +197,29 @@ impl DshApp {
         let Ok(value) = serde_json::from_str::<Value>(value) else {
             return;
         };
-        if value["session"].as_str() != self.active_session.as_deref()
-            || self.trajectory.active != super::trajectory::ConversationView::Chat
-        {
+        if value["session"].as_str() != self.active_session.as_deref() {
+            return;
+        }
+        match value["action"].as_str() {
+            Some("question-focus" | "question-hold" | "question-hide") => {
+                self.question_composer_action(&value, w, cx);
+                return;
+            }
+            Some("plan-preview") => {
+                self.plan_review_preview_action(&value, w, cx);
+                return;
+            }
+            _ => {}
+        }
+        if self.trajectory.active != super::trajectory::ConversationView::Chat {
             return;
         }
         match value["action"].as_str().unwrap_or("") {
+            "open-plan-card" => {
+                if let Some(call) = value["callId"].as_str() {
+                    self.open_submitted_plan(call, w, cx);
+                }
+            }
             "file" => {
                 if let Some(path) = value["path"].as_str() {
                     let line = value["line"]

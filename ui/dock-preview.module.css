@@ -1,0 +1,67 @@
+.statusLine {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: 1.6;
+  white-space: normal;
+}
+
+.action {
+  padding: 4px 10px;
+  color: var(--dsw-alias-label-primary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  font-family: var(--dsw-font, inherit);
+  white-space: normal;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .action:hover {
+    background: var(--dsw-alias-bg-layer-3);
+  }
+}
+
+/* The next page, asked for where the loaded text ends. */
+.more {
+  display: block;
+  margin: 8px 10px;
+  padding: 4px 10px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  font-family: var(--dsw-font, inherit);
+  white-space: normal;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .more:hover:not(:disabled) {
+    color: var(--dsw-alias-label-primary);
+    background: var(--dsw-alias-bg-layer-3);
+  }
+}
+
+.more:disabled {
+  color: var(--dsw-alias-label-tertiary);
+  cursor: default;
+}
+
+.scrollport {
+  height: 100%;
+  overflow: auto;
+  overflow-anchor: none;
+  color: var(--dsw-alias-label-primary);
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+}
+
+.scrollport::-webkit-scrollbar-track { margin: 2px; }

@@ -335,19 +335,19 @@ impl Operation {
 #[test]
 fn package_badges_and_component_counts_follow_the_official_rules() {
     let snapshot: Snapshot = serde_json::from_value(serde_json::json!({
-        configs: [], managementAvailable: true,
-        entries: [
-            { entryId: "active", moduleName: "a", enabled: true, fiberPhase: "active" },
-            { entryId: "off", moduleName: "b", enabled: false, fiberPhase: "active" },
-            { entryId: "failed", moduleName: "c", enabled: true, fiberPhase: "failed" },
+        "configs": [], "managementAvailable": true,
+        "entries": [
+            { "entryId": "active", "moduleName": "a", "enabled": true, "fiberPhase": "active" },
+            { "entryId": "off", "moduleName": "b", "enabled": false, "fiberPhase": "active" },
+            { "entryId": "failed", "moduleName": "c", "enabled": true, "fiberPhase": "failed" },
         ],
-        bundles: [{
-            name: "bundle", installed: true, official: true, experimental: true,
-            enabled: true, removable: false, availability: "missing", moreOnly: false, rank: 0,
-            rows: [
-                { rowId: "a", moduleName: "a", entryId: "active" },
-                { rowId: "b", moduleName: "b", entryId: "off" },
-                { rowId: "c", moduleName: "c", entryId: "failed" },
+        "bundles": [{
+            "name": "bundle", "installed": true, "official": true, "experimental": true,
+            "enabled": true, "removable": false, "availability": "missing", "moreOnly": false, "rank": 0,
+            "rows": [
+                { "rowId": "a", "moduleName": "a", "entryId": "active" },
+                { "rowId": "b", "moduleName": "b", "entryId": "off" },
+                { "rowId": "c", "moduleName": "c", "entryId": "failed" },
             ],
         }],
     }))
@@ -370,8 +370,8 @@ fn package_badges_and_component_counts_follow_the_official_rules() {
     let missing = Bundle {
         error: Some("unsupported-platform".into()),
         ..serde_json::from_value(serde_json::json!({
-            name: "missing", installed: true, official: true, enabled: true, removable: false,
-            availability: "installed", moreOnly: false, rank: 0, rows: [],
+            "name": "missing", "installed": true, "official": true, "enabled": true, "removable": false,
+            "availability": "installed", "moreOnly": false, "rank": 0, "rows": [],
         }))
         .unwrap()
     };

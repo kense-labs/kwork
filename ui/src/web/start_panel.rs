@@ -835,7 +835,9 @@ impl DshApp {
             RightPanelTab::Document(key) => self
                 .render_document(pane, key, width, w, cx)
                 .into_any_element(),
-            RightPanelTab::Plan(key) => self.render_plan_document(key, w, cx).into_any_element(),
+            RightPanelTab::Plan(key) => self
+                .render_plan_document(pane, key, w, cx)
+                .into_any_element(),
             RightPanelTab::Browser(key) => self
                 .render_right_browser(key, pane.is_floating(), w, cx)
                 .into_any_element(),

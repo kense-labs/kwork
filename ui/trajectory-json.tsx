@@ -11,6 +11,11 @@ import { ToolCatalog, SystemPromptDiff } from './trajectory-prompt';
 import { stageCanvasOverlay } from './document-html.js';
 import { beginChatMarkdownFrames, listenChatMarkdown } from './chat-markdown';
 export { measureChatMarkdown, stageChatMarkdown } from './chat-markdown';
+export { clearQuestionDraft, questionSubmitting } from './question-composer';
+import { beginDockPreviewFrames, listenDockPreview } from './dock-preview';
+export { stagePlanPreview, stageDocumentMarkdown } from './dock-preview';
+import { beginSessionPresetFrames } from './session-agent-preset';
+export { stageSessionPreset, presetSelectionPending, stagedAgentPreset, stageCreatorAgentPreset } from './session-agent-preset';
 import { beginTrajectoryTimelineFrames, listenTrajectoryTimeline } from './trajectory-timeline';
 export { stageTrajectoryTimeline, trajectoryTimelineHeight, trajectoryTimelineFocus, trajectoryTimelineHistoryStarted, focusTrajectorySearch } from './trajectory-timeline';
 import { createRoot, type Root } from 'react-dom/client';
@@ -67,8 +72,11 @@ function send(action: string, value = '') { notify?.(action, value); }
 function restoreShell() { document.querySelector<HTMLElement>('#gpui-text-input')?.focus({ preventScroll: true }); }
 export function listenTrajectoryJson(callback: typeof notify) {
   notify = callback; installIcons(); listenTrajectoryTimeline(callback); listenTrajectoryAccessibility(callback); listenChatMarkdown(callback);
+  listenDockPreview(callback);
 }
 export function beginTrajectoryJsonFrames() {
+  beginDockPreviewFrames();
+  beginSessionPresetFrames();
   beginChatMarkdownFrames();
   beginTrajectoryTimelineFrames();
   beginTrajectoryAccessibilityFrames();

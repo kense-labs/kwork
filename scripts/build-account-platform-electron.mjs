@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,3 +14,13 @@ await build({
 });
 await writeFile(join(outdir, 'package.json'), JSON.stringify({ name: 'kwork-account-platform', version: '0.1.0', main: 'main.cjs', private: true }, null, 2) + '\n');
 console.log(`Account Platform helper ready: ${outdir}`);
+if (process.argv.includes('--windows-bundle')) {
+  const runtime = join(source, 'node_modules/electron/dist');
+  const bundle = join(source, 'bundle');
+  await access(join(runtime, 'electron.exe'));
+  await rm(bundle, { recursive: true, force: true });
+  await cp(runtime, bundle, { recursive: true });
+  await rm(join(bundle, 'resources/default_app.asar'), { force: true });
+  await cp(outdir, join(bundle, 'resources/app'), { recursive: true });
+  console.log(`Windows account renderer ready: ${bundle}`);
+}

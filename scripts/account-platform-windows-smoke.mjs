@@ -318,9 +318,9 @@ async function verify(binary, host, home, documents, fixture) {
   assert(documentsLoaded.every(entry => entry.route && entry.deployment && entry.client === 'desktop-win'));
   const external = fixture.records.filter(entry => entry.path.startsWith('outside:'));
   assert.equal(external.length, 3, 'Only redirected assets reached the other port');
-  assert(external.every(entry => entry.ordinary && !entry.route && !entry.deployment && !entry.auth && !entry.client),
-    'Cross-origin redirect preserves ordinary cookies without forwarding the embedded credentials');
-  console.log('Windows WebView2 platform smoke passed: recovery, usage, top-up, worker requests, redirect isolation and profile storage after restart.');
+  assert(external.every(entry => !entry.ordinary && !entry.route && !entry.deployment && !entry.auth && !entry.client),
+    'The official request policy strips Cookie and other injected headers on cross-origin redirects');
+  console.log('Windows embedded Electron smoke passed: recovery, usage, top-up, worker requests, redirect isolation and profile storage after restart.');
 }
 
 if (import.meta.main) {

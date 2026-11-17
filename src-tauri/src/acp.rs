@@ -27,6 +27,8 @@ const CLIENT_PREFERENCE_LICENSE: &str =
     include_str!("../../services/vendor/dsh-ui-preferences/LICENSE");
 const CLIENT_DEVELOPER: &str =
     include_str!("../../services/vendor/dsh-ui-preferences/developer.mjs");
+const AGENT_PRESET_PROFILE: &str = include_str!("../../services/agent-preset-profile.mjs");
+const AGENT_PRESET_PACKAGES: &str = include_str!("../../services/agent-preset-packages.mjs");
 
 /// Owns the single ACP connection shared by all windows and sessions.
 #[derive(Default)]
@@ -151,6 +153,32 @@ impl AcpConnection {
                 command.env(
                     "KWORK_CLIENT_PREFERENCES_MODULE",
                     cached_module("client-preferences", source.as_bytes())?,
+                );
+            }
+            if cfg!(any(target_os = "macos", windows)) {
+                let packages =
+                    cached_module("agent-preset-packages", AGENT_PRESET_PACKAGES.as_bytes())?;
+                let assets = json!({
+                    "lock": serde_json::from_str::<Value>(include_str!("../../services/vendor/dsh-agent-presets/packages.json"))
+                        .map_err(|error| error.to_string())?,
+                    "acp": include_str!("../../services/vendor/dsh-agent-presets/acp.mjs"),
+                    "license": include_str!("../../services/vendor/dsh-agent-presets/LICENSE"),
+                    "presets": {
+                        "standard": include_str!("../../services/vendor/dsh-agent-presets/standard.patch.yml"),
+                        "ptc": include_str!("../../services/vendor/dsh-agent-presets/ptc.patch.yml"),
+                        "minimal": include_str!("../../services/vendor/dsh-agent-presets/minimal.patch.yml"),
+                        "cordis": include_str!("../../services/vendor/dsh-agent-presets/cordis.patch.yml")
+                    }
+                });
+                let source =
+                    format!("const bundledPresetAssets = {assets};\n{AGENT_PRESET_PROFILE}")
+                        .replace(
+                            "'./agent-preset-packages.mjs'",
+                            &module_import_specifier(&packages)?,
+                        );
+                command.env(
+                    "KWORK_AGENT_PRESETS_MODULE",
+                    cached_module("agent-preset-profile", source.as_bytes())?,
                 );
             }
             match terminal {
@@ -864,15 +892,38 @@ pub async fn new_session(
     webview: tauri::Webview,
     cwd: String,
     workspace_id: Option<String>,
+    agent_preset: Option<String>,
     service: State<'_, AcpService>,
 ) -> Result<Value, String> {
     let connection = connection(&service).await?;
     if workspace_id.is_some() && (webview.label() != "main" || !connection.session_bridge) {
         return Err("当前窗口或服务无法创建工作区会话。".into());
     }
-    let mut reply = connection
-        .request("session/new", json!({"cwd": cwd, "mcpServers": []}))
-        .await?;
+    let mut request = json!({"cwd": cwd, "mcpServers": []});
+    if let Some(preset) = agent_preset {
+        if webview.label() != "main"
+            || !connection.session_bridge
+            || preset.is_empty()
+            || preset.len() > 512
+        {
+            return Err("当前窗口或服务无法指定 Agent 预设。".into());
+        }
+        let roster = connection
+            .request(
+                "_dsh/gpui/agent-preset-settings",
+                json!({"operation":"list"}),
+            )
+            .await?;
+        if !roster["presets"].as_array().is_some_and(|presets| {
+            presets
+                .iter()
+                .any(|option| option["id"] == preset && option["broken"].is_null())
+        }) {
+            return Err("所选 Agent 预设已不可用。".into());
+        }
+        request["_meta"] = json!({"kwork.agentPreset": preset});
+    }
+    let mut reply = connection.request("session/new", request).await?;
     if let Some(id) = reply["sessionId"].as_str().map(str::to_owned)
         && let Some(workspace_id) = workspace_id
     {
@@ -888,6 +939,7 @@ pub async fn new_session(
         }
     }
     prepare_session_models(&connection, &mut reply);
+    prepare_session_preset(&connection, &mut reply).await;
     Ok(reply)
 }
 
@@ -952,7 +1004,25 @@ async fn resume_session_reply(
         reply = connection.request("session/resume", params).await?;
     }
     prepare_session_models(connection, &mut reply);
+    prepare_session_preset(connection, &mut reply).await;
     Ok(reply)
+}
+
+async fn prepare_session_preset(connection: &AcpConnection, reply: &mut Value) {
+    if !cfg!(any(target_os = "macos", windows)) || !connection.session_bridge {
+        return;
+    }
+    if let Some(session) = reply["sessionId"].as_str()
+        && let Ok(state) = connection
+            .request(
+                "_dsh/gpui/agent-preset-settings",
+                json!({"operation": "session", "sessionId": session}),
+            )
+            .await
+        && let Some(preset) = state["agentPreset"].as_str()
+    {
+        reply["agentPreset"] = json!(preset);
+    }
 }
 
 fn model_address(value: &str) -> Option<[String; 2]> {

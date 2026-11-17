@@ -93,6 +93,7 @@ struct FrameLayout<'a> {
     covers: &'a [FrameCover],
     radius: f32,
     background: &'static str,
+    dark: bool,
     hidden: bool,
     inert: bool,
 }
@@ -104,6 +105,15 @@ fn bounds_rect(bounds: Bounds<Pixels>) -> Rect {
         bounds.right().into(),
         bounds.bottom().into(),
     ]
+}
+
+#[wasm_bindgen(raw_module = "../trajectory-json.js")]
+extern "C" {
+    #[wasm_bindgen(js_name = stagePlanPreview)]
+    fn stage_plan_preview(key: &str, source: &str, layout: JsValue);
+
+    #[wasm_bindgen(js_name = stageDocumentMarkdown)]
+    fn stage_document_markdown(key: &str, source: &str, layout: JsValue);
 }
 
 pub(super) fn cover(key: u64, radius: f32) -> Canvas<()> {
@@ -226,6 +236,47 @@ impl DshApp {
         w: &Window,
         cx: &App,
     ) -> Canvas<()> {
+        let key = key.to_string();
+        self.dock_dom_frame(pane, viewer_open, w, cx, move |layout| {
+            stage_frame(&key, &content, layout);
+        })
+    }
+
+    pub(super) fn plan_document_frame(
+        &self,
+        pane: DockPaneId,
+        key: String,
+        source: String,
+        w: &Window,
+        cx: &App,
+    ) -> Canvas<()> {
+        self.dock_dom_frame(pane, false, w, cx, move |layout| {
+            stage_plan_preview(&key, &source, layout);
+        })
+    }
+
+    pub(super) fn markdown_document_frame(
+        &self,
+        pane: DockPaneId,
+        key: String,
+        source: String,
+        viewer_open: bool,
+        w: &Window,
+        cx: &App,
+    ) -> Canvas<()> {
+        self.dock_dom_frame(pane, viewer_open, w, cx, move |layout| {
+            stage_document_markdown(&key, &source, layout);
+        })
+    }
+
+    fn dock_dom_frame(
+        &self,
+        pane: DockPaneId,
+        viewer_open: bool,
+        w: &Window,
+        cx: &App,
+        stage: impl Fn(JsValue) + 'static,
+    ) -> Canvas<()> {
         let floats = self.float_layers(w);
         let first_above = floats
             .iter()
@@ -267,12 +318,8 @@ impl DshApp {
         } else {
             0.
         };
-        let background = if super::workspace::dark(cx) {
-            "#151517"
-        } else {
-            "#ffffff"
-        };
-        let key = key.to_string();
+        let dark = super::workspace::dark(cx);
+        let background = if dark { "#151517" } else { "#ffffff" };
         canvas(
             move |bounds, w, _| {
                 let layout = FrameLayout {
@@ -281,11 +328,12 @@ impl DshApp {
                     covers: &covers,
                     radius,
                     background,
+                    dark,
                     hidden,
                     inert,
                 };
                 if let Ok(layout) = serde_wasm_bindgen::to_value(&layout) {
-                    stage_frame(&key, &content, layout);
+                    stage(layout);
                 }
             },
             |_, _, _, _| {},

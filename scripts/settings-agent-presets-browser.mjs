@@ -5,13 +5,21 @@ import { join } from 'node:path';
 export async function installAgentPresetsMock(page) {
   await page.addInitScript(() => {
     const state = window.__presetTest = { selected: 'standard', revision: 1, calls: [],
-      failSave: false, delayedRead: false, reads: [], pendingSave: null };
+      failSave: false, delayedRead: false, reads: [], pendingSave: null, sessions: {} };
     const rows = () => ['standard', 'ptc', 'minimal', 'cordis', 'custom', 'broken'].map(id => ({ id,
       isDefault: id === state.selected,
       ...(id === 'custom' ? { name: '团队模式', description: '团队自定义工具组合。' } : {}),
       ...(id === 'broken' ? { name: '故障预设', broken: 'Fixture missing dependency' } : {}) }));
     window.__presetRemote = async request => {
       state.calls.push(request);
+      if (request.operation === 'session') {
+        return {agentPreset:state.sessions[request.sessionId], canSelect:true};
+      }
+      if (request.operation === 'select') {
+        if (!state.sessions[request.sessionId]) throw Error('Unknown session');
+        state.sessions[request.sessionId] = request.id;
+        return {agentPreset:request.id};
+      }
       if (request.operation === 'list') return { presets: rows(), writable: true, revision: state.revision };
       if (request.operation === 'read') {
         const result = { content: `- id: ${request.id}\n  name: fixture\n`, name: request.id };
@@ -94,6 +102,25 @@ export async function runAgentPresetsCase(page, artifacts) {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(await yaml.isVisible(), false, 'closed connection owner cannot reopen a stale YAML viewer');
   await nav.focus(); await page.keyboard.press('Escape'); await shell.waitFor({ state: 'hidden' });
+  await page.setViewportSize({width:1440,height:1100});
+  await open();
+  await content.getByRole('button',{name:'让 Agent 帮我创建预设模式'}).click();
+  await shell.waitFor({state:'hidden'});
+  const seat = page.locator('[data-session-agent-preset]').getByRole('button',{name:'创造模式',exact:true});
+  await seat.waitFor().catch(async error => {
+    console.error('PRESET_CALLS', await page.evaluate(() => window.__verification.calls.filter(call =>
+      ['new_session','resume_session','agent_preset_settings'].includes(call.name))));
+    await page.screenshot({path:join(artifacts,'preset-creator-failed.png')});
+    throw error;
+  });
+  await page.screenshot({path:join(artifacts,'preset-creator-hero.png')});
+  await seat.click();
+  await page.getByRole('menuitem', {name:/^标准模式/}).click();
+  await page.locator('[data-session-agent-preset]').getByRole('button',{name:'标准模式',exact:true}).waitFor();
+  const creator = await page.evaluate(() => window.__verification.calls.find(call =>
+    call.name === 'new_session' && call.args.agentPreset === 'cordis'));
+  assert.ok(creator);
+  assert.equal(await page.evaluate(() => window.__presetTest.sessions['preset-creator']), 'standard');
   await writeFile(join(artifacts, 'agent-presets-checks.json'), JSON.stringify({ passed: true,
     checks: ['official built-in/custom cards', 'broken composition cannot select', 'pending save retains accepted default',
       'save failure/retry', 'read-only YAML', 'nested Escape and focus return', 'Markdown usage guide',
