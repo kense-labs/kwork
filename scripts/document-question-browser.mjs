@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 
 export async function runDocumentAndQuestionCase(page, artifacts, sessionId) {
+  const recorded = page.locator('[data-question-reply]');
+  await recorded.getByText('历史提问：保留哪些内容？', { exact: true }).waitFor();
+  await recorded.getByText('保留完整的历史回答。', { exact: true }).waitFor();
+  await page.screenshot({ path: join(artifacts, 'question-reply.png') });
   await page.locator('[data-chat-markdown]').getByRole('button', {name:'打开文档', exact:true}).click();
   const document = page.locator('[data-document-markdown]');
   await document.getByRole('heading', {name:'分页文档'}).waitFor();

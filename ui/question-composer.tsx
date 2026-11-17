@@ -80,39 +80,43 @@ export function InteractionBody({session, interaction, send}: {session: string; 
   latest.current = interaction;
   const matched = useMemo<PendingQuestion>(() => {
     let answered = false;
+    // A React focus callback can run while WKWebView is measuring a WASM frame.
+    const afterLayout = (action: string, value: object) => {
+      setTimeout(() => send(session, action, { requestId, ...value }), 0);
+    };
     return {
-    key: requestId,
-    questions: interaction.questions,
-    review: interaction.review,
-    dismissal: interaction.canHide ? 'hide' : 'cancel',
-    liveKeys: () => latest.current.liveKeys,
-    snapshot: () => latest.current.snapshot,
-    holdFocus: () => queueMicrotask(() => send(session, 'question-focus', {requestId, focused:true})),
-    releaseFocus: () => queueMicrotask(() => send(session, 'question-focus', {requestId, focused:false})),
-    engage: () => queueMicrotask(() => send(session, 'question-hold', {requestId, editing:true})),
-    takeTime: () => queueMicrotask(() => send(session, 'question-hold', {requestId})),
-    async answer(answer) {
-      if (kind === 'plan') {
-        await invokeFileAction('respond_plan_review', {sessionId:session, requestId, decision:'approve'});
-        return;
-      }
-      const channel = latest.current.snapshot.channel;
-      const pendingKey = JSON.stringify([session, requestId]);
-      submitting.add(pendingKey);
-      try {
-        await invokeFileAction('respond_question', {sessionId:session, requestId, decision:'answer', answers:answer.answers});
-        answered = channel === 'rpc';
-      } finally { submitting.delete(pendingKey); }
-    },
-    async dismiss() {
-      if (kind === 'plan') {
-        await invokeFileAction('respond_plan_review', {sessionId:session, requestId, decision:'discuss'});
-      } else if (interaction.canHide) {
-        send(session, 'question-hide', {requestId, settled: answered});
-      } else {
-        await invokeFileAction('respond_question', {sessionId:session, requestId, decision:'cancel'});
-      }
-    },
+      key: requestId,
+      questions: interaction.questions,
+      review: interaction.review,
+      dismissal: interaction.canHide ? 'hide' : 'cancel',
+      liveKeys: () => latest.current.liveKeys,
+      snapshot: () => latest.current.snapshot,
+      holdFocus: () => afterLayout('question-focus', { focused: true }),
+      releaseFocus: () => afterLayout('question-focus', { focused: false }),
+      engage: () => afterLayout('question-hold', { editing: true }),
+      takeTime: () => afterLayout('question-hold', {}),
+      async answer(answer) {
+        if (kind === 'plan') {
+          await invokeFileAction('respond_plan_review', {sessionId:session, requestId, decision:'approve'});
+          return;
+        }
+        const channel = latest.current.snapshot.channel;
+        const pendingKey = JSON.stringify([session, requestId]);
+        submitting.add(pendingKey);
+        try {
+          await invokeFileAction('respond_question', {sessionId:session, requestId, decision:'answer', answers:answer.answers});
+          answered = channel === 'rpc';
+        } finally { submitting.delete(pendingKey); }
+      },
+      async dismiss() {
+        if (kind === 'plan') {
+          await invokeFileAction('respond_plan_review', {sessionId:session, requestId, decision:'discuss'});
+        } else if (latest.current.canHide) {
+          send(session, 'question-hide', {requestId, settled: answered});
+        } else {
+          await invokeFileAction('respond_question', {sessionId:session, requestId, decision:'cancel'});
+        }
+      },
     };
   }, [kind, requestId, session, send]);
   return <MarkdownDelegateProvider openExternalLink={external}>

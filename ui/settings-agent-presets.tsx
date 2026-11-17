@@ -73,13 +73,16 @@ function createOwner() {
 }
 
 export function listenSettingsAgentPresets(callback: typeof dispatch) { dispatch = callback; }
+export function officialAgentPresetsEnabled() {
+  const platform = document.documentElement.dataset.platform;
+  return platform === 'darwin' || platform === 'win32';
+}
 export function placeSettingsAgentPresets(left: number, top: number, width: number, height: number) {
   bounds = [left, top, width, height];
   if (holder) for (const [index, key] of ['left', 'top', 'width', 'height'].entries()) holder.style[key as any] = `${bounds[index]}px`;
 }
 export function updateSettingsAgentPresets(next: View) {
-  const platform = document.documentElement.dataset.platform;
-  if (platform !== 'darwin' && platform !== 'win32') return;
+  if (!officialAgentPresetsEnabled()) return;
   const previous = view; view = next;
   if (!next.connected || previous?.generation !== next.generation) {
     if (owner) owner.lifetime.active = false;

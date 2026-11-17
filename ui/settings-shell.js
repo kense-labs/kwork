@@ -1,6 +1,6 @@
 import { listenSettingsDeveloper, updateSettingsDeveloper, listenSettingsPermission, updateSettingsPermission, officialModelsEnabled, updateSettingsModels, updateSettingsPlugins, listenSettingsUpload, updateSettingsUpload, focusWithoutRing, listenSettingsTheme, updateSettingsTheme, placeSettingsThemeViewport } from '/trajectory-json.js';
 import { listenClientPreferences, updateClientPreferencesConnection, refreshClientPreferences } from '/trajectory-json.js';
-import { listenSettingsAgentPresets, updateSettingsAgentPresets } from '/trajectory-json.js';
+import { officialAgentPresetsEnabled, listenSettingsAgentPresets, updateSettingsAgentPresets } from '/trajectory-json.js';
 export { placeSettingsAgentPresets as place_settings_agent_presets } from '/trajectory-json.js';
 export { saveClientTheme as save_client_theme } from '/trajectory-json.js';
 export { placeSettingsTheme as place_settings_theme, settingsThemeHeight as settings_theme_height } from '/trajectory-json.js';
@@ -84,13 +84,14 @@ function mount() {
   });
   document.addEventListener('keydown', event => {
     if (event.defaultPrevented || event.isComposing || event.key !== 'Tab' || !view?.visible || view.locked) return;
-    // Provider/account forms live in sibling portals; the General theme rows
-    // are actual descendants. All three keep their native Tab boundaries in
-    // the shared dialog while nested pickers keep their own traversal.
-    if (![0, 2, 5].includes(view.page) && !([6, 7].includes(view.page) && officialModelsEnabled())) return;
+    // Content in sibling portals shares the dialog's Tab bounds. Nested
+    // pickers keep their own traversal.
+    const inline = view.page === 2 || [5, 6].includes(view.page) && officialModelsEnabled()
+      || view.page === 7 && officialAgentPresetsEnabled();
+    if (!inline && ![0, 5].includes(view.page)) return;
     const foreground = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')].filter(node => !node.hidden && node.getClientRects().length).at(-1);
     if (foreground && foreground !== root) return;
-    const content = view.page === 2 || [5, 6, 7].includes(view.page) && officialModelsEnabled() ? null : document.getElementById(view.page === 5 ? 'model-provider-form' : 'deepseek-account-form');
+    const content = inline ? null : document.getElementById(view.page === 5 ? 'model-provider-form' : 'deepseek-account-form');
     const candidates = holder => [...(holder?.querySelectorAll('button, input, select, textarea, a[href], summary, [tabindex="0"]') ?? [])]
       .filter(node => !node.disabled && node.getClientRects().length && !node.closest('[hidden], [inert], [aria-hidden="true"]'));
     const chrome = candidates(root), fields = candidates(content);

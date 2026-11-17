@@ -2,7 +2,7 @@ export { readTrajectoryImageDrag } from './trajectory-output';
 export { officialModelsEnabled, updateSettingsModels, placeSettingsModels } from './settings-models';
 export { listenClientPreferences, updateClientPreferencesConnection, saveClientTheme, refreshClientPreferences } from './client-preferences';
 export { updateSettingsPlugins, placeSettingsPlugins } from './settings-plugins';
-export { listenSettingsAgentPresets, updateSettingsAgentPresets, placeSettingsAgentPresets } from './settings-agent-presets';
+export { officialAgentPresetsEnabled, listenSettingsAgentPresets, updateSettingsAgentPresets, placeSettingsAgentPresets } from './settings-agent-presets';
 export { listenSettingsUpload, updateSettingsUpload, placeSettingsUpload, settingsUploadHeight } from './settings-upload';
 export { focusWithoutRing } from './vendor/harness-primitives/focus';
 export { listenSettingsTheme, updateSettingsTheme, placeSettingsTheme, placeSettingsThemeViewport, settingsThemeHeight } from './settings-theme';

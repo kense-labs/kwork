@@ -52,6 +52,11 @@ const browserServer = await chromium.launchServer({
 });
 const browser = await chromium.connect(browserServer.wsEndpoint());
 const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, deviceScaleFactor: 1 });
+const legacySettings = ['settings', 'settings-partial', 'settings-readonly', 'settings-search', 'settings-fetch'].includes(mode);
+const platform = process.env.KWORK_TEST_PLATFORM ?? (legacySettings ? 'Win32' : undefined);
+if (platform) {
+  await page.addInitScript(platform => Object.defineProperty(navigator, 'platform', { value: platform }), platform);
+}
 const errors = [];
 page.on('pageerror', error => { errors.push(String(error)); console.error('PAGE ERROR', error); });
 page.on('console', message => {
@@ -237,6 +242,18 @@ const events = mode === 'inherited'
   : ['theme', 'stream', 'settings', 'settings-partial', 'settings-readonly', 'settings-search', 'settings-fetch', 'appearance', 'plugins', 'workflow', 'team', 'permission', 'approval', 'queue', 'composer', 'composer-focus', 'attachments', 'model-menu', 'model-catalog', 'model-accessibility', 'goal', 'reading', 'session-order', 'workspace-registry', 'workspace-actions', 'workspace-startup', 'workspace-search', 'workspace-accessibility', 'workspace-group-accessibility'].includes(mode)
     ? themeEvents
     : [turnStart, userMessage, ...contentEvents, ...imageEvents, turnEnd];
+if (mode === 'document-question') {
+  events.push({
+    type: 'user/message', seq: events.at(-1).seq + 1, time: 10000, surfaceOp: 'append',
+    data: {
+      id: 'settled-question', source: { kind: 'user-question-reply', outcome: 'answered', callId: 'previous-question' },
+      content: [{ type: 'text', text: JSON.stringify({
+        questions: [{ id: 'previous', question: '历史提问：保留哪些内容？' }],
+        answers: [{ id: 'previous', selected: [], custom: '保留完整的历史回答。' }],
+      }) }],
+    },
+  });
+}
 const history = { events, hasMore: mode === 'trajectory-pages', sessionStats: null, tokenUsage: null };
 let verificationFailed = false;
 try {
@@ -6062,7 +6079,9 @@ try {
   const assertions = mode === 'plan-preview'
     ? ['logged and temporary plan previews', 'code copy and wrap', 'narrow scrollbar', 'restored-plan pending and missing states', 'review failure and retry']
     : mode === 'document-question'
-    ? ['YAML field order and literal values', 'pagination failure and retry', 'document-relative images after EOF', 'official question form', 'answer failure, retry and exact option label']
+    ? ['YAML field order and literal values', 'pagination failure and retry', 'document-relative images after EOF', 'recorded question reply from history', 'official question form', 'answer failure, retry and exact option label']
+    : mode === 'agent-presets'
+    ? ['preset cards and YAML', 'guide tabs and focus', 'default write conflict and retry', 'Creator draft and seat selection']
     : mode === 'chat-markdown'
     ? ['official headings, tables, KaTeX, mixed inline wrapping', 'actual measured width and height beside preview', 'wheel routes to transcript', 'code wrapping', 'session DOM cleanup']
     : mode === 'file-links'
