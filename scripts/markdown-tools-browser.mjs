@@ -1804,7 +1804,7 @@ try {
     await waitsFor('登录已过期，请重新开始。');
     await button(account, '添加 API Key').click();
     await account.waitFor({ state: 'hidden' });
-    await button(nav, '模型服务').waitFor();
+    await nav.getByRole('button', { name: /^模型(?:服务)?$/ }).waitFor();
 
     await page.goto(`${url}?scenario=restored`);
     await page.waitForFunction(() => window.__verification.calls.some(call => call.name === 'start_service'));
@@ -5993,7 +5993,7 @@ try {
       throw error;
     }
     await writeFile(join(artifacts, 'final-calls.json'), JSON.stringify(await page.evaluate(() => window.__verification.calls.filter(call => call.name === 'web_settings')), null, 2));
-  } else if (!mode.startsWith('settings')) {
+  } else if (mode !== 'theme' && !mode.startsWith('settings')) {
     await page.waitForFunction(() => window.__verification.calls.some(call => call.name === 'read_attachment'), null, { timeout: 20000 });
     await page.waitForTimeout(3000);
     await page.screenshot({ path: join(artifacts, 'settled-markdown.png') });
@@ -6013,7 +6013,7 @@ try {
     await page.waitForTimeout(300);
     await page.screenshot({ path: join(artifacts, 'web-error-expanded.png') });
   }
-  for (const [themeMode, contentFontDelta, label] of mode === 'inherited' ? [['light', 0, 'inherited-light']] : mode !== 'all' ? [] : [['dark', 4, 'dark-large-font'], ['light', -2, 'light-small-font']]) {
+  for (const [themeMode, contentFontDelta, label] of mode === 'inherited' ? [['light', 0, 'inherited-light']] : !['all', 'theme'].includes(mode) ? [] : [['dark', 4, 'dark-large-font'], ['light', -2, 'light-small-font']]) {
     const themed = await browser.newPage({ viewport: { width: 1440, height: 1100 }, deviceScaleFactor: 1 });
     await page.close();
     themed.on('console', message => {
@@ -6034,6 +6034,10 @@ try {
         switch (name) {
           case 'start_auth': case 'auth_status': return { apiKey: { configured: true } };
           case 'load_workspace_preferences': return { themeMode, addedWorkspaces: [cwd], workDetails: 'verbose', contentFontDelta, scratchSession: sessionId };
+          case 'client_preferences': return { writable: true, namespaces: [
+            { ns: 'ui-theme', revision: 0, value: { preference: themeMode, fontSize: 14 + contentFontDelta } },
+            { ns: 'ui-settings', revision: 0, value: { enabled: false } },
+          ] };
           case 'load_shortcuts': return { revision: 1, document: { schemaVersion: 1, profiles: {} }, error: null };
           case 'load_developer_tools': return false;
           case 'start_service': return { workspace: cwd, servicePath: '/fixture', agent: { agentInfo: { name: 'fixture' } }, configOptions: [{ id: 'model', currentValue: 'fixture-model' }] };
@@ -6082,6 +6086,8 @@ try {
     ? ['YAML field order and literal values', 'pagination failure and retry', 'document-relative images after EOF', 'recorded question reply from history', 'official question form', 'answer failure, retry and exact option label']
     : mode === 'agent-presets'
     ? ['preset cards and YAML', 'guide tabs and focus', 'default write conflict and retry', 'Creator draft and seat selection']
+    : mode === 'theme'
+    ? ['dark theme with an increased font size', 'light theme with a reduced font size']
     : mode === 'chat-markdown'
     ? ['official headings, tables, KaTeX, mixed inline wrapping', 'actual measured width and height beside preview', 'wheel routes to transcript', 'code wrapping', 'session DOM cleanup']
     : mode === 'file-links'
