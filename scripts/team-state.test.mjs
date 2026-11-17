@@ -50,6 +50,7 @@ test('Team reads use the actual root projection and distinguish model usage', as
     available: true, request: 4,
     team: { enabled: true, tasks: [], hasUsedModel: false },
   });
+  assert.deepEqual(await h.read({ enabled: null }), await h.read());
   h.setModelSelection({ lastUsed: { provider: 'deepseek' }, next: null });
   assert.equal((await h.read()).team.hasUsedModel, true);
   h.setModelSelection(undefined);

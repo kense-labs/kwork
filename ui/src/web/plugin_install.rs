@@ -1275,7 +1275,13 @@ impl DshApp {
                                 .child(
                                     div()
                                         .text_size(px(12.))
-                                        .font_family("monospace")
+                                        .font_family(crate::web::document_fonts::code_family(cx))
+                                        .map(|mut element| {
+                                            element.text_style().font_fallbacks = Some(
+                                                crate::web::document_fonts::code_fallbacks(cx),
+                                            );
+                                            element
+                                        })
                                         .child(sample),
                                 )
                                 .child(note(hint, cx)),
@@ -1422,7 +1428,7 @@ impl DshApp {
             return body.child(
                 row().w_full().h(px(64.)).justify_center().gap(px(16.))
                     .rounded(px(12.)).bg(p.bg_module_platform)
-                    .font_family("monospace").text_size(px(16.))
+                    .font_family(crate::web::document_fonts::code_family(cx)).map(|mut element| { element.text_style().font_fallbacks = Some(crate::web::document_fonts::code_fallbacks(cx)); element }).text_size(px(16.))
                     .child(div().text_color(p.label_tertiary).child(from.to_owned()))
                     .child(gpui::svg().data(include_bytes!("../../assets/header-chevron-right.svg"))
                         .size(px(14.)).text_color(p.label_tertiary))
@@ -1713,7 +1719,7 @@ impl DshApp {
         {
             body = body.child(column().w_full().gap(px(8.)).p(px(12.)).rounded(px(12.)).bg(p.state_warn_tertiary)
                 .child(note("安装需要允许以下依赖运行安装脚本。",cx))
-                .child(div().font_family("monospace").text_size(px(12.)).child(outcome.pending_builds.join("\n")))
+                .child(div().font_family(crate::web::document_fonts::code_family(cx)).map(|mut element| { element.text_style().font_fallbacks = Some(crate::web::document_fonts::code_fallbacks(cx)); element }).text_size(px(12.)).child(outcome.pending_builds.join("\n")))
                 .when(install.approve_open, |body| body.child(note(
                     "继续将保存当前 profile 的脚本许可。这些脚本在本机运行，请确认所列依赖来源可信。",cx))));
         }
@@ -1747,7 +1753,12 @@ impl DshApp {
                     .p(px(10.))
                     .rounded(px(12.))
                     .bg(p.bg_layer_3)
-                    .font_family("monospace")
+                    .font_family(crate::web::document_fonts::code_family(cx))
+                    .map(|mut element| {
+                        element.text_style().font_fallbacks =
+                            Some(crate::web::document_fonts::code_fallbacks(cx));
+                        element
+                    })
                     .text_size(px(12.))
                     .line_height(px(17.))
                     .text_color(p.label_secondary)

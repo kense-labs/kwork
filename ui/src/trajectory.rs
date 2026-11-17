@@ -4,6 +4,19 @@ use crate::state::{ChatEntry, EntryRole};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
+mod folds;
+mod output;
+#[cfg(all(test, not(target_family = "wasm")))]
+use folds::visible;
+#[cfg(target_family = "wasm")]
+pub(crate) use folds::{
+    FoldDomain, Visible, double_click_folds, fold_states, toggle_global_fold, visible,
+};
+pub(crate) mod hierarchy;
+pub(crate) mod program;
+mod prompts;
+pub(crate) mod timeline;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     System,
@@ -15,23 +28,76 @@ pub(crate) enum Kind {
     Subtool,
 }
 
+/// Inspector tabs follow ui-trajectory/TrajectoryTable.tsx. A request boundary
+/// has its own tabs even though its ledger record uses the Message kind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum DetailTab {
+    #[default]
+    Overview,
+    Rendered,
+    Raw,
+    Source,
+    Input,
+    Output,
+    Schema,
+    Timing,
+    SystemPrompt,
+    Diff,
+    Tools,
+    Options,
+    Usage,
+}
+
+impl DetailTab {
+    pub fn label(self, record: &Record) -> &'static str {
+        match self {
+            Self::Overview => "概述",
+            Self::Rendered => "预览",
+            Self::Raw if record.kind == Kind::Compacted => "原始输出",
+            Self::Raw => "原始内容",
+            Self::Source => "来源",
+            Self::Input if record.program().is_some() => "源码",
+            Self::Input => "参数",
+            Self::Output => "结果",
+            Self::Schema => "Schema",
+            Self::Timing => "计时",
+            Self::SystemPrompt => "系统提示词",
+            Self::Diff => "差异",
+            Self::Tools => "工具",
+            Self::Options => "选项",
+            Self::Usage => "用量",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DetailData {
+    pub source: Option<Value>,
+    pub blocks: Vec<Value>,
+    pub output_error: Option<Value>,
+    pub schema: Option<Value>,
+    pub result_seq: Option<u64>,
+    pub prompt: Option<prompts::Snapshot>,
+    pub previous_prompt: Option<prompts::Snapshot>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Usage {
-    pub input: u64,
-    pub output: u64,
-    pub cache_read: u64,
-    pub cache_write: u64,
-    pub thinking: u64,
+    pub input: Option<u64>,
+    pub output: Option<u64>,
+    pub cache_read: Option<u64>,
+    pub cache_write: Option<u64>,
+    pub thinking: Option<u64>,
 }
 
 impl Usage {
     fn from(value: &Value) -> Option<Self> {
         (!value.is_null()).then(|| Self {
-            input: value["inputTokens"].as_u64().unwrap_or(0),
-            output: value["outputTokens"].as_u64().unwrap_or(0),
-            cache_read: value["cacheReadTokens"].as_u64().unwrap_or(0),
-            cache_write: value["cacheWriteTokens"].as_u64().unwrap_or(0),
-            thinking: value["reasoningTokens"].as_u64().unwrap_or(0),
+            input: value["inputTokens"].as_u64(),
+            output: value["outputTokens"].as_u64(),
+            cache_read: value["cacheReadTokens"].as_u64(),
+            cache_write: value["cacheWriteTokens"].as_u64(),
+            thinking: value["reasoningTokens"].as_u64(),
         })
     }
 }
@@ -70,7 +136,6 @@ pub(crate) struct Record {
     pub output: String,
     pub thinking: String,
     pub status: String,
-    pub at_ms: Option<f64>,
     pub timing: Timing,
     pub usage: Option<Usage>,
     pub provider: Option<String>,
@@ -79,11 +144,62 @@ pub(crate) struct Record {
     pub system_prompt: Option<String>,
     pub tool_schemas: Option<String>,
     pub parent_call: Option<String>,
-    pub has_children: bool,
     pub entry: ChatEntry,
+    pub detail: DetailData,
 }
 
 impl Record {
+    pub fn detail_tabs(&self, request: bool) -> Vec<DetailTab> {
+        use DetailTab::*;
+        if request {
+            let mut tabs = vec![Overview];
+            if self.options.is_some() {
+                tabs.push(Options);
+            }
+            tabs.extend([Usage, Timing]);
+            return tabs;
+        }
+        match self.kind {
+            Kind::System if self.detail.previous_prompt.is_some() => {
+                vec![Diff, SystemPrompt, Tools]
+            }
+            Kind::System if self.tool_schemas.is_some() => vec![SystemPrompt, Tools],
+            Kind::System => vec![SystemPrompt],
+            Kind::Compacted => vec![Overview, Raw],
+            Kind::User | Kind::Context | Kind::Message => {
+                let mut tabs = vec![Overview, Rendered, Raw];
+                if self.kind != Kind::Message && self.detail.source.is_some() {
+                    tabs.push(Source);
+                }
+                tabs
+            }
+            Kind::Tool | Kind::Subtool => {
+                let mut tabs = vec![Overview];
+                if !self.entry.input.is_empty() && self.entry.input != "null" {
+                    tabs.push(Input);
+                }
+                if !self.output.is_empty() || self.program().is_some() {
+                    tabs.push(Output);
+                }
+                tabs.extend([Schema, Timing]);
+                tabs
+            }
+        }
+    }
+
+    pub fn preferred_detail_tab(&self, request: bool, history: &[DetailTab]) -> DetailTab {
+        if request {
+            return DetailTab::Overview;
+        }
+        let tabs = self.detail_tabs(false);
+        history
+            .iter()
+            .rev()
+            .find(|tab| tabs.contains(tab))
+            .copied()
+            .unwrap_or(tabs[0])
+    }
+
     pub fn label(&self) -> &'static str {
         match self.kind {
             Kind::System => "系统",
@@ -108,22 +224,72 @@ impl Record {
     }
 
     pub fn preview(&self) -> String {
-        preview(&match self.kind {
-            Kind::Tool | Kind::Subtool if !self.output.is_empty() => {
-                format!("{} → {}", self.input, preview(&self.output))
+        match self.kind {
+            Kind::Tool | Kind::Subtool => {
+                let args = self.tool_arguments_preview();
+                if args.is_empty() {
+                    self.name.clone()
+                } else {
+                    format!("{} {args}", self.name)
+                }
             }
-            Kind::Message => [&self.input, &self.thinking]
-                .into_iter()
-                .filter(|text| !text.is_empty())
-                .cloned()
+            Kind::Message => preview(if self.output.is_empty() {
+                &self.thinking
+            } else {
+                &self.output
+            }),
+            _ => preview(&self.output),
+        }
+    }
+
+    pub fn tool_arguments_preview(&self) -> String {
+        if let Some(program) = self.program() {
+            program
+                .description
+                .split_whitespace()
                 .collect::<Vec<_>>()
-                .join(" · "),
-            _ => self.input.clone(),
+                .join(" ")
+        } else if self.entry.input == "null" {
+            String::new()
+        } else {
+            preview(&self.entry.input)
+        }
+    }
+
+    pub fn result_preview(&self) -> Option<String> {
+        if !matches!(self.kind, Kind::Tool | Kind::Subtool) || self.pending() {
+            return None;
+        }
+        if !self.detail.blocks.is_empty() || self.detail.output_error.is_some() {
+            return Some(output::summary(
+                &self.detail.blocks,
+                self.failed(),
+                self.detail.output_error.as_ref(),
+            ));
+        }
+        Some(if self.output.is_empty() {
+            "无输出".to_owned()
+        } else {
+            preview(&self.output)
         })
     }
 }
 
 /// The first visible row is bounded; details keep all retained text.
+#[cfg(target_family = "wasm")]
+pub fn preview(text: &str) -> String {
+    use wasm_bindgen::prelude::*;
+    #[wasm_bindgen(raw_module = "../trajectory-json.js")]
+    extern "C" {
+        #[wasm_bindgen(js_name = trajectoryRecordPreview)]
+        fn upstream_preview(text: &str) -> String;
+    }
+    upstream_preview(text)
+}
+
+// Native builds only exercise projection fixtures; the shipped WASM UI uses
+// the upstream GFM parser above (including local images and CJK emphasis).
+#[cfg(not(target_family = "wasm"))]
 pub fn preview(text: &str) -> String {
     let source: String = text.chars().take(2048).collect();
     let mut compact = String::with_capacity(source.len());
@@ -238,13 +404,14 @@ impl State {
                 record.status = old.status.clone();
                 record.output.clone_from(&old.output);
                 record.entry.text.clone_from(&old.entry.text);
+                record.detail = old.detail.clone();
+                record.timing.completed_at = old.timing.completed_at;
             }
         }
         *self = projected;
     }
 
     fn reindex(&mut self) {
-        derive_turn_folds(&mut self.records);
         for (index, record) in self.requests.iter_mut().enumerate() {
             record.index = index + 1;
         }
@@ -332,9 +499,11 @@ fn raw_record(event: &Value, kind: Kind, text: String, turn: u64, step: u64) -> 
         output: text,
         thinking: String::new(),
         status: "completed".to_owned(),
-        at_ms: number(event, "time"),
         timing: Timing {
             started_at: number(event, "time"),
+            completed_at: matches!(kind, Kind::User | Kind::Context | Kind::System)
+                .then(|| number(event, "time"))
+                .flatten(),
             ..Timing::default()
         },
         usage: None,
@@ -344,12 +513,12 @@ fn raw_record(event: &Value, kind: Kind, text: String, turn: u64, step: u64) -> 
         system_prompt: None,
         tool_schemas: None,
         parent_call: None,
-        has_children: false,
         entry,
+        detail: DetailData::default(),
     }
 }
 
-fn tool_event(event: &Value, children: &HashMap<String, Vec<String>>) -> Option<Record> {
+fn tool_event(event: &Value) -> Option<Record> {
     let data = &event["data"];
     let id = data["callId"]
         .as_str()
@@ -375,12 +544,22 @@ fn tool_event(event: &Value, children: &HashMap<String, Vec<String>>) -> Option<
     } else {
         data
     };
-    let text = crate::tool_calls::result_text(result);
     let running = event["type"] == "tool/call" || event["type"] == "tool/ptc-dispatch-start";
     let status = if running {
         "in_progress".to_owned()
     } else {
         crate::tool_calls::result_status(data, result).to_owned()
+    };
+    let blocks = result["content"].as_array().cloned().unwrap_or_default();
+    let error = data
+        .get("error")
+        .or_else(|| result.get("error"))
+        .filter(|value| value.is_object())
+        .cloned();
+    let text = if running {
+        String::new()
+    } else {
+        output::detail(&blocks, result["isError"] == true, error.as_ref())
     };
     let mut entry = ChatEntry::local(EntryRole::Tool, format!("tool-{id}"), &text);
     entry.external_id = Some(id.to_owned());
@@ -408,7 +587,6 @@ fn tool_event(event: &Value, children: &HashMap<String, Vec<String>>) -> Option<
         output: text,
         thinking: String::new(),
         status,
-        at_ms: number(event, "time"),
         timing: Timing {
             started_at: number(event, "time"),
             ..Timing::default()
@@ -420,8 +598,13 @@ fn tool_event(event: &Value, children: &HashMap<String, Vec<String>>) -> Option<
         system_prompt: None,
         tool_schemas: None,
         parent_call: parent,
-        has_children: children.contains_key(id),
         entry,
+        detail: DetailData {
+            blocks,
+            output_error: error,
+            result_seq: (!running).then(|| event["seq"].as_u64()).flatten(),
+            ..DetailData::default()
+        },
     })
 }
 
@@ -431,7 +614,9 @@ fn project(events: &[Value]) -> State {
     let mut turn = 0;
     let mut step = 0;
     let mut step_start: Option<f64> = None;
+    let mut prompts = prompts::Prompts::default();
     let mut tools: HashMap<String, usize> = HashMap::new();
+    let mut schemas: HashMap<String, Value> = HashMap::new();
     let mut tool_starts: HashMap<String, f64> = HashMap::new();
     let mut closed: HashMap<(u64, u64), f64> = HashMap::new();
     for event in events {
@@ -443,20 +628,18 @@ fn project(events: &[Value]) -> State {
         }
     }
     let mut parents: HashMap<String, String> = HashMap::new();
-    let mut children: HashMap<String, Vec<String>> = HashMap::new();
     for event in events {
         if let Some(id) = event["data"]["subCallId"].as_str()
             && let Some(parent) = event["data"]["parentCallId"].as_str()
             && id != parent
-            && parents.insert(id.to_owned(), parent.to_owned()).is_none()
         {
-            children
-                .entry(parent.to_owned())
-                .or_default()
-                .push(id.to_owned());
+            parents
+                .entry(id.to_owned())
+                .or_insert_with(|| parent.to_owned());
         }
     }
     for event in events {
+        prompts.surface(event, turn, step);
         match event["type"].as_str().unwrap_or("") {
             "turn/start" => {
                 turn = coordinate(event, "turn");
@@ -470,6 +653,9 @@ fn project(events: &[Value]) -> State {
                 record.name = "模型请求".into();
                 record.status = "running".into();
                 record.timing.started_at = step_start;
+                if let Some(prompt) = &prompts.latest {
+                    prompt.apply(&mut record);
+                }
                 requests.push(record);
             }
             "step/end" => {
@@ -490,29 +676,23 @@ fn project(events: &[Value]) -> State {
                 }
             }
             "request/header" => {
-                let data = &event["data"]["header"];
-                let config = &data["config"];
-                let provider = config["provider"].as_str().map(str::to_owned);
-                let model = config["model"].as_str().map(str::to_owned);
-                if let Some(request) = requests
-                    .last_mut()
-                    .filter(|request| request.status == "running")
-                {
-                    request.provider = provider;
-                    request.model = model;
-                    request.options = Some(config.clone());
-                    request.system_prompt = data["system"].as_str().map(str::to_owned);
-                    request.tool_schemas = data.get("tools").map(Value::to_string);
-                } else {
-                    let mut record = raw_record(event, Kind::System, String::new(), turn, step);
-                    record.key = format!("header-{}", seq(event).unwrap_or(0.));
-                    record.name = "请求配置".into();
-                    record.provider = provider;
-                    record.model = model;
-                    record.options = Some(config.clone());
-                    record.system_prompt = data["system"].as_str().map(str::to_owned);
-                    record.tool_schemas = data.get("tools").map(Value::to_string);
-                    records.push(record);
+                prompts.header(event, turn, step);
+                if let Some(prompt) = &prompts.latest {
+                    schemas = prompt
+                        .tools
+                        .iter()
+                        .filter_map(|schema| {
+                            schema["name"]
+                                .as_str()
+                                .map(|name| (name.to_owned(), schema.clone()))
+                        })
+                        .collect();
+                    if let Some(request) = requests
+                        .last_mut()
+                        .filter(|request| request.status == "running")
+                    {
+                        prompt.apply(request);
+                    }
                 }
             }
             "request/context" => {
@@ -545,9 +725,15 @@ fn project(events: &[Value]) -> State {
                 } else {
                     Kind::Context
                 };
-                records.push(raw_record(event, kind, text, turn, step));
+                let mut record = raw_record(event, kind, text, turn, step);
+                record.detail.source = event["data"].get("source").cloned();
+                record.detail.blocks = event["data"]["content"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                records.push(record);
             }
-            "developer/message" | "system/message" => {
+            "developer/message" => {
                 let message = &event["data"]["message"];
                 let text = event_text(message["content"].as_array());
                 let changes: Vec<Value> = message["content"]
@@ -583,14 +769,9 @@ fn project(events: &[Value]) -> State {
                         .join("\n")
                 };
                 let mut record = raw_record(event, Kind::Context, text, turn, step);
-                if event["type"] == "system/message" {
-                    record.kind = Kind::System;
-                    record.name = "系统提示词".into();
-                    record.entry.role = EntryRole::SystemPrompt;
-                } else {
-                    record.name = "工具已更新".into();
-                }
-                record.system_prompt = message["text"].as_str().map(str::to_owned);
+                record.name = "工具已更新".into();
+                record.detail.source = message.get("source").cloned();
+                record.detail.blocks = message["content"].as_array().cloned().unwrap_or_default();
                 records.push(record);
             }
             "assistant/attempt" => {
@@ -624,7 +805,9 @@ fn project(events: &[Value]) -> State {
                 record.key = format!("assistant-{}", message["id"].as_str().unwrap_or("message"));
                 record.name = "助手消息".into();
                 record.input = preview(&record.output);
-                record.thinking = preview(&thinking);
+                record.thinking = thinking.clone();
+                record.detail.source = message.get("source").cloned();
+                record.detail.blocks = content.cloned().unwrap_or_default();
                 record.usage = Usage::from(&event["data"]["usage"]);
                 record.provider = message
                     .pointer("/source/provider")
@@ -647,8 +830,12 @@ fn project(events: &[Value]) -> State {
                     .find(|request| request.turn == turn && request.step == step)
                 {
                     request.usage = record.usage;
-                    request.provider.clone_from(&record.provider);
-                    request.model.clone_from(&record.model);
+                    if record.provider.is_some() {
+                        request.provider.clone_from(&record.provider);
+                    }
+                    if record.model.is_some() {
+                        request.model.clone_from(&record.model);
+                    }
                     request.status = record.status.clone();
                     request.timing.completed_at = number(event, "time");
                     request.timing.first_token_at = request
@@ -686,14 +873,14 @@ fn project(events: &[Value]) -> State {
                 records.push(record);
             }
             "tool/call" | "tool/result" | "tool/ptc-dispatch-start" | "tool/ptc-dispatch" => {
-                let Some(mut record) = tool_event(event, &children) else {
+                let Some(mut record) = tool_event(event) else {
                     continue;
                 };
                 let id = record.entry.external_id.clone().unwrap();
                 record.parent_call = parents.get(&id).cloned();
                 record.turn = record.turn.max(turn);
                 record.step = record.step.max(step);
-                record.has_children = children.contains_key(&id);
+                record.detail.schema = schemas.get(&record.name).cloned();
                 if record.pending()
                     && let Some(ended) = closed.get(&(record.turn, record.step)).copied()
                 {
@@ -733,6 +920,9 @@ fn project(events: &[Value]) -> State {
                     };
                     record.entry.tool = previous.entry.tool.clone().or(record.entry.tool);
                     record.entry.title.clone_from(&record.name);
+                    if record.detail.schema.is_none() {
+                        record.detail.schema.clone_from(&previous.detail.schema);
+                    }
                 }
                 if let Some(index) = tools.get(&id).copied() {
                     if !record.pending() || records[index].pending() {
@@ -768,14 +958,12 @@ fn project(events: &[Value]) -> State {
             _ => {}
         }
     }
-    for record in &mut records {
-        record.has_children = record
-            .entry
-            .external_id
-            .as_ref()
-            .is_some_and(|id| children.contains_key(id));
-    }
-    derive_turn_folds(&mut records);
+    records.extend(prompts.records);
+    records.sort_by(|a, b| {
+        a.source_seq
+            .unwrap_or(f64::MAX)
+            .total_cmp(&b.source_seq.unwrap_or(f64::MAX))
+    });
     for request in &mut requests {
         if request.pending()
             && let Some(ended) = closed.get(&(request.turn, request.step)).copied()
@@ -834,12 +1022,11 @@ fn from_entry(entry: &ChatEntry, turn: u64, step: u64) -> Record {
         input,
         output: entry.text.clone(),
         thinking: if entry.role == EntryRole::Thought {
-            preview(&entry.text)
+            entry.text.clone()
         } else {
             String::new()
         },
         status: entry.status.clone(),
-        at_ms: entry.at_ms,
         timing: Timing {
             started_at: entry.at_ms,
             ..Timing::default()
@@ -851,88 +1038,9 @@ fn from_entry(entry: &ChatEntry, turn: u64, step: u64) -> Record {
         system_prompt: None,
         tool_schemas: None,
         parent_call: None,
-        has_children: entry.role == EntryRole::User,
         entry: entry.clone(),
+        detail: DetailData::default(),
     }
-}
-
-/// Normalized record spans for the overview and its inclusive range filter.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct TimelineSpan {
-    pub start: f32,
-    pub end: f32,
-}
-
-pub(crate) fn time_spans(
-    state: &State,
-    actual_time: bool,
-    actual_duration: bool,
-) -> HashMap<String, TimelineSpan> {
-    let records: Vec<&Record> = state
-        .requests
-        .iter()
-        .chain(&state.records)
-        .filter(|record| record.at_ms.is_some())
-        .collect();
-    let mut timed_records = records.clone();
-    timed_records.sort_by(|left, right| {
-        let at = |record: &Record| record.timing.started_at.or(record.at_ms).unwrap_or(0.);
-        at(left).total_cmp(&at(right))
-    });
-    let min = records
-        .iter()
-        .filter_map(|record| record.timing.started_at.or(record.at_ms))
-        .fold(f64::INFINITY, f64::min);
-    let max = records
-        .iter()
-        .filter_map(|record| record.timing.completed_at.or(record.at_ms))
-        .fold(f64::NEG_INFINITY, f64::max);
-    let span = (max - min).max(1.);
-    let total: f64 = records
-        .iter()
-        .filter_map(|record| record.timing.duration_ms())
-        .sum();
-    let mut before = 0.;
-    timed_records
-        .iter()
-        .enumerate()
-        .map(|(index, record)| {
-            let (start, end) = if actual_time {
-                let at = record.at_ms.unwrap_or(min);
-                let start = record.timing.started_at.unwrap_or(at);
-                let end = record.timing.completed_at.unwrap_or(at);
-                ((start - min) / span, (end - min) / span)
-            } else if actual_duration && record.timing.duration_ms().is_some() {
-                let start = before / total.max(1.);
-                before += record.timing.duration_ms().unwrap_or(0.);
-                (start, before / total.max(1.))
-            } else {
-                (
-                    index as f64 / records.len().max(1) as f64,
-                    (index + 1) as f64 / records.len().max(1) as f64,
-                )
-            };
-            (
-                record.key.clone(),
-                TimelineSpan {
-                    start: start.clamp(0., 1.) as f32,
-                    end: end.clamp(start, 1.) as f32,
-                },
-            )
-        })
-        .collect()
-}
-
-/// Order and clamp a normalized timeline selection.
-pub(crate) fn ordered_range((start, end): (f32, f32)) -> (f32, f32) {
-    (start.min(end).clamp(0., 1.), start.max(end).clamp(0., 1.))
-}
-
-/// Expand a click-sized selection to one record in the active projection.
-pub(crate) fn minimum_range(center: f32, records: usize) -> (f32, f32) {
-    let length = 1. / records.max(1) as f32;
-    let start = (center - length / 2.).clamp(0., 1. - length);
-    (start, start + length)
 }
 
 /// Matching includes folded records and copyable full input/output.
@@ -946,211 +1054,6 @@ pub fn matches(record: &Record, query: &str) -> bool {
             || record.thinking.to_lowercase().contains(&term)
             || format!("#{}", record.index).contains(&term)
     })
-}
-
-/// Fold the ledger into rows, retaining matched descendants of folded records.
-#[derive(Clone, Debug)]
-pub(crate) struct Visible<'a> {
-    pub record: &'a Record,
-    #[cfg(test)]
-    pub collapsed: bool,
-    pub summary: Option<String>,
-}
-
-fn derive_turn_folds(records: &mut [Record]) {
-    let mut first = HashMap::new();
-    let mut counts: HashMap<u64, usize> = HashMap::new();
-    for (index, record) in records.iter().enumerate() {
-        if record.turn > 0 && !matches!(record.kind, Kind::System | Kind::Tool | Kind::Subtool) {
-            first.entry(record.turn).or_insert(index);
-            *counts.entry(record.turn).or_default() += 1;
-        }
-    }
-    for (index, record) in records.iter_mut().enumerate() {
-        if first.get(&record.turn) == Some(&index) {
-            record.has_children = counts.get(&record.turn).is_some_and(|count| *count > 1);
-        }
-    }
-}
-
-pub(crate) fn first_turn_content(records: &[Record]) -> HashMap<u64, &str> {
-    records
-        .iter()
-        .filter(|record| {
-            record.turn > 0 && !matches!(record.kind, Kind::System | Kind::Tool | Kind::Subtool)
-        })
-        .fold(HashMap::new(), |mut first, record| {
-            first.entry(record.turn).or_insert(record.key.as_str());
-            first
-        })
-}
-
-pub(crate) fn global_fold(record: &Record, first_in_turn: bool) -> &'static str {
-    match record.kind {
-        Kind::Tool => "$call",
-        Kind::Subtool => "$subcall",
-        Kind::User | Kind::Context | Kind::Message | Kind::Compacted if first_in_turn => "$turn",
-        _ => "",
-    }
-}
-
-pub fn visible<'a>(
-    records: &'a [Record],
-    folded: &HashSet<String>,
-    query: &str,
-) -> Vec<Visible<'a>> {
-    let first_turn_content = first_turn_content(records);
-    let global_fold = |record: &Record| {
-        global_fold(
-            record,
-            first_turn_content.get(&record.turn) == Some(&record.key.as_str()),
-        )
-    };
-
-    let calls: HashMap<&str, &Record> = records
-        .iter()
-        .filter_map(|record| record.entry.external_id.as_deref().map(|id| (id, record)))
-        .collect();
-    let searching = !query.trim().is_empty();
-    let rows = records
-        .iter()
-        .filter_map(|record| {
-            let global = global_fold(record);
-            let collapsed = record.has_children
-                && !global.is_empty()
-                && (folded.contains(global) || folded.contains(&record.key));
-            let is_folded = |record: &Record| {
-                let global = global_fold(record);
-                record.has_children
-                    && !global.is_empty()
-                    && (folded.contains(global) || folded.contains(&record.key))
-            };
-            let mut parent = record.parent_call.as_deref();
-            let mut seen = HashSet::new();
-            let mut hidden_by_call = false;
-            while let Some(id) = parent {
-                if !seen.insert(id) {
-                    break;
-                }
-                let Some(ancestor) = calls.get(id) else { break };
-                if is_folded(ancestor) {
-                    hidden_by_call = true;
-                    break;
-                }
-                parent = ancestor.parent_call.as_deref();
-            }
-            let turn_hidden = first_turn_content
-                .get(&record.turn)
-                .is_some_and(|key| *key != record.key)
-                && records.iter().any(|candidate| {
-                    Some(candidate.key.as_str()) == first_turn_content.get(&record.turn).copied()
-                        && candidate.has_children
-                        && is_folded(candidate)
-                });
-            let hidden = hidden_by_call || turn_hidden;
-            let matched = matches(record, query);
-            if hidden && !(searching && (matched || collapsed)) {
-                return None;
-            }
-            if searching && !matched && !collapsed {
-                return None;
-            }
-            let summary = (record.has_children
-                && !global.is_empty()
-                && (folded.contains(global) || folded.contains(&record.key)))
-            .then(|| {
-                let descendants = records
-                    .iter()
-                    .filter(|other| {
-                        other.index > record.index
-                            && match global_fold(record) {
-                                "$turn" => other.turn == record.turn && other.kind != Kind::System,
-                                "$call" | "$subcall" => {
-                                    let mut parent = other.parent_call.as_deref();
-                                    let mut seen = HashSet::new();
-                                    while let Some(id) = parent {
-                                        if !seen.insert(id) {
-                                            break;
-                                        }
-                                        if Some(id) == record.entry.external_id.as_deref() {
-                                            return true;
-                                        }
-                                        parent = calls
-                                            .get(id)
-                                            .and_then(|record| record.parent_call.as_deref());
-                                    }
-                                    false
-                                }
-                                _ => false,
-                            }
-                    })
-                    .count();
-                format!("已收起{} · {descendants} 条记录", record.label())
-            });
-            Some(Visible {
-                record,
-                #[cfg(test)]
-                collapsed: false,
-                summary,
-            })
-        })
-        .collect::<Vec<_>>();
-    let mut folded = Vec::with_capacity(rows.len() + 1);
-    for mut row in rows {
-        let summary = row.summary.take();
-        let record = row.record;
-        folded.push(row);
-        if let Some(summary) = summary {
-            folded.push(Visible {
-                record,
-                #[cfg(test)]
-                collapsed: true,
-                summary: Some(summary),
-            });
-        }
-    }
-    folded
-}
-
-/// Global expansion clears only its own domain; per-record expansion materializes exceptions.
-pub(crate) fn turn_folded(records: &[Record], folded: &HashSet<String>, turn: u64) -> bool {
-    let Some(key) = first_turn_content(records).get(&turn).copied() else {
-        return false;
-    };
-    records.iter().any(|record| {
-        record.key == key
-            && record.has_children
-            && (folded.contains("$turn") || folded.contains(key))
-    })
-}
-
-pub(crate) fn toggle_global_fold(folded: &mut HashSet<String>, records: &[Record], domain: &str) {
-    let first_in_turn = first_turn_content(records);
-    let keys: Vec<String> = records
-        .iter()
-        .filter(|record| {
-            record.has_children
-                && global_fold(
-                    record,
-                    first_in_turn.get(&record.turn) == Some(&record.key.as_str()),
-                ) == domain
-        })
-        .map(|record| record.key.clone())
-        .collect();
-    if folded.remove(domain) {
-        for key in keys {
-            folded.remove(&key);
-        }
-        return;
-    }
-    if keys.iter().all(|key| folded.contains(key)) {
-        for key in keys {
-            folded.remove(&key);
-        }
-    } else {
-        folded.insert(domain.to_owned());
-        folded.extend(keys);
-    }
 }
 
 #[cfg(test)]
@@ -1175,10 +1078,100 @@ mod tests {
         let state = project(&events());
         assert_eq!(state.records.len(), 3);
         assert_eq!(state.records[2].input, "pwd");
-        assert_eq!(state.records[2].preview(), "pwd → /tmp");
+        assert_eq!(state.records[1].preview(), "Done");
+        assert_eq!(state.records[2].preview(), "bash {\"command\":\"pwd\"}");
+        assert_eq!(state.records[2].result_preview().as_deref(), Some("/tmp"));
         assert_eq!(state.records[2].timing.duration_ms(), Some(200.));
-        assert_eq!(state.requests[0].usage.unwrap().input, 20);
+        assert_eq!(state.requests[0].usage.unwrap().input, Some(20));
         assert_eq!(state.requests[0].timing.duration_ms(), Some(800.));
+    }
+
+    #[test]
+    fn inspector_retains_full_reasoning_arguments_and_message_source() {
+        let mut events = events();
+        let reasoning = "保留 **完整** 思考\n".repeat(600);
+        events[3]["data"]["message"]["content"][0]["text"] = json!(reasoning);
+        let state = project(&events);
+        let assistant = &state.records[1];
+        assert_eq!(assistant.thinking, reasoning);
+        assert_eq!(assistant.detail.blocks[0]["text"], reasoning);
+        assert_eq!(assistant.detail.source.as_ref().unwrap()["model"], "v4");
+        assert_eq!(
+            assistant
+                .detail
+                .source
+                .as_ref()
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["provider", "model"],
+            "the JSON inspector preserves the original field order",
+        );
+        assert!(assistant.preview().chars().count() < 520);
+        assert_eq!(state.records[2].entry.input, r#"{"command":"pwd"}"#);
+        // Durable message content is not the live, unrendered tool return value.
+        assert_eq!(state.records[2].detail.result_seq, Some(6));
+    }
+
+    #[test]
+    fn inspector_restores_compatible_tab_but_request_opens_overview() {
+        use DetailTab::*;
+        let state = project(&events());
+        let history = [Raw, Input];
+        assert_eq!(state.records[1].preferred_detail_tab(false, &history), Raw);
+        assert_eq!(
+            state.records[2].preferred_detail_tab(false, &history),
+            Input
+        );
+        assert_eq!(
+            state.requests[0].preferred_detail_tab(true, &[Timing]),
+            Overview
+        );
+        assert_eq!(
+            state.requests[0].detail_tabs(true),
+            vec![Overview, Usage, Timing]
+        );
+        let mut system = state.records[0].clone();
+        system.kind = Kind::System;
+        assert_eq!(system.preferred_detail_tab(false, &history), SystemPrompt);
+        assert_eq!(system.detail_tabs(false), vec![SystemPrompt]);
+    }
+
+    #[test]
+    fn tool_completion_preserves_call_schema_and_header_model() {
+        let mut events = events();
+        events[3]["data"]["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("source");
+        events.insert(3, json!({"seq":3.5,"time":1250,"type":"request/header","data":{"header":{
+            "config":{"provider":"configured-provider","model":"configured-model"},
+            "tools":[{"name":"bash","description":"Run shell commands","parameters":{"type":"object"}}]
+        }}}));
+        let state = project(&events);
+        let tool = state
+            .records
+            .iter()
+            .find(|record| record.kind == Kind::Tool)
+            .unwrap();
+        assert_eq!(tool.detail.schema.as_ref().unwrap()["name"], "bash");
+        assert_eq!(
+            tool.detail.schema.as_ref().unwrap()["parameters"]["type"],
+            "object"
+        );
+        assert_eq!(
+            state.requests[0].provider.as_deref(),
+            Some("configured-provider")
+        );
+        assert_eq!(state.requests[0].model.as_deref(), Some("configured-model"));
+        assert!(
+            state.requests[0]
+                .detail_tabs(true)
+                .contains(&DetailTab::Options)
+        );
     }
 
     #[test]
@@ -1215,218 +1208,12 @@ mod tests {
                 .unwrap()
                 .failed()
         );
-        let folded = HashSet::from(["tool-root".to_owned()]);
-        let rows = visible(&state.records, &folded, "");
+        let folded = HashSet::from(["tool:tool-root".to_owned()]);
+        let rows = visible(&state.records, &state.requests, &folded, "");
         assert!(!rows.iter().any(|row| row.record.key == "tool-child"));
         assert!(rows.iter().any(|row| row.record.key == "tool-root"));
-        let rows = visible(&state.records, &folded, "README.md");
+        let rows = visible(&state.records, &state.requests, &folded, "README.md");
         assert!(rows.iter().any(|row| row.record.key == "tool-child"));
-    }
-
-    #[test]
-    fn sequence_and_recorded_time_share_inclusive_span_filtering() {
-        let state = project(&events());
-        let sequence = time_spans(&state, false, false);
-        assert_eq!(
-            sequence["u"],
-            TimelineSpan {
-                start: 0.,
-                end: 0.25
-            }
-        );
-        let timed = time_spans(&state, true, false);
-        let tool = timed["tool-c"];
-        assert!((tool.start - 2. / 3.).abs() < 0.0001);
-        assert!((tool.end - 8. / 9.).abs() < 0.0001);
-        let selected = |span: TimelineSpan| span.start <= 0.8 && span.end >= 0.7;
-        assert!(selected(tool));
-        assert!(!selected(TimelineSpan {
-            start: 0.,
-            end: 0.5
-        }));
-    }
-
-    #[test]
-    fn click_ranges_expand_to_one_record_without_exceeding_the_domain() {
-        assert_eq!(ordered_range((0.8, 0.2)), (0.2, 0.8));
-        let range = minimum_range(0.5, 10);
-        assert!((range.0 - 0.45).abs() < 0.0001);
-        assert!((range.1 - 0.55).abs() < 0.0001);
-        assert_eq!(minimum_range(1., 10), (0.9, 1.));
-        assert_eq!(minimum_range(0.5, 0), (0., 1.));
-    }
-
-    #[test]
-    fn wasm_scroll_listener_never_overwrites_gpui_wheel_position() {
-        let source = include_str!("web/trajectory.rs");
-        let scroll = source
-            .split(".track_scroll(&self.trajectory.scroll)")
-            .nth(1)
-            .expect("trajectory scroll listener");
-        assert!(scroll.find(".on_scroll(") < scroll.find(".child(body)"));
-        assert!(scroll.contains("scroll.offset().y + delta"));
-        assert!(!scroll.contains("scroll.set_offset"));
-    }
-
-    #[test]
-    fn turn_folds_keep_the_first_content_record_and_show_its_summary() {
-        let state = project(&events());
-        let rows = visible(&state.records, &HashSet::from(["$turn".to_owned()]), "");
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].record.kind, Kind::User);
-        assert!(!rows[0].collapsed);
-        assert_eq!(rows[0].summary, None);
-        assert!(rows[1].collapsed);
-        assert_eq!(rows[1].summary.as_deref(), Some("已收起用户 · 2 条记录"));
-        assert!(state.records[0].has_children);
-
-        let rows = visible(&state.records, &HashSet::from(["u".to_owned()]), "");
-        assert!(turn_folded(
-            &state.records,
-            &HashSet::from(["u".to_owned()]),
-            1
-        ));
-        assert!(!turn_folded(&state.records, &HashSet::new(), 1));
-        assert!(!turn_folded(
-            &state.records,
-            &HashSet::from(["$turn".to_owned()]),
-            2
-        ));
-        assert_eq!(rows.len(), 2);
-        assert!(rows[1].collapsed);
-        let rows = visible(&state.records, &HashSet::new(), "");
-        assert_eq!(rows.len(), 3);
-        assert!(rows.iter().all(|row| !row.collapsed));
-    }
-
-    #[test]
-    fn turns_without_a_user_record_fold_their_first_assistant_content() {
-        let state = project(&[
-            json!({"seq":1,"time":1000,"type":"turn/start","data":{"turn":9}}),
-            json!({"seq":2,"time":1100,"type":"step/start","data":{"turn":9,"step":1}}),
-            json!({"seq":3,"time":1200,"type":"assistant/message","data":{"turn":9,"step":1,"message":{"id":"first","content":[{"type":"text","text":"first"}]}}}),
-            json!({"seq":4,"time":1300,"type":"assistant/message","data":{"turn":9,"step":1,"message":{"id":"second","content":[{"type":"text","text":"second"}]}}}),
-        ]);
-        assert!(state.records[0].has_children);
-        let rows = visible(&state.records, &HashSet::from(["$turn".to_owned()]), "");
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].record.key, "assistant-first");
-        assert_eq!(rows[1].summary.as_deref(), Some("已收起助手 · 1 条记录"));
-        let rows = visible(
-            &state.records,
-            &HashSet::from(["assistant-first".to_owned()]),
-            "second",
-        );
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].record.key, "assistant-first");
-        assert!(rows[1].collapsed);
-        assert_eq!(rows[2].record.key, "assistant-second");
-    }
-
-    #[test]
-    fn call_folds_ignore_leaf_calls_and_retain_real_subcalls() {
-        let state = project(&[
-            json!({"seq":1,"time":1000,"type":"turn/start","data":{"turn":1}}),
-            json!({"seq":2,"time":1100,"type":"tool/call","data":{"turn":1,"step":1,"callId":"leaf","name":"bash","arguments":"{\"command\":\"pwd\"}"}}),
-            json!({"seq":3,"time":1200,"type":"tool/result","data":{"turn":1,"step":1,"message":{"source":{"callId":"leaf"},"content":[{"type":"text","text":"/tmp"}]}}}),
-            json!({"seq":4,"time":1300,"type":"tool/call","data":{"turn":1,"step":1,"callId":"root","name":"run_code","arguments":"{}"}}),
-            json!({"seq":5,"time":1400,"type":"tool/ptc-dispatch-start","data":{"rootCallId":"root","parentCallId":"root","subCallId":"child","name":"read_file","arguments":{"path":"README.md"}}}),
-            json!({"seq":6,"time":1500,"type":"tool/ptc-dispatch","data":{"rootCallId":"root","parentCallId":"root","subCallId":"child","name":"read_file","arguments":{"path":"README.md"},"content":[{"type":"text","text":"contents"}]}}),
-        ]);
-        let rows = visible(&state.records, &HashSet::from(["$call".to_owned()]), "");
-        let leaf = rows
-            .iter()
-            .find(|row| row.record.key == "tool-leaf")
-            .unwrap();
-        assert!(!leaf.record.has_children);
-        assert!(!leaf.collapsed);
-        assert_eq!(leaf.summary, None);
-        let root = rows
-            .iter()
-            .find(|row| row.record.key == "tool-root" && !row.collapsed)
-            .unwrap();
-        assert!(root.record.has_children);
-        assert!(!root.collapsed);
-        assert_eq!(
-            rows.iter()
-                .find(|row| row.record.key == "tool-root" && row.collapsed)
-                .and_then(|row| row.summary.as_deref()),
-            Some("已收起工具 · 1 条记录")
-        );
-        assert_eq!(leaf.summary, None);
-        assert!(!rows.iter().any(|row| row.record.key == "tool-child"));
-
-        let rows = visible(&state.records, &HashSet::from(["tool-leaf".to_owned()]), "");
-        assert!(rows.iter().any(|row| row.record.key == "tool-child"));
-        assert!(
-            !rows
-                .iter()
-                .find(|row| row.record.key == "tool-root")
-                .unwrap()
-                .collapsed
-        );
-        let rows = visible(&state.records, &HashSet::from(["$subcall".to_owned()]), "");
-        let child = rows
-            .iter()
-            .find(|row| row.record.key == "tool-child")
-            .unwrap();
-        assert!(!child.collapsed);
-        assert_eq!(child.summary, None);
-
-        let mut folded = HashSet::new();
-        toggle_global_fold(&mut folded, &state.records, "$call");
-        assert!(folded.contains("$call"));
-        assert_eq!(visible(&state.records, &folded, "")[0].summary, None);
-        toggle_global_fold(&mut folded, &state.records, "$call");
-        assert_eq!(folded, HashSet::new());
-        toggle_global_fold(&mut folded, &state.records, "$call");
-        assert!(folded.contains("$call"));
-        folded.insert("tool-root".to_owned());
-        toggle_global_fold(&mut folded, &state.records, "$call");
-        assert_eq!(folded, HashSet::new());
-    }
-
-    #[test]
-    fn nested_global_expansion_keeps_hidden_individual_folds() {
-        let state = project(&[
-            json!({"seq":1,"time":1000,"type":"turn/start","data":{"turn":1}}),
-            json!({"seq":2,"time":1100,"type":"user/message","data":{"id":"u","source":{"kind":"user"},"content":[{"type":"text","text":"nested"}]}}),
-            json!({"seq":3,"time":1200,"type":"tool/call","data":{"turn":1,"step":1,"callId":"root","name":"run_code","arguments":"{}"}}),
-            json!({"seq":4,"time":1300,"type":"tool/ptc-dispatch-start","data":{"rootCallId":"root","parentCallId":"root","subCallId":"child","name":"read_file","arguments":{"path":"README.md"}}}),
-            json!({"seq":5,"time":1400,"type":"tool/ptc-dispatch","data":{"rootCallId":"root","parentCallId":"root","subCallId":"child","name":"read_file","arguments":{"path":"README.md"},"content":[{"type":"text","text":"contents"}]}}),
-            json!({"seq":6,"time":1500,"type":"tool/ptc-dispatch-start","data":{"rootCallId":"root","parentCallId":"child","subCallId":"grandchild","name":"grep","arguments":{"query":"needle"}}}),
-            json!({"seq":7,"time":1600,"type":"tool/ptc-dispatch","data":{"rootCallId":"root","parentCallId":"child","subCallId":"grandchild","name":"grep","arguments":{"query":"needle"},"content":[{"type":"text","text":"found"}]}}),
-        ]);
-        let mut folded = HashSet::from(["$subcall".to_owned()]);
-        toggle_global_fold(&mut folded, &state.records, "$call");
-        let rows = visible(&state.records, &folded, "");
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[2].summary.as_deref(), Some("已收起工具 · 2 条记录"));
-        toggle_global_fold(&mut folded, &state.records, "$call");
-        assert_eq!(folded, HashSet::from(["$subcall".to_owned()]));
-        let rows = visible(&state.records, &folded, "");
-        assert!(
-            rows.iter().any(|row| row.record.key == "tool-child"),
-            "rows: {rows:#?}"
-        );
-        assert_eq!(rows[3].summary.as_deref(), Some("已收起子工具 · 1 条记录"));
-        assert!(!rows.iter().any(|row| row.record.key == "tool-grandchild"));
-        let rows = visible(&state.records, &folded, "needle");
-        assert_eq!(rows.len(), 3, "rows: {rows:#?}");
-        assert_eq!(rows[0].record.key, "tool-child");
-        assert_eq!(rows[1].summary.as_deref(), Some("已收起子工具 · 1 条记录"));
-        assert_eq!(rows[2].record.key, "tool-grandchild");
-        let rows = visible(&state.records, &folded, "");
-        assert_eq!(rows.len(), 4);
-        folded.insert("tool-root".to_owned());
-        let rows = visible(&state.records, &folded, "needle");
-        assert_eq!(rows.len(), 5, "rows: {rows:#?}");
-        assert_eq!(rows[0].record.key, "tool-root");
-        assert_eq!(rows[1].summary.as_deref(), Some("已收起工具 · 2 条记录"));
-        assert_eq!(rows[3].summary.as_deref(), Some("已收起子工具 · 1 条记录"));
-        assert_eq!(rows[4].record.key, "tool-grandchild");
-        let rows = visible(&state.records, &folded, "");
-        assert_eq!(rows.len(), 3);
     }
 
     #[test]
@@ -1435,10 +1222,9 @@ mod tests {
         state.apply_page(&events()[2..], false);
         state.apply_page(&events()[..2], true);
         assert_eq!(state.events.len(), 7);
-        let folded = HashSet::from(["$turn".to_owned()]);
-        let rows = visible(&state.records, &folded, "pwd");
+        let folded = HashSet::from(["turn:1".to_owned()]);
+        let rows = visible(&state.records, &state.requests, &folded, "pwd");
         assert!(rows.iter().any(|row| row.record.name == "bash"));
-        assert!(state.records[0].has_children);
         assert_eq!(format_duration(None), "—");
     }
 }

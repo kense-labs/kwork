@@ -76,6 +76,16 @@ test('a retain stream failure removes only that hold and can be retried', async 
   await h.watchTerminals(h.ctx, { sessionId: 'session', active: false });
 });
 
+test('an unavailable terminal controller clears a previous watch and reports feature absence', async () => {
+  const h = await harness([]);
+  await h.watchTerminals(h.ctx, { sessionId: 'session', request: 1 });
+  const previous = h.terminalWatches.get('session');
+  const result = await h.watchTerminals({ get: () => undefined }, { sessionId: 'session', request: 2 });
+  assert.deepEqual(result, { available: false });
+  assert.equal(previous.controller.signal.aborted, true);
+  assert.equal(h.terminalWatches.has('session'), false);
+});
+
 test('watch initialization failure and replacement clean up their own stream and holds', async () => {
   const h = await harness([], { firstDone: true });
   await assert.rejects(h.watchTerminals(h.ctx, { sessionId: 'session', request: 1 }), /清单已关闭/);

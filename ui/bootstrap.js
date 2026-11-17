@@ -2,6 +2,10 @@ import init, { start } from './pkg/dsh_gpui_ui.js';
 
 const boot = document.getElementById('boot');
 
+// The upstream token/component sheets distinguish desktop macOS from narrow
+// browser layouts using this attribute, just as GPUI uses dshIsMac().
+if (navigator.platform.startsWith('Mac')) document.documentElement.dataset.platform = 'darwin';
+
 function enableMacWindowMaterial() {
   if (!window.__TAURI_INTERNALS__ || !navigator.platform.startsWith('Mac')) return;
   document.documentElement.dataset.nativeMacMaterial = '';

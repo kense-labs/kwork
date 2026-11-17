@@ -1,0 +1,2921 @@
+{
+  "directory": [
+    {
+      "provider": "deepseek-official",
+      "displayName": "DeepSeek",
+      "settingsNs": "llm-deepseek",
+      "settingsPath": []
+    },
+    {
+      "provider": "deepseek-account",
+      "displayName": "DeepSeek Account",
+      "settingsNs": "llm-deepseek-account",
+      "settingsPath": []
+    },
+    {
+      "provider": "amazon-bedrock",
+      "displayName": "amazon-bedrock",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "amazon-bedrock"
+      ],
+      "declared": false,
+      "baseURLEnv": [
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION"
+      ],
+      "nativeAuth": {
+        "env": [
+          "AWS_BEARER_TOKEN_BEDROCK",
+          "AWS_PROFILE",
+          "AWS_ACCESS_KEY_ID",
+          "AWS_SECRET_ACCESS_KEY",
+          "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+          "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+          "AWS_WEB_IDENTITY_TOKEN_FILE"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "ant-ling",
+      "displayName": "ant-ling",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "ant-ling"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.ant-ling.com/v1",
+      "nativeAuth": {
+        "env": [
+          "ANT_LING_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "anthropic",
+      "displayName": "anthropic",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "anthropic"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.anthropic.com",
+      "nativeAuth": {
+        "env": [
+          "ANTHROPIC_AUTH_TOKEN",
+          "ANTHROPIC_OAUTH_TOKEN",
+          "ANTHROPIC_API_KEY",
+          "ANTHROPIC_FEDERATION_RULE_ID",
+          "ANTHROPIC_ORGANIZATION_ID",
+          "ANTHROPIC_IDENTITY_TOKEN_FILE",
+          "ANTHROPIC_SERVICE_ACCOUNT_ID",
+          "ANTHROPIC_WORKSPACE_ID"
+        ],
+        "oauth": true
+      }
+    },
+    {
+      "provider": "azure",
+      "displayName": "azure",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "azure"
+      ],
+      "declared": false,
+      "baseURLEnv": [
+        "AZURE_OPENAI_BASE_URL",
+        "AZURE_OPENAI_RESOURCE_NAME"
+      ],
+      "nativeAuth": {
+        "env": [
+          "AZURE_OPENAI_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "baseten",
+      "displayName": "baseten",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "baseten"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://inference.baseten.co/v1",
+      "nativeAuth": {
+        "env": [
+          "BASETEN_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "cerebras",
+      "displayName": "cerebras",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "cerebras"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.cerebras.ai/v1",
+      "nativeAuth": {
+        "env": [
+          "CEREBRAS_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "cloudflare-ai-gateway",
+      "displayName": "cloudflare-ai-gateway",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "cloudflare-ai-gateway"
+      ],
+      "declared": false,
+      "baseURLEnv": [
+        "CLOUDFLARE_ACCOUNT_ID",
+        "CLOUDFLARE_GATEWAY_ID"
+      ],
+      "nativeAuth": {
+        "env": [
+          "CLOUDFLARE_API_KEY",
+          "CLOUDFLARE_ACCOUNT_ID",
+          "CLOUDFLARE_GATEWAY_ID"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "cloudflare-workers-ai",
+      "displayName": "cloudflare-workers-ai",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "cloudflare-workers-ai"
+      ],
+      "declared": false,
+      "baseURLEnv": [
+        "CLOUDFLARE_ACCOUNT_ID"
+      ],
+      "nativeAuth": {
+        "env": [
+          "CLOUDFLARE_API_KEY",
+          "CLOUDFLARE_ACCOUNT_ID"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "deepseek",
+      "displayName": "deepseek",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "deepseek"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.deepseek.com",
+      "nativeAuth": {
+        "env": [
+          "DEEPSEEK_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "fireworks",
+      "displayName": "fireworks",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "fireworks"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.fireworks.ai/inference",
+      "nativeAuth": {
+        "env": [
+          "FIREWORKS_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "github-copilot",
+      "displayName": "github-copilot",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "github-copilot"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.individual.githubcopilot.com",
+      "nativeAuth": {
+        "env": [
+          "COPILOT_GITHUB_TOKEN"
+        ],
+        "oauth": true
+      }
+    },
+    {
+      "provider": "google",
+      "displayName": "google",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "google"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://generativelanguage.googleapis.com/v1beta",
+      "nativeAuth": {
+        "env": [
+          "GEMINI_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "google-vertex",
+      "displayName": "google-vertex",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "google-vertex"
+      ],
+      "declared": false,
+      "baseURLEnv": [
+        "GOOGLE_CLOUD_PROJECT",
+        "GCLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION"
+      ],
+      "nativeAuth": {
+        "env": [
+          "GOOGLE_CLOUD_API_KEY",
+          "GOOGLE_APPLICATION_CREDENTIALS",
+          "GOOGLE_CLOUD_PROJECT",
+          "GCLOUD_PROJECT",
+          "GOOGLE_CLOUD_LOCATION"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "groq",
+      "displayName": "groq",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "groq"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.groq.com/openai/v1",
+      "nativeAuth": {
+        "env": [
+          "GROQ_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "huggingface",
+      "displayName": "huggingface",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "huggingface"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://router.huggingface.co/v1",
+      "nativeAuth": {
+        "env": [
+          "HF_TOKEN"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "kimi-coding",
+      "displayName": "kimi-coding",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "kimi-coding"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.kimi.com/coding/v1",
+      "nativeAuth": {
+        "env": [
+          "KIMI_API_KEY"
+        ],
+        "oauth": true
+      }
+    },
+    {
+      "provider": "meta",
+      "displayName": "meta",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "meta"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.meta.ai/v1",
+      "nativeAuth": {
+        "env": [
+          "META_API_KEY"
+        ],
+        "oauth": true
+      }
+    },
+    {
+      "provider": "minimax",
+      "displayName": "minimax",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "minimax"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.minimax.io/anthropic",
+      "nativeAuth": {
+        "env": [
+          "MINIMAX_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "minimax-cn",
+      "displayName": "minimax-cn",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "minimax-cn"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.minimaxi.com/anthropic",
+      "nativeAuth": {
+        "env": [
+          "MINIMAX_CN_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "mistral",
+      "displayName": "mistral",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "mistral"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.mistral.ai",
+      "nativeAuth": {
+        "env": [
+          "MISTRAL_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "moonshotai",
+      "displayName": "moonshotai",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "moonshotai"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.moonshot.ai/v1",
+      "nativeAuth": {
+        "env": [
+          "MOONSHOT_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "moonshotai-cn",
+      "displayName": "moonshotai-cn",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "moonshotai-cn"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.moonshot.cn/v1",
+      "nativeAuth": {
+        "env": [
+          "MOONSHOT_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "nvidia",
+      "displayName": "nvidia",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "nvidia"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://integrate.api.nvidia.com/v1",
+      "nativeAuth": {
+        "env": [
+          "NVIDIA_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "openai",
+      "displayName": "openai",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "openai"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.openai.com/v1",
+      "nativeAuth": {
+        "env": [
+          "OPENAI_API_KEY"
+        ],
+        "oauth": true
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "displayName": "openai-codex",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "openai-codex"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://chatgpt.com/backend-api",
+      "nativeAuth": {
+        "env": [],
+        "oauth": true
+      }
+    },
+    {
+      "provider": "opencode",
+      "displayName": "opencode",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "opencode"
+      ],
+      "declared": false,
+      "nativeAuth": {
+        "env": [
+          "OPENCODE_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "opencode-go",
+      "displayName": "opencode-go",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "opencode-go"
+      ],
+      "declared": false,
+      "nativeAuth": {
+        "env": [
+          "OPENCODE_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "openrouter",
+      "displayName": "openrouter",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "openrouter"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://openrouter.ai/api/v1",
+      "nativeAuth": {
+        "env": [
+          "OPENROUTER_API_KEY"
+        ],
+        "oauth": true
+      }
+    },
+    {
+      "provider": "qwen-token-plan",
+      "displayName": "qwen-token-plan",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "qwen-token-plan"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+      "nativeAuth": {
+        "env": [
+          "QWEN_TOKEN_PLAN_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "qwen-token-plan-cn",
+      "displayName": "qwen-token-plan-cn",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "qwen-token-plan-cn"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+      "nativeAuth": {
+        "env": [
+          "QWEN_TOKEN_PLAN_CN_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "qwen-token-plan-individual",
+      "displayName": "qwen-token-plan-individual",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "qwen-token-plan-individual"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+      "nativeAuth": {
+        "env": [
+          "QWEN_TOKEN_PLAN_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "radius",
+      "displayName": "radius",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "radius"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://radius.pi.dev/v1",
+      "nativeAuth": {
+        "env": [
+          "RADIUS_API_KEY"
+        ],
+        "oauth": true
+      }
+    },
+    {
+      "provider": "together",
+      "displayName": "together",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "together"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.together.ai/v1",
+      "nativeAuth": {
+        "env": [
+          "TOGETHER_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "vercel-ai-gateway",
+      "displayName": "vercel-ai-gateway",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "vercel-ai-gateway"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://ai-gateway.vercel.sh",
+      "nativeAuth": {
+        "env": [
+          "AI_GATEWAY_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "xai",
+      "displayName": "xai",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "xai"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.x.ai/v1",
+      "nativeAuth": {
+        "env": [
+          "XAI_API_KEY"
+        ],
+        "oauth": true
+      }
+    },
+    {
+      "provider": "xiaomi",
+      "displayName": "xiaomi",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "xiaomi"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.xiaomimimo.com/v1",
+      "nativeAuth": {
+        "env": [
+          "XIAOMI_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "xiaomi-token-plan-ams",
+      "displayName": "xiaomi-token-plan-ams",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "xiaomi-token-plan-ams"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://token-plan-ams.xiaomimimo.com/v1",
+      "nativeAuth": {
+        "env": [
+          "XIAOMI_TOKEN_PLAN_AMS_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "xiaomi-token-plan-cn",
+      "displayName": "xiaomi-token-plan-cn",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "xiaomi-token-plan-cn"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://token-plan-cn.xiaomimimo.com/v1",
+      "nativeAuth": {
+        "env": [
+          "XIAOMI_TOKEN_PLAN_CN_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "xiaomi-token-plan-sgp",
+      "displayName": "xiaomi-token-plan-sgp",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "xiaomi-token-plan-sgp"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://token-plan-sgp.xiaomimimo.com/v1",
+      "nativeAuth": {
+        "env": [
+          "XIAOMI_TOKEN_PLAN_SGP_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "zai",
+      "displayName": "zai",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "zai"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://api.z.ai/api/coding/paas/v4",
+      "nativeAuth": {
+        "env": [
+          "ZAI_API_KEY"
+        ],
+        "oauth": false
+      }
+    },
+    {
+      "provider": "zai-coding-cn",
+      "displayName": "zai-coding-cn",
+      "settingsNs": "llm-pi-ai",
+      "settingsPath": [
+        "providers",
+        "zai-coding-cn"
+      ],
+      "declared": false,
+      "defaultBaseURL": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "nativeAuth": {
+        "env": [
+          "ZAI_CODING_CN_API_KEY"
+        ],
+        "oauth": false
+      }
+    }
+  ],
+  "registered": [
+    {
+      "id": "deepseek-official",
+      "name": "DeepSeek"
+    },
+    {
+      "id": "deepseek-account",
+      "name": "DeepSeek Account"
+    }
+  ],
+  "described": {
+    "writable": true,
+    "namespaces": [
+      {
+        "ns": "llm-pi-ai",
+        "autoGenerate": false,
+        "schema": {
+          "uid": 2465,
+          "refs": {
+            "2320": {
+              "type": "number",
+              "meta": {
+                "max": 2147483647,
+                "default": 500
+              }
+            },
+            "2321": {
+              "type": "number",
+              "meta": {
+                "max": 2147483647,
+                "default": 10000
+              }
+            },
+            "2322": {
+              "type": "number",
+              "meta": {
+                "min": 0,
+                "max": 1,
+                "default": 0.1
+              }
+            },
+            "2323": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "initialDelayMs": 2320,
+                "maxDelayMs": 2321,
+                "jitterRatio": 2322
+              }
+            },
+            "2324": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "normal"
+            },
+            "2325": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 0,
+                "max": 9007199254740991,
+                "default": 5
+              }
+            },
+            "2326": {
+              "type": "string",
+              "meta": {}
+            },
+            "2327": {
+              "type": "array",
+              "meta": {
+                "default": [
+                  "EMPTY_RESPONSE",
+                  "RATE_LIMIT",
+                  "SERVER",
+                  "TIMEOUT",
+                  "TRANSPORT"
+                ]
+              },
+              "inner": 2326
+            },
+            "2328": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "mode": 2324,
+                "maxRetries": 2325,
+                "retryableCodes": 2327,
+                "backoff": 2323
+              }
+            },
+            "2329": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "always"
+            },
+            "2330": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "mode": 2329,
+                "backoff": 2323
+              }
+            },
+            "2331": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2328,
+                2330
+              ]
+            },
+            "2332": {
+              "type": "number",
+              "meta": {}
+            },
+            "2333": {
+              "type": "number",
+              "meta": {}
+            },
+            "2334": {
+              "type": "number",
+              "meta": {}
+            },
+            "2335": {
+              "type": "number",
+              "meta": {}
+            },
+            "2336": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "minimal": 2332,
+                "low": 2333,
+                "medium": 2334,
+                "high": 2335
+              }
+            },
+            "2337": {
+              "type": "string",
+              "meta": {}
+            },
+            "2338": {
+              "type": "number",
+              "meta": {}
+            },
+            "2339": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2340": {
+              "type": "const",
+              "meta": {},
+              "value": null
+            },
+            "2341": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "thinking.enabled"
+            },
+            "2342": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "thinking.effort"
+            },
+            "2343": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "thinking.budget"
+            },
+            "2344": {
+              "type": "union",
+              "meta": {
+                "required": true
+              },
+              "list": [
+                2341,
+                2342,
+                2343
+              ]
+            },
+            "2345": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2346": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "$var": 2344,
+                "omitWhenOff": 2345
+              }
+            },
+            "2347": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2337,
+                2338,
+                2339,
+                2340,
+                2346
+              ]
+            },
+            "2348": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2349": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2350": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2351": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2352": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2353": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2354,
+                2355
+              ]
+            },
+            "2354": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "max_completion_tokens"
+            },
+            "2355": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "max_tokens"
+            },
+            "2356": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2357": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2358": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2359": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2360": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2361,
+                2362,
+                2363,
+                2364,
+                2365,
+                2366,
+                2367,
+                2368,
+                2369,
+                2370,
+                2371
+              ]
+            },
+            "2361": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "openai"
+            },
+            "2362": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "deepseek"
+            },
+            "2363": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "openrouter"
+            },
+            "2364": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "together"
+            },
+            "2365": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "baseten"
+            },
+            "2366": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "zai"
+            },
+            "2367": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "qwen"
+            },
+            "2368": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "chat-template"
+            },
+            "2369": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "qwen-chat-template"
+            },
+            "2370": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "string-thinking"
+            },
+            "2371": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "ant-ling"
+            },
+            "2372": {
+              "type": "dict",
+              "meta": {
+                "default": {}
+              },
+              "inner": 2347,
+              "sKey": 2373
+            },
+            "2373": {
+              "type": "string",
+              "meta": {}
+            },
+            "2374": {
+              "type": "dict",
+              "meta": {
+                "default": {}
+              },
+              "inner": 2347,
+              "sKey": 2375
+            },
+            "2375": {
+              "type": "string",
+              "meta": {}
+            },
+            "2376": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2377": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2378,
+                2379,
+                2380
+              ]
+            },
+            "2378": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "thinking_token_budget"
+            },
+            "2379": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "thinking_budget"
+            },
+            "2380": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "thinking_budget_tokens"
+            },
+            "2381": {
+              "type": "number",
+              "meta": {
+                "step": 1
+              }
+            },
+            "2382": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2383": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2384": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2385
+              ]
+            },
+            "2385": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "anthropic"
+            },
+            "2386": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2387": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2388": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2389": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2390": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2391": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2392": {
+              "type": "boolean",
+              "meta": {}
+            },
+            "2393": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "supportsStore": 2348,
+                "supportsDeveloperRole": 2349,
+                "supportsReasoningEffort": 2350,
+                "supportsUsageInStreaming": 2351,
+                "supportsFinishReason": 2352,
+                "maxTokensField": 2353,
+                "requiresToolResultName": 2356,
+                "requiresAssistantAfterToolResult": 2357,
+                "requiresThinkingAsText": 2358,
+                "requiresReasoningContentOnAssistantMessages": 2359,
+                "thinkingFormat": 2360,
+                "chatTemplateKwargs": 2372,
+                "chatTemplateArgs": 2374,
+                "supportsThinkingTokenBudget": 2376,
+                "thinkingTokenBudgetField": 2377,
+                "vllmPriority": 2381,
+                "supportsMaxOutputTokens": 2382,
+                "supportsStrictMode": 2383,
+                "cacheControlFormat": 2384,
+                "supportsLongCacheRetention": 2386,
+                "supportsEagerToolInputStreaming": 2387,
+                "supportsCacheControlOnTools": 2388,
+                "supportsTemperature": 2389,
+                "forceAdaptiveThinking": 2390,
+                "allowEmptySignature": 2391,
+                "supportsStrictTools": 2392
+              }
+            },
+            "2394": {
+              "type": "string",
+              "meta": {}
+            },
+            "2395": {
+              "type": "const",
+              "meta": {},
+              "value": null
+            },
+            "2396": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2394,
+                2395
+              ]
+            },
+            "2397": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2398,
+                2399,
+                2400,
+                2401,
+                2402,
+                2403,
+                2404
+              ]
+            },
+            "2398": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "off"
+            },
+            "2399": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "minimal"
+            },
+            "2400": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "low"
+            },
+            "2401": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "medium"
+            },
+            "2402": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "high"
+            },
+            "2403": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "xhigh"
+            },
+            "2404": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "max"
+            },
+            "2405": {
+              "type": "dict",
+              "meta": {
+                "default": {}
+              },
+              "inner": 2396,
+              "sKey": 2397
+            },
+            "2406": {
+              "type": "string",
+              "meta": {}
+            },
+            "2407": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1
+              }
+            },
+            "2408": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1
+              }
+            },
+            "2409": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2410,
+                2411
+              ]
+            },
+            "2410": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "text"
+            },
+            "2411": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "image"
+            },
+            "2412": {
+              "type": "array",
+              "meta": {
+                "default": []
+              },
+              "inner": 2409
+            },
+            "2413": {
+              "type": "const",
+              "meta": {},
+              "value": false
+            },
+            "2414": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2413,
+                2405
+              ]
+            },
+            "2415": {
+              "type": "string",
+              "meta": {
+                "required": true
+              }
+            },
+            "2416": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "id": 2415,
+                "name": 2406,
+                "contextWindow": 2407,
+                "maxTokens": 2408,
+                "input": 2412,
+                "reasoningEfforts": 2414,
+                "compat": 2393
+              }
+            },
+            "2417": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "name": 2406,
+                "contextWindow": 2407,
+                "maxTokens": 2408,
+                "input": 2412,
+                "reasoningEfforts": 2414,
+                "compat": 2393
+              }
+            },
+            "2418": {
+              "type": "string",
+              "meta": {
+                "role": "credential-ref"
+              }
+            },
+            "2419": {
+              "type": "string",
+              "meta": {}
+            },
+            "2420": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2421,
+                2422,
+                2423
+              ]
+            },
+            "2421": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "openai-completions"
+            },
+            "2422": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "openai-responses"
+            },
+            "2423": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "anthropic-messages"
+            },
+            "2424": {
+              "type": "string",
+              "meta": {}
+            },
+            "2425": {
+              "type": "array",
+              "meta": {
+                "default": []
+              },
+              "inner": 2416
+            },
+            "2426": {
+              "type": "dict",
+              "meta": {
+                "default": {}
+              },
+              "inner": 2417,
+              "sKey": 2427
+            },
+            "2427": {
+              "type": "string",
+              "meta": {}
+            },
+            "2428": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 1000000
+              }
+            },
+            "2429": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 128000
+              }
+            },
+            "2430": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2431,
+                2432
+              ]
+            },
+            "2431": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "text"
+            },
+            "2432": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "image"
+            },
+            "2433": {
+              "type": "array",
+              "meta": {
+                "default": [
+                  "text"
+                ]
+              },
+              "inner": 2430
+            },
+            "2434": {
+              "type": "string",
+              "meta": {}
+            },
+            "2435": {
+              "type": "dict",
+              "meta": {
+                "default": {}
+              },
+              "inner": 2434,
+              "sKey": 2436
+            },
+            "2436": {
+              "type": "string",
+              "meta": {}
+            },
+            "2437": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2438,
+                2439,
+                2440,
+                2441,
+                2442,
+                2443,
+                2444
+              ]
+            },
+            "2438": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "off"
+            },
+            "2439": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "minimal"
+            },
+            "2440": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "low"
+            },
+            "2441": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "medium"
+            },
+            "2442": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "high"
+            },
+            "2443": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "xhigh"
+            },
+            "2444": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "max"
+            },
+            "2445": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2446,
+                2447,
+                2448
+              ]
+            },
+            "2446": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "none"
+            },
+            "2447": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "short"
+            },
+            "2448": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "long"
+            },
+            "2449": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2450,
+                2451,
+                2452,
+                2453
+              ]
+            },
+            "2450": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "sse"
+            },
+            "2451": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "websocket"
+            },
+            "2452": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "websocket-cached"
+            },
+            "2453": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "auto"
+            },
+            "2454": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 0
+              }
+            },
+            "2455": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 0
+              }
+            },
+            "2456": {
+              "type": "number",
+              "meta": {
+                "min": 5e-324,
+                "max": 2147483647,
+                "default": 300000
+              }
+            },
+            "2457": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 20971520
+              }
+            },
+            "2458": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 50
+              }
+            },
+            "2459": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1
+              }
+            },
+            "2460": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 4194304
+              }
+            },
+            "2461": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 1048576
+              }
+            },
+            "2462": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "apiKeyEnv": 2418,
+                "displayName": 2419,
+                "api": 2420,
+                "baseURL": 2424,
+                "models": 2425,
+                "modelOverrides": 2426,
+                "compat": 2393,
+                "defaultContextWindow": 2428,
+                "defaultMaxTokens": 2429,
+                "defaultInput": 2433,
+                "headers": 2435,
+                "reasoning": 2437,
+                "thinkingBudgets": 2336,
+                "cacheRetention": 2445,
+                "transport": 2449,
+                "timeoutMs": 2454,
+                "websocketConnectTimeoutMs": 2455,
+                "streamIdleTimeoutMs": 2456,
+                "maxRequestImageBytes": 2457,
+                "maxRequestImages": 2458,
+                "imageOffloadCountQuantum": 2459,
+                "requestImagePixelBudget": 2460,
+                "requestImageMaxBytes": 2461,
+                "retryPolicy": 2331
+              }
+            },
+            "2463": {
+              "type": "string",
+              "meta": {}
+            },
+            "2464": {
+              "type": "dict",
+              "meta": {
+                "default": {}
+              },
+              "inner": 2462,
+              "sKey": 2463
+            },
+            "2465": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "providers": 2464
+              }
+            }
+          }
+        },
+        "value": {
+          "providers": {}
+        },
+        "base": {
+          "providers": {}
+        },
+        "user": {},
+        "applies": "live",
+        "secrets": [],
+        "revision": 0
+      },
+      {
+        "ns": "llm-deepseek",
+        "autoGenerate": false,
+        "schema": {
+          "uid": 2582,
+          "refs": {
+            "2526": {
+              "type": "string",
+              "meta": {}
+            },
+            "2527": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "enabled"
+            },
+            "2528": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "disabled"
+            },
+            "2529": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2527,
+                2528
+              ]
+            },
+            "2530": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "off"
+            },
+            "2531": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "low"
+            },
+            "2532": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "high"
+            },
+            "2533": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "max"
+            },
+            "2534": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2530,
+                2531,
+                2532,
+                2533
+              ]
+            },
+            "2535": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "max": 9007199254740991,
+                "default": 256000
+              }
+            },
+            "2536": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 1000000
+              }
+            },
+            "2537": {
+              "type": "string",
+              "meta": {}
+            },
+            "2538": {
+              "type": "string",
+              "meta": {}
+            },
+            "2539": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1
+              }
+            },
+            "2540": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1
+              }
+            },
+            "2541": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1
+              }
+            },
+            "2542": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2541,
+                2543
+              ]
+            },
+            "2543": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "low"
+            },
+            "2544": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1
+              }
+            },
+            "2545": {
+              "type": "const",
+              "meta": {},
+              "value": "in-history"
+            },
+            "2546": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2547,
+                2548
+              ]
+            },
+            "2547": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "in-history"
+            },
+            "2548": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "addition-only"
+            },
+            "2549": {
+              "type": "string",
+              "meta": {
+                "required": true
+              }
+            },
+            "2550": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2551,
+                2552
+              ]
+            },
+            "2551": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "text"
+            },
+            "2552": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "image"
+            },
+            "2553": {
+              "type": "array",
+              "meta": {
+                "default": [
+                  "text"
+                ],
+                "min": 1
+              },
+              "inner": 2550
+            },
+            "2554": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "id": 2549,
+                "name": 2537,
+                "description": 2538,
+                "contextWindow": 2539,
+                "maxTokens": 2540,
+                "imagePixelBudget": 2542,
+                "imageMaxBytes": 2544,
+                "systemPromptUpdate": 2545,
+                "toolUpdate": 2546,
+                "inputModalities": 2553
+              }
+            },
+            "2555": {
+              "type": "array",
+              "meta": {
+                "default": [
+                  {
+                    "id": "deepseek-flash",
+                    "name": "DeepSeek-V4.1-Flash",
+                    "contextWindow": 1048576,
+                    "systemPromptUpdate": "in-history",
+                    "toolUpdate": "addition-only",
+                    "inputModalities": [
+                      "text",
+                      "image"
+                    ]
+                  },
+                  {
+                    "id": "deepseek-v4-pro",
+                    "name": "DeepSeek-V4-Pro",
+                    "description": "Stronger agentic coding, knowledge, and difficult reasoning; suited to complex or quality-critical tasks at higher cost.",
+                    "contextWindow": 1048576
+                  }
+                ]
+              },
+              "inner": 2554
+            },
+            "2556": {
+              "type": "number",
+              "meta": {
+                "min": 5e-324,
+                "max": 2147483647,
+                "default": 300000
+              }
+            },
+            "2557": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 134217728
+              }
+            },
+            "2558": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 20971520
+              }
+            },
+            "2559": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 600
+              }
+            },
+            "2560": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 67108864
+              }
+            },
+            "2561": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 10485760
+              }
+            },
+            "2562": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 20
+              }
+            },
+            "2563": {
+              "type": "number",
+              "meta": {
+                "min": 5e-324,
+                "max": 2147483647,
+                "default": 60000
+              }
+            },
+            "2564": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 3600,
+                "max": 2592000,
+                "default": 604800
+              }
+            },
+            "2565": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 0,
+                "default": 3600
+              }
+            },
+            "2566": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "max": 1000,
+                "default": 100
+              }
+            },
+            "2567": {
+              "type": "number",
+              "meta": {
+                "max": 2147483647,
+                "default": 500
+              }
+            },
+            "2568": {
+              "type": "number",
+              "meta": {
+                "max": 2147483647,
+                "default": 10000
+              }
+            },
+            "2569": {
+              "type": "number",
+              "meta": {
+                "min": 0,
+                "max": 1,
+                "default": 0.1
+              }
+            },
+            "2570": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "initialDelayMs": 2567,
+                "maxDelayMs": 2568,
+                "jitterRatio": 2569
+              }
+            },
+            "2571": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "normal"
+            },
+            "2572": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 0,
+                "max": 9007199254740991,
+                "default": 5
+              }
+            },
+            "2573": {
+              "type": "string",
+              "meta": {}
+            },
+            "2574": {
+              "type": "array",
+              "meta": {
+                "default": [
+                  "EMPTY_RESPONSE",
+                  "RATE_LIMIT",
+                  "SERVER",
+                  "TIMEOUT",
+                  "TRANSPORT"
+                ]
+              },
+              "inner": 2573
+            },
+            "2575": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "mode": 2571,
+                "maxRetries": 2572,
+                "retryableCodes": 2574,
+                "backoff": 2570
+              }
+            },
+            "2576": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "always"
+            },
+            "2577": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "mode": 2576,
+                "backoff": 2570
+              }
+            },
+            "2578": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2575,
+                2577
+              ]
+            },
+            "2579": {
+              "type": "number",
+              "meta": {
+                "min": 5e-324,
+                "max": 2147483647,
+                "default": 5000
+              }
+            },
+            "2580": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 0,
+                "max": 9007199254740991,
+                "default": 600000
+              }
+            },
+            "2581": {
+              "type": "string",
+              "meta": {
+                "role": "credential-ref",
+                "default": "DEEPSEEK_API_KEY"
+              }
+            },
+            "2582": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "baseURL": 2526,
+                "thinking": 2529,
+                "reasoningEffort": 2534,
+                "maxTokens": 2535,
+                "defaultContextWindow": 2536,
+                "models": 2555,
+                "streamIdleTimeoutMs": 2556,
+                "maxRequestFilesBytes": 2557,
+                "maxInlineRequestImageBytes": 2558,
+                "maxImagesPerRequest": 2559,
+                "imageOffloadByteQuantum": 2560,
+                "inlineImageOffloadByteQuantum": 2561,
+                "imageOffloadCountQuantum": 2562,
+                "filesApiTimeoutMs": 2563,
+                "fileExpiresAfterSeconds": 2564,
+                "fileRefreshMarginSeconds": 2565,
+                "fileQuotaCleanupBatch": 2566,
+                "retryPolicy": 2578,
+                "modelsTimeoutMs": 2579,
+                "modelsMaxAgeMs": 2580,
+                "apiKeyEnv": 2581
+              }
+            }
+          }
+        },
+        "value": {
+          "baseURL": "https://fixture.invalid/v1",
+          "maxTokens": 256000,
+          "defaultContextWindow": 1000000,
+          "models": [
+            {
+              "id": "deepseek-flash",
+              "name": "DeepSeek-V4.1-Flash",
+              "contextWindow": 1048576,
+              "systemPromptUpdate": "in-history",
+              "toolUpdate": "addition-only",
+              "inputModalities": [
+                "text",
+                "image"
+              ]
+            },
+            {
+              "id": "deepseek-v4-pro",
+              "name": "DeepSeek-V4-Pro",
+              "description": "Stronger agentic coding, knowledge, and difficult reasoning; suited to complex or quality-critical tasks at higher cost.",
+              "contextWindow": 1048576,
+              "inputModalities": [
+                "text"
+              ]
+            }
+          ],
+          "streamIdleTimeoutMs": 300000,
+          "maxRequestFilesBytes": 134217728,
+          "maxInlineRequestImageBytes": 20971520,
+          "maxImagesPerRequest": 600,
+          "imageOffloadByteQuantum": 67108864,
+          "inlineImageOffloadByteQuantum": 10485760,
+          "imageOffloadCountQuantum": 20,
+          "filesApiTimeoutMs": 60000,
+          "fileExpiresAfterSeconds": 604800,
+          "fileRefreshMarginSeconds": 3600,
+          "fileQuotaCleanupBatch": 100,
+          "modelsTimeoutMs": 5000,
+          "modelsMaxAgeMs": 600000,
+          "apiKeyEnv": "DEEPSEEK_API_KEY"
+        },
+        "base": {
+          "maxTokens": 256000,
+          "defaultContextWindow": 1000000,
+          "models": [
+            {
+              "id": "deepseek-flash",
+              "name": "DeepSeek-V4.1-Flash",
+              "contextWindow": 1048576,
+              "systemPromptUpdate": "in-history",
+              "toolUpdate": "addition-only",
+              "inputModalities": [
+                "text",
+                "image"
+              ]
+            },
+            {
+              "id": "deepseek-v4-pro",
+              "name": "DeepSeek-V4-Pro",
+              "description": "Stronger agentic coding, knowledge, and difficult reasoning; suited to complex or quality-critical tasks at higher cost.",
+              "contextWindow": 1048576,
+              "inputModalities": [
+                "text"
+              ]
+            }
+          ],
+          "streamIdleTimeoutMs": 300000,
+          "maxRequestFilesBytes": 134217728,
+          "maxInlineRequestImageBytes": 20971520,
+          "maxImagesPerRequest": 600,
+          "imageOffloadByteQuantum": 67108864,
+          "inlineImageOffloadByteQuantum": 10485760,
+          "imageOffloadCountQuantum": 20,
+          "filesApiTimeoutMs": 60000,
+          "fileExpiresAfterSeconds": 604800,
+          "fileRefreshMarginSeconds": 3600,
+          "fileQuotaCleanupBatch": 100,
+          "modelsTimeoutMs": 5000,
+          "modelsMaxAgeMs": 600000,
+          "apiKeyEnv": "DEEPSEEK_API_KEY"
+        },
+        "user": {
+          "baseURL": "https://fixture.invalid/v1"
+        },
+        "applies": "live",
+        "secrets": [],
+        "revision": 0
+      },
+      {
+        "ns": "llm-deepseek-account",
+        "autoGenerate": false,
+        "schema": {
+          "uid": 2659,
+          "refs": {
+            "2604": {
+              "type": "string",
+              "meta": {}
+            },
+            "2605": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "enabled"
+            },
+            "2606": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "disabled"
+            },
+            "2607": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2605,
+                2606
+              ]
+            },
+            "2608": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "off"
+            },
+            "2609": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "low"
+            },
+            "2610": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "high"
+            },
+            "2611": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "max"
+            },
+            "2612": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2608,
+                2609,
+                2610,
+                2611
+              ]
+            },
+            "2613": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "max": 9007199254740991,
+                "default": 256000
+              }
+            },
+            "2614": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 1000000
+              }
+            },
+            "2615": {
+              "type": "number",
+              "meta": {
+                "min": 5e-324,
+                "max": 2147483647,
+                "default": 300000
+              }
+            },
+            "2616": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 134217728
+              }
+            },
+            "2617": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 20971520
+              }
+            },
+            "2618": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 600
+              }
+            },
+            "2619": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 67108864
+              }
+            },
+            "2620": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 10485760
+              }
+            },
+            "2621": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "default": 20
+              }
+            },
+            "2622": {
+              "type": "number",
+              "meta": {
+                "min": 5e-324,
+                "max": 2147483647,
+                "default": 60000
+              }
+            },
+            "2623": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 3600,
+                "max": 2592000,
+                "default": 604800
+              }
+            },
+            "2624": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 0,
+                "default": 3600
+              }
+            },
+            "2625": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1,
+                "max": 1000,
+                "default": 100
+              }
+            },
+            "2626": {
+              "type": "number",
+              "meta": {
+                "max": 2147483647,
+                "default": 500
+              }
+            },
+            "2627": {
+              "type": "number",
+              "meta": {
+                "max": 2147483647,
+                "default": 10000
+              }
+            },
+            "2628": {
+              "type": "number",
+              "meta": {
+                "min": 0,
+                "max": 1,
+                "default": 0.1
+              }
+            },
+            "2629": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "initialDelayMs": 2626,
+                "maxDelayMs": 2627,
+                "jitterRatio": 2628
+              }
+            },
+            "2630": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "normal"
+            },
+            "2631": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 0,
+                "max": 9007199254740991,
+                "default": 5
+              }
+            },
+            "2632": {
+              "type": "string",
+              "meta": {}
+            },
+            "2633": {
+              "type": "array",
+              "meta": {
+                "default": [
+                  "EMPTY_RESPONSE",
+                  "RATE_LIMIT",
+                  "SERVER",
+                  "TIMEOUT",
+                  "TRANSPORT"
+                ]
+              },
+              "inner": 2632
+            },
+            "2634": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "mode": 2630,
+                "maxRetries": 2631,
+                "retryableCodes": 2633,
+                "backoff": 2629
+              }
+            },
+            "2635": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "always"
+            },
+            "2636": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "mode": 2635,
+                "backoff": 2629
+              }
+            },
+            "2637": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2634,
+                2636
+              ]
+            },
+            "2638": {
+              "type": "number",
+              "meta": {
+                "min": 5e-324,
+                "max": 2147483647,
+                "default": 5000
+              }
+            },
+            "2639": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 0,
+                "max": 9007199254740991,
+                "default": 600000
+              }
+            },
+            "2640": {
+              "type": "string",
+              "meta": {}
+            },
+            "2641": {
+              "type": "string",
+              "meta": {}
+            },
+            "2642": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1
+              }
+            },
+            "2643": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1
+              }
+            },
+            "2644": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1
+              }
+            },
+            "2645": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2644,
+                2646
+              ]
+            },
+            "2646": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "low"
+            },
+            "2647": {
+              "type": "number",
+              "meta": {
+                "step": 1,
+                "min": 1
+              }
+            },
+            "2648": {
+              "type": "const",
+              "meta": {},
+              "value": "in-history"
+            },
+            "2649": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2650,
+                2651
+              ]
+            },
+            "2650": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "in-history"
+            },
+            "2651": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "addition-only"
+            },
+            "2652": {
+              "type": "union",
+              "meta": {},
+              "list": [
+                2653,
+                2654
+              ]
+            },
+            "2653": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "text"
+            },
+            "2654": {
+              "type": "const",
+              "meta": {
+                "required": true
+              },
+              "value": "image"
+            },
+            "2655": {
+              "type": "array",
+              "meta": {
+                "default": []
+              },
+              "inner": 2652
+            },
+            "2656": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "name": 2640,
+                "description": 2641,
+                "contextWindow": 2642,
+                "maxTokens": 2643,
+                "imagePixelBudget": 2645,
+                "imageMaxBytes": 2647,
+                "systemPromptUpdate": 2648,
+                "toolUpdate": 2649,
+                "inputModalities": 2655
+              }
+            },
+            "2657": {
+              "type": "string",
+              "meta": {}
+            },
+            "2658": {
+              "type": "dict",
+              "meta": {
+                "default": {}
+              },
+              "inner": 2656,
+              "sKey": 2657
+            },
+            "2659": {
+              "type": "object",
+              "meta": {
+                "default": {}
+              },
+              "dict": {
+                "baseURL": 2604,
+                "thinking": 2607,
+                "reasoningEffort": 2612,
+                "maxTokens": 2613,
+                "defaultContextWindow": 2614,
+                "streamIdleTimeoutMs": 2615,
+                "maxRequestFilesBytes": 2616,
+                "maxInlineRequestImageBytes": 2617,
+                "maxImagesPerRequest": 2618,
+                "imageOffloadByteQuantum": 2619,
+                "inlineImageOffloadByteQuantum": 2620,
+                "imageOffloadCountQuantum": 2621,
+                "filesApiTimeoutMs": 2622,
+                "fileExpiresAfterSeconds": 2623,
+                "fileRefreshMarginSeconds": 2624,
+                "fileQuotaCleanupBatch": 2625,
+                "retryPolicy": 2637,
+                "modelsTimeoutMs": 2638,
+                "modelsMaxAgeMs": 2639,
+                "modelOverrides": 2658
+              }
+            }
+          }
+        },
+        "value": {
+          "maxTokens": 256000,
+          "defaultContextWindow": 1000000,
+          "streamIdleTimeoutMs": 300000,
+          "maxRequestFilesBytes": 134217728,
+          "maxInlineRequestImageBytes": 20971520,
+          "maxImagesPerRequest": 600,
+          "imageOffloadByteQuantum": 67108864,
+          "inlineImageOffloadByteQuantum": 10485760,
+          "imageOffloadCountQuantum": 20,
+          "filesApiTimeoutMs": 60000,
+          "fileExpiresAfterSeconds": 604800,
+          "fileRefreshMarginSeconds": 3600,
+          "fileQuotaCleanupBatch": 100,
+          "modelsTimeoutMs": 5000,
+          "modelsMaxAgeMs": 600000,
+          "modelOverrides": {}
+        },
+        "base": {
+          "maxTokens": 256000,
+          "defaultContextWindow": 1000000,
+          "streamIdleTimeoutMs": 300000,
+          "maxRequestFilesBytes": 134217728,
+          "maxInlineRequestImageBytes": 20971520,
+          "maxImagesPerRequest": 600,
+          "imageOffloadByteQuantum": 67108864,
+          "inlineImageOffloadByteQuantum": 10485760,
+          "imageOffloadCountQuantum": 20,
+          "filesApiTimeoutMs": 60000,
+          "fileExpiresAfterSeconds": 604800,
+          "fileRefreshMarginSeconds": 3600,
+          "fileQuotaCleanupBatch": 100,
+          "modelsTimeoutMs": 5000,
+          "modelsMaxAgeMs": 600000,
+          "modelOverrides": {}
+        },
+        "user": {},
+        "applies": "live",
+        "secrets": [],
+        "revision": 0
+      }
+    ]
+  }
+}

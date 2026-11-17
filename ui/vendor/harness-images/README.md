@@ -1,0 +1,1 @@
+Gallery, original-image lightbox, image drag gestures, browser file transfers, file actions, context-menu triggers and filename rules are from DeepSeek Harness commit `39163dd30f703a79079e2d2446545cff3c453738`. Only runtime imports are redirected to the local copies; MIT terms are retained. `ui/trajectory-output.tsx` supplies the native attachment reader and menu adapter.

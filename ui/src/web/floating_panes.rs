@@ -381,6 +381,7 @@ impl DshApp {
     pub(super) fn render_float_panes(&self, w: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let mut layer = div().absolute().inset_0();
         for (float, rect) in self.float_layers(w) {
+            super::document_html::cover_canvas_float(rect, FLOAT_RADIUS);
             layer = layer.child(self.render_float_pane(float, rect, w, cx));
         }
         layer.child(float_pointer_capture(cx))

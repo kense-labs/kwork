@@ -3,6 +3,7 @@
 #[cfg(target_os = "macos")]
 pub(crate) mod applications;
 pub(crate) mod document;
+pub(crate) mod file_actions;
 pub(crate) mod watch;
 
 use serde::Serialize;

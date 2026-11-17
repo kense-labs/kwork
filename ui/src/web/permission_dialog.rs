@@ -1,9 +1,51 @@
 //! Full-access acknowledgement dialog and shared modal actions.
 
-use super::workspace::{composer_bg, conversation_bg};
+use super::workspace::conversation_bg;
 use super::*;
+use serde::Serialize;
+
+pub(super) struct PermissionDialogFocus {
+    close: gpui::FocusHandle,
+    acknowledgement: gpui::FocusHandle,
+    cancel: gpui::FocusHandle,
+    confirm: gpui::FocusHandle,
+}
+
+impl PermissionDialogFocus {
+    pub(super) fn new(cx: &App) -> Self {
+        Self {
+            close: cx.focus_handle(),
+            acknowledgement: cx.focus_handle(),
+            cancel: cx.focus_handle(),
+            confirm: cx.focus_handle(),
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Serialize)]
+pub(super) struct AccessiblePermissionRisk {
+    session: String,
+    preset: String,
+    from_command: bool,
+    title: &'static str,
+    description: &'static str,
+    acknowledgement: &'static str,
+    action: &'static str,
+    acknowledged: bool,
+}
 
 impl DshApp {
+    pub(super) fn open_permission_confirmation(
+        &mut self,
+        preset: String,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_permission = Some(preset);
+        self.full_access_acknowledged = false;
+        self.permission_dialog_focus.acknowledgement.focus(w, cx);
+    }
+
     pub(super) fn close_permission_confirmation(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         self.confirm_permission = None;
         self.full_access_acknowledged = false;
@@ -15,6 +57,90 @@ impl DshApp {
         cx.notify();
     }
 
+    pub(super) fn handle_permission_confirmation_key(
+        &mut self,
+        combo: &str,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.confirm_permission.is_none() {
+            return false;
+        }
+        match combo {
+            "Escape" => self.close_permission_confirmation(w, cx),
+            "Tab" | "shift+Tab" => {
+                let focus = &self.permission_dialog_focus;
+                let controls = [
+                    &focus.close,
+                    &focus.acknowledgement,
+                    &focus.cancel,
+                    &focus.confirm,
+                ];
+                let count = usize::from(self.full_access_acknowledged) + 3;
+                let index = controls[..count]
+                    .iter()
+                    .position(|control| control.is_focused(w));
+                let next = index.map_or(1, |index| {
+                    (index + if combo == "Tab" { 1 } else { count - 1 }) % count
+                });
+                controls[next].focus(w, cx);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn confirm_permission_change(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if self.full_access_acknowledged
+            && let Some(preset) = self.confirm_permission.take()
+        {
+            self.close_permission_confirmation(w, cx);
+            self.apply_permission(preset, true);
+        }
+    }
+
+    pub(super) fn act_on_permission_risk(
+        &mut self,
+        action: &str,
+        target: &str,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok((session, preset)) = serde_json::from_str::<(String, String)>(target) else {
+            return;
+        };
+        if self.active_session.as_deref() != Some(session.as_str())
+            || self.confirm_permission.as_deref() != Some(preset.as_str())
+        {
+            return;
+        }
+        match action {
+            "permission-risk-acknowledge" => {
+                self.full_access_acknowledged = !self.full_access_acknowledged;
+                cx.notify();
+            }
+            "permission-risk-confirm" => self.confirm_permission_change(w, cx),
+            "permission-risk-cancel" => self.close_permission_confirmation(w, cx),
+            _ => {}
+        }
+    }
+
+    pub(super) fn accessible_permission_risk(&self) -> Option<AccessiblePermissionRisk> {
+        let session = self.active_session.clone()?;
+        let preset = self.confirm_permission.clone()?;
+        let (title, description, acknowledgement, action) = permission_risk(&preset);
+        Some(AccessiblePermissionRisk {
+            session,
+            preset,
+            from_command: self.composer_menu == Some(ComposerMenu::PermissionChoices),
+            title,
+            description,
+            acknowledgement,
+            action,
+            acknowledged: self.full_access_acknowledged,
+        })
+    }
+
     pub(super) fn render_full_access_dialog(
         &mut self,
         w: &mut Window,
@@ -23,27 +149,14 @@ impl DshApp {
         let p = dsh(cx);
         let width = (f32::from(w.viewport_size().width) - 48.).clamp(0., 440.);
         let acknowledged = self.full_access_acknowledged;
-        let (title, description, acknowledgement, action) = if self.confirm_permission.as_deref()
-            == Some("auto")
-        {
-            (
-                "确认启用自动审查（实验）？",
-                "自动审查不使用沙箱。每次原生工具调用和 PTC 内层调用前，都会由与当前 agent 相同的模型进行审查；审查拒绝的调用由你批准或拒绝。此功能仍属实验性，可能误放行或误拒绝，并会消耗额外 token。",
-                "我已了解这些风险，并愿意继续",
-                "启用自动审查",
-            )
-        } else {
-            (
-                "确认启用完全权限？",
-                "启用完全权限后，智能体将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。",
-                "我已了解风险，并愿意继续",
-                "启用完全权限",
-            )
-        };
+        let (title, description, acknowledgement, action) =
+            permission_risk(self.confirm_permission.as_deref().unwrap_or_default());
+        let focus = &self.permission_dialog_focus;
         div()
             .id("full-access-dialog")
             .absolute()
             .inset_0()
+            .p(px(24.))
             .flex()
             .items_center()
             .justify_center()
@@ -53,44 +166,39 @@ impl DshApp {
             .child(
                 column()
                     .id("full-access-dialog-panel")
+                    .role(gpui::Role::Dialog)
+                    .aria_label(title)
                     .w(px(width))
+                    .max_h_full()
+                    .min_h_0()
+                    .gap(px(20.))
                     .pb(px(24.))
                     .rounded(px(28.))
-                    .bg(composer_bg(cx))
+                    .bg(p.bg_layer_2)
                     .shadow(elevation_prominent())
                     .occlude()
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
-                    .child(dialog_header(
-                        title,
-                        "close-full-access-dialog",
-                        None,
-                        cx,
-                        |this, w, cx| this.close_permission_confirmation(w, cx),
-                    ))
                     .child(
                         column()
-                            .w_full()
-                            .px(px(24.))
+                            .id("permission-risk-content")
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .child(dialog_header_with_warning(
+                                title,
+                                "close-full-access-dialog",
+                                Some(&focus.close),
+                                true,
+                                cx,
+                                |this, w, cx| this.close_permission_confirmation(w, cx),
+                            ))
                             .child(
-                                row()
-                                    .w_full()
-                                    .items_start()
-                                    .gap(px(10.))
-                                    .child(div().pt(px(2.)).flex_none().child(icon(
-                                        Glyph::Alert,
-                                        16.,
-                                        p.danger,
-                                    )))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .text_size(px(14.))
-                                            .line_height(px(22.))
-                                            .text_color(p.secondary)
-                                            .child(description),
-                                    ),
+                                div()
+                                    .px(px(24.))
+                                    .text_size(px(14.))
+                                    .line_height(px(22.))
+                                    .text_color(p.secondary)
+                                    .child(description),
                             )
                             .child(
                                 row()
@@ -98,8 +206,10 @@ impl DshApp {
                                     .role(gpui::Role::CheckBox)
                                     .aria_label(acknowledgement)
                                     .aria_selected(acknowledged)
+                                    .track_focus(&focus.acknowledgement)
                                     .tab_index(0)
                                     .w_full()
+                                    .px(px(24.))
                                     .mt(px(16.))
                                     .items_start()
                                     .gap(px(8.))
@@ -146,37 +256,54 @@ impl DshApp {
                     .child(
                         row()
                             .w_full()
-                            .mt(px(20.))
+                            .flex_none()
                             .px(px(24.))
                             .justify_end()
                             .gap(px(8.))
-                            .child(dialog_action(
-                                "cancel-full-access",
-                                "取消",
-                                false,
-                                false,
-                                72.,
-                                cx,
-                                |this, w, cx| this.close_permission_confirmation(w, cx),
-                            ))
-                            .child(dialog_action(
-                                "confirm-full-access",
-                                action,
-                                true,
-                                !acknowledged,
-                                136.,
-                                cx,
-                                |this, w, cx| {
-                                    if this.full_access_acknowledged
-                                        && let Some(preset) = this.confirm_permission.take()
-                                    {
-                                        this.close_permission_confirmation(w, cx);
-                                        this.apply_permission(preset, true);
-                                    }
-                                },
-                            )),
+                            .child(
+                                dialog_action(
+                                    "cancel-full-access",
+                                    "取消",
+                                    false,
+                                    false,
+                                    72.,
+                                    cx,
+                                    |this, w, cx| this.close_permission_confirmation(w, cx),
+                                )
+                                .track_focus(&focus.cancel),
+                            )
+                            .child(
+                                dialog_action(
+                                    "confirm-full-access",
+                                    action,
+                                    true,
+                                    !acknowledged,
+                                    136.,
+                                    cx,
+                                    |this, w, cx| this.confirm_permission_change(w, cx),
+                                )
+                                .track_focus(&focus.confirm),
+                            ),
                     ),
             )
+    }
+}
+
+fn permission_risk(preset: &str) -> (&'static str, &'static str, &'static str, &'static str) {
+    if preset == "auto" {
+        (
+            "确认启用自动审查（实验）？",
+            "自动审查不使用沙箱。每次原生工具调用和 PTC 内层调用前，都会由与当前 agent 相同的模型进行审查；审查拒绝的调用由你批准或拒绝。此功能仍属实验性，可能误放行或误拒绝，并会消耗额外 token。",
+            "我已了解这些风险，并愿意继续",
+            "启用自动审查",
+        )
+    } else {
+        (
+            "确认启用完全权限？",
+            "启用完全权限后，智能体将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。",
+            "我已了解风险，并愿意继续",
+            "启用完全权限",
+        )
     }
 }
 
@@ -184,6 +311,17 @@ pub(super) fn dialog_header(
     title: impl Into<gpui::SharedString>,
     id: &'static str,
     focus: Option<&gpui::FocusHandle>,
+    cx: &mut Context<DshApp>,
+    action: impl Fn(&mut DshApp, &mut Window, &mut Context<DshApp>) + 'static,
+) -> gpui::Div {
+    dialog_header_with_warning(title, id, focus, false, cx, action)
+}
+
+pub(super) fn dialog_header_with_warning(
+    title: impl Into<gpui::SharedString>,
+    id: &'static str,
+    focus: Option<&gpui::FocusHandle>,
+    warning: bool,
     cx: &mut Context<DshApp>,
     action: impl Fn(&mut DshApp, &mut Window, &mut Context<DshApp>) + 'static,
 ) -> gpui::Div {
@@ -198,14 +336,32 @@ pub(super) fn dialog_header(
         .items_center()
         .justify_between()
         .child(
-            div()
+            row()
                 .flex_1()
                 .min_w_0()
-                .text_size(px(16.))
-                .line_height(px(24.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(p.ink)
-                .child(title.into()),
+                .gap(px(8.))
+                .items_start()
+                .when(warning, |title| {
+                    title.child(
+                        div().pt(px(3.)).flex_none().child(
+                            gpui::svg()
+                                .data(include_bytes!(
+                                    "../../assets/plugin-install-warning-outline.svg"
+                                ))
+                                .size(px(18.))
+                                .text_color(p.state_warn_primary),
+                        ),
+                    )
+                })
+                .child(
+                    div()
+                        .min_w_0()
+                        .text_size(px(16.))
+                        .line_height(px(24.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(p.ink)
+                        .child(title.into()),
+                ),
         )
         .child(super::dock_action_button(
             div()

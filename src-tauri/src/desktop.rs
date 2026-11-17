@@ -147,6 +147,23 @@ pub(crate) async fn chinese_system_font(
 }
 
 #[tauri::command]
+pub(crate) async fn named_system_font(
+    webview: tauri::Webview,
+    family: String,
+) -> Result<tauri::ipc::Response, String> {
+    if webview.label() != "main" || family.len() > 800 || family.chars().any(char::is_control) {
+        return Err("Invalid font request".into());
+    }
+    #[cfg(target_os = "macos")]
+    return tauri::async_runtime::spawn_blocking(move || system_fonts::named_font(&family))
+        .await
+        .map_err(|error| error.to_string())?
+        .map(tauri::ipc::Response::new);
+    #[cfg(not(target_os = "macos"))]
+    Ok(tauri::ipc::Response::new(Vec::<u8>::new()))
+}
+
+#[tauri::command]
 pub(crate) async fn show_document_copy_menu(
     webview: tauri::Webview,
     text: String,

@@ -1,0 +1,39 @@
+{
+  "upstream": "https://github.com/kense-labs/dsh-acp",
+  "purpose": "ACP autonomous turn notifications, reserved/background session ownership, and pre-publication presets",
+  "targetHost": "0.2.2-rc.3",
+  "inputs": [
+    {
+      "file": "packages/acp/acp/lib/content.js",
+      "sha256": "f11a1b1d79b463d3b921d166dac9872f6c6de8b00426b50aba22e1b8530bcfa7"
+    },
+    {
+      "file": "packages/acp/acp/lib/prewarm.js",
+      "sha256": "d2828ed8d854dbbed51f42a00a56605bc6bc1b9ef6bd9f3d0ce06854837d0466"
+    },
+    {
+      "file": "packages/acp/acp/lib/mcp.js",
+      "sha256": "1cf71fbfbde784f9dc0fd99faeafe3f7094b56164de5d75f2c08c14a8ec10aef"
+    },
+    {
+      "file": "packages/acp/acp/lib/model-control.js",
+      "sha256": "f7f1607d67007429ccd7812de3d9bfce9da1c048745993d913103ab6f9318794"
+    },
+    {
+      "file": "packages/acp/acp/lib/codec.js",
+      "sha256": "72e921d7745fc68f2ba97b96e4d1bb0f60bb1881c89f0bed7a6e6850bb8ed5df"
+    },
+    {
+      "file": "packages/acp/acp/lib/updates.js",
+      "sha256": "4b392bca7913738097a243c8d123d969673325efc5a4f9bcff2b6e686f84c176"
+    },
+    {
+      "file": "packages/acp/acp/lib/session.js",
+      "sha256": "f3190def83da9e483a89d80014a30ac622aa527023248b5d6f5c18a7381c271b"
+    },
+    {
+      "file": "services/agent-preset-session.mjs",
+      "sha256": "7f764a833adcffb9879ef7074d9304bdfe2df69c92d7346953f2340ceafe039a"
+    }
+  ]
+}

@@ -7,6 +7,7 @@ use std::{cell::Cell, rc::Rc};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Preference {
+    BusyEnter,
     Display,
     Timing,
     Replies,
@@ -20,6 +21,11 @@ enum Preference {
 impl Preference {
     fn labels(self) -> (&'static str, &'static str, &'static [&'static str]) {
         match self {
+            Self::BusyEnter => (
+                "繁忙时的发送行为",
+                "智能体运行时 Enter 键和发送按钮的行为，Cmd/Ctrl+Enter 使用另一行为",
+                &["排队发送", "插话发送"],
+            ),
             Self::Display => (
                 "工作步骤展示",
                 "选择希望看到多少工具调用细节",
@@ -50,6 +56,9 @@ impl Preference {
 
     fn selected(self, app: &DshApp) -> usize {
         match self {
+            Self::BusyEnter => {
+                usize::from(app.composer_preference.mode == crate::submit::SubmitMode::Steer)
+            }
             Self::Display => match app.work_details {
                 WorkDetailsMode::Compact => 0,
                 WorkDetailsMode::Standard => 1,
@@ -76,7 +85,7 @@ struct OpenMenu {
 }
 
 pub(super) struct TranscriptPreferences {
-    triggers: [Trigger; 5],
+    triggers: [Trigger; 6],
     menu: Option<OpenMenu>,
 }
 
@@ -102,6 +111,13 @@ impl TranscriptPreferences {
 
 impl DshApp {
     pub(super) fn close_settings(&mut self, cx: &mut Context<Self>) {
+        if self.account_platform_open() {
+            self.close_account_platform();
+            return;
+        }
+        if self.cancel_provider_modal(cx) || self.cancel_account_confirmation(cx) {
+            return;
+        }
         self.transcript_preferences.clear_menu();
         self.plugin_center.close_inventory();
         self.show_settings = false;
@@ -114,6 +130,9 @@ impl DshApp {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if field == Preference::BusyEnter && self.composer_preference.busy {
+            return;
+        }
         let ui = &mut self.transcript_preferences;
         if ui.menu.as_ref().is_some_and(|menu| menu.field == field) {
             ui.clear_menu();
@@ -144,6 +163,16 @@ impl DshApp {
             .focus(w, cx);
         if index != field.selected(self) {
             match field {
+                Preference::BusyEnter => {
+                    let mode = if index == 0 {
+                        crate::submit::SubmitMode::Queue
+                    } else {
+                        crate::submit::SubmitMode::Steer
+                    };
+                    self.request_composer_preference(Some(mode), w, cx);
+                    cx.notify();
+                    return;
+                }
                 Preference::Display => {
                     self.work_details = [
                         WorkDetailsMode::Compact,
@@ -209,22 +238,82 @@ impl DshApp {
         true
     }
 
-    pub(super) fn render_transcript_preferences(&self, w: &Window, cx: &mut Context<Self>) -> Div {
-        let fields = [
-            Preference::Display,
-            Preference::Timing,
-            Preference::Replies,
-            Preference::Links,
-            Preference::Performance,
-        ];
-        column().w_full().gap_0().children(
-            fields
-                .into_iter()
-                .filter(|field| {
-                    *field != Preference::Replies || self.work_details != WorkDetailsMode::Verbose
-                })
-                .map(|field| self.render_transcript_preference(field, w, cx)),
+    pub(super) fn render_transcript_view_preferences(
+        &self,
+        w: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        self.render_transcript_preferences(
+            &[Preference::Display, Preference::Timing, Preference::Replies],
+            w,
+            cx,
         )
+    }
+
+    pub(super) fn render_transcript_action_preferences(
+        &self,
+        w: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        self.render_transcript_preferences(
+            &[
+                Preference::Links,
+                Preference::BusyEnter,
+                Preference::Performance,
+            ],
+            w,
+            cx,
+        )
+    }
+
+    fn render_transcript_preferences(
+        &self,
+        fields: &[Preference],
+        w: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        column()
+            .w_full()
+            .gap_0()
+            .children(
+                fields
+                    .iter()
+                    .copied()
+                    .filter(|field| {
+                        *field != Preference::Replies
+                            || self.work_details != WorkDetailsMode::Verbose
+                    })
+                    .map(|field| self.render_transcript_preference(field, w, cx)),
+            )
+            .when_some(
+                fields
+                    .contains(&Preference::BusyEnter)
+                    .then(|| self.composer_preference.error.clone())
+                    .flatten(),
+                |rows, error| {
+                    rows.child(
+                        row()
+                            .gap(px(8.))
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(12.))
+                                    .text_color(dsh(cx).state_error_primary)
+                                    .child(error),
+                            )
+                            .child(
+                                Button::new("composer-preference-retry")
+                                    .label("重试读取发送设置")
+                                    .secondary()
+                                    .on_click(cx.listener(|app, _, w, cx| {
+                                        app.request_composer_preference(None, w, cx)
+                                    }))
+                                    .into_themed(cx),
+                            ),
+                    )
+                },
+            )
     }
 
     fn render_transcript_preference(

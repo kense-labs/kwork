@@ -1,0 +1,1 @@
+Preset display helper, types and locale dictionaries from DeepSeek Harness `39163dd30f703a79079e2d2446545cff3c453738`, preset/agent-preset-registry and client/ui-agent-preset. The display helper re-export points to the local copy; otherwise unchanged. MIT license: ../harness-primitives/LICENSE.

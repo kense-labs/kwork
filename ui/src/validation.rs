@@ -8,32 +8,38 @@ pub(crate) fn valid_provider_url(value: &str) -> bool {
     if value.chars().any(char::is_whitespace) {
         return false;
     }
-    let rest = value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"));
-    let Some(rest) = rest else {
+    let Some((scheme, rest)) = value.split_once("://") else {
         return false;
     };
+    if !scheme.eq_ignore_ascii_case("https") && !scheme.eq_ignore_ascii_case("http") {
+        return false;
+    }
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     if authority.is_empty() || authority.contains('@') {
         return false;
+    }
+    if let Some(address) = authority.strip_prefix('[') {
+        let Some((ip, suffix)) = address.split_once(']') else {
+            return false;
+        };
+        return ip.parse::<std::net::Ipv6Addr>().is_ok()
+            && (suffix.is_empty() || suffix.strip_prefix(':').is_some_and(valid_provider_port));
     }
     let (host, port) = match authority.rsplit_once(':') {
         Some((host, port)) => (host, Some(port)),
         None => (authority, None),
     };
-    if let Some(port) = port
-        && (port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()))
-    {
+    if port.is_some_and(|port| !valid_provider_port(port)) {
         return false;
-    }
-    if host.starts_with('[') {
-        return host.ends_with(']');
     }
     !host.is_empty()
         && host
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
+fn valid_provider_port(value: &str) -> bool {
+    value.bytes().all(|byte| byte.is_ascii_digit()) && value.parse::<u16>().is_ok()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +101,8 @@ mod tests {
             "http://127.0.0.1:8080",
             "https://my_host.example:443",
             "http://[::1]:8080",
+            "http://[::1]",
+            "HTTPS://api.deepseek.com/v1",
         ] {
             assert!(valid_provider_url(value), "should accept {value}");
         }
@@ -106,6 +114,8 @@ mod tests {
             "https://host:port",
             "https://user@host",
             "https://host with space/v1",
+            "https://host:65536",
+            "http://[not-ipv6]:8080",
         ] {
             assert!(!valid_provider_url(value), "should reject {value}");
         }

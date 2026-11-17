@@ -10,6 +10,91 @@ const CHINESE_FACES: [&str; 3] = [
     "PingFangSC-Semibold",
 ];
 
+/// Resolve an installed family or PostScript name through CoreText. Unknown
+/// names must not return CoreText's silent default-font substitution.
+pub(super) fn named_font(family: &str) -> Result<Vec<u8>, String> {
+    let font = core_text::font::new_from_name(family, 14.).map_err(|_| "Unknown font")?;
+    if !font.family_name().eq_ignore_ascii_case(family)
+        && !font.postscript_name().eq_ignore_ascii_case(family)
+        && !font.display_name().eq_ignore_ascii_case(family)
+    {
+        return Ok(Vec::new());
+    }
+    let Some(path) = font.url().and_then(|url| url.to_path()) else {
+        return Ok(Vec::new());
+    };
+    let mut paths = std::collections::BTreeSet::from([path.clone()]);
+    if let Some(descriptors) = core_text::font_collection::create_for_family(&font.family_name())
+        .and_then(|collection| collection.get_descriptors())
+    {
+        paths.extend(
+            descriptors
+                .iter()
+                .filter_map(|descriptor| descriptor.font_path()),
+        );
+    }
+    let sources: Vec<_> = paths
+        .into_iter()
+        .filter_map(|path| std::fs::read(path).ok())
+        .collect();
+    if sources.len() == 1 {
+        return Ok(sources.into_iter().next().unwrap());
+    }
+    let mut faces = Vec::new();
+    for source in &sources {
+        for index in 0..ttf_parser::fonts_in_collection(source).unwrap_or(1) {
+            if let Ok(face) = Face::parse(source, index) {
+                let raw = *face.raw_face();
+                let cff = raw.table(Tag::from_bytes(b"CFF ")).is_some()
+                    || raw.table(Tag::from_bytes(b"CFF2")).is_some();
+                faces.push((raw, cff));
+            }
+        }
+    }
+    if !faces.is_empty()
+        && let Some(bytes) = package_collection(&faces)
+    {
+        return Ok(bytes);
+    }
+    std::fs::read(path).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod named_font_tests {
+    use super::*;
+
+    #[test]
+    fn installed_family_supplies_real_font_data() {
+        for name in ["Arial", "Courier New"] {
+            let bytes = named_font(name).unwrap();
+            assert!(
+                Face::parse(&bytes, 0).is_ok(),
+                "{name} must supply a parseable installed face"
+            );
+            let faces: Vec<_> = (0..ttf_parser::fonts_in_collection(&bytes).unwrap_or(1))
+                .map(|index| Face::parse(&bytes, index).unwrap())
+                .collect();
+            assert!(
+                faces.iter().any(Face::is_bold),
+                "{name} includes its bold face"
+            );
+            assert!(
+                faces.iter().any(Face::is_italic),
+                "{name} includes its italic face"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_family_does_not_load_a_silent_coretext_substitute() {
+        assert!(
+            named_font("KWork Font That Is Not Installed 20261117")
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
 pub(super) fn chinese_collection() -> Result<Vec<u8>, String> {
     let active = core_text::font::new_from_name(CHINESE_FACES[0], 13.)
         .ok()
@@ -82,7 +167,7 @@ fn package_simplified_faces(data: &[u8]) -> Option<Vec<u8>> {
     package_collection(&[faces[0]?, faces[1]?, faces[2]?])
 }
 
-fn package_collection(faces: &[(RawFace<'_>, bool); 3]) -> Option<Vec<u8>> {
+fn package_collection(faces: &[(RawFace<'_>, bool)]) -> Option<Vec<u8>> {
     // TTC directories use absolute offsets. Preserve the source tables and
     // their checksums, including tables shared by more than one weight.
     let header_size = 12 + faces.len() * 4;
@@ -108,11 +193,13 @@ fn package_collection(faces: &[(RawFace<'_>, bool); 3]) -> Option<Vec<u8>> {
         bytes.resize(table_directory + usize::from(count) * 16, 0);
 
         for (slot, table) in face.table_records.into_iter().enumerate() {
-            let offset = match table_offsets.entry((table.offset, table.length)) {
+            let data = face.table(table.tag)?;
+            // Identical offsets in separate font files are unrelated tables.
+            let offset = match table_offsets.entry((data.as_ptr() as usize, data.len())) {
                 std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     let offset = u32::try_from(bytes.len()).ok()?;
-                    bytes.extend_from_slice(face.table(table.tag)?);
+                    bytes.extend_from_slice(data);
                     bytes.resize(bytes.len().next_multiple_of(4), 0);
                     *entry.insert(offset)
                 }

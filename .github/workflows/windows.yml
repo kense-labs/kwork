@@ -19,7 +19,9 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # The manual desktop test needs a runner with a working WebView2 DevTools endpoint.
+    # https://github.com/actions/runner-images/issues/14738
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'windows-2022' || 'windows-latest' }}
     env:
       KWORK_UI_BUILD: always
       # First Windows pipeline: skip the optional wasm-opt size pass (it needs
@@ -54,6 +56,11 @@ jobs:
 
       - name: Build Windows installer (NSIS)
         run: bun x tauri build --bundles nsis
+
+      - name: Exercise account pages in WebView2
+        if: github.event_name == 'workflow_dispatch'
+        timeout-minutes: 10
+        run: bun scripts/account-platform-windows-smoke.mjs target/release/KWork.exe
 
       - name: Upload installer and portable binary
         uses: actions/upload-artifact@v4

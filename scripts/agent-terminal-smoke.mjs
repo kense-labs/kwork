@@ -1,15 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 
 // Integration test only: run with the production Node executable, the ACP
-// service checkout, and the installed rc.3 terminal runtime. The two temporary
-// test methods still use ACP's public session host and real tool executor; no
-// controller private method is used to create or write a model terminal.
+// service checkout, and the installed rc.3 terminal runtime. Create the session
+// through standard ACP. The test-only command invokes the real tool executor.
 const [serviceArgument, moduleArgument, runtimeArgument] = process.argv.slice(2);
 if (!serviceArgument || !moduleArgument || !runtimeArgument) {
   throw new Error('Usage: node scripts/agent-terminal-smoke.mjs <ACP service> <controller/lib/index.js> <runtime>');
@@ -18,16 +17,14 @@ const service = resolve(serviceArgument);
 const module = resolve(moduleArgument);
 const runtime = resolve(runtimeArgument);
 const home = await mkdtemp(join(tmpdir(), 'kwork-agent-terminal-home-'));
+const workspace = join(home, 'workspace');
+await mkdir(workspace);
 const source = `${await readFile(new URL('../services/session-read-status.mjs', import.meta.url), 'utf8')}
 const bundledAskUser = {};
 ${await readFile(new URL('../services/acp-session-bridge.mjs', import.meta.url), 'utf8')}`
   .replace("'./agent-terminal-bridge.mjs'", JSON.stringify(new URL('../services/agent-terminal-bridge.mjs', import.meta.url).pathname))
-  .replaceAll('terminalWatchMethod, terminalInputMethod,', "'_dsh/gpui/session-create-for-smoke', '_dsh/gpui/terminal-tool', terminalWatchMethod, terminalInputMethod,")
-  .replace('} else if (method === terminalWatchMethod) {', `} else if (method === '_dsh/gpui/session-create-for-smoke') {
-        const { ctx } = await ready;
-        const { session } = await ctx.get('acpSessionHost').create(params.sessionId, params.cwd);
-        response = { result: { sessionId: session.header.id } };
-      } else if (method === '_dsh/gpui/terminal-tool') {
+  .replaceAll('terminalWatchMethod, terminalInputMethod,', "'_dsh/gpui/terminal-tool', terminalWatchMethod, terminalInputMethod,")
+  .replace('} else if (method === terminalWatchMethod) {', `} else if (method === '_dsh/gpui/terminal-tool') {
         const { ctx } = await ready;
         const agent = liveAgent(ctx, params.sessionId);
         response = { result: await ctx.get('tools').execute({
@@ -44,7 +41,7 @@ const smokeEntry = join(smokeDirectory, 'bridge.mjs');
 await writeFile(smokeEntry, source, { mode: 0o600 });
 const child = spawn(process.execPath, [smokeEntry, service,
   `${service}/apps/cli/lib/profile-boot.js`], {
-    env: { ...process.env, DSH_HOME: home, KWORK_WORKSPACE: '/private/tmp',
+    env: { ...process.env, DSH_HOME: home, KWORK_WORKSPACE: workspace,
     NODE_OPTIONS: '--disable-warning=ExperimentalWarning',
     KWORK_WORKSPACE_PREFERENCES: `${home}/preferences.json`,
     KWORK_TERMINAL_MODULE: module, KWORK_TERMINAL_RUNTIME: runtime },
@@ -113,9 +110,8 @@ try {
     assert.equal(batch.results.length, 1);
     return batch.results[0].result;
   }
-  const created = await request('_dsh/gpui/session-create-for-smoke', {
-    sessionId: `kwork-terminal-smoke-${Date.now()}`, cwd: '/private/tmp',
-  });
+  await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+  const created = await request('session/new', { cwd: workspace, mcpServers: [] });
   const sessionId = created.sessionId;
   console.log('SESSION', sessionId);
   const listed = await request('_dsh/gpui/terminal-watch', { sessionId, request: 1 });
@@ -123,7 +119,7 @@ try {
   await request('_dsh/gpui/terminal-watch', { sessionId, request: 2, active: [] });
   // Execute the model-facing plugin through the same executor used by an Agent.
   const opened = await modelTool(sessionId, 'terminal_open', {
-    type: 'shell', name: 'Agent smoke', cwd: '/private/tmp',
+    type: 'shell', name: 'Agent smoke', cwd: workspace,
   });
   assert.equal(opened.isError, false, JSON.stringify(opened));
   assert.equal(opened.value.status.kind, 'running');

@@ -1326,6 +1326,10 @@ pub fn turn_failure(reason: &Value) -> Option<TurnFailure> {
         // The provider AUTH diagnostic can echo a masked credential, so only
         // the localized cause is shown.
         "AUTH" => ("API 密钥无效".to_owned(), Some("AUTH".to_owned())),
+        "ACCOUNT_QUOTA" => (
+            "当前请求的额度已用尽".to_owned(),
+            Some("ACCOUNT_QUOTA".to_owned()),
+        ),
         _ if quota => ("当前请求的额度已用尽".to_owned(), Some("QUOTA".to_owned())),
         _ => {
             let message = if message.is_empty() {
@@ -1561,6 +1565,38 @@ pub struct UserImage {
     pub data_url: Option<String>,
 }
 
+/// A durable verbatim attachment on a user turn.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserFile {
+    pub attachment_id: String,
+    pub name: String,
+    pub bytes: u64,
+}
+
+pub fn user_files(entry: &ChatEntry) -> Vec<UserFile> {
+    user_input_value(entry)
+        .and_then(|value| value.get("files").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| serde_json::from_value(value).ok())
+        .collect()
+}
+
+pub fn set_user_attachments(entry: &mut ChatEntry, images: &[UserImage], files: &[UserFile]) {
+    let mut value = user_input_value(entry)
+        .filter(Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !images.is_empty() {
+        let encoded: Value = serde_json::from_str(&user_images_json(images)).unwrap_or(Value::Null);
+        value["images"] = encoded["images"].clone();
+    }
+    if !files.is_empty() {
+        value["files"] = serde_json::json!(files);
+    }
+    entry.input = value.to_string();
+}
+
 /// Parse the images a user row carries (stored as JSON in `input`).
 pub fn user_images(entry: &ChatEntry) -> Vec<UserImage> {
     if entry.role != EntryRole::User {
@@ -1653,10 +1689,16 @@ fn user_input_value(entry: &ChatEntry) -> Option<Value> {
 }
 
 /// Serialize one user row's `input` payload from its parts.
-pub fn user_entry_input(images: &[UserImage], extra: &[Value], references: &[String]) -> String {
+pub fn user_entry_input(
+    images: &[UserImage],
+    files: &[UserFile],
+    extra: &[Value],
+    references: &[String],
+) -> String {
     let image_value: Value = serde_json::from_str(&user_images_json(images)).unwrap_or(Value::Null);
     serde_json::json!({
         "images": image_value.get("images").cloned().unwrap_or(Value::Array(Vec::new())),
+        "files": files,
         "extra": extra,
         "references": references,
     })
@@ -2334,6 +2376,12 @@ mod tests {
         }))
         .expect("quota failure");
         assert_eq!(quota.message, "当前请求的额度已用尽");
+        let account_quota = turn_failure(&json!({
+            "kind": "error", "error": {"code": "ACCOUNT_QUOTA", "message": "balance"},
+        }))
+        .expect("account quota failure");
+        assert_eq!(account_quota.message, quota.message);
+        assert_eq!(account_quota.code.as_deref(), Some("ACCOUNT_QUOTA"));
 
         let transport = turn_failure(&json!({
             "kind": "error",
@@ -2463,7 +2511,7 @@ mod tests {
     #[test]
     fn user_rows_keep_extra_blocks_and_reference_labels() {
         let extra = vec![serde_json::json!({"type": "asset", "assetId": "a-1"})];
-        let input = user_entry_input(&[], &extra, &[]);
+        let input = user_entry_input(&[], &[], &extra, &[]);
         let mut entry = ChatEntry::local(EntryRole::User, "u1", "hello");
         entry.input = input;
         assert_eq!(user_extra_blocks(&entry), extra);

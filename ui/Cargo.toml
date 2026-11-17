@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 gpui = { package = "gpui-pre", version = "=0.3.10", default-features = false }
 kui = { package = "kense-kui", git = "https://github.com/kense-labs/KUI.git", rev = "e5142159168d865a71e88485ec6208a5a0714488", default-features = false }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 similar = { version = "2", features = ["text"] }
 unicode-linebreak = "0.1"
 unicode-normalization = "0.1"

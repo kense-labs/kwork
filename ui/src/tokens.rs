@@ -36,6 +36,7 @@ pub struct Tokens {
     pub label_tertiary: Hsla,           // --dsw-alias-label-tertiary
     pub label_caption: Hsla,            // --dsw-alias-label-caption
     pub label_dimmed: Hsla,             // --dsw-alias-label-dimmed
+    pub label_primary_dimmed: Hsla,     // --dsw-alias-label-primary-dimmed
     pub label_primary_inverted: Hsla,   // --dsw-alias-label-primary-inverted（深底上的主文字）
     pub label_primary_foreground: Hsla, // --dsw-alias-label-primary-foreground（primary 按钮上的字）
     pub label_primary_bluish: Hsla,     // --dsw-alias-label-primary-bluish（徽章字）
@@ -143,6 +144,7 @@ impl Tokens {
             label_tertiary: rgb(0xadb2b8).into(),
             label_caption: rgb(0x81858c).into(),
             label_dimmed: rgb(0x43454a).into(),
+            label_primary_dimmed: rgb(0xebeef2).into(),
             label_primary_inverted: rgb(0x353638).into(),
             label_primary_foreground: rgb(0x0f1115).into(),
             label_primary_bluish: rgb(0xf9fafb).into(),
@@ -231,6 +233,7 @@ impl Tokens {
             label_tertiary: rgb(0x81858c).into(),
             label_caption: rgb(0xadb2b8).into(),
             label_dimmed: rgb(0xe1e5ee).into(),
+            label_primary_dimmed: rgb(0x151517).into(),
             label_primary_inverted: rgb(0xffffff).into(),
             label_primary_foreground: rgb(0xffffff).into(),
             label_primary_bluish: rgb(0x0e3074).into(),

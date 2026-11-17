@@ -1,0 +1,1 @@
+From DeepSeek Harness 39163dd30f703a79079e2d2446545cff3c453738, ui-settings-session-log. Component, CSS, state machine and dictionaries unchanged except runtime imports redirected to the local upstream primitives and snapshot engine. Native transport and lifecycle are in ui/settings-upload.tsx and ui/settings-upload-controller.ts. MIT license: ../harness-primitives/LICENSE.

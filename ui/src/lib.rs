@@ -22,6 +22,8 @@ pub mod file_icons;
 pub mod file_notes;
 #[cfg(any(target_family = "wasm", test))]
 mod files;
+#[path = "../../shared/font_preferences.rs"]
+pub mod font_preferences;
 pub mod goal;
 pub mod history;
 pub mod layout;

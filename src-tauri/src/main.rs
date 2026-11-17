@@ -1,12 +1,17 @@
 //! Tauri desktop host for KWork.
 
+mod account_platform;
 mod acp;
 mod auth;
 mod browser;
 mod desktop;
+mod desktop_onboarding;
 mod embedded_script;
+#[path = "../../shared/font_preferences.rs"]
+mod font_preferences;
 mod history;
 mod preferences;
+mod prompt_files;
 #[allow(dead_code)]
 #[path = "../../ui/src/shortcuts.rs"]
 mod shortcut_bindings;
@@ -43,6 +48,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .setup(desktop::setup)
         .manage(AcpService::default())
+        .manage(account_platform::AccountPlatform::default())
         .manage(AuthService::default())
         .manage(BrowserService::default())
         .manage(shortcuts::ShortcutService::default())
@@ -77,24 +83,41 @@ fn main() {
     let builder = builder
         .on_window_event(desktop::window_chrome::handle_event)
         .on_web_content_process_terminate(browser::shell_process_terminated);
+    #[cfg(windows)]
+    let builder = builder.on_window_event(account_platform::window_event);
     let app = builder
         .invoke_handler(tauri::generate_handler![
             acp::model_providers,
+            acp::models_settings,
+            acp::deepseek_account,
+            acp::account_notifications,
+            account_platform::account_platform_view,
             acp::runtime_settings,
+            acp::settings_document,
+            acp::resolve_session_document,
+            acp::read_file_image,
             acp::web_settings,
+            acp::composer_preference,
             acp::agent_terminal_watch,
+            acp::watch_tool_result,
             acp::agent_terminal_attach,
             acp::agent_terminal_detach,
             acp::agent_terminal_input,
             acp::agent_terminal_rename,
             acp::agent_terminal_close,
             acp::plugin_center,
+            acp::plugin_inventory,
+            acp::agent_preset_settings,
+            acp::session_log_preference,
+            acp::client_preferences,
+            acp::permission_default,
             acp::plugin_install,
             acp::schedule_tasks,
             acp::start_service,
             acp::stop_service,
             acp::new_session,
             acp::list_sessions,
+            acp::search_session_history,
             acp::resume_session,
             acp::rename_session,
             acp::session_read_state,
@@ -104,6 +127,9 @@ fn main() {
             history::plan::read_session_plans,
             history::export::session_markdown,
             history::export::archive::download_session_log,
+            history::export::archive::download_user_attachment,
+            history::export::archive::save_image_attachment,
+            history::export::archive::images::copy_image_attachment,
             history::peek_session_titles,
             history::list_local_sessions,
             note_panic,
@@ -112,8 +138,10 @@ fn main() {
             history::turn_token_usage,
             acp::close_session,
             acp::set_session_archived,
+            acp::workspace_registry,
             acp::prompt,
             acp::queue_prompt,
+            acp::stage_prompt_file,
             acp::inbox_state,
             acp::inbox_action,
             acp::goal_state,
@@ -121,6 +149,7 @@ fn main() {
             acp::team_state,
             acp::cancel_session,
             acp::set_config_option,
+            acp::model_catalog,
             acp::respond_permission,
             acp::plan_mode,
             acp::session_commands,
@@ -147,6 +176,12 @@ fn main() {
             workspace::applications::open_workspace_application,
             workspace::open_browser_url,
             workspace::open_path,
+            workspace::file_actions::document_file,
+            workspace::file_actions::save_file_bytes,
+            workspace::file_actions::copy_image_bytes,
+            workspace::file_actions::open_document_application,
+            #[cfg(target_os = "macos")]
+            workspace::file_actions::document_applications,
             workspace_search::search_workspace_files,
             browser::browser_shell_generation,
             browser::present_embedded_browser,
@@ -158,6 +193,7 @@ fn main() {
             preferences::load_workspace_preferences,
             preferences::save_workspace_preferences,
             preferences::load_developer_tools,
+            desktop_onboarding::desktop_onboarding,
             preferences::save_developer_tools,
             shortcuts::load_shortcuts,
             shortcuts::save_shortcuts,
@@ -168,6 +204,7 @@ fn main() {
             desktop::configure_shell_window,
             desktop::document_system_font,
             desktop::chinese_system_font,
+            desktop::named_system_font,
             desktop::show_document_copy_menu,
             terminal::terminal_font,
             terminal::terminal_shells,
@@ -186,6 +223,12 @@ fn main() {
         .expect("build KWork");
 
     app.run(|app, event| {
+        #[cfg(any(target_os = "macos", windows))]
+        if let RunEvent::ExitRequested { code, api, .. } = &event
+            && account_platform::defer_exit(app, *code, api)
+        {
+            return;
+        }
         #[cfg(target_os = "macos")]
         if matches!(event, RunEvent::Exit) {
             browser::uninstall_guest_input();

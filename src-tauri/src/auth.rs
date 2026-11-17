@@ -229,6 +229,7 @@ fn write_api_key_backup(value: &str) {
     }
     if let Err(error) = std::fs::write(&path, value) {
         eprintln!("dsh-gpui api key backup: {error}");
+        #[cfg(unix)]
         return;
     }
     #[cfg(unix)]

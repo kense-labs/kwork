@@ -99,12 +99,6 @@ enum Decision {
     Approve,
 }
 
-struct PlanSubmission {
-    draft: String,
-    attachment_ids: Vec<String>,
-    prompt: Option<OutgoingPrompt>,
-}
-
 impl DshApp {
     pub(super) fn handle_plan_review(
         &mut self,
@@ -133,7 +127,7 @@ impl DshApp {
             && self.page == WorkspacePage::Conversation
         {
             if self.conversation.plan_reviews.is_empty()
-                && self.conversation.permission.is_none()
+                && self.conversation.approvals.is_empty()
                 && update["phase"] == "closed"
                 && self.focused_right_pane(w, cx).is_none()
             {
@@ -146,7 +140,7 @@ impl DshApp {
     pub(super) fn auto_open_plan_preview(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         if !self.show_welcome
             && self.page == WorkspacePage::Conversation
-            && self.conversation.permission.is_none()
+            && self.conversation.approvals.is_empty()
             && self
                 .conversation
                 .plan_reviews
@@ -338,58 +332,23 @@ impl DshApp {
         .detach();
     }
 
-    pub(super) fn submit_plan_command(&mut self, w: &mut Window, cx: &mut Context<Self>) -> bool {
-        let draft = self.composer.read(cx).value().to_owned();
-        // Shared resolver so `/plan` and `/计划` cannot drift apart.
-        let Some(rest) = crate::commands::strip_command_token(&draft, "plan") else {
-            return false;
-        };
-        let message = rest.trim();
-        let active = message != "off";
-        let attachments = &self.conversation.draft_attachments;
-        if !active && !attachments.is_empty() {
-            self.conversation.error = Some("/plan off 不支持附加文件。".to_owned());
-            cx.notify();
-            return true;
-        }
-        let prompt = (active && (!message.is_empty() || !attachments.is_empty())).then(|| {
-            let (display, prompt) = build_prompt_payload(message, attachments);
-            OutgoingPrompt { display, prompt }
-        });
-        let attachment_ids = attachments.iter().map(|item| item.id.clone()).collect();
-        self.set_plan_mode(
-            active,
-            Some(PlanSubmission {
-                draft,
-                attachment_ids,
-                prompt,
-            }),
-            w,
-            cx,
-        );
-        true
-    }
-
-    fn set_plan_mode(
-        &mut self,
-        active: bool,
-        command: Option<PlanSubmission>,
-        w: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn exit_plan_mode(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.active_session.clone() else {
             return;
         };
-        if !self.connected() || !self.conversation.acp_open || self.conversation.plan_mode_busy {
+        if !self.connected()
+            || !self.conversation.acp_open
+            || self.conversation.plan_mode_busy
+            || self.conversation.command_busy
+        {
             return;
         }
         self.conversation.plan_mode_busy = true;
         cx.notify();
         cx.spawn_in(w, async move |this, cx| {
             let result =
-                bridge::invoke("plan_mode", json!({"sessionId": session, "active": active})).await;
-            let _ = this.update_in(cx, |this, w, cx| {
-                let selected = this.active_session.as_deref() == Some(&session);
+                bridge::invoke("plan_mode", json!({"sessionId": session, "active": false})).await;
+            let _ = this.update_in(cx, |this, _, cx| {
                 let Some(conversation) = this.conversation_mut(&session) else {
                     return;
                 };
@@ -397,32 +356,11 @@ impl DshApp {
                     return;
                 }
                 match result {
-                    Ok(value) => conversation.plan_active = value["active"].as_bool(),
-                    Err(error) => {
-                        conversation.error = Some(error);
-                        cx.notify();
-                        return;
+                    Ok(value) => {
+                        conversation.plan_active = value["active"].as_bool();
+                        conversation.error = None;
                     }
-                }
-                conversation.error = None;
-                if let Some(PlanSubmission {
-                    draft,
-                    attachment_ids,
-                    prompt,
-                }) = command
-                {
-                    conversation
-                        .draft_attachments
-                        .retain(|item| !attachment_ids.contains(&item.id));
-                    if !selected && conversation.draft == draft {
-                        conversation.draft.clear();
-                    }
-                    if selected && this.composer.read(cx).value() == draft {
-                        this.replace_composer_without_trigger("", w, cx);
-                    }
-                    if let Some(prompt) = prompt {
-                        this.continue_plan_prompt(&session, prompt, w, cx);
-                    }
+                    Err(error) => conversation.error = Some(error),
                 }
                 cx.notify();
             });
@@ -430,42 +368,13 @@ impl DshApp {
         .detach();
     }
 
-    fn continue_plan_prompt(
-        &mut self,
-        session: &str,
-        prompt: OutgoingPrompt,
-        w: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(row) = self.sessions.iter_mut().find(|row| row.id == session) {
-            row.title
-                .get_or_insert_with(|| short_session_title(&prompt.display));
-            row.blank = false;
-        }
-        if self
-            .conversation_mut(session)
-            .is_some_and(|conversation| conversation.running || conversation.prompt_inflight)
-        {
-            // 繁忙时同样交给 Host Inbox：/plan 的后续消息不能只存在客户端内存里。
-            self.dispatch_inbox_prompt(
-                session.to_owned(),
-                prompt,
-                crate::submit::DEFAULT_BUSY_ENTER,
-                None,
-                w,
-                cx,
-            );
-        } else {
-            self.start_prompt(session, prompt, cx);
-        }
-    }
-
     pub(super) fn plan_chip(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<gpui::Div>> {
         if self.conversation.plan_active != Some(true) {
             return None;
         }
         let p = dsh(cx);
-        let locked = !self.connected() || self.conversation.plan_mode_busy;
+        let locked =
+            !self.connected() || self.conversation.plan_mode_busy || self.conversation.command_busy;
         let group = "plan-mode-chip";
         let chip = row()
             .id("plan-mode-chip")
@@ -525,7 +434,7 @@ impl DshApp {
                         .state_business_tertiary
                         .blend(p.state_business_primary.opacity(0.06)))
                 }),
-                cx.listener(|this, _, w, cx| this.set_plan_mode(false, None, w, cx)),
+                cx.listener(|this, _, w, cx| this.exit_plan_mode(w, cx)),
             )
         })
     }
@@ -729,6 +638,7 @@ impl DshApp {
                     &plan.markdown,
                     &format!("plan-{key}"),
                     super::workspace::MarkdownOptions {
+                        dom: None,
                         copied_mark: self.copied_mark.as_deref(),
                         wrapped_code: &self.conversation.wrapped_code,
                         font_delta: 0,

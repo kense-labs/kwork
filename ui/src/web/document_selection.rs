@@ -360,6 +360,31 @@ impl SelectionLayout {
         self.frame.borrow().spans.len()
     }
 
+    /// Actual shaped bounds of one source line, including its wrapped rows.
+    /// Only the plain/code document renderers expose source-line navigation.
+    pub(super) fn source_line_bounds(&self, line: usize) -> Option<Bounds<Pixels>> {
+        let frame = self.frame.borrow();
+        let span = frame.spans.first()?;
+        let start = if line == 1 {
+            0
+        } else {
+            span.text
+                .match_indices('\n')
+                .nth(line.checked_sub(2)?)
+                .map(|(at, _)| at + 1)?
+        };
+        let mut rows = span
+            .rows
+            .iter()
+            .filter(|row| row.logical_start == start + span.bytes.start);
+        let first = rows.next()?;
+        let last = rows.next_back().unwrap_or(first);
+        Some(Bounds::from_corners(
+            first.origin,
+            point(first.origin.x, last.origin.y + last.height),
+        ))
+    }
+
     pub(super) fn text(
         selection: Option<&Self>,
         text: impl Into<SharedString>,

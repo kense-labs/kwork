@@ -315,12 +315,15 @@ try {
       'ui/document-highlight.js', 'ui/document-frontmatter.js',
       'ui/document-math.js',
       'ui/document-fonts.js', 'ui/document-fonts-worker.js',
-      'ui/document-html.js',
+      'ui/document-html.js', 'ui/session-metadata-search.ts',
+      'ui/model-metadata-search.ts', 'ui/trajectory-json.tsx',
+      'ui/markdown-navigation.ts',
     ],
     outdir: dist,
     chunkNames: 'syntax/[name]-[hash]',
     assetNames: 'fonts/[name]-[hash]',
-    loader: { '.wasm': 'file' },
+    loader: { '.wasm': 'file', '.woff2': 'file', '.woff': 'file', '.ttf': 'file' },
+    jsx: 'automatic',
     bundle: true,
     splitting: true,
     format: 'esm',
@@ -340,6 +343,7 @@ try {
   );
   outputs.set('preview-LICENSES.txt', Buffer.from(previewLicenses.join('\n\n')));
   outputs.set('DeepSeek-LICENSE.txt', readFileSync(join(root, 'ui', 'assets', 'DeepSeek-LICENSE.txt')));
+  collectFiles(join(root, 'ui', 'assets', 'onboarding'), 'onboarding', outputs);
   outputs.set('kense-mark.png', readFileSync(join(root, 'src-tauri', 'icons', '32x32.png')));
   outputs.set('xterm-LICENSE.txt', readFileSync(join(root, 'ui', 'assets', 'xterm-LICENSE.txt')));
   outputs.set(
@@ -350,7 +354,7 @@ try {
     'xterm-addon-serialize.mjs',
     readFileSync(join(root, 'node_modules', '@xterm', 'addon-serialize', 'lib', 'addon-serialize.mjs')),
   );
-  for (const file of ['index.html', 'app.css', 'bootstrap.js', 'terminal-screen.js', 'terminal-selection.js']) {
+  for (const file of ['index.html', 'app.css', 'bootstrap.js', 'terminal-screen.js', 'terminal-selection.js', 'overlay-inert.js', 'account-notifications.js', 'account-quota-notice.js']) {
     outputs.set(file, readFileSync(join(root, 'ui', file)));
   }
 

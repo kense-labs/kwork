@@ -98,6 +98,7 @@ impl ImeMirror {
             .map_err(|e| anyhow::anyhow!("Failed to create textarea element: {e:?}"))?
             .dyn_into()
             .map_err(|e| anyhow::anyhow!("Created element is not a textarea: {e:?}"))?;
+        element.set_id("gpui-text-input");
         let style = element.style();
         style.set_property("position", "fixed").ok();
         style.set_property("top", "0").ok();
@@ -223,6 +224,15 @@ impl ImeMirror {
 
     pub(crate) fn focus(&self) {
         Self::focus_element(&self.element);
+    }
+
+    /// An IME conduit without an editor must not advertise an editable field.
+    /// Client accessibility adapters combine this with their own modal hiding.
+    pub(crate) fn set_editor_active(&self, active: bool) {
+        let value = if active { "true" } else { "false" };
+        if self.element.get_attribute("data-gpui-editor-active").as_deref() != Some(value) {
+            self.element.set_attribute("data-gpui-editor-active", value).ok();
+        }
     }
 
     fn focus_element(element: &web_sys::HtmlTextAreaElement) {

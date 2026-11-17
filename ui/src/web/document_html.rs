@@ -39,6 +39,9 @@ extern "C" {
 
     #[wasm_bindgen(js_name = coverAllHtmlFrames)]
     fn cover_all_frames(cover: JsValue);
+
+    #[wasm_bindgen(js_name = coverCanvasOverlays)]
+    fn cover_canvas_overlays(cover: JsValue);
 }
 
 type Rect = [f32; 4];
@@ -74,6 +77,12 @@ impl From<MenuCover> for FrameCover {
 pub(super) fn cover_all(cover: MenuCover) {
     if let Ok(cover) = serde_wasm_bindgen::to_value(&FrameCover::from(cover)) {
         cover_all_frames(cover);
+    }
+}
+
+pub(super) fn cover_canvas_float(rect: FloatRect, radius: f32) {
+    if let Ok(cover) = serde_wasm_bindgen::to_value(&FrameCover::floating(rect, radius, false)) {
+        cover_canvas_overlays(cover);
     }
 }
 
@@ -249,8 +258,7 @@ impl DshApp {
             || self.shortcuts.open
             || self.confirm_permission.is_some()
             || self.drop_active
-            || self.workspace_rename.is_some()
-            || self.workspace_delete.is_some()
+            || self.workspace_dialog.is_some()
             || self.session_rename.is_some()
             || self.dock_drop_hint_pane() == Some(pane);
         let inert = viewer_open || self.terminal_shell_menu_rect(w, cx).is_some();

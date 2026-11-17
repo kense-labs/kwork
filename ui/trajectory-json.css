@@ -1,0 +1,40 @@
+.trajectory-json-frame { position: fixed; z-index: 1; overflow: hidden; pointer-events: none; }
+.trajectory-json-frame[hidden] { display: none; }
+.trajectory-result-scalar {
+  margin: 0; padding: 2px 14px 8px; color: var(--dsw-alias-label-primary);
+  font: 12px/16px var(--ds-font-family-code); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.trajectory-literal-payload {
+  box-sizing: border-box; min-height: 100%; margin: 0; padding: 14px; overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-primary); background: var(--dsw-alias-markdown-code-block);
+  font: 12px/19px var(--ds-font-family-code); tab-size: 2; white-space: pre-wrap;
+}
+.trajectory-literal-preview { min-height: 0; padding: 2px 14px 8px; }
+.trajectory-tool-text-output { display: flex; flex-direction: column; box-sizing: border-box; padding: 2px 14px 8px; gap: 10px; }
+.trajectory-tool-output-preview { gap: 6px; }
+.trajectory-result-images { display: flex; flex-direction: column; margin: 8px 14px 14px; gap: 8px; }
+.trajectory-tool-text-output pre {
+  margin: 0; overflow-wrap: anywhere; color: var(--dsw-alias-label-primary); background: transparent;
+  font: 12px/19px var(--ds-font-family-code); tab-size: 2; white-space: pre-wrap;
+}
+.trajectory-tool-text-output[data-error] pre { color: var(--dsw-alias-state-error-primary); }
+.trajectory-tool-output-fallback {
+  box-sizing: border-box; margin: 0; padding: 2px 14px 8px; overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-primary); background: var(--dsw-alias-markdown-code-block);
+  font: 12px/19px var(--ds-font-family-code); tab-size: 2; white-space: pre-wrap;
+}
+.trajectory-tool-output-fallback[data-error] { color: var(--dsw-alias-state-error-primary); }
+.trajectory-tool-output-fallback[data-empty] { color: var(--dsw-alias-label-caption); }
+.trajectory-detail-resize { position: fixed; z-index: 2; width: 8px; padding: 0; border: 0; background: transparent; cursor: col-resize; touch-action: none; user-select: none; }
+.trajectory-detail-resize:focus-visible { outline: none; }
+
+.trajectory-json-frame > div { pointer-events: auto; }
+.trajectory-timeline-frame { position: fixed; z-index: 1; pointer-events: none; --dsh-trajectory-toolbar-height: 32px; }
+.trajectory-timeline-frame[hidden] { display: none; }
+.trajectory-timeline-frame > div { pointer-events: auto; }
+/* Keep the requested selected fill distinct from pointer hover. Upstream only
+   persists a fill for Duration, so fold buttons otherwise look unchanged. */
+.trajectory-timeline-frame [role="toolbar"] button[aria-pressed="true"] {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-active);
+}

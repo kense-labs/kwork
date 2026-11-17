@@ -1,0 +1,153 @@
+/* Unchanged rule groups from upstream TrajectoryTable.module.css at 39163dd. */
+.promptDiffSections {
+  display: flex;
+  max-height: 100%;
+  flex-direction: column;
+  padding: 10px 14px 14px;
+  gap: 14px;
+  overflow: auto;
+}
+
+.promptDiffSection {
+  min-width: 0;
+}
+
+.promptDiffTitle {
+  margin: 0 0 6px;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xs-strong-13);
+  user-select: none;
+}
+
+.promptDiff {
+  margin: 0;
+  overflow: auto;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  font: 11px/17px var(--ds-font-family-code);
+  white-space: pre;
+}
+
+.promptDiff span {
+  display: block;
+  min-width: max-content;
+  padding: 0 6px;
+}
+
+.promptDiffLinemeta {
+  color: var(--dsw-alias-label-caption);
+  background: var(--dsw-alias-bg-module-platform);
+  user-select: none;
+}
+
+.promptDiffLinecontext {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.promptDiffLineadded {
+  color: color-mix(
+    in srgb,
+    var(--dsw-alias-state-success-primary) 72%,
+    var(--dsw-alias-label-primary)
+  );
+  background: var(--dsw-alias-state-success-tertiary);
+}
+
+.promptDiffLineremoved {
+  color: var(--dsw-alias-state-error-primary);
+  background: color-mix(
+    in srgb,
+    var(--dsw-alias-state-error-primary) 12%,
+    var(--dsw-alias-bg-layer-1)
+  );
+}
+
+.toolCatalog {
+  min-height: 100%;
+  padding: 8px 0 16px;
+}
+
+.toolCatalogItem {
+  border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+.toolCatalogSummary {
+  display: grid;
+  grid-template-columns: 12px 12px max-content minmax(0, 1fr);
+  align-items: center;
+  box-sizing: border-box;
+  min-height: 30px;
+  padding: 4px 12px;
+  gap: 5px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.toolCatalogSummary::-webkit-details-marker {
+  display: none;
+}
+
+@media (hover: hover) {
+  .toolCatalogSummary:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.toolCatalogSummary:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover);
+  outline: 1px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -1px;
+}
+
+.toolCatalogChevron,
+.toolCatalogIcon {
+  color: var(--dsw-alias-label-caption);
+}
+
+.toolCatalogChevron {
+  transition: transform 100ms var(--ds-ease-in-out);
+}
+
+.toolCatalogItem[open] .toolCatalogChevron {
+  transform: rotate(90deg);
+}
+
+.toolCatalogName {
+  color: var(--dsw-alias-label-primary);
+  font: 500 12px/18px var(--ds-font-family-code);
+}
+
+.toolCatalogDescription {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xs-13);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolCatalogDefinition {
+  padding: 0 0 8px 29px;
+  background: var(--dsw-alias-bg-base);
+}
+
+.toolCatalogFullDescription {
+  margin: 0;
+  padding: 7px 14px 4px 0;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xs-13);
+  white-space: pre-wrap;
+}
+
+.toolCatalogTree {
+  margin-left: -14px;
+  margin-right: 6px;
+}
+
+.noPayload {
+  margin: 0;
+  padding: 18px 14px;
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xs-13);
+}

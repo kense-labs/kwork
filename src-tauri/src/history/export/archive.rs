@@ -1,7 +1,8 @@
 //! Native Session ZIP writer. The archive is published only after every object verifies.
 
+pub(crate) mod images;
 #[cfg(target_os = "macos")]
-mod macos;
+pub(crate) mod macos;
 
 use super::{SessionLog, current_log_in, dsh_home, find_session_log, read_session_log};
 use crate::acp::{AcpService, SessionFlush};
@@ -82,12 +83,159 @@ pub(crate) async fn download_session_log(
     .map_err(|_| ZIP_ERROR)?
 }
 
+/// Save one exact user attachment from the Host's immutable file store.
+#[tauri::command]
+pub(crate) async fn download_user_attachment(
+    webview: tauri::Webview,
+    attachment_id: String,
+    name: String,
+    bytes: u64,
+) -> Result<Value, String> {
+    if webview.label() != "main" {
+        return Err("无法保存附件。".into());
+    }
+    let digest = attachment_id
+        .strip_prefix("sha256:")
+        .filter(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|ch| ch.is_ascii_digit() || (b'a'..=b'f').contains(&ch))
+        })
+        .ok_or("附件标识无效。")?
+        .to_owned();
+    if name.is_empty()
+        || matches!(name.as_str(), "." | "..")
+        || name.len() > 255
+        || name.chars().any(|ch| {
+            ch.is_ascii_control()
+                || matches!(ch, '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*')
+        })
+    {
+        return Err("附件名称无效。".into());
+    }
+    let root = dsh_home().join("attachments/v1/file-objects");
+    let source = root.join(&digest[..2]).join(&digest);
+    #[cfg(target_os = "macos")]
+    let destination = macos::choose_destination(webview, &name).await?;
+    #[cfg(not(target_os = "macos"))]
+    let destination = Some(
+        webview
+            .app_handle()
+            .path()
+            .download_dir()
+            .map_err(|error| error.to_string())?
+            .join(&name),
+    );
+    let Some(destination) = destination else {
+        return Ok(json!({"saved": false}));
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let directory = destination.parent().ok_or("附件保存位置无效。")?;
+        let mut pending = tempfile::NamedTempFile::new_in(directory).map_err(|error| error.to_string())?;
+        let root = root.canonicalize().map_err(|error| format!("无法读取附件：{error}"))?;
+        let source = source.canonicalize().map_err(|error| format!("无法读取附件：{error}"))?;
+        if !source.starts_with(root) {
+            return Err("附件路径超出存储范围。".into());
+        }
+        let mut input = File::open(source).map_err(|error| format!("无法读取附件：{error}"))?;
+        copy_verified(&mut input, &mut pending, bytes, &digest)
+            .map_err(|error| format!("保存附件失败：{error}"))?;
+        pending.as_file().sync_all().map_err(|error| error.to_string())?;
+        let path = persist_download(pending, &destination, cfg!(target_os = "macos"))?;
+        Ok(json!({"saved": true, "name": path.file_name().and_then(|name| name.to_str()).unwrap_or(&name)}))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[derive(Clone)]
 struct SessionRecord {
     id: String,
     parent: Option<String>,
     created: i64,
     path: PathBuf,
+}
+
+/// Save verified original image bytes; the renderer supplies no source path.
+#[tauri::command]
+pub(crate) async fn save_image_attachment(
+    webview: tauri::Webview,
+    attachment_id: String,
+    name: String,
+    bytes: u64,
+    mode: String,
+) -> Result<Value, String> {
+    if webview.label() != "main" || !matches!(mode.as_str(), "download" | "saveAs") {
+        return Err("无法保存图片。".into());
+    }
+    let digest = attachment_id
+        .strip_prefix("sha256:")
+        .filter(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|ch| ch.is_ascii_digit() || (b'a'..=b'f').contains(&ch))
+        })
+        .ok_or("附件标识无效。")?
+        .to_owned();
+    if name.is_empty()
+        || matches!(name.as_str(), "." | "..")
+        || name.len() > 255
+        || name.chars().any(|ch| {
+            ch.is_ascii_control()
+                || matches!(ch, '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*')
+        })
+    {
+        return Err("附件名称无效。".into());
+    }
+    let download = mode == "download";
+    let downloads = webview
+        .app_handle()
+        .path()
+        .download_dir()
+        .map_err(|error| error.to_string())?;
+    #[cfg(target_os = "macos")]
+    let destination = if download {
+        Some(downloads.join(&name))
+    } else {
+        macos::choose_destination(webview, &name).await?
+    };
+    #[cfg(not(target_os = "macos"))]
+    let destination = if download {
+        Some(downloads.join(&name))
+    } else {
+        return Err("无法打开保存对话框。".into());
+    };
+    let Some(destination) = destination else {
+        return Ok(json!({"status":"cancelled"}));
+    };
+    let root = dsh_home().join("attachments/v1/objects");
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = root.canonicalize().map_err(|error| error.to_string())?;
+        let source = root
+            .join(&digest[..2])
+            .join(&digest)
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if !source.starts_with(&root) {
+            return Err("附件路径超出存储范围。".into());
+        }
+        let directory = destination.parent().ok_or("图片保存位置无效。")?;
+        let mut pending =
+            tempfile::NamedTempFile::new_in(directory).map_err(|error| error.to_string())?;
+        let mut input = File::open(source).map_err(|error| error.to_string())?;
+        copy_verified(&mut input, &mut pending, bytes, &digest)
+            .map_err(|error| error.to_string())?;
+        pending
+            .as_file()
+            .sync_all()
+            .map_err(|error| error.to_string())?;
+        let path = persist_download(pending, &destination, !download)?;
+        Ok(json!({"status":"saved","path":path}))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn records(root: &Path) -> Result<HashMap<String, SessionRecord>, String> {
@@ -252,24 +400,37 @@ fn write_archive(
         .as_file()
         .sync_all()
         .map_err(|error| error.to_string())?;
+    persist_download(pending, destination, replace).map(|_| ())
+}
+
+pub(crate) fn persist_download(
+    mut pending: tempfile::NamedTempFile,
+    destination: &Path,
+    replace: bool,
+) -> Result<PathBuf, String> {
     if replace {
         pending
             .persist(destination)
             .map_err(|error| error.error.to_string())?;
-        return Ok(());
+        return Ok(destination.to_path_buf());
     }
     let stem = destination
         .file_stem()
         .and_then(|name| name.to_str())
         .ok_or(ZIP_ERROR)?;
+    let extension = destination.extension().and_then(|ext| ext.to_str());
     for index in 0.. {
         let target = if index == 0 {
             destination.to_path_buf()
         } else {
-            directory.join(format!("{stem} ({index}).zip"))
+            let name = match extension {
+                Some(ext) => format!("{stem} ({index}).{ext}"),
+                None => format!("{stem} ({index})"),
+            };
+            destination.with_file_name(name)
         };
-        match pending.persist_noclobber(target) {
-            Ok(_) => return Ok(()),
+        match pending.persist_noclobber(&target) {
+            Ok(_) => return Ok(target),
             Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
                 pending = error.file;
             }
@@ -511,6 +672,15 @@ fn write_attachment(
             options().large_file(expected_size >= u32::MAX.into()),
         )
         .map_err(|error| error.to_string())?;
+    copy_verified(&mut file, writer, expected_size, digest)
+}
+
+fn copy_verified(
+    file: &mut File,
+    writer: &mut impl Write,
+    expected_size: u64,
+    digest: &str,
+) -> Result<(), String> {
     let mut hash = Sha256::new();
     let mut size = 0_u64;
     let mut chunk = [0; 64 * 1024];

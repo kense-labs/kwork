@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' data:; frame-src 'self' dsh-preview: http://dsh-preview.localhost",
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' blob: data: ipc: http://ipc.localhost; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' data:; frame-src 'self' dsh-preview: http://dsh-preview.localhost",
       "capabilities": [
         {
           "identifier": "main-events",

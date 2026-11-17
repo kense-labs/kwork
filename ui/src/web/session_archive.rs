@@ -1,10 +1,11 @@
 use super::permission_dialog::{dialog_action, dialog_header};
+use super::workspace_accessibility::{AccessibleSurface, AccessibleTarget};
 use super::*;
 
 #[derive(Default)]
 pub(super) struct ArchiveUi {
     pub(super) available: bool,
-    pending: bool,
+    pub(super) pending: bool,
     confirm: Option<ArchiveRequest>,
 }
 
@@ -17,12 +18,71 @@ struct ArchiveRequest {
 }
 
 impl DshApp {
-    pub(super) fn apply_archive_snapshot(&mut self, reply: &Value) {
-        if reply["available"].as_bool() != Some(true) {
+    pub(super) fn archive_confirmation_open(&self) -> bool {
+        self.session_archival.confirm.is_some()
+    }
+
+    fn archive_confirmation_description(&self, request: &ArchiveRequest) -> String {
+        let title = self
+            .sessions
+            .iter()
+            .find(|session| session.id == request.session_id)
+            .map_or_else(
+                || "新会话".to_owned(),
+                |session| self.session_display_title(session),
+            );
+        format!(
+            "“{title}”仍有正在进行的工作。归档会先停止这些工作；之后可在侧栏筛选“全部对话（显示已归档）”中恢复会话，被停止的工作不会自动继续。"
+        )
+    }
+
+    pub(super) fn accessible_archive_confirmation(&self) -> Option<AccessibleSurface> {
+        let request = self.session_archival.confirm.as_ref()?;
+        Some(AccessibleSurface::Archive {
+            target: AccessibleTarget::Session {
+                id: request.session_id.clone(),
+            },
+            description: self.archive_confirmation_description(request),
+            activity: request.activity.iter().map(activity_line).collect(),
+            pending: self.session_archival.pending,
+            error: request.error.clone(),
+        })
+    }
+
+    pub(super) fn act_on_accessible_archive_confirmation(
+        &mut self,
+        id: &str,
+        stop: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session_archival.pending
+            || self
+                .session_archival
+                .confirm
+                .as_ref()
+                .is_none_or(|request| request.session_id != id)
+        {
             return;
         }
-        self.session_archival.available = true;
-        if let Some(archived) = reply["archived"].as_array() {
+        if stop {
+            self.set_session_archived(id.to_owned(), true, true, w, cx);
+        } else {
+            self.close_archive_confirmation(w, cx);
+        }
+    }
+
+    pub(super) fn apply_archive_snapshot(&mut self, reply: &Value) {
+        if reply["sequence"].is_u64() {
+            self.apply_workspace_registry(reply);
+        } else if reply["available"].as_bool() == Some(true) {
+            self.apply_session_archival(&reply["archived"]);
+        }
+    }
+
+    pub(super) fn apply_session_archival(&mut self, archived: &Value) {
+        if let Some(archived) = archived.as_array() {
+            self.session_archival.available = true;
             self.archived_sessions = archived
                 .iter()
                 .filter_map(Value::as_str)
@@ -124,14 +184,7 @@ impl DshApp {
         cx: &mut Context<Self>,
     ) -> Option<gpui::Stateful<gpui::Div>> {
         let request = self.session_archival.confirm.as_ref()?;
-        let title = self
-            .sessions
-            .iter()
-            .find(|session| session.id == request.session_id)
-            .map_or("新会话", SessionSummary::title);
-        let description = format!(
-            "“{title}”仍有正在进行的工作。归档会先停止这些工作；之后可在侧栏筛选“全部对话（显示已归档）”中恢复会话，被停止的工作不会自动继续。"
-        );
+        let description = self.archive_confirmation_description(request);
         let id = request.session_id.clone();
         let busy = self.session_archival.pending;
         let p = dsh(cx);

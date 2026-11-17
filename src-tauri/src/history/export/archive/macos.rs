@@ -8,9 +8,31 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use tauri::Manager;
 
-const DIALOG_ERROR: &str = "无法打开 Session ZIP 保存对话框。";
+const DIALOG_ERROR: &str = "无法打开保存对话框。";
 
-pub(super) async fn choose_destination(
+pub(crate) async fn copy_image(webview: tauri::Webview, png: Vec<u8>) -> Result<(), String> {
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypePNG};
+    use objc2_foundation::NSData;
+    let (send, receive) = tokio::sync::oneshot::channel();
+    webview
+        .window()
+        .run_on_main_thread(move || {
+            let data = NSData::from_vec(png);
+            let pasteboard = NSPasteboard::generalPasteboard();
+            pasteboard.clearContents();
+            // SAFETY: AppKit's PNG pasteboard type is a process-lifetime constant.
+            let saved = pasteboard.setData_forType(Some(&data), unsafe { NSPasteboardTypePNG });
+            let _ = send.send(saved);
+        })
+        .map_err(|error| error.to_string())?;
+    if receive.await.map_err(|error| error.to_string())? {
+        Ok(())
+    } else {
+        Err("无法复制图片。".into())
+    }
+}
+
+pub(crate) async fn choose_destination(
     webview: tauri::Webview,
     filename: &str,
 ) -> Result<Option<PathBuf>, String> {

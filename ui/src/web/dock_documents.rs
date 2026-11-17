@@ -295,9 +295,57 @@ struct DocumentViewport {
     remembered_top: Cell<Pixels>,
     layout_max: Cell<Option<Pixels>>,
     scrolled: Cell<bool>,
+    pending_line: Cell<Option<usize>>,
+    line_mark: Cell<Option<(usize, f64, gpui::Size<Pixels>)>>,
 }
 
 impl DocumentViewport {
+    fn reveal_line(
+        &self,
+        selection: &SelectionLayout,
+        source: gpui::Bounds<Pixels>,
+        w: &mut Window,
+    ) {
+        if let Some(line) = self.pending_line.get()
+            && let Some(row) = selection.source_line_bounds(line)
+        {
+            self.pending_line.set(None);
+            self.remembered_top
+                .set((row.top() - source.top()).max(px(0.)));
+            self.line_mark.set(Some((
+                line,
+                bridge::monotonic_ms(),
+                self.scroll.bounds().size,
+            )));
+            w.request_animation_frame();
+        }
+    }
+
+    fn paint_line_mark(&self, selection: &SelectionLayout, color: gpui::Hsla, w: &mut Window) {
+        let Some((line, started, size)) = self.line_mark.get() else {
+            return;
+        };
+        let elapsed = bridge::monotonic_ms() - started;
+        let viewport = self.scroll.bounds();
+        if elapsed >= 2000. || size != viewport.size {
+            self.line_mark.set(None);
+            return;
+        }
+        if let Some(row) = selection.source_line_bounds(line) {
+            let fade = crate::anim::context_menu_exit_opacity((elapsed - 600.).max(0.), 1400.);
+            let mut color = color;
+            color.a *= fade;
+            w.paint_quad(gpui::fill(
+                gpui::Bounds::new(
+                    point(viewport.left(), row.top()),
+                    gpui::size(viewport.size.width, row.size.height),
+                ),
+                color,
+            ));
+            w.request_animation_frame();
+        }
+    }
+
     fn record_scroll(&self) -> bool {
         if !self.scrolled.replace(false) {
             return false;
@@ -506,6 +554,34 @@ impl DocumentTab {
 }
 
 impl DshApp {
+    pub(super) fn navigate_document_line(
+        &mut self,
+        path: &str,
+        line: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((&key, _)) = self
+            .sidebar
+            .surface
+            .documents
+            .iter()
+            .find(|(_, opened)| opened.as_str() == path)
+        else {
+            return;
+        };
+        let tab = self
+            .sidebar
+            .documents
+            .entry(key)
+            .or_insert_with(|| DocumentTab::new(path, cx));
+        // HTML and rendered Markdown have no source-line anchors, as upstream.
+        tab.viewport
+            .pending_line
+            .set(line.filter(|_| matches!(tab.viewer, Viewer::Code | Viewer::Plain)));
+        tab.viewport.line_mark.set(None);
+        cx.notify();
+    }
+
     pub(super) fn update_html_preview_mode(&mut self, enabled: bool) {
         if self.developer_tools == enabled {
             return;
@@ -526,6 +602,17 @@ impl DshApp {
         &mut self,
         pane: DockPaneId,
         path: String,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_workspace_document_with(pane, path, true, w, cx);
+    }
+
+    pub(super) fn open_workspace_document_with(
+        &mut self,
+        pane: DockPaneId,
+        path: String,
+        replace: bool,
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -562,7 +649,10 @@ impl DshApp {
             .find(|id| !self.sidebar.surface.documents.contains_key(id))
             .expect("there are unclaimed document keys");
         self.sidebar.surface.documents.insert(key, path);
-        if let Some(previous) = self.sidebar.surface.layout.replace_document(pane, key) {
+        if let Some(previous) = replace
+            .then(|| self.sidebar.surface.layout.replace_document(pane, key))
+            .flatten()
+        {
             self.close_document(previous);
             self.focus_dock_pane(pane, w, cx);
             cx.notify();
@@ -626,13 +716,30 @@ impl DshApp {
                 && tab.metadata_failure().is_none()
                 && let Some(text) = &tab.text
                 && !text.eof
-                && (at_end || tab.viewport.needs_more())
+                && (at_end
+                    || tab.viewport.needs_more()
+                    || tab
+                        .viewport
+                        .pending_line
+                        .get()
+                        .is_some_and(|line| line > text.lines))
             {
                 let offset = text.lines + 1;
                 self.read_document(key, offset, cx);
             }
             self.highlight_document(key, cx);
             self.parse_document_frontmatter(key, cx);
+            if let Some(tab) = self.sidebar.documents.get(&key)
+                && let Some(text) = &tab.text
+                && text.eof
+                && tab
+                    .viewport
+                    .pending_line
+                    .get()
+                    .is_some_and(|line| line > text.lines)
+            {
+                tab.viewport.pending_line.set(None);
+            }
         }
     }
 
@@ -921,6 +1028,7 @@ impl DshApp {
     pub(super) fn toggle_document_wrap(&mut self, key: u64, cx: &mut Context<Self>) {
         if let Some(tab) = self.sidebar.documents.get_mut(&key) {
             tab.wrap = !tab.wrap;
+            tab.viewport.line_mark.set(None);
             tab.viewport.layout_max.set(None);
             cx.notify();
         }
@@ -1163,6 +1271,7 @@ impl DshApp {
                         markdown,
                         &format!("document-{key}"),
                         super::workspace::MarkdownOptions {
+                            dom: None,
                             copied_mark: self.copied_mark.as_deref(),
                             wrapped_code: &self.conversation.wrapped_code,
                             font_delta: self.content_font_delta,
@@ -1184,22 +1293,22 @@ impl DshApp {
                         &code.tokens,
                         &selection,
                         tab.wrap,
-                        self.content_font_delta,
                         cx,
                     ));
                 } else {
-                    let delta = self.content_font_delta as f32;
+                    let code_size = super::document_fonts::code_size(cx);
                     source = source.child(
                         div()
                             .px(px(18.))
                             .py(px(8.))
-                            .font_family(if bridge::is_mac() {
-                                "Menlo"
-                            } else {
-                                "monospace"
+                            .font_family(super::document_fonts::code_family(cx))
+                            .map(|mut element| {
+                                element.text_style().font_fallbacks =
+                                    Some(super::document_fonts::code_fallbacks(cx));
+                                element
                             })
-                            .text_size(px(11. + delta))
-                            .line_height(px(19. + delta))
+                            .text_size(px(code_size))
+                            .line_height(px(code_size + 8.))
                             .when(!tab.wrap, |block| block.whitespace_nowrap())
                             .child(SelectionLayout::text(
                                 Some(&selection),
@@ -1264,6 +1373,9 @@ impl DshApp {
                 let drag_scroll = tab.viewport.clone();
                 let wheel = tab.viewport.clone();
                 let viewport = tab.viewport.clone();
+                let line_selection = selection.clone();
+                let mark_selection = selection.clone();
+                let mark_viewport = tab.viewport.clone();
                 let can_load_more = !text.eof
                     && tab.request.is_none()
                     && tab.failure.is_none()
@@ -1297,8 +1409,17 @@ impl DshApp {
                             .relative()
                             .child(
                                 canvas(
-                                    move |_, w, _| viewport.restore_after_layout(can_load_more, w),
-                                    |_, _, _, _| {},
+                                    move |bounds, w, _| {
+                                        viewport.reveal_line(&line_selection, bounds, w);
+                                        viewport.restore_after_layout(can_load_more, w);
+                                    },
+                                    move |_, _, w, _| {
+                                        mark_viewport.paint_line_mark(
+                                            &mark_selection,
+                                            p.hover_accent,
+                                            w,
+                                        )
+                                    },
                                 )
                                 .absolute()
                                 .inset_0(),
@@ -1609,6 +1730,8 @@ impl DshApp {
                                     tab.retire_html();
                                 }
                                 tab.viewer = next;
+                                tab.viewport.pending_line.set(None);
+                                tab.viewport.line_mark.set(None);
                                 tab.selection.clear();
                                 tab.viewport.layout_max.set(None);
                                 if let Some(code) = tab.code.as_mut() {

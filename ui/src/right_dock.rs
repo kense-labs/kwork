@@ -255,10 +255,7 @@ impl DockSurface {
 }
 
 pub(crate) fn workspace_document_path(path: &str) -> bool {
-    !path.is_empty()
-        && !path.contains('\0')
-        && !std::path::Path::new(path).is_absolute()
-        && path.split('/').all(|part| !matches!(part, "" | "." | ".."))
+    !path.is_empty() && !path.chars().any(|ch| ch.is_ascii_control())
 }
 
 fn migrate_single_browser(data: &mut Value) {
@@ -1202,6 +1199,11 @@ mod tests {
         );
 
         surface.documents.insert(2, "../outside.txt".into());
+        assert_eq!(
+            DockSurface::restore(&serde_json::to_string(&surface).unwrap()),
+            surface
+        );
+        surface.documents.insert(2, "bad\0path".into());
         let restored = DockSurface::restore(&serde_json::to_string(&surface).unwrap());
         assert!(restored.documents.is_empty());
         assert!(restored.layout.floats().is_empty());

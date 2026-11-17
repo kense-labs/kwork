@@ -1,0 +1,11 @@
+.chat-markdown-frame {
+  position: fixed;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+}
+.chat-markdown-content {
+  position: relative;
+  display: flow-root;
+  pointer-events: auto;
+}

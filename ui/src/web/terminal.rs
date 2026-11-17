@@ -95,18 +95,6 @@ extern "C" {
     ) -> bool;
 }
 
-/// Menlo is macOS-only; Windows ships Cascadia Mono / Consolas. The host
-/// platform is a runtime property because this crate targets wasm32.
-fn terminal_font_family() -> &'static str {
-    if bridge::is_windows() {
-        "Cascadia Mono"
-    } else if bridge::is_mac() {
-        "Menlo"
-    } else {
-        "monospace"
-    }
-}
-const FONT_SIZE: Pixels = px(13.);
 const PADDING: Pixels = px(8.);
 const BOLD: u8 = 1;
 const ITALIC: u8 = 2;
@@ -537,12 +525,14 @@ impl Render for TerminalScreen {
             self.dirty = false;
         }
         let text = w.text_system();
-        let font_id = text.resolve_font(&font(terminal_font_family()));
+        let family = super::document_fonts::terminal_family(cx);
+        let font_size = px(super::document_fonts::terminal_size(cx));
+        let font_id = text.resolve_font(&font(family.clone()));
         let cell = size(
-            text.ch_advance(font_id, FONT_SIZE)
+            text.ch_advance(font_id, font_size)
                 .unwrap_or(px(8.))
                 .max(px(1.)),
-            (text.ascent(font_id, FONT_SIZE) + text.descent(font_id, FONT_SIZE))
+            (text.ascent(font_id, font_size) + text.descent(font_id, font_size))
                 .ceil()
                 .max(px(1.)),
         );
@@ -699,8 +689,13 @@ impl Render for TerminalScreen {
             .p(PADDING)
             .overflow_hidden()
             .text_color(theme.ink)
-            .font_family(terminal_font_family())
-            .text_size(FONT_SIZE)
+            .font_family(family)
+            .map(|mut element| {
+                element.text_style().font_fallbacks =
+                    Some(super::document_fonts::terminal_fallbacks(cx));
+                element
+            })
+            .text_size(font_size)
             .line_height(cell.height)
             .whitespace_nowrap()
             .cursor(if terminal_mouse_active(&self.engine) {

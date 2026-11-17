@@ -114,6 +114,7 @@ pub(super) struct OpenHeaderMenu {
     last_anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
     pointer_bounds: Rc<Cell<Option<HeaderMenuBounds>>>,
     context: Option<SessionContext>,
+    accessible_focus: Option<FocusHandle>,
     trigger: Option<FocusHandle>,
     app_rows: Vec<FocusHandle>,
     app_scroll: ScrollHandle,
@@ -149,6 +150,10 @@ pub(super) struct ExitingHeaderMenu {
 }
 
 impl OpenHeaderMenu {
+    pub(super) fn visibly_accessible_focused(&self, focus: &FocusHandle) -> bool {
+        self.accessible_focus.as_ref() == Some(focus)
+    }
+
     fn add_application_rows(&mut self, count: usize, cx: &mut App) {
         self.app_rows = (0..count)
             .map(|_| cx.focus_handle().tab_stop(true))
@@ -421,6 +426,147 @@ impl DshApp {
             .filter(|context| context.session_id == id)
     }
 
+    pub(super) fn accessible_session_menu(
+        &self,
+    ) -> Option<super::workspace_accessibility::AccessibleSurface> {
+        use super::workspace_accessibility::{AccessibleMenuItem, AccessibleSurface};
+        let menu = self.header_menu.as_ref()?;
+        menu.entered_at?;
+        let context = menu.context.as_ref()?;
+        let target = self
+            .sessions
+            .iter()
+            .find(|session| session.id == context.session_id)?;
+        let appearance = self.header_menu_appearance(menu);
+        let submenu = menu.submenu == Some(SubmenuOpen::Entered);
+        let items = if submenu {
+            self.workspace_applications
+                .iter()
+                .map(|app| AccessibleMenuItem {
+                    key: format!("application/{}", app.id),
+                    label: app.name.clone(),
+                    disabled: !appearance.app_enabled,
+                    submenu: false,
+                })
+                .chain(std::iter::once(AccessibleMenuItem {
+                    key: "back".into(),
+                    label: "返回".into(),
+                    disabled: false,
+                    submenu: false,
+                }))
+                .collect()
+        } else {
+            context
+                .rows
+                .iter()
+                .map(|(action, _)| *action)
+                .filter(|action| action.visible(appearance))
+                .map(|action| {
+                    let (key, label) = action.accessibility_label(appearance);
+                    AccessibleMenuItem {
+                        key: key.to_owned(),
+                        label: label.to_owned(),
+                        disabled: !action.enabled(appearance),
+                        submenu: action == SessionContextAction::OpenIn,
+                    }
+                })
+                .collect()
+        };
+        Some(AccessibleSurface::Menu {
+            target: super::workspace_accessibility::AccessibleTarget::Session {
+                id: context.session_id.clone(),
+            },
+            label: if submenu {
+                "在应用中打开".into()
+            } else {
+                format!("会话“{}”的操作", self.session_display_title(target))
+            },
+            submenu,
+            items,
+        })
+    }
+
+    pub(super) fn handle_accessible_session_menu(
+        &mut self,
+        session: &str,
+        key: &str,
+        activate: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !activate && key.is_empty() {
+            if self.session_context_for(session).is_some()
+                && let Some(menu) = self.header_menu.as_mut()
+                && menu.accessible_focus.take().is_some()
+            {
+                cx.notify();
+            }
+            return;
+        }
+        let Some(menu) = self.header_menu.as_ref() else {
+            return;
+        };
+        let Some(context) = menu
+            .context
+            .as_ref()
+            .filter(|context| context.session_id == session)
+        else {
+            return;
+        };
+        if menu.submenu == Some(SubmenuOpen::Entered) {
+            if key == "back" {
+                if activate {
+                    self.close_header_submenu(true, w, cx);
+                } else if let Some(back) = menu.submenu_back.clone() {
+                    self.focus_accessible_menu_row(back, w, cx);
+                }
+            } else if let Some(id) = key.strip_prefix("application/")
+                && !self.workspace_open_pending
+                && let Some(index) = self
+                    .workspace_applications
+                    .iter()
+                    .position(|app| app.id == id)
+            {
+                if activate {
+                    if let Some(workspace) = self.workspace_for_session(session).map(str::to_owned)
+                    {
+                        self.dismiss_header_menu(true, w, cx);
+                        self.launch_workspace_app(workspace, Some(id), cx);
+                    }
+                } else if let Some(row) = menu.app_rows.get(index).cloned() {
+                    menu.app_scroll.scroll_to_item(index);
+                    self.focus_accessible_menu_row(row, w, cx);
+                }
+            }
+            return;
+        }
+        let appearance = self.header_menu_appearance(menu);
+        if let Some((action, focus)) = context.rows.iter().find(|(action, _)| {
+            action.accessibility_label(appearance).0 == key
+                && action.visible(appearance)
+                && action.enabled(appearance)
+        }) {
+            if activate {
+                self.run_session_context_action(session, *action, w, cx);
+            } else {
+                self.focus_accessible_menu_row(focus.clone(), w, cx);
+            }
+        }
+    }
+
+    fn focus_accessible_menu_row(
+        &mut self,
+        focus: FocusHandle,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(menu) = self.header_menu.as_mut() {
+            focus.focus(w, cx);
+            menu.accessible_focus = Some(focus);
+            cx.notify();
+        }
+    }
+
     pub(super) fn open_session_context(
         &mut self,
         session_id: &str,
@@ -467,29 +613,26 @@ impl DshApp {
             has_apps,
             cx,
         );
-        let archived = self.archived_sessions.contains(session_id);
-        let rows = (!archived)
-            .then_some(SessionContextAction::Pin)
-            .into_iter()
-            .chain([
-                SessionContextAction::Rename,
-                SessionContextAction::ToggleRead,
-                SessionContextAction::Fork,
-                SessionContextAction::CopyId,
-            ])
-            .filter(|action| !archived || *action != SessionContextAction::ToggleRead)
-            .map(|action| (action, cx.focus_handle().tab_stop(true)))
-            .chain(
-                menu.open_in
-                    .iter()
-                    .cloned()
-                    .map(|focus| (SessionContextAction::OpenIn, focus)),
-            )
-            .chain(std::iter::once((
-                SessionContextAction::Archive,
-                cx.focus_handle().tab_stop(true),
-            )))
-            .collect::<Vec<_>>();
+        let rows = [
+            SessionContextAction::Pin,
+            SessionContextAction::Rename,
+            SessionContextAction::ToggleRead,
+            SessionContextAction::Fork,
+            SessionContextAction::CopyId,
+        ]
+        .into_iter()
+        .map(|action| (action, cx.focus_handle().tab_stop(true)))
+        .chain(
+            menu.open_in
+                .iter()
+                .cloned()
+                .map(|focus| (SessionContextAction::OpenIn, focus)),
+        )
+        .chain(std::iter::once((
+            SessionContextAction::Archive,
+            cx.focus_handle().tab_stop(true),
+        )))
+        .collect::<Vec<_>>();
         menu.context = Some(SessionContext {
             session_id: session_id.to_owned(),
             origin,
@@ -542,7 +685,12 @@ impl DshApp {
 
     fn header_menu_first_focus<'a>(&self, menu: &'a OpenHeaderMenu) -> Option<&'a FocusHandle> {
         if let Some(context) = &menu.context {
-            return context.rows.first().map(|(_, focus)| focus);
+            let appearance = self.header_menu_appearance(menu);
+            return context
+                .rows
+                .iter()
+                .find(|(action, _)| action.visible(appearance) && action.enabled(appearance))
+                .map(|(_, focus)| focus);
         }
         if !menu.kind.contextual() {
             return menu.app_rows.first();
@@ -561,10 +709,10 @@ impl DshApp {
             .or(menu.feedback.as_ref())
     }
 
-    fn header_menu_appearance(&self, menu: &OpenHeaderMenu) -> HeaderMenuAppearance {
+    pub(super) fn header_menu_appearance(&self, menu: &OpenHeaderMenu) -> HeaderMenuAppearance {
         let target = menu.context.as_ref().map(|context| &context.session_id);
         HeaderMenuAppearance {
-            pinned: target.is_some_and(|id| self.pinned_sessions.contains(id)),
+            pinned: target.is_some_and(|id| self.session_is_pinned(id)),
             archived: target.is_some_and(|id| self.archived_sessions.contains(id)),
             read_unread: target.is_some_and(|id| self.session_reading.completion_unread(id, false)),
             read_enabled: target.is_some_and(|id| {
@@ -635,6 +783,7 @@ impl DshApp {
             last_anchor: Rc::new(Cell::new(None)),
             pointer_bounds: Rc::new(Cell::new(None)),
             context: None,
+            accessible_focus: None,
             trigger,
             app_rows: Vec::new(),
             app_scroll: ScrollHandle::new(),
@@ -714,7 +863,12 @@ impl DshApp {
         self.dismiss_header_menu(true, w, cx)
     }
 
-    fn open_header_submenu(&mut self, enter: bool, w: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_header_submenu(
+        &mut self,
+        enter: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.workspace_open_pending {
             return;
         }
@@ -841,12 +995,11 @@ impl DshApp {
                 )
                 .collect()
         } else if let Some(context) = &menu.context {
+            let appearance = self.header_menu_appearance(menu);
             context
                 .rows
                 .iter()
-                .filter(|(action, _)| {
-                    *action != SessionContextAction::OpenIn || !self.workspace_open_pending
-                })
+                .filter(|(action, _)| action.visible(appearance) && action.enabled(appearance))
                 .map(|(_, focus)| focus)
                 .collect()
         } else {
@@ -1071,6 +1224,10 @@ impl DshApp {
                 row.aria_expanded(menu.visible_submenu())
                     .aria_label("在应用中打开")
             })
+            .when(
+                interactive && menu.visibly_accessible_focused(focus),
+                |row| row.bg(p.hover),
+            )
             .child(
                 svg()
                     .data(OPEN)
@@ -1343,6 +1500,7 @@ impl DshApp {
         let p = dsh(cx);
         let session = menu.kind.contextual();
         let context_anchor = menu.context.as_ref().map(|context| context.anchor);
+        let appearance = self.header_menu_appearance(menu);
         let parent_trigger_top = menu
             .context
             .as_ref()
@@ -1350,6 +1508,7 @@ impl DshApp {
                 context
                     .rows
                     .iter()
+                    .filter(|(action, _)| action.visible(appearance))
                     .position(|(action, _)| *action == SessionContextAction::OpenIn)
             })
             .map_or(
@@ -1388,6 +1547,9 @@ impl DshApp {
                             session,
                             !self.workspace_open_pending,
                         )
+                        .when(menu.visibly_accessible_focused(focus), |row| {
+                            row.bg(p.hover)
+                        })
                         .child(app_icon(app, 14., p.label_secondary))
                         .child(div().flex_1().min_w_0().truncate().child(label)),
                         true,
@@ -1415,6 +1577,9 @@ impl DshApp {
         let back = menu.submenu_back.as_ref().map(|focus| {
             header_menu_action(
                 header_menu_row(p, "header-submenu-back", Some(focus), true, true)
+                    .when(menu.visibly_accessible_focused(focus), |row| {
+                        row.bg(p.hover)
+                    })
                     .child(
                         svg()
                             .data(CHEVRON_LEFT)

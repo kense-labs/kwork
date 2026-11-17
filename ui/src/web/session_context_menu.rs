@@ -77,6 +77,26 @@ struct Presentation {
 }
 
 impl SessionContextAction {
+    pub(super) fn visible(self, appearance: HeaderMenuAppearance) -> bool {
+        !appearance.archived || !matches!(self, Self::Pin | Self::ToggleRead)
+    }
+
+    pub(super) fn enabled(self, appearance: HeaderMenuAppearance) -> bool {
+        match self {
+            Self::ToggleRead => appearance.read_enabled,
+            Self::OpenIn => appearance.app_enabled,
+            _ => true,
+        }
+    }
+
+    pub(super) fn accessibility_label(
+        self,
+        appearance: HeaderMenuAppearance,
+    ) -> (&'static str, &'static str) {
+        let presentation = self.presentation(appearance);
+        (presentation.id, presentation.label)
+    }
+
     fn presentation(self, appearance: HeaderMenuAppearance) -> Presentation {
         let (id, label, icon, shortcut, separator): (_, _, &'static [u8], _, _) = match self {
             Self::Pin => (
@@ -145,7 +165,13 @@ impl SessionContextAction {
                 (!appearance.archived).then_some(Command::ArchiveSession),
                 true,
             ),
-            Self::OpenIn => unreachable!("the application submenu renders its own trigger"),
+            Self::OpenIn => (
+                "open-in",
+                "在应用中打开",
+                include_bytes!("../../assets/open-in-application.svg"),
+                None,
+                false,
+            ),
         };
         Presentation {
             id,
@@ -170,6 +196,9 @@ impl DshApp {
         let mut card = menu_card(p, "session-context-menu", 16., interactive);
         for (action, focus) in &context.rows {
             let action = *action;
+            if !action.visible(appearance) {
+                continue;
+            }
             if action == SessionContextAction::OpenIn {
                 card = card.child(self.render_open_in_row(
                     menu,
@@ -184,10 +213,12 @@ impl DshApp {
             if spec.separator {
                 card = card.child(menu_separator(p));
             }
-            let enabled = interactive
-                && (action != SessionContextAction::ToggleRead || appearance.read_enabled);
+            let enabled = interactive && action.enabled(appearance);
             let item = header_menu_row(p, spec.id, enabled.then_some(focus), true, enabled)
                 .when(enabled, |item| item.aria_label(spec.label))
+                .when(enabled && menu.visibly_accessible_focused(focus), |item| {
+                    item.bg(p.hover)
+                })
                 .child(
                     svg()
                         .data(spec.icon)
@@ -221,33 +252,50 @@ impl DshApp {
                 item,
                 enabled,
                 cx.listener(move |app, _, w, cx| {
-                    app.dismiss_header_menu(true, w, cx);
-                    match action {
-                        SessionContextAction::Pin => app.toggle_session_pin(&id, cx),
-                        SessionContextAction::Rename => app.begin_session_rename(id.clone(), w, cx),
-                        SessionContextAction::ToggleRead => app.toggle_session_read(&id, cx),
-                        SessionContextAction::Fork => {
-                            app.fork_session(&id, ForkOrigin::Sidebar, cx)
-                        }
-                        SessionContextAction::CopyId => {
-                            bridge::copy_text(&id);
-                            app.push_toast("已复制 Session ID", cx);
-                        }
-                        SessionContextAction::Archive => {
-                            app.set_session_archived(
-                                id.clone(),
-                                !app.archived_sessions.contains(&id),
-                                false,
-                                w,
-                                cx,
-                            );
-                        }
-                        SessionContextAction::OpenIn => unreachable!(),
-                    }
+                    app.run_session_context_action(&id, action, w, cx);
                 }),
             ));
         }
         card
+    }
+
+    pub(super) fn run_session_context_action(
+        &mut self,
+        id: &str,
+        action: SessionContextAction,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self
+            .header_menu
+            .as_ref()
+            .filter(|_| self.session_context_for(id).is_some())
+        else {
+            return;
+        };
+        let appearance = self.header_menu_appearance(menu);
+        if !action.visible(appearance) || !action.enabled(appearance) {
+            return;
+        }
+        if action == SessionContextAction::OpenIn {
+            self.open_header_submenu(true, w, cx);
+            return;
+        }
+        self.dismiss_header_menu(true, w, cx);
+        match action {
+            SessionContextAction::Pin => self.toggle_session_pin(id, cx),
+            SessionContextAction::Rename => self.begin_session_rename(id.to_owned(), w, cx),
+            SessionContextAction::ToggleRead => self.toggle_session_read(id, cx),
+            SessionContextAction::Fork => self.fork_session(id, ForkOrigin::Sidebar, cx),
+            SessionContextAction::CopyId => {
+                bridge::copy_text(id);
+                self.push_toast("已复制 Session ID", cx);
+            }
+            SessionContextAction::Archive => {
+                self.set_session_archived(id.to_owned(), !appearance.archived, false, w, cx);
+            }
+            SessionContextAction::OpenIn => {}
+        }
     }
 }
 

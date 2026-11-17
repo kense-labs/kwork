@@ -1,0 +1,9 @@
+{
+  "name": "kwork-account-platform",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/main.cjs",
+  "devDependencies": {
+    "electron": "44.7.0"
+  }
+}

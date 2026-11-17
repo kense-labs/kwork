@@ -1,0 +1,3 @@
+Vendored from DeepSeek Harness commit `39163dd30f703a79079e2d2446545cff3c453738`, packages/client/ui-settings-models/src/client. MIT license: ../harness-primitives/LICENSE.
+
+The cards, editor state machines, CSS, localization and model-store join are unchanged. Runtime imports point to the corresponding local primitives, snapshot engine and text search. schema.ts retains the official synchronous operations without the Cordis service constructor. snapshot-store.ts and contract.ts are the official client/store implementation; dependencies use the upstream versions. KWork transport and mounting are in ui/settings-models.tsx.

@@ -1,6 +1,6 @@
 //! Bounded, versioned text pages for the GPUI document viewer.
 
-use super::{checked_relative, tree_directory};
+use super::tree_directory;
 use serde::Serialize;
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read};
@@ -53,10 +53,16 @@ pub(crate) struct HtmlSource {
 
 #[tauri::command]
 pub(crate) async fn read_workspace_text(
+    webview: tauri::Webview,
     workspace: String,
     path: String,
     offset: usize,
 ) -> Result<TextPage, ReadFailure> {
+    if webview.label() != "main" {
+        return Err(ReadFailure::Unavailable(
+            "文档预览必须由主界面读取。".into(),
+        ));
+    }
     tokio::task::spawn_blocking(move || read_text(&workspace, &path, offset))
         .await
         .map_err(|error| ReadFailure::Unavailable(error.to_string()))?
@@ -101,15 +107,25 @@ pub(crate) async fn read_workspace_html_asset(
 /// Resolve ancestors before checking the final component. The final component
 /// must be checked without following symlinks when opening it for a read.
 pub(super) fn document_path(workspace: &str, path: &str) -> Result<PathBuf, ReadFailure> {
-    let root = tree_directory(Path::new(workspace)).map_err(ReadFailure::Unavailable)?;
-    let relative = checked_relative(path).map_err(ReadFailure::Unavailable)?;
-    let name = relative.file_name().ok_or(ReadFailure::NotRegularFile)?;
-    let parent = root
-        .join(relative.parent().unwrap_or(Path::new("")))
-        .canonicalize()?;
-    if !parent.starts_with(&root) {
-        return Err(ReadFailure::Unavailable("文件在工作区之外。".into()));
+    if path.is_empty() || path.chars().any(|ch| ch.is_ascii_control()) {
+        return Err(ReadFailure::NotRegularFile);
     }
+    // Harness ChatView opens explicit absolute files and ../ links in the
+    // session's document preview too. This read-only path is distinct from
+    // the workspace tree's bounded mutation/navigation API.
+    let path = Path::new(path);
+    let target = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        tree_directory(Path::new(workspace))
+            .map_err(ReadFailure::Unavailable)?
+            .join(path)
+    };
+    let name = target.file_name().ok_or(ReadFailure::NotRegularFile)?;
+    let parent = target
+        .parent()
+        .ok_or(ReadFailure::NotRegularFile)?
+        .canonicalize()?;
     Ok(parent.join(name))
 }
 
@@ -150,7 +166,7 @@ impl DocumentSnapshot {
     }
 }
 
-fn open_regular_file(path: &Path) -> Result<File, ReadFailure> {
+pub(super) fn open_regular_file(path: &Path) -> Result<File, ReadFailure> {
     if !fs::symlink_metadata(path)?.is_file() {
         return Err(ReadFailure::NotRegularFile);
     }
@@ -262,6 +278,23 @@ fn read_complete_text(absolute: &Path, limit: u64) -> Result<HtmlSource, ReadFai
         version,
         source,
     })
+}
+
+/// Original bytes for explicit file actions, under the official full-file cap.
+pub(super) fn read_original(path: &Path) -> Result<Vec<u8>, ReadFailure> {
+    let mut file = open_regular_file(path)?;
+    let metadata = file.metadata()?;
+    if metadata.len() > HTML_BYTES {
+        return Err(ReadFailure::TooLarge);
+    }
+    let version = file_version(&metadata)?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    (&mut file).take(HTML_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > HTML_BYTES {
+        return Err(ReadFailure::TooLarge);
+    }
+    verify_version(&file, path, &version)?;
+    Ok(bytes)
 }
 
 fn verify_version(file: &File, path: &Path, version: &str) -> Result<(), ReadFailure> {
@@ -390,7 +423,19 @@ mod tests {
             read_text(workspace, "alias.txt", 1),
             Err(ReadFailure::NotRegularFile)
         ));
-        assert!(read_text(workspace, "../outside.txt", 1).is_err());
+        let outside_text = base.0.join("outside.txt");
+        fs::write(&outside_text, "outside preview").unwrap();
+        assert_eq!(
+            read_text(workspace, "../outside.txt", 1).unwrap().text,
+            "outside preview"
+        );
+        assert_eq!(
+            read_text(workspace, outside_text.to_str().unwrap(), 1)
+                .unwrap()
+                .text,
+            "outside preview"
+        );
+        assert!(read_text(workspace, "bad\0path", 1).is_err());
 
         let html = root.join("preview.HTM");
         let source = format!(

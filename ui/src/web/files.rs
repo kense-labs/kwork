@@ -218,6 +218,9 @@ impl DshApp {
             .strip_prefix('/')
             .filter(|rest| !rest.chars().any(char::is_whitespace));
         if let Some(filter) = token {
+            if self.command_filter != filter {
+                self.command_selected = 0;
+            }
             self.command_filter = filter.to_string();
             if self.composer_menu != Some(ComposerMenu::Commands) {
                 self.composer_menu = Some(ComposerMenu::Commands);
@@ -227,12 +230,63 @@ impl DshApp {
             }
             self.command_from_slash = true;
         } else if self.command_from_slash && self.composer_menu == Some(ComposerMenu::Commands) {
-            self.composer_menu = None;
+            self.dismiss_command_menu();
+        }
+        cx.notify();
+    }
+
+    pub(super) fn toggle_command_menu(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if self.composer_menu == Some(ComposerMenu::Commands) {
+            self.dismiss_command_menu();
+        } else {
             self.command_from_slash = false;
             self.command_filter.clear();
             self.command_selected = 0;
+            self.toggle_composer_menu(ComposerMenu::Commands);
+            self.focus_composer(w, cx);
         }
         cx.notify();
+    }
+
+    pub(super) fn dismiss_command_menu(&mut self) {
+        self.composer_menu = None;
+        self.command_from_slash = false;
+        self.command_filter.clear();
+        self.command_selected = 0;
+    }
+
+    pub(super) fn navigate_command_menu(
+        &mut self,
+        combo: &str,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.composer_menu != Some(ComposerMenu::Commands) {
+            return false;
+        }
+        if matches!(combo, "Escape" | "shift+Tab") {
+            self.dismiss_command_menu();
+            cx.notify();
+            return true;
+        }
+        let catalog = self.command_catalog.catalog();
+        let visible = visible_commands(&catalog, &self.command_filter);
+        if visible.is_empty() {
+            return false;
+        }
+        let index = self.command_selected.min(visible.len() - 1);
+        match combo {
+            "ArrowDown" => self.command_selected = (index + 1).min(visible.len() - 1),
+            "ArrowUp" => self.command_selected = index.saturating_sub(1),
+            "Enter" | "Tab" => {
+                if visible[index].enabled {
+                    self.activate_command(visible[index].key, w, cx);
+                }
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
     }
 
     pub(super) fn run_application_shortcut(
@@ -260,8 +314,7 @@ impl DshApp {
             if self.shortcuts.open {
                 self.dismiss_shortcuts(w, cx);
             } else if self.confirm_permission.is_none()
-                && self.workspace_rename.is_none()
-                && self.workspace_delete.is_none()
+                && self.workspace_dialog.is_none()
                 && self.session_rename.is_none()
             {
                 self.open_shortcuts(w, cx);
@@ -281,8 +334,7 @@ impl DshApp {
             return true;
         }
         if self.confirm_permission.is_some()
-            || self.workspace_rename.is_some()
-            || self.workspace_delete.is_some()
+            || self.workspace_dialog.is_some()
             || self.session_rename.is_some()
             || self.image_viewer.is_some()
             || self.file_open_error.is_some()
@@ -443,6 +495,23 @@ impl DshApp {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.account_platform_open() {
+            if combo == "Escape" {
+                self.close_account_platform();
+                return true;
+            }
+            return false;
+        }
+        if self.desktop_onboarding_visible() {
+            return false;
+        }
+        if self.account_launcher_modal() {
+            if combo == "Escape" {
+                self.close_account_launcher(w, cx);
+                return true;
+            }
+            return false;
+        }
         if self.shortcuts.open {
             if combo == "Escape" {
                 self.dismiss_shortcuts(w, cx);
@@ -460,15 +529,13 @@ impl DshApp {
             }
             return false;
         }
-        if self.confirm_permission.is_some() && combo == "Escape" {
-            self.close_permission_confirmation(w, cx);
+        if self.handle_permission_confirmation_key(combo, w, cx) {
             return true;
         }
         if self.sidebar_drawer
             && self.narrow_sidebar_expanded
             && matches!(combo, "Tab" | "shift+Tab")
-            && self.workspace_rename.is_none()
-            && self.workspace_delete.is_none()
+            && self.workspace_dialog.is_none()
             && self.session_rename.is_none()
         {
             if combo == "Tab" {
@@ -513,27 +580,6 @@ impl DshApp {
                 return true;
             }
         }
-        // 官方审批卡固定键：Enter=允许一次，Esc=拒绝（此时输入区被审批卡替换）。
-        if let Some(permission) = self.conversation.permission.as_ref() {
-            let pick = |predicate: fn(&str) -> bool| {
-                permission
-                    .options
-                    .iter()
-                    .find(|(id, _)| predicate(id))
-                    .map(|(id, _)| id.clone())
-            };
-            let option = match combo {
-                "Enter" => {
-                    pick(|id| id.contains("allow-once")).or_else(|| pick(|id| id.contains("allow")))
-                }
-                "Escape" => pick(|id| id.contains("reject") || id.contains("deny")),
-                _ => None,
-            };
-            if let Some(option) = option {
-                self.respond_permission(option, cx);
-                return true;
-            }
-        }
         if let Some(pane) = self.focused_right_pane(w, cx)
             && let Some(RightPanelTab::Document(key)) = self.focused_dock_tab(pane, w, cx)
             && let Some(tab) = self.sidebar.documents.get(&key)
@@ -541,29 +587,7 @@ impl DshApp {
         {
             return true;
         }
-        if self.composer_menu == Some(ComposerMenu::Commands) && self.command_from_slash {
-            let catalog = self.command_catalog.catalog();
-            let visible = visible_commands(&catalog, &self.command_filter);
-            match combo {
-                "ArrowDown" if !visible.is_empty() => {
-                    self.command_selected = (self.command_selected + 1).min(visible.len() - 1);
-                }
-                "ArrowUp" if !visible.is_empty() => {
-                    self.command_selected = self.command_selected.saturating_sub(1);
-                }
-                "Enter" if !visible.is_empty() => {
-                    let index = self.command_selected.min(visible.len() - 1);
-                    let key = visible
-                        .get(index)
-                        .filter(|spec| spec.enabled)
-                        .map(|spec| spec.key);
-                    if let Some(key) = key {
-                        self.activate_command(key, w, cx);
-                    }
-                }
-                _ => return false,
-            }
-            cx.notify();
+        if self.navigate_command_menu(combo, w, cx) {
             return true;
         }
         // 官方 Esc,Esc（500ms 内双击）停止生成；单次 Esc 交给弹层/编辑器处理。

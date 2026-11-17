@@ -58,7 +58,7 @@ impl DshApp {
                             "当前为浅色主题"
                         },
                         Glyph::Sun,
-                        SettingsPage::Appearance,
+                        SettingsPage::General,
                         cx,
                     )),
             )
@@ -135,7 +135,7 @@ impl DshApp {
             )
             .child(icon(Glyph::Arrow, 15., p.faint))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.settings_page = target;
+                this.settings_page = target.for_platform();
                 this.show_more_menu = false;
                 this.show_settings = true;
                 cx.notify();

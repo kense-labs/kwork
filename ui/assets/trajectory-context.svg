@@ -1,0 +1,16 @@
+<!-- DeepSeek Harness 39163dd: TrajectoryTable.tsx -->
+<svg xmlns="http://www.w3.org/2000/svg"
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.4"
+      stroke-linecap="round"
+      data-role-icon="information"
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="8" r="6.7" />
+      <circle cx="8" cy="5.5" r=".85" fill="currentColor" stroke="none" />
+      <path d="M8 7.75v3.4" stroke-width="1.8" />
+    </svg>

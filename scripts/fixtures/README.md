@@ -1,0 +1,1 @@
+models-settings.json is a redacted real ACP Host describe/directory snapshot captured with scripts/models-settings-smoke.mjs against DeepSeek Harness 0.2.2-rc.3. Runtime paths and endpoints are normalized; example endpoints use fixture.invalid. It includes the official provider directory and Schemastery schema so browser tests do not depend on a temporary local artifact.

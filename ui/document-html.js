@@ -68,6 +68,8 @@ function loadInteractiveFrame(frame, source, signal) {
 }
 
 const frames = new Map();
+const overlayClips = new Map();
+let overlayClipSerial = 0;
 let batch;
 let focusListener;
 let reportedFocus;
@@ -134,7 +136,7 @@ export function listenHtmlFocus(listener) {
 // GPUI reports measured rectangles during layout. Commit after the synchronous
 // draw so delayed layers, including the viewer menu, can contribute their bounds.
 export function beginHtmlFrames() {
-  const next = { visible: new Map(), covers: new Map(), sharedCovers: [] };
+  const next = { visible: new Map(), covers: new Map(), sharedCovers: [], overlayCovers: [], overlays: new Map() };
   batch = next;
   queueMicrotask(() => {
     if (batch !== next) return;
@@ -156,6 +158,51 @@ export function coverHtmlFrame(key, bounds) {
 
 export function coverAllHtmlFrames(cover) {
   batch?.sharedCovers.push(cover);
+}
+
+export function coverCanvasOverlays(cover) {
+  batch?.overlayCovers.push(cover);
+}
+
+// React controls sit above the canvas. Cut out the actual painted menu region,
+// just as HTML previews do, instead of hiding an entire toolbar or inspector.
+export function stageCanvasOverlay(key, host, bounds) {
+  batch?.overlays.set(key, { host, bounds });
+}
+
+function clipCanvasOverlays(overlays, covers) {
+  for (const [key, entry] of overlayClips) {
+    if (overlays.get(key)?.host !== entry.host) {
+      entry.host.style.clipPath = '';
+      entry.host.style.maskImage = '';
+      entry.svg.remove();
+      overlayClips.delete(key);
+    }
+  }
+  for (const [key, { host, bounds }] of overlays) {
+    const intersecting = covers.filter(cover => hasArea(intersect(cover.bounds, bounds)));
+    let entry = overlayClips.get(key);
+    if (!intersecting.length) {
+      if (entry) {
+        host.style.clipPath = ''; host.style.maskImage = '';
+        entry.svg.remove(); overlayClips.delete(key);
+      }
+      continue;
+    }
+    if (!entry) {
+      const svg = document.createElementNS(svgNamespace, 'svg');
+      svg.setAttribute('width', '0'); svg.setAttribute('height', '0');
+      svg.setAttribute('aria-hidden', 'true'); svg.style.position = 'fixed';
+      const definitions = document.createElementNS(svgNamespace, 'defs');
+      svg.append(definitions); document.body.append(svg);
+      entry = { host, svg, definitions, shadows: document.createElement('div'), geometry: '', id: ++overlayClipSerial };
+      overlayClips.set(key, entry);
+    }
+    const geometry = JSON.stringify([bounds, intersecting]);
+    if (entry.geometry === geometry) continue;
+    entry.geometry = geometry;
+    Object.assign(host.style, clipFrame(entry, `overlay-${entry.id}`, bounds, bounds, intersecting));
+  }
 }
 
 function intersect(a, b) {
@@ -265,7 +312,8 @@ function createFrame(key, source) {
   return { key, host, frame, source, geometry: '', svg, definitions, shadows, lifetime, acceptsKeys: false };
 }
 
-function commit({ visible, covers, sharedCovers }) {
+function commit({ visible, covers, sharedCovers, overlayCovers, overlays }) {
+  clipCanvasOverlays(overlays, [...sharedCovers, ...overlayCovers]);
   for (const [key, entry] of frames) {
     if (visible.get(key)?.document !== entry.source) {
       entry.lifetime.abort();

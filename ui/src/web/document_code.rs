@@ -176,18 +176,13 @@ pub(super) fn render_code(
     tokens: &[Vec<CodeSpan>],
     selection: &SelectionLayout,
     wrap: bool,
-    font_delta: i32,
     cx: &App,
 ) -> gpui::Div {
     let p = dsh(cx);
-    let font = if bridge::is_mac() {
-        "Menlo"
-    } else {
-        "monospace"
-    };
-    let font_size = px(11. + font_delta as f32);
+    let font = super::document_fonts::code_family(cx);
+    let font_size = px(super::document_fonts::code_size(cx));
     let text = cx.text_system();
-    let font_id = text.resolve_font(&gpui::font(font));
+    let font_id = text.resolve_font(&gpui::font(font.clone()));
     let number_width = source.split('\n').count().to_string().len().max(2);
     let digit = text
         .ch_advance(font_id, font_size)
@@ -209,8 +204,12 @@ pub(super) fn render_code(
         .pr(px(16.))
         .py(px(16.))
         .font_family(font)
+        .map(|mut element| {
+            element.text_style().font_fallbacks = Some(super::document_fonts::code_fallbacks(cx));
+            element
+        })
         .text_size(font_size)
-        .line_height(px(19. + font_delta as f32))
+        .line_height(font_size + px(8.))
         .text_color(p.label_primary)
         .when(!wrap, |text| text.whitespace_nowrap())
         .child(

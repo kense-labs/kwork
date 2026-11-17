@@ -1713,7 +1713,12 @@ impl DshApp {
                                 .py(px(1.))
                                 .rounded(px(4.))
                                 .bg(p.bg_module_platform)
-                                .font_family("monospace")
+                                .font_family(crate::web::document_fonts::code_family(cx))
+                                .map(|mut element| {
+                                    element.text_style().font_fallbacks =
+                                        Some(crate::web::document_fonts::code_fallbacks(cx));
+                                    element
+                                })
                                 .text_size(px(12.))
                                 .line_height(px(18.))
                                 .text_color(p.label_secondary)
