@@ -4459,6 +4459,8 @@ impl DshApp {
         }
         if update["sessionUpdate"] == "gpui_plan_mode" {
             conversation.plan_active = update["active"].as_bool();
+            conversation.plan_mode_error = None;
+            cx.notify();
             return;
         }
         if update["sessionUpdate"] == "gpui_trajectory_event" {
@@ -4852,6 +4854,7 @@ impl DshApp {
                             conversation.submitted_plans.clear();
                             conversation.plan_active = None;
                             conversation.plan_mode_busy = false;
+                            conversation.plan_mode_error = None;
                             if conversation.running {
                                 conversation.finish_turn(TurnEnd::Failed);
                             }

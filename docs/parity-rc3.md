@@ -20,6 +20,7 @@ KWork 是 Rust/GPUI 客户端，通过 ACP 与 Host 通信；官方客户端是 
 参照 `39163dd30f703a79079e2d2446545cff3c453738`。计划卡、计划预览、计划审核、提问表单、历史问答和普通 Markdown 文档使用官方组件。GPUI 保留会话、面板和可见区域的所有权，表单、代码块、公式、表格和 Markdown 元数据由对应组件渲染。
 
 - 优化构建回归覆盖恢复计划时的加载／缺失状态、计划审核失败后重试、文档分页失败时保留已读正文、文档相对图片、提问原始选项提交和历史回答。证据见 `/private/tmp/kwork-yolo-plan-review-measure-final` 和 `/private/tmp/kwork-yolo-doc-question-measure-final`。
+- 官方 Host 的真实工具回归检查了提问事件、拒绝修改过的选项标签、回答结算和计划批准后退出计划模式。证据见 `/private/tmp/kwork-yolo-real-question-v2/result.json` 和 `/private/tmp/kwork-yolo-real-plan/result.json`。手动退出计划模式失败时会在按钮旁显示提示，保留重试入口。
 - 会话切换、轨迹折叠、正文裁切、文件行号跳转、设置回退、窄窗和深色效果分别在浏览器回归中检查。最新隔离 Mac WKWebView 冷启动成功，菜单展示四项官方预设，并成功从标准模式切到极简模式。原生截图见 `/private/tmp/kwork-yolo-native/final-minimal.png`。
 - 官方 rc.3 的独立安装验证四种真实预设、新会话显式选择、空白会话切换、首次提示后锁定、关闭再恢复及按预设执行自动化。结果见 `/private/tmp/kwork-yolo-flat-preset-run/result.json`。设置回归另覆盖配置 YAML、说明页、默认写入冲突及重试、创造模式入口和窄窗，见 `/private/tmp/kwork-yolo-final-agent-presets`。
 

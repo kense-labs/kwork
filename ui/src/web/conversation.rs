@@ -224,6 +224,7 @@ pub(super) struct Conversation {
     pub(super) submitted_plans: HashMap<u64, Vec<crate::submitted_plan::SubmittedPlan>>,
     pub(super) plan_active: Option<bool>,
     pub(super) plan_mode_busy: bool,
+    pub(super) plan_mode_error: Option<String>,
     pub(super) command_busy: bool,
     pub(super) config_options: Vec<Value>,
     pub(super) command_model_pending: bool,

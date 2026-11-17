@@ -299,6 +299,7 @@ impl DshApp {
             return;
         }
         self.conversation.plan_mode_busy = true;
+        self.conversation.plan_mode_error = None;
         cx.notify();
         cx.spawn_in(w, async move |this, cx| {
             let result =
@@ -313,9 +314,8 @@ impl DshApp {
                 match result {
                     Ok(value) => {
                         conversation.plan_active = value["active"].as_bool();
-                        conversation.error = None;
                     }
-                    Err(error) => conversation.error = Some(error),
+                    Err(error) => conversation.plan_mode_error = Some(error),
                 }
                 cx.notify();
             });
@@ -323,7 +323,7 @@ impl DshApp {
         .detach();
     }
 
-    pub(super) fn plan_chip(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<gpui::Div>> {
+    pub(super) fn plan_chip(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
         if self.conversation.plan_active != Some(true) {
             return None;
         }
@@ -380,7 +380,7 @@ impl DshApp {
                     }),
             )
             .child("计划");
-        Some(if locked {
+        let chip = if locked {
             chip.opacity(0.6)
         } else {
             dock_action_button(
@@ -391,7 +391,20 @@ impl DshApp {
                 }),
                 cx.listener(|this, _, w, cx| this.exit_plan_mode(w, cx)),
             )
-        })
+        };
+        Some(row().flex_none().gap(px(6.)).child(chip).children(
+            self.conversation.plan_mode_error.as_ref().map(|error| {
+                let error = gpui::SharedString::from(error.clone());
+                div()
+                    .id("plan-mode-error")
+                    .role(gpui::Role::Status)
+                    .text_color(p.state_error_primary)
+                    .text_size(px(12.))
+                    .line_height(px(18.))
+                    .tooltip(move |_, cx| cx.new(|_| TurnActionHint(error.clone())).into())
+                    .child("退出计划模式失败")
+            }),
+        ))
     }
 
     pub(super) fn render_plan_review(&self, width: f32, cx: &Context<Self>) -> Option<gpui::Div> {
