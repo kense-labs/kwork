@@ -136,8 +136,14 @@ export function listenHtmlFocus(listener) {
 // GPUI reports measured rectangles during layout. Commit after the synchronous
 // draw so delayed layers, including the viewer menu, can contribute their bounds.
 export function beginHtmlFrames() {
-  const next = { visible: new Map(), covers: new Map(), sharedCovers: [], overlayCovers: [], overlays: new Map() };
-  batch = next;
+  batch = { visible: new Map(), covers: new Map(), sharedCovers: [], overlayCovers: [], overlays: new Map() };
+}
+
+export function finishHtmlFrames() {
+  // All regular and deferred elements have completed GPUI prepaint. WebKit
+  // may drain microtasks between Wasm imports, including during the layout.
+  const next = batch;
+  if (!next) return;
   queueMicrotask(() => {
     if (batch !== next) return;
     commit(next);
@@ -175,6 +181,7 @@ function clipCanvasOverlays(overlays, sharedCovers, overlayCovers, covers) {
     if (overlays.get(key)?.host !== entry.host) {
       entry.host.style.clipPath = '';
       entry.host.style.maskImage = '';
+      if (entry.overflow !== undefined) entry.host.style.overflow = entry.overflow;
       entry.svg.remove();
       overlayClips.delete(key);
     }
@@ -186,6 +193,7 @@ function clipCanvasOverlays(overlays, sharedCovers, overlayCovers, covers) {
     if (!intersecting.length) {
       if (entry) {
         host.style.clipPath = ''; host.style.maskImage = '';
+        if (entry.overflow !== undefined) host.style.overflow = entry.overflow;
         entry.svg.remove(); overlayClips.delete(key);
       }
       continue;
@@ -197,6 +205,12 @@ function clipCanvasOverlays(overlays, sharedCovers, overlayCovers, covers) {
       const definitions = document.createElementNS(svgNamespace, 'defs');
       svg.append(definitions); document.body.append(svg);
       entry = { host, svg, definitions, shadows: document.createElement('div'), geometry: '', id: ++overlayClipSerial };
+      // An even-odd cutout can extend beyond this box. Keep overflowing
+      // controls inside the box while a menu covers them.
+      if (getComputedStyle(host).overflow === 'visible') {
+        entry.overflow = host.style.overflow;
+        host.style.overflow = 'clip';
+      }
       overlayClips.set(key, entry);
     }
     const geometry = JSON.stringify([bounds, intersecting]);
@@ -260,6 +274,15 @@ function clipFrame(entry, key, bounds, viewport, covers) {
     }
   }
   entry.shadows.replaceChildren(...shadows);
+  // A single menu over a canvas control is the common case. Keep its cutout
+  // local to the CSS box, including on composited Retina WebKit layers.
+  if (shapes.length === 2 && clipped.every((edge, i) => edge === bounds[i])) {
+    entry.definitions.replaceChildren();
+    return {
+      clipPath: `path(evenodd, "${shapes[1]}")`,
+      maskImage: visualMask(bounds, outer, visualHoles),
+    };
+  }
   // Intersect successive clips so overlapping cover holes cannot reveal content.
   const clips = shapes.length === 1 ? [] : shapes.map((shape, index) => {
     const clip = document.createElementNS(svgNamespace, 'clipPath');

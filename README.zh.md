@@ -16,9 +16,9 @@ KWork 是基于 DeepSeek Harness ACP 的桌面客户端。Rust 界面使用 KUI 
 
 安装 [Bun](https://bun.sh)、通过 `rustup` 安装的 Rust stable，以及当前平台的 Tauri 构建依赖。macOS 还需安装 Xcode Command Line Tools 和 `just`。
 
-**KWork 自身不依赖 Node.js，无论构建期还是运行期。** 前端构建脚本（`scripts/*.mjs`）、依赖安装和 Tauri CLI 全部走 Bun。Node.js 24.9+ / pnpm 12.6.0 只用于独立的 [dsh-acp](https://github.com/kense-labs/dsh-acp) 检出：KWork 把它和一个小型凭据服务当作外部 stdio 子进程启动，`DSH_NODE` 指向的正是这个可执行文件。整个项目里只有这两个子进程需要 Node。
+KWork 使用 Bun 安装依赖、构建前端和运行 Tauri CLI。外部 Harness Host 和凭据服务需要 Node.js 24.9+，可以用 `DSH_NODE` 指定可执行文件。自行构建 dsh-acp 时还需要 pnpm 12.6.0。
 
-将 KWork 和配套的 dsh-acp 服务克隆到同一个父目录下。
+macOS 开发构建会用 Bun 安装锁定的官方 Harness Host 0.2.2-rc.3。克隆 KWork 并运行其中的 `bun install` 和 `just dev` 即可。其他平台或自行开发 Host 时，可以把 dsh-acp 克隆到同一个父目录。
 
 ```sh
 git clone https://github.com/kense-labs/kwork.git
@@ -27,10 +27,10 @@ cd dsh-acp
 pnpm install          # 仅 dsh-acp 需要
 pnpm run build        # 仅 dsh-acp 需要
 cd ../kwork
-bun install --no-save # 读取已入库的 package-lock.json，避免生成第二份 lockfile
+bun install --no-save
 ```
 
-macOS 上运行 `just dev`，构建并启动 `.tools/dev-app/KWork.app`。其他平台使用 `bun run dev` 启动 Tauri 开发客户端。若 Bun 不在 `PATH` 中，可用 `KWORK_BUN` 指定可执行文件。
+可以通过 `DSH_ACP_PATH` 显式选择自己的 Host；Agent 预设需要 0.2.2-rc.3。macOS 上运行 `just dev`，构建并启动 `.tools/dev-app/KWork.app`。其他平台使用 `bun run dev` 启动 Tauri 开发客户端。若 Bun 不在 `PATH` 中，可用 `KWORK_BUN` 指定可执行文件。
 
 首次启动可以添加 DeepSeek API Key，也可以选择「稍后配置」进入工作区。之后从侧栏打开「更多 → 设置 → API Key」管理密钥。KWork 也支持 `DEEPSEEK_API_KEY` 环境变量，并为该密钥使用 `deepseek-official` 路由。
 

@@ -102,6 +102,7 @@ export function AgentPresetSection({
     <h2 className={css.title}>{t('nav')}</h2>
     <p className={css.intro}>{t('sectionIntro')}</p>
     {state.error === null ? null : <p className={css.error} role="alert">{state.error}</p>}
+    {state.status === 'error' && <Button variant="outline" onClick={() => { void load() }}>{t('retry')}</Button>}
     {([true, false] as const).map((builtIn) => {
       const rows = state.rows.filter(row => isBuiltInPreset(row) === builtIn
         && (developerTools || !requiresCodingTools(row)))

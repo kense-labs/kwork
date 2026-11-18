@@ -16,6 +16,9 @@ extern "C" {
     #[wasm_bindgen(js_name = beginHtmlFrames)]
     pub(super) fn begin_frames();
 
+    #[wasm_bindgen(js_name = finishHtmlFrames)]
+    pub(super) fn finish_frames();
+
     #[wasm_bindgen(js_name = listenHtmlFocus)]
     pub(super) fn listen_focus(listener: &js_sys::Function);
 

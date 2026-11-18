@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -87,7 +88,9 @@ if (official) {
     await symlink(resolve(process.env.KWORK_PRESET_TEST_CACHE), join(home, 'profiles/acp/.kwork-runtime/agent-presets-packages'), 'dir');
   }
 }
-const child = spawn(process.env.DSH_NODE, [bridge, runtime, join(runtime, 'apps/cli/lib/profile-boot.js')],
+const sourceProfile = join(runtime, 'apps/cli/lib/profile-boot.js');
+const profile = existsSync(sourceProfile) ? sourceProfile : join(runtime, 'node_modules/@deepseek-ai/dsh/lib/profile-boot.js');
+const child = spawn(process.env.DSH_NODE, [bridge, runtime, profile],
   { cwd: workspace, env: environment, stdio: ['pipe', 'pipe', 'pipe'] });
 const exited = once(child, 'exit');
 let stderr = '', sequence = 1;

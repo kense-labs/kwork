@@ -5869,6 +5869,11 @@ impl Render for DshApp {
             });
         }
         workspace
+            .child(
+                gpui::canvas(|_, _, _| (), |_, (), _, _| document_html::finish_frames())
+                    .absolute()
+                    .inset_0(),
+            )
             .when_some(document_fonts::interface_family(cx), |root, family| {
                 root.font_family(family)
             })

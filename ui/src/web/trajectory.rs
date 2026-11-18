@@ -977,10 +977,15 @@ impl DshApp {
             0.
         };
         let rows = ledger_rows(&self.conversation.trajectory, &query, history_height);
-        let composer_clearance = self
-            .composer_seat_bounds
-            .get()
-            .map_or(168., |bounds| f32::from(bounds.size.height) + 16.);
+        // With an inspector open the composer has a separate flex row and both
+        // detail and ledger scrollers end at its top edge.
+        let composer_clearance = if self.trajectory.selected.is_some() {
+            0.
+        } else {
+            self.composer_seat_bounds
+                .get()
+                .map_or(168., |bounds| f32::from(bounds.size.height) + 16.)
+        };
         let ledger_end = rows
             .last()
             .map_or(history_height + 180., |row| row.top + row.height);
@@ -1193,13 +1198,7 @@ impl DshApp {
                 .iter()
                 .chain(&self.conversation.trajectory.requests)
                 .find(|record| record.key == key)?;
-            Some(self.render_trajectory_inspector(
-                record,
-                inspector_overlays,
-                inspector_width,
-                composer_clearance,
-                cx,
-            ))
+            Some(self.render_trajectory_inspector(record, inspector_overlays, inspector_width, cx))
         });
         let table = column()
             .gap_0()

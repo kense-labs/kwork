@@ -5,7 +5,7 @@ import { join } from 'node:path';
 export async function installAgentPresetsMock(page) {
   await page.addInitScript(() => {
     const state = window.__presetTest = { selected: 'standard', revision: 1, calls: [],
-      failSave: false, delayedRead: false, reads: [], pendingSave: null, sessions: {} };
+      listError: null, failSave: false, delayedRead: false, reads: [], pendingSave: null, sessions: {} };
     const rows = () => ['standard', 'ptc', 'minimal', 'cordis', 'custom', 'broken'].map(id => ({ id,
       isDefault: id === state.selected,
       ...(id === 'custom' ? { name: '团队模式', description: '团队自定义工具组合。' } : {}),
@@ -20,7 +20,10 @@ export async function installAgentPresetsMock(page) {
         state.sessions[request.sessionId] = request.id;
         return {agentPreset:request.id};
       }
-      if (request.operation === 'list') return { presets: rows(), writable: true, revision: state.revision };
+      if (request.operation === 'list') {
+        if (state.listError) throw Error(state.listError);
+        return { presets: rows(), writable: true, revision: state.revision };
+      }
       if (request.operation === 'read') {
         const result = { content: `- id: ${request.id}\n  name: fixture\n`, name: request.id };
         if (state.delayedRead) return new Promise(resolve => state.reads.push(() => resolve(result)));
@@ -46,16 +49,28 @@ export async function runAgentPresetsCase(page, artifacts) {
   const close = shell.getByRole('button', { name: '关闭设置', exact: true });
   const card = id => content.locator(`[data-agent-preset-id="${id}"]`);
   const selection = id => card(id).locator('button[aria-pressed]');
-  const open = async () => {
+  const open = async (waitForCards = true) => {
     await page.locator('#composer-submit-accessibility').getByRole('button', { name: '更多设置', exact: true }).dispatchEvent('click');
     await page.locator('#composer-submit-accessibility').getByRole('button', { name: '设置', exact: true }).dispatchEvent('click');
-    await nav.click(); await card('standard').waitFor();
+    await nav.click();
+    if (waitForCards) await card('standard').waitFor();
   };
   const settleSave = async () => {
     await page.waitForFunction(() => window.__presetTest.pendingSave !== null);
     await page.evaluate(() => window.__presetTest.pendingSave());
   };
-  await open();
+  await page.evaluate(() => {
+    window.__presetTest.listError = 'ACP -32603: Session operation failed: Agent 预设需要配套 Host 0.2.2-rc.3，当前为 0.2.2-rc.1。';
+  });
+  await open(false);
+  const alert = content.getByRole('alert').filter({ hasText: '配套 Host' });
+  await alert.waitFor();
+  assert.match(await alert.innerText(), /0\.2\.2-rc\.3.*DSH_ACP_PATH/u);
+  assert.doesNotMatch(await alert.innerText(), /-32603|Session operation failed/u);
+  await page.evaluate(() => { window.__presetTest.listError = null; });
+  await content.getByRole('button', { name: '重试', exact: true }).click();
+  await card('standard').waitFor();
+  await alert.waitFor({ state: 'hidden' });
   assert.equal(await content.getByRole('heading', { name: 'Agent 预设', exact: true }).count(), 1);
   assert.equal(await content.locator('[data-agent-preset-id]').count(), 6);
   assert.equal(await selection('standard').getAttribute('aria-pressed'), 'true');
@@ -122,7 +137,7 @@ export async function runAgentPresetsCase(page, artifacts) {
   assert.ok(creator);
   assert.equal(await page.evaluate(() => window.__presetTest.sessions['preset-creator']), 'standard');
   await writeFile(join(artifacts, 'agent-presets-checks.json'), JSON.stringify({ passed: true,
-    checks: ['official built-in/custom cards', 'broken composition cannot select', 'pending save retains accepted default',
+    checks: ['incompatible Host feedback and retry', 'official built-in/custom cards', 'broken composition cannot select', 'pending save retains accepted default',
       'save failure/retry', 'read-only YAML', 'nested Escape and focus return', 'Markdown usage guide',
       'two/one-column layouts', 'late viewer after close ignored'] }, null, 2));
 }

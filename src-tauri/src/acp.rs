@@ -105,8 +105,11 @@ impl AcpConnection {
         let node = resolve_node();
         let mut command = Command::new(&node);
         command.current_dir(service_path);
+        let package = service_path.join("node_modules/@deepseek-ai/dsh/lib");
         let (entry, profile) = if built.is_file() {
             (built, service_path.join("apps/cli/lib/profile-boot.js"))
+        } else if package.join("bin.js").is_file() {
+            (package.join("bin.js"), package.join("profile-boot.js"))
         } else if source.is_file() {
             command.args(["--import", "tsx/esm"]);
             (source, service_path.join("apps/cli/src/profile-boot.ts"))
@@ -2549,6 +2552,16 @@ pub(crate) fn resolve_service_path(value: Option<&str>) -> Result<PathBuf, Strin
         }
     }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    #[cfg(target_os = "macos")]
+    {
+        let host = manifest.join("../services/macos-host");
+        if host
+            .join("node_modules/@deepseek-ai/dsh/lib/profile-boot.js")
+            .is_file()
+        {
+            return host.canonicalize().map_err(|error| error.to_string());
+        }
+    }
     let candidates = [
         manifest.join("../../dsh-acp"),
         manifest.join("../dsh-acp"),

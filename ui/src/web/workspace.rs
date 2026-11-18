@@ -27,6 +27,12 @@ fn workspace_menu_height(
 impl DshApp {
     pub(super) fn render_workspace(&mut self, w: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = dsh(cx);
+        let floating_composer = self.page == WorkspacePage::Conversation
+            && self.trajectory.active == trajectory::ConversationView::Trajectory
+            && self.trajectory.selected.is_none();
+        if !floating_composer {
+            self.composer_seat_bounds.set(None);
+        }
         let material = bridge::has_mac_window_material();
         // First-run API Key configuration can be deferred.
         if self.show_welcome {
@@ -130,7 +136,7 @@ impl DshApp {
                             overlay = overlay.child(self.render_turn_rail(&items, cx));
                         }
                     }
-                    if trajectory_overlay {
+                    if floating_composer {
                         let seat = if approval {
                             self.render_permission(w, cx)
                                 .map(|card| card.into_any_element())

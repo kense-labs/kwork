@@ -25,7 +25,16 @@ function createOwner() {
   let document: { status: string; revision?: number; writable: boolean } = { status: 'idle', writable: false };
   const invoke = async (request: Record<string, unknown>) => {
     if (!lifetime.active) throw new Error('连接已更换，请重试。');
-    const result = await (window as any).__TAURI__.core.invoke('agent_preset_settings', { request });
+    let result;
+    try {
+      result = await (window as any).__TAURI__.core.invoke('agent_preset_settings', { request });
+    } catch (error) {
+      const detail = (error instanceof Error ? error.message : String(error))
+        .replace(/^ACP -?\d+:\s*(?:Session operation failed:\s*)?/u, '');
+      throw new Error(detail.startsWith('Agent 预设需要配套 Host')
+        ? detail + ' 请检查 DSH_ACP_PATH 是否指向旧版本，然后重新启动 KWork。'
+        : detail);
+    }
     if (!lifetime.active) throw new Error('连接已更换，请重试。');
     if (request.operation === 'list' || request.operation === 'default') {
       document = { status: 'ready', writable: result.writable, revision: result.revision };

@@ -11,6 +11,7 @@ if ! command -v "$BUN" >/dev/null 2>&1; then
     exit 1
 fi
 
+"$BUN" scripts/prepare-macos-host.mjs
 "$BUN" scripts/build-ui.mjs
 # blaze is an opt-in accelerator for the native Host only (never for the WASM
 # frontend or release builds). The wrapper probes compatibility once and falls

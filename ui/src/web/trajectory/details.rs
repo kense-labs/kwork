@@ -1057,7 +1057,6 @@ impl DshApp {
         record: &Record,
         narrow: bool,
         width: f32,
-        composer_clearance: f32,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let p = dsh(cx);
@@ -1321,12 +1320,7 @@ impl DshApp {
                     .w_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.trajectory.inspector_scroll)
-                    .pb(px(composer_clearance
-                        + if active == DetailTab::Overview {
-                            12.
-                        } else {
-                            0.
-                        }))
+                    .when(active == DetailTab::Overview, |panel| panel.pb(px(12.)))
                     .child(content),
             )
     }

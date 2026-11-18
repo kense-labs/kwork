@@ -9,3 +9,5 @@
 *.log
 /src-tauri/gen/
 /.learnings/
+
+/services/macos-host/node_modules/

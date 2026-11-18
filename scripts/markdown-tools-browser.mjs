@@ -7,7 +7,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inflateSync } from 'node:zlib';
-import { chromium } from 'playwright-core';
+import { chromium, webkit } from 'playwright-core';
 import { runOutputBlocksCase } from './trajectory-blocks-browser.mjs';
 import { runFontsCase } from './settings-fonts-browser.mjs';
 import { installModelsMock, runModelsCase } from './models-settings-browser.mjs';
@@ -21,7 +21,7 @@ const root = dirname(fileURLToPath(new URL('../package.json', import.meta.url)))
 process.chdir(root);
 const modeIndex = process.argv.indexOf('--mode');
 const mode = modeIndex >= 0 ? process.argv[modeIndex + 1] : 'all';
-assert.ok(['document-question', 'plan-preview', 'chat-markdown', 'file-links', 'ui-feedback', 'agent-presets', 'trajectory-blocks', 'settings-developer', 'fonts', 'settings-permission', 'settings-upload', 'plugin-inventory', 'models-official', 'all', 'image', 'inherited', 'theme', 'stream', 'turn-navigation', 'trajectory', 'trajectory-results', 'trajectory-program', 'trajectory-folds', 'trajectory-long', 'trajectory-narrow', 'trajectory-pages', 'trajectory-prompts', 'trajectory-timeline', 'settings', 'settings-shell', 'settings-partial', 'settings-readonly', 'settings-search', 'settings-fetch', 'appearance', 'plugins', 'workflow', 'team', 'permission', 'approval', 'queue', 'composer', 'composer-focus', 'attachments', 'welcome', 'provider-settings', 'provider-protocols', 'provider-authorization', 'deepseek-account', 'desktop-onboarding', 'account-notifications', 'account-quota', 'model-menu', 'model-catalog', 'model-accessibility', 'goal', 'reading', 'session-order', 'workspace-registry', 'workspace-actions', 'workspace-startup', 'workspace-search', 'workspace-accessibility', 'workspace-group-accessibility'].includes(mode), `unknown mode: ${mode}`);
+assert.ok(['document-question', 'plan-preview', 'chat-markdown', 'file-links', 'ui-feedback', 'agent-presets', 'trajectory-blocks', 'settings-developer', 'fonts', 'settings-permission', 'settings-upload', 'plugin-inventory', 'models-official', 'all', 'image', 'inherited', 'theme', 'stream', 'turn-navigation', 'trajectory', 'trajectory-results', 'trajectory-program', 'trajectory-folds', 'trajectory-menus', 'trajectory-long', 'trajectory-narrow', 'trajectory-pages', 'trajectory-prompts', 'trajectory-timeline', 'settings', 'settings-shell', 'settings-partial', 'settings-readonly', 'settings-search', 'settings-fetch', 'appearance', 'plugins', 'workflow', 'team', 'permission', 'approval', 'queue', 'composer', 'composer-focus', 'attachments', 'welcome', 'provider-settings', 'provider-protocols', 'provider-authorization', 'deepseek-account', 'desktop-onboarding', 'account-notifications', 'account-quota', 'model-menu', 'model-catalog', 'model-accessibility', 'goal', 'reading', 'session-order', 'workspace-registry', 'workspace-actions', 'workspace-startup', 'workspace-search', 'workspace-accessibility', 'workspace-group-accessibility'].includes(mode), `unknown mode: ${mode}`);
 const artifactArgument = process.argv.slice(2).find(argument => argument !== '--mode' && argument !== mode);
 const artifacts = resolve(artifactArgument || join(root, '.tools/verification/markdown-tools-browser', mode));
 await mkdir(artifacts, { recursive: true });
@@ -44,14 +44,17 @@ const server = createServer(async (request, response) => {
   }
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const browserServer = await chromium.launchServer({
+const useWebKit = process.env.KWORK_TEST_BROWSER === 'webkit';
+const engine = useWebKit ? webkit : chromium;
+const browserServer = await engine.launchServer({
   host: '127.0.0.1',
-  executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  executablePath: useWebKit ? undefined : process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: true,
-  args: ['--no-first-run', '--enable-unsafe-webgpu', '--use-angle=swiftshader'],
+  args: useWebKit ? [] : ['--no-first-run', '--enable-unsafe-webgpu', '--use-angle=swiftshader',
+    ...(mode === 'trajectory-menus' ? ['--force-device-scale-factor=2'] : [])],
 });
-const browser = await chromium.connect(browserServer.wsEndpoint());
-const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, deviceScaleFactor: 1 });
+const browser = await engine.connect(browserServer.wsEndpoint());
+const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, deviceScaleFactor: mode === 'trajectory-menus' ? 2 : 1 });
 const legacySettings = ['settings', 'settings-partial', 'settings-readonly', 'settings-search', 'settings-fetch'].includes(mode);
 const platform = process.env.KWORK_TEST_PLATFORM ?? (legacySettings ? 'Win32' : undefined);
 if (platform) {
@@ -195,7 +198,7 @@ const events = mode === 'inherited'
       { type: 'step/start', seq: 3, time: 950, data: { turn: 1, step: 1 } },
       ...longTrajectoryEvents.map(event => ({ ...event, seq: event.seq + 3 })),
     ]
-  : mode === 'trajectory-folds'
+  : ['trajectory-folds', 'trajectory-menus'].includes(mode)
     ? [
       { type: 'turn/start', seq: 1, time: 1000, data: { turn: 1 } },
       { type: 'user/message', seq: 2, time: 1100, data: { id: 'fold-user', content: [{ type: 'text', text: 'Inspect calls' }] } },
@@ -650,7 +653,7 @@ try {
           case 'open_start_tool': return null;
           case 'workspace_applications': return mode === 'workspace-accessibility'
             ? [{ id: 'fixture-editor', name: 'Fixture editor' }]
-            : mode === 'trajectory-folds' ? [{ id: 'finder', name: '访达' }, { id: 'terminal', name: '终端' }] : [];
+            : ['trajectory-folds', 'trajectory-menus'].includes(mode) ? [{ id: 'finder', name: '访达' }, { id: 'terminal', name: '终端' }] : [];
           case 'rename_session': return new Promise((resolve, reject) => {
             window.__verification.settleSessionRename = result => result.error ? reject(result.error) : resolve(result);
           });
@@ -2976,12 +2979,16 @@ try {
     await focusedText('置顶会话');
     await page.waitForTimeout(250);
     const menuClip = { x: 12, y: 306, width: 270, height: 414 };
+    const rightEdge = { x: menuClip.x + 133, y: menuClip.y + 156, width: 2, height: 12 };
+    const pinEdge = await page.screenshot({ clip: rightEdge });
     const pinFocus = await page.screenshot({ path: join(artifacts, 'pin-focus.png'), clip: menuClip });
     await page.keyboard.press('ArrowDown');
     await focusedText('重命名');
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const renameFocus = await page.screenshot({ path: join(artifacts, 'rename-focus.png'), clip: menuClip });
     assert.ok(!pinFocus.equals(renameFocus), 'moving menu focus also updates the painted menu');
+    assert.ok(!pinEdge.equals(await page.screenshot({ clip: rightEdge })),
+      'the first row highlight reaches the right edge beyond its short label');
     await page.keyboard.press('ArrowDown');
     await focusedText('分叉会话');
     assert.equal(await menuItem('标为未读').isDisabled(), true);
@@ -4702,6 +4709,26 @@ try {
     await page.mouse.wheel(0, 10000); await page.waitForTimeout(250);
     assert.deepEqual(await projection(), [0, 100], 'zooming out restores the full domain');
     await page.screenshot({ path: join(artifacts, 'timeline-reset.png') });
+  } else if (mode === 'trajectory-menus') {
+    await clickConversationTab(1318);
+    const timeline = page.getByRole('region', { name: '轨迹时间线', exact: true });
+    await timeline.waitFor();
+    const bounds = await timeline.boundingBox();
+    // The taller session menu intersects both the toolbar and the timeline.
+    const moreX = page.viewportSize().width - 58;
+    await page.mouse.click(moreX, 25);
+    await page.waitForFunction(() => !!document.querySelector('.trajectory-timeline-frame')?.style.clipPath);
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: join(artifacts, 'session-menu-over-timeline.png') });
+    const region = { x: moreX - 104, y: Math.ceil(bounds.y + 4), width: 108, height: 34 };
+    const sample = () => page.screenshot({ clip: region });
+    const painted = await sample();
+    const ghost = await page.addStyleTag({ content: '.trajectory-timeline-frame { visibility: hidden !important }' });
+    try {
+      assert.ok(painted.equals(await sample()), 'the timeline paints no pixels through the session menu');
+    } finally { await ghost.evaluate(node => node.remove()); }
+    await page.mouse.click(moreX, 25);
+    await page.waitForFunction(() => !document.querySelector('.trajectory-timeline-frame')?.style.clipPath);
   } else if (mode === 'trajectory-folds') {
     await clickConversationTab(1318);
     const timeline = page.getByRole('region', { name: '轨迹时间线', exact: true });
@@ -4778,7 +4805,9 @@ try {
     await toolbar.getByRole('button', { name: '展开所有子调用', exact: true }).click();
     assert.deepEqual(await ledger('all-expanded'), [29, 59, 89, 119, 149, 179, 209]);
     for (const key of ['Enter', 'Space']) {
-      await page.mouse.click(600, top + 15, { clickCount: 2 });
+      // Use separate points on the same row so GPUI counts two double clicks
+      // even when the keyboard assertions finish within its 400 ms click window.
+      await page.mouse.dblclick(key === 'Enter' ? 600 : 620, top + 15);
       await toolbar.getByRole('button', { name: '展开所有轮次', exact: true }).waitFor();
       await page.keyboard.press('Tab');
       if (key === 'Space') {
@@ -5335,7 +5364,10 @@ try {
       await page.waitForTimeout(292);
       const requestInspector = await page.screenshot({ path: join(artifacts, 'request-inspector.png') });
       assert.ok((await page.getByRole('toolbar', { name: '轨迹工具栏', exact: true }).screenshot()).equals(toolbarBefore), 'opening details preserves the full-width toolbar');
-      assert.ok((await page.getByRole('separator', { name: '调整事件详情宽度' }).boundingBox()).y >= 130, 'the inspector begins below toolbar and timeline');
+      const inspectorBounds = await page.getByRole('separator', { name: '调整事件详情宽度' }).boundingBox();
+      assert.ok(inspectorBounds.y >= 130, 'the inspector begins below toolbar and timeline');
+      assert.ok(inspectorBounds.y + inspectorBounds.height <= page.viewportSize().height - 80,
+        'the inspector leaves room for the composer');
       assert.ok(!requestInspector.equals(beforeRequest), 'terminal request opens a real inspector');
       // The active tab's 2px blue underline is read from the rendered canvas.
       const activeDetailTab = shot => {
@@ -6116,6 +6148,8 @@ try {
       ? ['historical system snapshots', 'system/tools/combined diffs', 'original diff line metrics', 'tool catalog keyboard disclosure', 'empty prompt and tool states']
     : mode === 'trajectory-narrow'
       ? ['compact ledger rows', 'right-side inspector drawer', 'Escape closes details', 'request boundary opens details']
+    : mode === 'trajectory-menus'
+      ? ['Retina session menu fully occludes the toolbar and timeline', 'dismissing the menu restores the timeline']
     : mode === 'trajectory-folds'
       ? ['canvas application menu preserves the toolbar and timeline outside its bounds', 'menu owns pointer hits in its bounds', 'assistant calls and tool subcalls use separate fold domains', 'turn fold preserves the first row', 'search bypasses all folds', 'clearing search restores folds', 'expansion preserves other domains']
     : mode === 'trajectory-timeline'

@@ -1954,7 +1954,7 @@ pub(super) fn header_menu_row(
         .when_some(focus, |row, focus| {
             row.role(gpui::Role::MenuItem).track_focus(focus)
         })
-        .w_full()
+        .self_stretch()
         .h(px(if session { SESSION_ROW_HEIGHT } else { 30. }))
         .flex_none()
         .px(px(8.))
