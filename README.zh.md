@@ -59,7 +59,7 @@ cargo test --workspace
 bun test scripts/*.test.mjs
 ```
 
-`bun run build` 构建发布版主程序。打包 macOS 应用时，先构建前端，再运行 `bun x tauri build --bundles app`。前端构建会把 `Cargo.lock` 锁定版本的 `wasm-bindgen-cli` 和按平台匹配的 `wasm-opt` 安装到 `.tools/`，不写入 `package.json`。
+`bun run build` 构建发布版主程序。前端构建会把 `Cargo.lock` 锁定版本的 `wasm-bindgen-cli` 和按平台匹配的 `wasm-opt` 安装到 `.tools/`，不写入 `package.json`。
 
 | 路径 | 内容 |
 | --- | --- |
@@ -67,6 +67,18 @@ bun test scripts/*.test.mjs
 | `src-tauri/` | 原生窗口、IPC、ACP 进程管理和应用图标 |
 | `services/` | 凭据桥、ACP 桥和内置 Harness 服务 |
 | `scripts/` | 构建工具和 JavaScript 测试 |
+
+## macOS
+
+在与安装包目标架构相同的 Mac 上构建磁盘映像。
+
+```sh
+bun install --frozen-lockfile
+bun run ui:build
+bun x tauri build --bundles dmg --config src-tauri/tauri.macos-release.conf.json
+```
+
+安装包适用于 macOS 14 及以上版本，内含 Node.js、锁定版本的 DeepSeek Harness Host 和 Agent 终端依赖。打开磁盘映像，把 KWork 拖入「应用程序」。公开分发时，配置 Developer ID 签名和 Apple 公证。
 
 ## Windows
 

@@ -2440,7 +2440,7 @@ pub(crate) fn resolve_node(app: &AppHandle) -> std::ffi::OsString {
             return value;
         }
     }
-    if let Some(path) = bundled_windows_host(app).map(|host| host.join("node.exe"))
+    if let Some(path) = bundled_harness_host(app).map(|host| host.join(bundled_node_name()))
         && path.is_file()
     {
         return path.into_os_string();
@@ -2538,8 +2538,12 @@ fn which_exists(path: &Path) -> bool {
     }
 }
 
-fn bundled_windows_host(app: &AppHandle) -> Option<PathBuf> {
-    if !cfg!(windows) {
+fn bundled_node_name() -> &'static str {
+    if cfg!(windows) { "node.exe" } else { "node" }
+}
+
+fn bundled_harness_host(app: &AppHandle) -> Option<PathBuf> {
+    if !cfg!(any(target_os = "macos", windows)) {
         return None;
     }
     app.path()
@@ -2566,10 +2570,10 @@ pub(crate) fn resolve_service_path(
                 .map_err(|error| format!("dsh-acp 路径不可访问 {}：{error}", path.display()));
         }
     }
-    if let Some(host) = bundled_windows_host(app)
+    if let Some(host) = bundled_harness_host(app)
         && host.is_dir()
     {
-        if !host.join("node.exe").is_file()
+        if !host.join(bundled_node_name()).is_file()
             || !host
                 .join("node_modules/@deepseek-ai/dsh/lib/bin.js")
                 .is_file()

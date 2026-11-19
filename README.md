@@ -59,7 +59,7 @@ cargo test --workspace
 bun test scripts/*.test.mjs
 ```
 
-`bun run build` builds the release host executable. To package a macOS application, build the frontend first and run `bun x tauri build --bundles app`. The frontend build installs the `wasm-bindgen-cli` version pinned in `Cargo.lock` and a platform-matched `wasm-opt` under `.tools/`, without adding them to `package.json`.
+`bun run build` builds the release host executable. The frontend build installs the `wasm-bindgen-cli` version pinned in `Cargo.lock` and a platform-matched `wasm-opt` under `.tools/`, without adding them to `package.json`.
 
 | Path | Contents |
 | --- | --- |
@@ -67,6 +67,18 @@ bun test scripts/*.test.mjs
 | `src-tauri/` | Native shell, IPC, ACP process management, and application icons |
 | `services/` | Credential and ACP bridges, plus bundled Harness services |
 | `scripts/` | Build tools and JavaScript tests |
+
+## macOS
+
+Build the disk image on a Mac with the same architecture as the intended installer.
+
+```sh
+bun install --frozen-lockfile
+bun run ui:build
+bun x tauri build --bundles dmg --config src-tauri/tauri.macos-release.conf.json
+```
+
+The installer supports macOS 14 and later and bundles Node.js, the pinned DeepSeek Harness Host and Agent terminal dependencies. Open the disk image and drag KWork into Applications. For public distribution, configure a Developer ID signing identity and Apple notarization.
 
 ## Windows
 
