@@ -1,5 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeBuildCommand": "bun scripts/prepare-windows-host.mjs"
+  },
   "app": {
     "windows": [
       {
@@ -14,8 +17,14 @@
   },
   "bundle": {
     "targets": ["nsis"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
     "resources": {
-      "../services/account-platform-electron/bundle/": "account-platform/"
+      "../services/account-platform-electron/bundle/": "account-platform/",
+      "../services/windows-host/bundle/": "harness-runtime/"
     }
   }
 }

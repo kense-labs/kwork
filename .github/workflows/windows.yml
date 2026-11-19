@@ -40,7 +40,7 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Node.js (bundled Harness runtime)
+      - name: Node.js (build tools)
         uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -114,6 +114,11 @@ jobs:
               throw "Missing portable resource: $file"
             }
           }
+          foreach ($file in @('node.exe', 'node_modules/@deepseek-ai/dsh/lib/bin.js', 'node_modules/@deepseek-ai/dsh/lib/profile-boot.js', 'terminal-controller/v3/package/lib/index.js')) {
+            if (!(Test-Path -LiteralPath "target/release/harness-runtime/$file" -PathType Leaf)) {
+              throw "Missing portable Harness resource: $file"
+            }
+          }
 
       - name: Upload installer and portable app
         uses: actions/upload-artifact@v4
@@ -123,6 +128,7 @@ jobs:
           path: |
             target/release/KWork.exe
             target/release/account-platform/
+            target/release/harness-runtime/
             target/release/bundle/nsis/*.exe
 
       - name: Exercise previews on Windows Chromium
@@ -151,7 +157,7 @@ jobs:
               throw "Missing installed resource: $file"
             }
           }
-          bun scripts/account-platform-windows-smoke.mjs "$directory/KWork.exe" "$env:RUNNER_TEMP/kwork-host-fixture/host"
+          bun scripts/account-platform-windows-smoke.mjs "$directory/KWork.exe"
 
       - name: Require a passing renderer smoke test
         if: github.event_name == 'workflow_dispatch' && steps.electron-smoke.outcome != 'success'

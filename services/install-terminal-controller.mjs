@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { prepareTerminalProfile } from './agent-terminal-bridge.mjs';
 
-const [target, service, home = join(homedir(), '.dsh')] = process.argv.slice(2);
+const [target, service, home = join(homedir(), '.dsh'), prepareOnly] = process.argv.slice(2);
 const generation = join(target, 'v3');
 
 const name = '@deepseek-ai/dsh-api-terminal-controller';
@@ -103,14 +103,19 @@ export async function main() {
     const staging = join(target, `.install-${randomUUID()}`);
     await mkdir(staging, { recursive: false });
     try {
-      await extract(
-        `https://registry.npmjs.org/${name}/-/${name.split('/')[1]}-${version}.tgz`,
-        join(staging, 'package'), [name, version], integrity,
-      );
-      if (!existsSync(join(staging, 'package/lib/index.js'))) throw new Error('Agent 终端模块缺少入口。');
-      for (const [dependency, release, digest] of dependencies) {
-        const archive = `https://registry.npmjs.org/${dependency}/-/${dependency.split('/').at(-1)}-${release}.tgz`;
-        await extract(archive, join(staging, 'node_modules', dependency), [dependency, release], digest);
+      const seed = join(service, 'terminal-controller', 'v3');
+      if (!prepareOnly && existsSync(seed)) {
+        await cp(seed, staging, { recursive: true });
+      } else {
+        await extract(
+          `https://registry.npmjs.org/${name}/-/${name.split('/')[1]}-${version}.tgz`,
+          join(staging, 'package'), [name, version], integrity,
+        );
+        if (!existsSync(join(staging, 'package/lib/index.js'))) throw new Error('Agent 终端模块缺少入口。');
+        for (const [dependency, release, digest] of dependencies) {
+          const archive = `https://registry.npmjs.org/${dependency}/-/${dependency.split('/').at(-1)}-${release}.tgz`;
+          await extract(archive, join(staging, 'node_modules', dependency), [dependency, release], digest);
+        }
       }
       // Recheck before replacing anything: another process may have completed
       // the same generation while this staging directory was downloading.
@@ -135,6 +140,10 @@ export async function main() {
       await rm(staging, { recursive: true, force: true });
     }
   }
-  await prepareTerminalProfile({ service, module: entry, home, runtime: dirname(dirname(dirname(entry))) });
+  if (!prepareOnly) {
+    await prepareTerminalProfile({ service, module: entry, home, runtime: dirname(dirname(dirname(entry))) });
+  }
   return entry;
 }
+
+if (prepareOnly === '--prepare-only') console.log(await main());

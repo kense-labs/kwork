@@ -6,7 +6,7 @@ use super::dock_strip::{dock_chip, dock_chip_title};
 use super::workspace::{TurnActionHint, begin_window_drag, conversation_bg, dark};
 use super::*;
 use crate::right_dock::{
-    DockPane, auto_fullscreen, clamp_dock_preference, default_dock_width, dock_width,
+    DockPane, FloatRect, auto_fullscreen, clamp_dock_preference, default_dock_width, dock_width,
 };
 use gpui::svg;
 
@@ -313,6 +313,17 @@ impl DshApp {
         let panes = self.sidebar.surface.layout.panes();
         let geometry = DockGeometry::new(panes);
         let viewport_height = f32::from(w.viewport_size().height);
+        if frame.fullscreen {
+            super::document_html::cover_canvas_float(
+                FloatRect {
+                    x: frame.left,
+                    y: 0.,
+                    width: frame.width,
+                    height: viewport_height,
+                },
+                0.,
+            );
+        }
         row()
             .id(gpui::ElementId::Name(
                 format!(

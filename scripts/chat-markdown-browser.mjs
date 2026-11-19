@@ -22,6 +22,15 @@ export async function runChatMarkdownCase(page, artifacts, sessionId) {
   assert.equal(await body.locator('blockquote li').count(), 2);
   const initial = await body.locator('.chat-markdown-content').boundingBox();
   await page.screenshot({path:join(artifacts,'markdown-wide.png')});
+  const editor = page.locator('#gpui-text-input');
+  await editor.fill('/');
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-chat-markdown]')]
+    .some(frame => frame.querySelector('h2')?.textContent === '官方正文排版' && frame.style.clipPath));
+  await page.screenshot({path:join(artifacts,'markdown-slash-menu.png')});
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-chat-markdown]')]
+    .some(frame => frame.querySelector('h2')?.textContent === '官方正文排版' && !frame.style.clipPath));
+  await editor.fill('');
   await verifyMenuDockNavigation(page, body, artifacts);
   await body.getByRole('button', {name:'完整预览',exact:true}).click();
   await page.locator('[data-document-html-host] iframe').waitFor();

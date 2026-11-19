@@ -76,6 +76,7 @@ pub(super) fn interaction(
         .w_full()
         .max_w(px(width))
         .min_w_0()
+        .mx_auto()
         .flex_none()
         .child(Markdown {
             key: format!("{session}:interaction:{request}"),

@@ -8,11 +8,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{Child, ChildStdin};
 use tokio::sync::{Mutex, oneshot};
 
 use crate::acp::resolve_service_path;
-use crate::embedded_script::write_module;
+use crate::embedded_script::{node_command, write_module};
 
 /// Owns the credential helper independently of the ACP conversation process.
 #[derive(Default)]
@@ -39,10 +39,10 @@ impl AuthConnection {
             "credential-service",
             include_str!("../../services/credential-service.mjs").as_bytes(),
         )?;
-        let node = crate::acp::resolve_node();
+        let node = crate::acp::resolve_node(&app);
         // As in acp.rs, the script path takes argv[1], so the service path and
         // DSH home remain at process.argv.slice(2). No `--eval` payload needed.
-        let mut child = Command::new(node)
+        let mut child = node_command(&node)
             .arg(script.path())
             .arg(&service_path)
             .arg(&dsh_home)
@@ -278,7 +278,7 @@ pub async fn start_auth(
     app: AppHandle,
     service: State<'_, AuthService>,
 ) -> Result<Value, String> {
-    let service_path = resolve_service_path(service_path.as_deref())?;
+    let service_path = resolve_service_path(service_path.as_deref(), &app)?;
     let mut slot = service.connection.lock().await;
     if let Some(previous) = slot.take() {
         previous.stop().await;
@@ -335,7 +335,7 @@ async fn connection(service: &AuthService) -> Result<Arc<AuthConnection>, String
         .ok_or_else(|| "Harness 凭据服务尚未连接".to_string())
 }
 
-fn resolve_dsh_home() -> Result<PathBuf, String> {
+pub(crate) fn resolve_dsh_home() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("DSH_HOME") {
         return Ok(PathBuf::from(path));
     }

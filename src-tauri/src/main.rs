@@ -1,5 +1,7 @@
 //! Tauri desktop host for KWork.
 
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod account_platform;
 mod acp;
 mod auth;

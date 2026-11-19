@@ -12,10 +12,24 @@
 //!   reused by every connection and every app launch.
 
 use sha2::{Digest, Sha256};
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::{Builder, NamedTempFile};
+use tokio::process::Command;
+
+/// Launch a Node helper without attaching a console to the desktop app.
+pub(crate) fn node_command(node: &OsStr) -> Command {
+    let command = Command::new(node);
+    #[cfg(windows)]
+    let command = {
+        let mut command = command;
+        command.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+        command
+    };
+    command
+}
 
 /// Materialise an embedded module as a private `.mjs` file owned by the caller.
 pub(crate) fn write_module(name: &str, source: &[u8]) -> Result<NamedTempFile, String> {

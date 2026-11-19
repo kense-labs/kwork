@@ -237,75 +237,14 @@ fn open_host_path(path: &str, reveal: bool) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn open_browser_url(url: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || open_url(&url))
-        .await
-        .map_err(|error| format!("打开链接失败：{error}"))?
-}
-
-fn normalize_url(raw: &str) -> Result<String, String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err("请输入网址".to_string());
-    }
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        return Ok(trimmed.to_string());
-    }
-    if trimmed.contains(' ') {
-        return Err("网址无效".to_string());
-    }
-    Ok(format!("https://{trimmed}"))
-}
-
-#[cfg(target_os = "macos")]
-fn open_url(raw: &str) -> Result<String, String> {
-    let url = normalize_url(raw)?;
-    let status = std::process::Command::new("open")
-        .arg(&url)
-        .status()
-        .map_err(|error| format!("无法打开链接：{error}"))?;
-    if status.success() {
+    let url = crate::browser::normalize_url(&url)?.to_string();
+    tokio::task::spawn_blocking(move || {
+        tauri_plugin_opener::open_url(&url, None::<&str>)
+            .map_err(|error| format!("打开链接失败：{error}"))?;
         Ok(url)
-    } else {
-        Err(format!("打开链接失败：{status}"))
-    }
-}
-
-#[cfg(windows)]
-fn open_url(raw: &str) -> Result<String, String> {
-    let url = normalize_url(raw)?;
-    windows_open_url(&url)?;
-    Ok(url)
-}
-
-/// Windows `start` implementation; compiled on every host for type checking.
-#[allow(dead_code)]
-fn windows_open_url(url: &str) -> Result<(), String> {
-    // `start` is a cmd builtin; the empty title keeps quoted URLs intact.
-    let target = url.replace('"', "");
-    let status = std::process::Command::new("cmd")
-        .arg("/C")
-        .arg(format!("start \"\" \"{target}\""))
-        .status()
-        .map_err(|error| format!("无法打开链接：{error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("打开链接失败：{status}"))
-    }
-}
-
-#[cfg(not(any(target_os = "macos", windows)))]
-fn open_url(raw: &str) -> Result<String, String> {
-    let url = normalize_url(raw)?;
-    let status = std::process::Command::new("xdg-open")
-        .arg(&url)
-        .status()
-        .map_err(|error| format!("无法打开链接：{error}"))?;
-    if status.success() {
-        Ok(url)
-    } else {
-        Err(format!("打开链接失败：{status}"))
-    }
+    })
+    .await
+    .map_err(|error| format!("打开链接失败：{error}"))?
 }
 
 #[cfg(target_os = "macos")]
@@ -372,17 +311,8 @@ fn windows_open_tool(root: &Path, tool: &str) -> Result<(), String> {
                 Err(format!("工作区工具打开失败：{status}"))
             }
         }
-        "browser" => {
-            let status = std::process::Command::new("cmd")
-                .args(["/C", "start", "", "https://www.deepseek.com/"])
-                .status()
-                .map_err(|error| format!("无法打开工作区工具：{error}"))?;
-            if status.success() {
-                Ok(())
-            } else {
-                Err(format!("工作区工具打开失败：{status}"))
-            }
-        }
+        "browser" => tauri_plugin_opener::open_url("https://www.deepseek.com/", None::<&str>)
+            .map_err(|error| format!("无法打开工作区工具：{error}")),
         _ => Err("未知的工作区工具".to_string()),
     }
 }

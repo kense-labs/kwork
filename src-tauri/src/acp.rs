@@ -1,6 +1,6 @@
 //! ACP stdio transport and Tauri commands for DeepSeek Harness.
 
-use crate::embedded_script::{cached_module, write_module};
+use crate::embedded_script::{cached_module, node_command, write_module};
 use crate::prompt_files::{PromptFiles, StagedFile};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{Child, ChildStdin};
 use tokio::sync::{Mutex, oneshot};
 
 const EVENT_NAME: &str = "acp-event";
@@ -102,8 +102,8 @@ impl AcpConnection {
     ) -> Result<Arc<Self>, String> {
         let built = service_path.join("apps/cli/lib/bin.js");
         let source = service_path.join("apps/cli/src/bin.ts");
-        let node = resolve_node();
-        let mut command = Command::new(&node);
+        let node = resolve_node(&app);
+        let mut command = node_command(&node);
         command.current_dir(service_path);
         let package = service_path.join("node_modules/@deepseek-ai/dsh/lib");
         let (entry, profile) = if built.is_file() {
@@ -438,10 +438,7 @@ async fn prepare_terminal_module(
     node: &std::ffi::OsStr,
     service: &Path,
 ) -> Result<(PathBuf, PathBuf), String> {
-    let home = std::env::var_os("DSH_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".dsh")))
-        .ok_or("无法确定 Harness 主目录，请设置 DSH_HOME")?;
+    let home = crate::auth::resolve_dsh_home()?;
     let target = home.join("profiles/acp/.kwork-runtime").join(format!(
         "terminal-controller-{}-0.2.2-rc.3",
         service_digest(service)
@@ -452,7 +449,7 @@ async fn prepare_terminal_module(
         &module_import_specifier(&adapter)?,
     ) + "\nconsole.log(await main());\n";
     let installer = write_module("install-terminal-controller-resolved", contents.as_bytes())?;
-    let output = Command::new(node)
+    let output = node_command(node)
         .arg(installer.path())
         .arg(&target)
         .arg(service)
@@ -739,7 +736,7 @@ pub async fn start_service(
     app: AppHandle,
     service: State<'_, AcpService>,
 ) -> Result<StartServiceReply, String> {
-    let service_path = resolve_service_path(service_path.as_deref())?;
+    let service_path = resolve_service_path(service_path.as_deref(), &app)?;
     let workspace = resolve_workspace(workspace.as_deref())?;
     let mut slot = service.connection.lock().await;
     crate::account_platform::invalidate_grant(&app);
@@ -2436,12 +2433,17 @@ fn default_workspace() -> Result<PathBuf, String> {
 
 /// Resolve a Node.js binary for spawning dsh-acp and the credential helper.
 /// GUI launches often have a minimal PATH, so probe known install locations.
-pub(crate) fn resolve_node() -> std::ffi::OsString {
+pub(crate) fn resolve_node(app: &AppHandle) -> std::ffi::OsString {
     if let Some(value) = std::env::var_os("DSH_NODE") {
         let path = PathBuf::from(&value);
         if path.is_file() || which_exists(&path) {
             return value;
         }
+    }
+    if let Some(path) = bundled_windows_host(app).map(|host| host.join("node.exe"))
+        && path.is_file()
+    {
+        return path.into_os_string();
     }
     if which_exists(Path::new("node")) {
         return "node".into();
@@ -2536,7 +2538,20 @@ fn which_exists(path: &Path) -> bool {
     }
 }
 
-pub(crate) fn resolve_service_path(value: Option<&str>) -> Result<PathBuf, String> {
+fn bundled_windows_host(app: &AppHandle) -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    app.path()
+        .resource_dir()
+        .ok()
+        .map(|resources| resources.join("harness-runtime"))
+}
+
+pub(crate) fn resolve_service_path(
+    value: Option<&str>,
+    app: &AppHandle,
+) -> Result<PathBuf, String> {
     if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
         let path = absolute_path(Path::new(value))?;
         return path
@@ -2550,6 +2565,21 @@ pub(crate) fn resolve_service_path(value: Option<&str>) -> Result<PathBuf, Strin
                 .canonicalize()
                 .map_err(|error| format!("dsh-acp 路径不可访问 {}：{error}", path.display()));
         }
+    }
+    if let Some(host) = bundled_windows_host(app)
+        && host.is_dir()
+    {
+        if !host.join("node.exe").is_file()
+            || !host
+                .join("node_modules/@deepseek-ai/dsh/lib/bin.js")
+                .is_file()
+            || !host
+                .join("node_modules/@deepseek-ai/dsh/lib/profile-boot.js")
+                .is_file()
+        {
+            return Err("KWork 的内置 Harness 运行时不完整，请重新运行安装程序。".into());
+        }
+        return Ok(host);
     }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     #[cfg(target_os = "macos")]

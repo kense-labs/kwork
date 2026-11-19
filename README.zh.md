@@ -80,9 +80,11 @@ bun run ui:build
 bun x tauri build --bundles nsis
 ```
 
-`just dev` 和 `scripts/dev-app.sh` 仅适用于 macOS；开发调试请用 `bun run dev`。运行时仍需要配套的 `dsh-acp` 检出，可在「设置」或环境变量中指定 `DSH_ACP_PATH` 与 `DSH_NODE`（例如 `C:\Program Files\nodejs\node.exe`）。
+双击 x64 NSIS 安装包，即可为当前 Windows 用户安装 KWork。Node.js、配套的 DeepSeek Harness Host 和 Agent 终端依赖都随包安装。启动后登录 DeepSeek 或填写 API Key 即可开始对话。如果系统缺少 WebView2，安装程序会联网下载。
 
-`.github/workflows/windows.yml` 会在 `windows-latest` 上构建 NSIS 安装包和便携版 `target/release/KWork.exe`，并作为 `KWork-Windows-x64` 产物上传。
+`tauri build` 会按锁定版本准备内置 Host。Windows 开发调试可先运行一次 `bun scripts/prepare-windows-host.mjs`，再运行 `bun run dev`。开发者也可以用 `DSH_ACP_PATH` 和 `DSH_NODE` 指定自己的 Host 或 Node.js。
+
+`.github/workflows/windows.yml` 会将 NSIS 安装包和便携版上传为 `KWork-Windows-x64`。使用便携版时，把 `account-platform/` 和 `harness-runtime/` 保留在 `KWork.exe` 旁边。
 
 ### 内嵌的 Node 模块
 

@@ -279,7 +279,7 @@ try {
   if (mode === 'settings-developer') await installDeveloperMock(page);
   if (mode === 'settings-permission') await installPermissionMock(page);
   if (mode === 'settings-upload') await installUploadMock(page);
-  await page.addInitScript(({ sessionId, cwd, history, png, attachmentId, mode, orderWorkspace, hostWorkspaces, outsiderId, chosenDirectory, canonicalDirectory, defaultWorkspace }) => {
+  await page.addInitScript(({ sessionId, cwd, history, png, attachmentId, mode, orderWorkspace, hostWorkspaces, outsiderId, chosenDirectory, canonicalDirectory, defaultWorkspace, theme }) => {
     const workspaceRegistry = ['workspace-registry', 'workspace-actions', 'workspace-search', 'workspace-accessibility', 'workspace-group-accessibility'].includes(mode);
     const startup = mode === 'workspace-startup' ? new URLSearchParams(location.search).get('scenario') : null;
     const welcomeCase = mode === 'welcome' ? new URLSearchParams(location.search).get('scenario') : null;
@@ -510,7 +510,7 @@ try {
             });
           }
           case 'load_workspace_preferences': {
-            const defaults = { themeMode: mode === 'appearance' ? 'light' : 'dark', addedWorkspaces: [cwd], workDetails: 'verbose', contentFontDelta: 0, scratchSession: sessionId };
+            const defaults = { themeMode: theme ?? (mode === 'appearance' ? 'light' : 'dark'), addedWorkspaces: [cwd], workDetails: 'verbose', contentFontDelta: 0, scratchSession: sessionId };
             if (['deepseek-account', 'desktop-onboarding', 'account-notifications', 'account-quota'].includes(mode)) return { ...defaults,
               ...(mode === 'desktop-onboarding' && onboardingSnapshot.progress.step === 'done'
                 ? { workDetails: onboardingSnapshot.progress.process, performanceUsage: onboardingSnapshot.progress.usage } : {}),
@@ -1004,7 +1004,7 @@ try {
       event: { listen: (name, listener) => { listeners.push(listener); return Promise.resolve(() => {}); } },
     };
     window.__TAURI_INTERNALS__ = { invoke: window.__TAURI__.core.invoke };
-  }, { sessionId, cwd, history, png, attachmentId: imageAttachment.attachmentId, mode, orderWorkspace, hostWorkspaces, outsiderId, chosenDirectory, canonicalDirectory, defaultWorkspace });
+  }, { sessionId, cwd, history, png, attachmentId: imageAttachment.attachmentId, mode, orderWorkspace, hostWorkspaces, outsiderId, chosenDirectory, canonicalDirectory, defaultWorkspace, theme: process.env.KWORK_TEST_THEME });
   const url = `http://127.0.0.1:${server.address().port}/`;
   await page.goto(mode === 'workspace-startup' ? `${url}?scenario=fresh` : url);
   await page.waitForFunction(() => document.querySelector('canvas') && !document.getElementById('boot'), null, { timeout: 60000 });

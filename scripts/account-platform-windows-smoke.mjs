@@ -207,13 +207,23 @@ async function startDesktop(binary, host, home, documents) {
   const debuggerURL = reservation.origin;
   await reservation.close();
   const env = {
-    ...process.env, DSH_HOME: home, DSH_ACP_PATH: host, KWORK_DOCUMENTS_DIRECTORY: documents,
+    ...process.env, DSH_HOME: home, KWORK_DOCUMENTS_DIRECTORY: documents,
     DSH_TELEMETRY_DISABLED: '1',
     WEBVIEW2_USER_DATA_FOLDER: join(home, 'webview2'),
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=' + new URL(debuggerURL).port,
   };
   delete env.DEEPSEEK_API_KEY;
   delete env.OPENAI_API_KEY;
+  if (host) {
+    env.DSH_ACP_PATH = host;
+  } else {
+    delete env.DSH_ACP_PATH;
+    delete env.DSH_NODE;
+    for (const key of Object.keys(env)) {
+      if (key.toUpperCase() === 'PATH') delete env[key];
+    }
+    env.PATH = join(env.SystemRoot, 'System32');
+  }
   const processHandle = spawn(binary, [], { cwd: documents, env, stdio: ['ignore', 'inherit', 'inherit'] });
   let launchError;
   const exited = once(processHandle, 'exit').catch(error => {
@@ -280,12 +290,36 @@ async function accountSettings(page, firstBoot) {
   return form;
 }
 
+async function verifyBrowserHandoff(page) {
+  let visited = false;
+  const browser = await serve((request, response) => {
+    const received = new URL(request.url, 'http://fixture.invalid');
+    if (received.pathname === '/dsh/authorize'
+      && received.searchParams.get('state') === 'fixture & %2F'
+      && received.searchParams.get('theme') === 'dark') visited = true;
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      .end('<!doctype html><title>KWork browser handoff passed</title><p>KWork browser handoff passed.</p>');
+  });
+  try {
+    const target = new URL('/dsh/authorize', browser.origin);
+    target.searchParams.set('state', 'fixture & %2F');
+    target.searchParams.set('theme', 'dark');
+    const returned = await page.evaluate(url => window.__TAURI__.core.invoke('open_browser_url', { url }), target.href);
+    assert.equal(returned, target.href);
+    await waitFor('default browser to receive the complete authorization URL', () => visited, 20000);
+    console.log('Windows default browser opened the authorization URL with all query parameters.');
+  } finally {
+    await browser.close();
+  }
+}
+
 async function verify(binary, host, home, documents, fixture) {
   let desktop = await startDesktop(binary, host, home, documents);
   const count = (path) => fixture.records.filter(entry => entry.path === path).length;
   try {
     let account = await accountSettings(desktop.page, true);
     await verifyAgentPresets(desktop.page, documents);
+    await verifyBrowserHandoff(desktop.page);
     let platform = desktop.page.locator('#account-platform-view');
     const retry = button(platform, '重试');
     await account.getByRole('link', { name: '查询用量', exact: true }).click();
@@ -381,7 +415,7 @@ async function verifyInstalled() {
   let testFailed = false;
   try {
     await mkdir(documents);
-    const host = process.argv[3] ? resolve(process.argv[3]) : await installHost(root);
+    const host = process.argv[3] ? resolve(process.argv[3]) : undefined;
     fixture = await platformFixture(home);
     await verify(binary, host, home, documents, fixture);
   } catch (error) {

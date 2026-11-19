@@ -46,4 +46,36 @@ export async function runDocumentAndQuestionCase(page, artifacts, sessionId) {
   const answers = await page.evaluate(() => window.__verification.calls.filter(call => call.name === 'respond_question'));
   assert.equal(answers.length, 2);
   for (const answer of answers) assert.deepEqual(answer.args.answers, [{id:'question-1', selected:['继续（推荐）']}]);
+
+  await page.evaluate(sessionId => window.__verification.emit({kind:'session_update', sessionId,
+    update:{sessionUpdate:'gpui_questions', phase:'open', requestId:'question-layout', questions:[
+      {id:'layout-1', question:'这篇读后感是围绕哪部作品来写？', options:[
+        {label:'工作区已有的文章（推荐）', description:'根据工作区现有的文章写一篇约一千字的读后感。'},
+        {label:'另一本书或另一篇文章，题目和内容由我在下一步指定', description:'请提供作品的标题、作者和适合在读后感中讨论的主要内容。'},
+      ]},
+      {id:'layout-2', question:'希望使用什么风格？', options:[{label:'自然清晰'}]},
+    ]}}), sessionId);
+  const layout = page.locator('[data-question-key="question-layout"]');
+  await layout.waitFor();
+  assert.equal(await layout.evaluate(node => [...node.querySelectorAll('[data-option-line]')].every(line =>
+    line.nextElementSibling.getBoundingClientRect().top >= line.getBoundingClientRect().bottom)), true,
+  'descriptions consistently sit below the option titles');
+  await page.screenshot({path:join(artifacts,'question-options-wide.png')});
+  await page.setViewportSize({width:365, height:520});
+  await page.waitForFunction(() => document.querySelector('[data-question-key="question-layout"]')
+    ?.closest('[data-chat-markdown]')?.style.clipPath);
+  // The fullscreen dock's rightmost toolbar icon returns to the conversation.
+  await page.mouse.click(345, 24);
+  await page.waitForFunction(() => {
+    const frame = document.querySelector('[data-question-key="question-layout"]')?.closest('[data-chat-markdown]');
+    return frame && !frame.style.clipPath;
+  });
+  const next = layout.getByText('下一题', {exact:true});
+  await next.waitFor();
+  const nextBox = await next.boundingBox();
+  assert.ok(nextBox.x >= 0 && nextBox.x + nextBox.width <= 365 && nextBox.y + nextBox.height <= 520,
+    'the primary action stays inside a narrow window');
+  await page.screenshot({path:join(artifacts,'question-options-narrow.png')});
+  await layout.getByRole('radio',{name:/另一本书/}).click();
+  await layout.getByText('希望使用什么风格？', {exact:true}).waitFor();
 }

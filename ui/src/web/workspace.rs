@@ -2,7 +2,7 @@
 
 use super::header_chrome::{MENU_GAP, MENU_MARGIN, menu_origin};
 use super::menu_groups::{MenuHeading, heading_space};
-use super::menu_surface::{menu_elevation, menu_material};
+use super::menu_surface::{MenuCover, menu_elevation, menu_material};
 use super::session_context_menu::{
     SessionMenuAnchor, SessionMenuOrigin, mac_control_click, session_menu_gestures,
 };
@@ -3259,16 +3259,36 @@ impl DshApp {
             if let Some(consumed) = consumed {
                 content = content.child(
                     status.child(
-                        div()
+                        row()
                             .w_full()
                             .pl(px(20.))
+                            .gap(px(8.))
+                            .flex_wrap()
+                            .items_center()
                             .text_size(px(12.))
                             .line_height(px(18.))
                             .text_color(p.faint)
-                            .child(format!(
-                                "已处理 {}s ｜ 已消耗 ◇ {consumed}",
-                                elapsed.floor() as u32
-                            )),
+                            .child(format!("已处理 {}s", elapsed.floor() as u32))
+                            .child(
+                                row()
+                                    .flex_none()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .border_l_1()
+                                    .border_color(p.border_l3)
+                                    .pl(px(8.))
+                                    .child("已消耗")
+                                    .child(
+                                        gpui::svg()
+                                            .data(include_bytes!(
+                                                "../../assets/stats-token-outline.svg"
+                                            )
+                                                as &[u8])
+                                            .size(px(10.))
+                                            .text_color(p.faint),
+                                    )
+                                    .child(consumed.to_string()),
+                            ),
                     ),
                 );
             } else {
@@ -6492,12 +6512,23 @@ fn composer_focus_ring(color: gpui::Hsla) -> gpui::Div {
 
 fn composer_popup_surface(id: &'static str, cx: &App) -> gpui::Stateful<gpui::Div> {
     let p = dsh(cx);
+    let radius = 16.;
     column()
         .id(id)
         .gap_0()
         .p(px(4.))
-        .rounded(px(16.))
-        .child(menu_material(p, 16.))
+        .rounded(px(radius))
+        .child(menu_material(p, radius))
+        .child(
+            gpui::canvas(
+                move |bounds, _, _| {
+                    super::document_html::cover_all(MenuCover::measured(bounds, radius, false));
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0(),
+        )
         .shadow(menu_elevation(p))
         .occlude()
 }
@@ -8866,7 +8897,7 @@ impl Render for TurnActionHint {
             .py(px(3.))
             .rounded(px(8.))
             .bg(p.tooltip_bg)
-            .text_color(p.label_primary)
+            .text_color(p.tooltip_label)
             .text_size(px(13.))
             .line_height(px(20.))
             .child(self.0.clone())

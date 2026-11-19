@@ -336,7 +336,7 @@ pub fn browser_shell_generation(webview: Webview) -> Result<u64, String> {
     Ok(current_browser_shell(webview.app_handle()))
 }
 
-fn normalize_url(raw: &str) -> Result<url::Url, String> {
+pub(crate) fn normalize_url(raw: &str) -> Result<url::Url, String> {
     let trimmed =
         raw.trim_matches(|ch: char| ch == '\u{feff}' || (ch.is_whitespace() && ch != '\u{0085}'));
     if trimmed.is_empty() {

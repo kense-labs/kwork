@@ -11,3 +11,4 @@
 /.learnings/
 
 /services/macos-host/node_modules/
+/services/windows-host/

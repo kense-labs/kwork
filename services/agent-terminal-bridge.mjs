@@ -1,7 +1,9 @@
 import { EventEmitter, once } from 'node:events';
 import { lstat, mkdir, readFile, readlink, realpath, rename, rm, symlink } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
+
+const linkType = process.platform === 'win32' ? 'junction' : 'dir';
 
 async function packageAt(require, dependency, version) {
   for (const path of require.resolve.paths(dependency) ?? []) {
@@ -30,7 +32,7 @@ async function linkTerminalPackage(home, source) {
 async function linkPackage(link, source) {
   await mkdir(dirname(link), { recursive: true });
   try {
-    await symlink(source.dir, link, 'dir');
+    await symlink(source.dir, link, linkType);
     return;
   } catch (error) {
     if (error?.code === 'EEXIST') {
@@ -44,14 +46,16 @@ async function linkPackage(link, source) {
       // package remains untouched and produces an actionable error instead.
       const existing = await lstat(link);
       const target = existing.isSymbolicLink() ? await readlink(link) : '';
-      const ownedSource = source.dir.includes('/.kwork-runtime/') || source.dir.includes('/kwork-runtime/');
-      const ownedTarget = target.includes('/.install-') || target.includes('/.kwork-runtime/')
-        || target.includes('/kwork-runtime/') || target.includes('/kwork-terminal-runtime-');
+      const sourcePath = source.dir.split(sep).join('/');
+      const targetPath = target.split(sep).join('/');
+      const ownedSource = sourcePath.includes('/.kwork-runtime/') || sourcePath.includes('/kwork-runtime/');
+      const ownedTarget = targetPath.includes('/.install-') || targetPath.includes('/.kwork-runtime/')
+        || targetPath.includes('/kwork-runtime/') || targetPath.includes('/kwork-terminal-runtime-');
       if (!existing.isSymbolicLink() || !ownedSource || !ownedTarget) {
         throw new Error(`ACP profile 已包含不同来源的 ${source.manifest.name}，未覆盖它。`);
       }
       const replacement = `${link}.kwork-${process.pid}`;
-      await symlink(source.dir, replacement, 'dir');
+      await symlink(source.dir, replacement, linkType);
       await rename(replacement, link).catch(async error => {
         await rm(replacement, { force: true });
         throw error;
