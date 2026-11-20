@@ -551,6 +551,7 @@ impl DshApp {
             });
         }
         let wide_opacity = progress;
+        let windows = bridge::is_windows();
         let material = !drawer && bridge::has_mac_window_material();
         let reduced_transparency = material && bridge::reduces_transparency();
         let dark = dark(cx);
@@ -630,45 +631,58 @@ impl DshApp {
                     .px(px(8.))
                     .py(px(6.))
                     .opacity(if drawer { 1. } else { wide_opacity })
+                    .when(!windows, |sidebar| {
+                        sidebar.child(
+                            row()
+                                .w(px(content_width))
+                                .h(px(52.))
+                                .flex_none()
+                                .mt(px(-6.))
+                                .justify_end()
+                                .pb(px(if bridge::is_mac() { 2. } else { 0. }))
+                                .pr(px(if bridge::is_mac() && !self.shell_fullscreen(w) {
+                                    0.
+                                } else {
+                                    4.
+                                }))
+                                .when(bridge::is_mac() && self.shell_fullscreen(w), |strip| {
+                                    strip
+                                        .pl(px(4.))
+                                        .child(self.sidebar_toggle_button(true, false, cx))
+                                })
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .h_full()
+                                        .on_mouse_down(gpui::MouseButton::Left, |_, _, _| {
+                                            begin_window_drag()
+                                        }),
+                                )
+                                .when(!bridge::is_mac() || !self.shell_fullscreen(w), |strip| {
+                                    strip.child(self.sidebar_toggle_button(true, false, cx))
+                                }),
+                        )
+                    })
                     .child(
                         row()
                             .w(px(content_width))
-                            .h(px(52.))
+                            .h(px(if windows { 44. } else { 60. }))
                             .flex_none()
-                            .mt(px(-6.))
-                            .justify_end()
-                            .pb(px(if bridge::is_mac() { 2. } else { 0. }))
-                            .pr(px(if bridge::is_mac() && !self.shell_fullscreen(w) {
-                                0.
-                            } else {
-                                4.
-                            }))
-                            .when(bridge::is_mac() && self.shell_fullscreen(w), |strip| {
-                                strip
-                                    .pl(px(4.))
-                                    .child(self.sidebar_toggle_button(true, false, cx))
-                            })
+                            .when(!windows, |row| row.mt(px(-16.)))
+                            .px(px(8.))
                             .child(
-                                div()
+                                row()
                                     .flex_1()
+                                    .min_w_0()
                                     .h_full()
                                     .on_mouse_down(gpui::MouseButton::Left, |_, _, _| {
                                         begin_window_drag()
-                                    }),
+                                    })
+                                    .child(crate::brand::wordmark(24., 18., dark)),
                             )
-                            .when(!bridge::is_mac() || !self.shell_fullscreen(w), |strip| {
-                                strip.child(self.sidebar_toggle_button(true, false, cx))
+                            .when(windows, |row| {
+                                row.child(self.sidebar_toggle_button(true, false, cx))
                             }),
-                    )
-                    .child(
-                        row()
-                            .w(px(content_width))
-                            .h(px(60.))
-                            .flex_none()
-                            .mt(px(-16.))
-                            .px(px(8.))
-                            .on_mouse_down(gpui::MouseButton::Left, |_, _, _| begin_window_drag())
-                            .child(crate::brand::wordmark(24., 18., dark)),
                     )
                     .child(
                         div()

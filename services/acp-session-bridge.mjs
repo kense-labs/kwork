@@ -3823,6 +3823,14 @@ function observeSessionUpdates(ctx) {
     const agent = ctx.get('agents')?.get(sessionId);
     if (agent !== undefined) publishGoal(agent);
   }, { global: true });
+  const assistantChunks = new WeakMap();
+  const flushAssistantChunks = agent => {
+    const pending = assistantChunks.get(agent);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    assistantChunks.delete(agent);
+    notify(agent.id, { sessionUpdate: 'gpui_assistant_stream', chunks: pending.chunks });
+  };
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
     if (frame.type === 'chunk') {
       const chunk = frame.chunk;
@@ -3843,17 +3851,35 @@ function observeSessionUpdates(ctx) {
         notify(agent.id, { sessionUpdate: 'gpui_tool_preparing', preparing: false });
         return;
       }
-      // Token deltas need no forwarding: the client's stream-preview rows are
-      // disabled (they froze the transcript), and durable ACP content owns the
-      // transcript text. Only the prepare signal is published from this stream.
+      if (!['reasoning-delta', 'text-delta'].includes(chunk.type)
+          && !(chunk.type === 'block-end' && ['reasoning', 'text'].includes(chunk.block?.type))) return;
+      // Deliver one transcript redraw for several provider tokens.
+      let pending = assistantChunks.get(agent);
+      if (!pending) {
+        pending = { chunks: [], timer: setTimeout(() => flushAssistantChunks(agent), 40) };
+        assistantChunks.set(agent, pending);
+      }
+      pending.chunks.push(frame);
       return;
     }
+    flushAssistantChunks(agent);
+    const update = { sessionUpdate: 'gpui_assistant_stream', frame };
     if (frame.type === 'end') {
       // The message finished streaming: the tool now executes, and its live
       // activity label takes over from 准备X.
       preparingTools.delete(agent);
       notify(agent.id, { sessionUpdate: 'gpui_tool_preparing', preparing: false });
+      if (frame.outcome.kind === 'committed' && frame.outcome.eventType === 'assistant/message') {
+        const event = agent.session.eventAt(frame.outcome.seq);
+        if (event?.type === 'assistant/message') {
+          const { id, content } = event.data.message;
+          update.messageId = id;
+          update.hasThought = content.some(block => block.type === 'reasoning' && block.text.length > 0);
+          update.hasText = content.some(block => block.type === 'text' && block.text.length > 0);
+        }
+      }
     }
+    notify(agent.id, update);
   }, { global: true });
   ctx.on('session/event', (session, event) => {
     if (event.type === 'tool/ptc-dispatch-start' || event.type === 'tool/ptc-dispatch'

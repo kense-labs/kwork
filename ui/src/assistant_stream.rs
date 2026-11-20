@@ -1,9 +1,4 @@
 //! Temporary thought and answer rows sourced from the Harness assistant stream.
-//!
-//! Disabled: activating the preview rows froze the transcript once the bridge
-//! began forwarding live frames, so the UI ignores `gpui_assistant_stream` until
-//! that render path is fixed. The types stay here (with tests) for that follow-up.
-#![allow(dead_code)]
 
 use crate::state::{ChatEntry, EntryRole};
 use serde_json::Value;
@@ -23,6 +18,20 @@ struct Attempt {
 
 impl AssistantStream {
     pub(crate) fn update(&mut self, update: &Value) {
+        if let Some(chunks) = update["chunks"].as_array() {
+            if let Some(attempt) = self
+                .active
+                .as_mut()
+                .filter(|attempt| attempt.message_id.is_none())
+            {
+                for frame in chunks {
+                    if frame["attemptId"] == attempt.id {
+                        attempt.chunk(frame);
+                    }
+                }
+            }
+            return;
+        }
         let frame = &update["frame"];
         let Some(id) = frame["attemptId"].as_str() else {
             return;

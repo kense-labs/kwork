@@ -4484,10 +4484,11 @@ impl DshApp {
             return;
         }
         if update["sessionUpdate"] == "gpui_assistant_stream" {
-            // The stream-preview rows are not rendered: activating them froze the
-            // transcript once the bridge started forwarding frames. The prepare
-            // signal travels on its own update, and durable ACP content owns the
-            // transcript text.
+            conversation.assistant_stream.update(update);
+            if selected {
+                self.maybe_follow_tail();
+                cx.notify();
+            }
             return;
         }
         let durable_tail = update["sessionUpdate"] == "gpui_turn_tail";
@@ -4869,7 +4870,11 @@ impl DshApp {
                 }
             }
             Some("session_update" | "permission" | "permission_closed") => {
-                self.handle_conversation_event(event, w, cx)
+                let assistant_stream = event["update"]["sessionUpdate"] == "gpui_assistant_stream";
+                self.handle_conversation_event(event, w, cx);
+                if assistant_stream {
+                    return;
+                }
             }
             Some("workspace_directory_changed") => {
                 self.workspace_directory_changed(&event, cx);

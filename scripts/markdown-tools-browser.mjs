@@ -510,7 +510,7 @@ try {
             });
           }
           case 'load_workspace_preferences': {
-            const defaults = { themeMode: theme ?? (mode === 'appearance' ? 'light' : 'dark'), addedWorkspaces: [cwd], workDetails: 'verbose', contentFontDelta: 0, scratchSession: sessionId };
+            const defaults = { themeMode: theme ?? (mode === 'appearance' ? 'light' : 'dark'), addedWorkspaces: [cwd], workDetails: mode === 'stream' ? 'standard' : 'verbose', contentFontDelta: 0, scratchSession: sessionId };
             if (['deepseek-account', 'desktop-onboarding', 'account-notifications', 'account-quota'].includes(mode)) return { ...defaults,
               ...(mode === 'desktop-onboarding' && onboardingSnapshot.progress.step === 'done'
                 ? { workDetails: onboardingSnapshot.progress.process, performanceUsage: onboardingSnapshot.progress.usage } : {}),
@@ -5632,23 +5632,50 @@ try {
     await page.waitForTimeout(300);
     assert.equal((await page.evaluate(() => window.__verification.calls)).filter(call => call.name === 'prompt').length, 1, 'one Enter sends exactly one prompt');
     await page.screenshot({ path: join(artifacts, 'composer-submitted.png') });
-    await page.evaluate(sessionId => {
-      window.__verification.emit({ kind: 'session_update', sessionId, update: {
-        sessionUpdate: 'agent_message_chunk', messageId: 'live-assistant',
-        content: { type: 'text', text: '流式公式 $\\frac{a+b}{2}$ 暂时保留原文。' },
-      } });
-    }, sessionId);
-    await page.waitForTimeout(1000);
-    const liveFormula = await page.screenshot({ path: join(artifacts, 'streaming-literal.png'), clip: { x: 480, y: 270, width: 430, height: 65 } });
+    const publish = update => page.evaluate(
+      ({ sessionId, update }) => window.__verification.emit({ kind: 'session_update', sessionId, update }),
+      { sessionId, update },
+    );
+    const attemptId = 'streaming-fixture';
+    const chunk = (index, text) => ({
+      type: 'chunk', attemptId, index, chunk: { type: 'text-delta', index: 1, text },
+    });
+    const thought = '先检查公式的分母。';
+    const prefix = '流式公式 ';
+    const suffix = '$\\frac{a+b}{2}$ 暂时保留原文。';
+    await publish({ sessionUpdate: 'gpui_assistant_stream', frame: { type: 'start', attemptId } });
+    await publish({ sessionUpdate: 'gpui_assistant_stream', chunks: [{
+      type: 'chunk', attemptId, index: 0, chunk: { type: 'reasoning-delta', index: 0, text: thought },
+    }] });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await publish({ sessionUpdate: 'gpui_assistant_stream', chunks: [chunk(1, prefix)] });
+    const preview = page.locator(`[data-chat-markdown$=":md-stream-${attemptId}-1"]`);
+    await preview.filter({ hasText: prefix.trim() }).waitFor();
+    const closingChunk = chunk(2, suffix);
+    await publish({ sessionUpdate: 'gpui_assistant_stream', chunks: [closingChunk, closingChunk] });
+    await preview.filter({ hasText: prefix + suffix }).waitFor();
+    assert.equal((await preview.innerText()).trim(), prefix + suffix, 'deltas are visible before settlement and deduplicated');
+    assert.equal(await preview.locator('.katex').count(), 0, 'partial formulas remain literal');
+    await preview.screenshot({ path: join(artifacts, 'streaming-literal.png') });
+    await publish({ sessionUpdate: 'gpui_assistant_stream', frame: { type: 'end', attemptId },
+      messageId: 'live-assistant', hasText: true, hasThought: true });
+    assert.ok(await preview.isVisible(), 'the live reply stays visible until its committed content arrives');
+    await publish({ sessionUpdate: 'agent_thought_chunk', messageId: 'live-assistant',
+      content: { type: 'text', text: thought } });
+    await publish({ sessionUpdate: 'agent_message_chunk', messageId: 'live-assistant',
+      content: { type: 'text', text: prefix + suffix } });
+    const answer = page.locator('[data-chat-markdown$=":md-assistant-live-assistant"]');
+    await answer.waitFor();
+    await preview.waitFor({ state: 'detached' });
+    assert.equal(await answer.count(), 1, 'committed ACP content replaces the live row');
     await page.evaluate(sessionId => {
       window.__verification.emit({ kind: 'session_update', sessionId, update: {
         sessionUpdate: 'turn_end', turn: 1, reason: 'completed', reasonObject: { kind: 'completed' },
       } });
       window.__verification.completePrompt();
     }, sessionId);
-    await page.waitForTimeout(3000);
-    const settledFormula = await page.screenshot({ path: join(artifacts, 'settled-after-live.png'), clip: { x: 480, y: 270, width: 430, height: 65 } });
-    assert.notDeepEqual(liveFormula, settledFormula, 'the live formula changes when its turn settles');
+    await answer.locator('.katex').waitFor();
+    await answer.screenshot({ path: join(artifacts, 'settled-after-live.png') });
     await writeFile(join(artifacts, 'stream-calls.json'), JSON.stringify(await page.evaluate(() => window.__verification.calls), null, 2));
   } else if (mode === 'appearance') {
     page.setDefaultTimeout(10000);
@@ -6120,6 +6147,8 @@ try {
     ? ['preset cards and YAML', 'guide tabs and focus', 'default write conflict and retry', 'Creator draft and seat selection']
     : mode === 'theme'
     ? ['dark theme with an increased font size', 'light theme with a reduced font size']
+    : mode === 'stream'
+    ? ['live reasoning precedes the live answer', 'answer grows before ACP settlement', 'duplicate deltas are ignored', 'committed content replaces the live row', 'math renders when the turn ends']
     : mode === 'chat-markdown'
     ? ['official headings, tables, KaTeX, mixed inline wrapping', 'actual measured width and height beside preview', 'wheel routes to transcript', 'code wrapping', 'session DOM cleanup']
     : mode === 'file-links'
