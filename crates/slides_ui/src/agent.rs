@@ -16,6 +16,30 @@ impl SlidesView {
         f(&self.pres, self.current)
     }
 
+    /// Return `(current_slide, selected_shape_index)` on screen.
+    pub fn agent_selected_shape(&self) -> (usize, Option<usize>) {
+        (self.current, self.selected)
+    }
+
+    /// Navigate to `slide` (0-based) and select `shape` (0-based index on that slide), if any.
+    pub fn agent_select_shape(
+        &mut self,
+        slide: usize,
+        shape: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pres.is_empty() {
+            return;
+        }
+        let slide = slide.min(self.pres.len() - 1);
+        self.go_to(slide, cx);
+        let valid = shape.filter(|&ix| ix < self.pres.slide(slide).shapes.len());
+        self.select_at(
+            valid.map(|ix| slides_engine::ShapeRef(slide, ix, slides_engine::Inner::TOP)),
+            cx,
+        );
+    }
+
     /// Edit the presentation as one undo step. `f` gets the slide on
     /// screen and returns where the change is (that slide and shape are
     /// shown and selected), with "Agent: {what}" in the status bar.

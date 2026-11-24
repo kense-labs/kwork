@@ -16,6 +16,20 @@ impl DocsView {
         f(&self.whole_doc(), self.body_sel())
     }
 
+    /// Select `sel` in the body and scroll it into view without mutating the document.
+    pub fn agent_select(
+        &mut self,
+        sel: Selection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.leave_part(window, cx);
+        self.float_sel = None;
+        self.sel = self.doc.clamp_selection(sel);
+        self.reveal_caret.set(true);
+        cx.notify();
+    }
+
     /// Edit the document. `f` gets the user's selection (to restore on
     /// undo) and returns the selection to show afterwards, which is
     /// revealed, with "Agent: {what}" in the status bar. Refused while an
