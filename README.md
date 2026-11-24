@@ -178,3 +178,9 @@ KWork is licensed under the [MIT License](LICENSE). Bundled third-party componen
 - [GPUI renderer](vendor/gpui-pre-wgpu/LICENSE-APACHE)
 - [GPUI web platform](vendor/gpui-pre-web/LICENSE-APACHE)
 - [Noto Sans](ui/assets/NotoSans-LICENSE) and [xterm.js](ui/assets/xterm-LICENSE.txt)
+
+## Code signing policy
+
+KWork is preparing an application for free Windows release signing through SignPath Foundation. No approval has been granted; current Windows preview artifacts remain unsigned until a signed release is explicitly announced. See the [Code signing policy](CODE_SIGNING.md) for team roles, build provenance, approval requirements, and uninstall instructions.
+
+Network behavior and third-party service disclosures are described in the [Privacy policy](PRIVACY.md).

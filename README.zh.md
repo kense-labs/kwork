@@ -98,6 +98,10 @@ bun x tauri build --bundles nsis
 
 `.github/workflows/windows.yml` 会将 NSIS 安装包和便携版上传为 `KWork-Windows-x64`。使用便携版时，把 `account-platform/` 和 `harness-runtime/` 保留在 `KWork.exe` 旁边。
 
+卸载时打开「Windows 设置 → 应用 → 安装的应用 → KWork → 卸载」。卸载不会自动删除用户工作区和 Harness 数据。
+
+KWork 正在准备 SignPath Foundation 的免费 Windows 发布签名申请，目前尚未获得批准；在明确发布签名版之前，Windows 预览产物保持未签名。详见[代码签名政策](CODE_SIGNING.md)和[隐私政策](PRIVACY.md)。
+
 ### 内嵌的 Node 模块
 
 `services/acp-session-bridge.mjs` 与 `services/credential-service.mjs` 通过 `include_str!` 编进主进程二进制，并不作为散落文件分发，也不再通过 `node --eval` 注入（约 90 KB 命令行参数，叠加环境变量后已接近 macOS 的 `ARG_MAX` 上限）。`src-tauri/src/embedded_script.rs` 会在启动子进程前把它们写成私有的 `.mjs` 临时文件：堆栈信息指向真实路径，连接释放时文件随之删除。574 KB 的调度运行时（`services/vendor/dsh-schedule/index.mjs`）则按内容 SHA-256 寻址缓存在用户临时目录，只写一次，供所有 ACP 连接和每次启动复用。两个脚本仍从 `process.argv.slice(2)` 读取参数，只是原本占着 `argv[1]` 的 `[eval]` 标签换成了脚本路径。
