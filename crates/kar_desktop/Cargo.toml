@@ -1,0 +1,47 @@
+[package]
+name = "kar_desktop"
+description = "Pure-Rust GPUI desktop workbench for Kar + Kantor Office with KUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+default-run = "kar-desktop"
+
+[[bin]]
+name = "kar-desktop"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-channel = "2"
+axum.workspace = true
+chrono = { workspace = true, features = ["clock"] }
+docs_engine.workspace = true
+docs_ui.workspace = true
+env_logger.workspace = true
+futures.workspace = true
+gpui-kit.workspace = true
+image = { workspace = true, features = ["png"] }
+kar.workspace = true
+kantor_core.workspace = true
+kantor_theme.workspace = true
+kantor_ui.workspace = true
+kui.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sheets_engine.workspace = true
+sheets_ui.workspace = true
+slides_engine.workspace = true
+slides_ui.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui-pre-macos = { version = "0.3.11", features = ["test-support"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
