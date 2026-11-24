@@ -136,6 +136,25 @@ impl<L: ChoiceLayout> FormChoices<L> {
             .map(|i| self.items[*i].key.clone())
             .collect()
     }
+    pub fn select_key_silent(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(i) = self
+            .items
+            .iter()
+            .position(|item| !item.disabled && item.key.as_ref() == key)
+        else {
+            return;
+        };
+        if self.single() && self.selected.contains(&i) {
+            return;
+        }
+        if self.single() {
+            self.selected.clear();
+            self.offset.duration(i as f32, 0.32, cx);
+        }
+        self.selected.insert(i);
+        self.active = i;
+        cx.notify();
+    }
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         if !self.selected.is_empty() {
             self.selected.clear();

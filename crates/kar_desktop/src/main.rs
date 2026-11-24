@@ -9,11 +9,12 @@ use kar_desktop::{
     coedit::{ScenarioKey, UserResolutionChoice},
     init_runtime_ui,
     kar_bridge::KarCommand,
-    workbench::{KarWorkbench, WorkbenchConfig},
+    studio_window_options,
+    workbench::{ComposerPopover, KarWorkbench, WorkbenchConfig},
 };
 
 const USAGE: &str = "\
-kar-desktop — Pure-Rust GPUI desktop client for Kar + Kantor Office (built with KUI)
+kar-desktop — Pure-Rust GPUI desktop client for Kar + Kantor Office (Claude-style Inset + KUI)
 
 USAGE:
   kar-desktop [OPTIONS] [FILE...]
@@ -31,9 +32,12 @@ OPTIONS:
   --coedit-resolve <CHOICE>    Optional scripted resolution: dual | keep | adopt | manual:<VAL> | dismiss
   --bind-selection             Capture active Office tab selection into the Chat composer on startup
   --switch-tab <INDEX>         Switch active Office tab (0-based) after binding selection
-  --select-runtime <ID>        Pre-select runtime in sidebar (e.g. codex, grok, claude)
+  --select-runtime <ID>        Pre-select runtime (e.g. codex, grok, claude)
+  --open-cmd-palette           Open the ⌘K KUI CommandDesk overlay after launch
+  --open-provider-health       Open the KUI ProviderStatus diagnostics modal after launch
+  --open-runtime-popover       Open the inline composer runtime picker popover after launch
   --dark                       Launch in unified Dark theme (KUI + Kantor)
-  --smoke-integration          Launch the minimal Stage-1 KUI + Kantor same-window smoke view
+  --smoke-integration          Launch the Stage-1 KUI + Kantor same-window smoke view
   --screenshot <PNG_PATH>      Render native Metal window to PNG after delay and exit cleanly
   --screenshot-delay-ms <MS>   Delay before capturing --screenshot (default: 1200)
   -h, --help                   Print this help message
@@ -49,6 +53,10 @@ struct CliOptions {
     switch_tab_after_bind: Option<usize>,
     select_runtime: Option<String>,
     select_cell: Option<String>,
+    serve_http: Option<String>,
+    open_cmd_palette: bool,
+    open_provider_health: bool,
+    open_runtime_popover: bool,
     screenshot_out: Option<PathBuf>,
     screenshot_delay_ms: u64,
 }
@@ -77,6 +85,10 @@ fn parse_cli() -> CliOptions {
     let mut switch_tab_after_bind = None;
     let mut select_runtime = None;
     let mut select_cell = None;
+    let mut serve_http = None;
+    let mut open_cmd_palette = false;
+    let mut open_provider_health = false;
+    let mut open_runtime_popover = false;
     let mut screenshot_out = None;
     let mut screenshot_delay_ms = 1200u64;
 
@@ -164,6 +176,18 @@ fn parse_cli() -> CliOptions {
             "--select-cell" => {
                 select_cell = args.next();
             }
+            "--serve-http" => {
+                serve_http = args.next();
+            }
+            "--open-cmd-palette" => {
+                open_cmd_palette = true;
+            }
+            "--open-provider-health" => {
+                open_provider_health = true;
+            }
+            "--open-runtime-popover" => {
+                open_runtime_popover = true;
+            }
             "--dark" => {
                 wb.dark_mode = true;
             }
@@ -199,6 +223,10 @@ fn parse_cli() -> CliOptions {
         switch_tab_after_bind,
         select_runtime,
         select_cell,
+        serve_http,
+        open_cmd_palette,
+        open_provider_health,
+        open_runtime_popover,
         screenshot_out,
         screenshot_delay_ms,
     }
@@ -216,20 +244,12 @@ fn main() {
     app.run(move |cx| {
         init_runtime_ui(cx);
 
-        let window_options = WindowOptions {
-            app_id: Some("kar-desktop".into()),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Kar Studio — Native GPUI Workbench & Kantor Office".into()),
-                ..Default::default()
-            }),
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                None,
-                size(px(1480.), px(900.)),
-                cx,
-            ))),
-            window_min_size: Some(size(px(960.), px(600.))),
-            ..Default::default()
-        };
+        let window_options = studio_window_options(
+            "Kar Studio",
+            size(px(1480.), px(900.)),
+            size(px(960.), px(600.)),
+            cx,
+        );
 
         if opts.smoke_integration {
             let sample = opts.workbench.open_files.first().cloned();
@@ -274,6 +294,10 @@ fn main() {
         let switch_tab = opts.switch_tab_after_bind;
         let sel_rt = opts.select_runtime.clone();
         let sel_cell = opts.select_cell.clone();
+        let srv_http = opts.serve_http.clone();
+        let open_cmd = opts.open_cmd_palette;
+        let open_prov = opts.open_provider_health;
+        let open_rt_pop = opts.open_runtime_popover;
         if !steps.is_empty()
             || resolve.is_some()
             || bind_sel
@@ -281,6 +305,10 @@ fn main() {
             || switch_tab.is_some()
             || sel_rt.is_some()
             || sel_cell.is_some()
+            || srv_http.is_some()
+            || open_cmd
+            || open_prov
+            || open_rt_pop
         {
             let win_handle = window;
             let wb_entity = entity;
@@ -296,7 +324,18 @@ fn main() {
                         if create_chat {
                             wb.create_new_real_chat(cx);
                         }
+                        if let Some(ref addr) = srv_http
+                            && let Some(cid) = wb.chat_list.first().map(|c| c.info.id)
+                        {
+                            wb.bridge.send(KarCommand::StartHttpServer {
+                                chat_id: cid,
+                                listen_addr: addr.clone(),
+                            });
+                        }
                         if bind_sel {
+                            if switch_tab.is_some() && !wb.office_tabs.is_empty() {
+                                wb.active_office_tab = Some(0);
+                            }
                             wb.bind_active_selection_to_chat(window, cx);
                         }
                         if let Some(tab_i) = switch_tab
@@ -322,6 +361,16 @@ fn main() {
                             {
                                 wb.submit_coedit_choice(op_id, choice.clone(), window, cx);
                             }
+                        }
+                        if open_cmd {
+                            wb.toggle_command_palette(window, cx);
+                        }
+                        if open_prov {
+                            wb.toggle_provider_sheet(cx);
+                        }
+                        if open_rt_pop {
+                            wb.composer_popover = Some(ComposerPopover::RuntimePicker);
+                            cx.notify();
                         }
                     });
                 });

@@ -50,6 +50,9 @@ impl CopyButton {
         self.icon_only = true;
         self
     }
+    pub fn set_text(&mut self, text: impl Into<SharedString>) {
+        self.text = text.into();
+    }
     fn copy(&mut self, cx: &mut Context<Self>) {
         if self.busy {
             return;

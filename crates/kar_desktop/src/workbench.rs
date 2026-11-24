@@ -1,7 +1,10 @@
-//! Unified single-window GPUI Workbench: KUI Chrome + Kar Chat SDK + Kantor Office + Co-Edit.
+//! Unified single-window GPUI Workbench: Claude-style Inset Shell + KUI Components + Kar SDK + Kantor Office.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::Duration;
 
 use gpui::{prelude::*, *};
 use kar::{
@@ -12,13 +15,22 @@ use kar::{
 use kui::{
     ThemeMode,
     components::{
+        agent_status::{Step as AgentStep, WorkBadge},
+        ai_command::{Command, CommandDesk, CommandEvent},
         alert::{Alert, AlertAction, Severity},
         code_suggestion::{Decision, Hunk, PatchReview},
+        copy_button::CopyButton,
         dialog::Dialog,
         dropdown_menu::DropdownMenu,
         input::Input,
+        pro_chrome::pro_presence,
+        provider_status::{
+            ProviderDay, ProviderHealth, ProviderIncident, ProviderIncidentUpdate, ProviderStatus,
+            ProviderStatusEvent, ProviderStatusItem,
+        },
         reasoning_block::{ExplanationNote, NoteState},
-        resizable_panels::{Pane, ResizablePanels},
+        theme_switch::{ThemeChange, ThemeSwitch},
+        toast::Toast,
         tool_call::{Invocation, InvocationInspector, ToolState},
     },
     primitives::{
@@ -26,6 +38,7 @@ use kui::{
         editor::{EditEvent, Editor, EditorShortcutEvent, InputMode},
         glyph::Glyph,
         menu::{MenuAlign, MenuItem, MenuSelection},
+        pro_icons::ProIcon,
     },
 };
 use uuid::Uuid;
@@ -38,11 +51,30 @@ use crate::{
     },
     kar_bridge::{KarBridgeEvent, KarBridgeHandle, KarCommand, ProjectedChatState},
     office_host::{OfficeEditorView, OfficeTab, clean_doc_para_text, materialize_coedit_demo_files},
+    studio_window_options,
     types::{
         ChatAccessMode, ChatListEntry, FeedConnectionState, OfficeKind, PendingPromptAttempt,
-        ProviderStatusInfo, SelectionLocator, SelectionTarget,
+        ProviderAvailability, ProviderStatusInfo, SelectionLocator, SelectionTarget,
     },
+    ui_primitives::StudioPalette,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkspaceLayoutMode {
+    /// Focused single-column Claude Desktop conversational workspace.
+    ChatFocus,
+    /// Claude Cowork / Artifacts split view: conversational thread + Kantor Office Studio.
+    Split,
+    /// Expanded Office canvas (~67% width) with compact AI sidekick chat.
+    CanvasWide,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComposerPopover {
+    AddContext,
+    ApprovalPolicy,
+    RuntimePicker,
+}
 
 #[derive(Clone, Debug)]
 pub struct WorkbenchConfig {
@@ -82,10 +114,24 @@ pub struct KarWorkbench {
     pub config: WorkbenchConfig,
     pub bridge: KarBridgeHandle,
     pub theme_mode: ThemeMode,
+    pub focus_handle: FocusHandle,
+
+    // Claude-style shell geometry & overlays
+    pub sidebar_open: bool,
+    pub layout_mode: WorkspaceLayoutMode,
+    pub split_ratio: f32,
+    pub(crate) dragging_split: bool,
+    pub(crate) inset_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    pub composer_popover: Option<ComposerPopover>,
+    pub approval_mode: ApprovalMode,
+    pub command_palette_open: bool,
+    pub provider_sheet_open: bool,
 
     // KUI structural & interactive entities
-    pub(crate) panels: Entity<ResizablePanels>,
-    pub(crate) runtime_menu: Entity<DropdownMenu>,
+    pub(crate) theme_switch: Entity<ThemeSwitch>,
+    pub(crate) command_desk: Entity<CommandDesk>,
+    pub(crate) provider_status_view: Entity<ProviderStatus>,
+    pub(crate) toast: Entity<Toast>,
     pub(crate) chat_actions_menu: Entity<DropdownMenu>,
     pub(crate) office_menu: Entity<DropdownMenu>,
     pub(crate) status_alert: Entity<Alert>,
@@ -115,9 +161,11 @@ pub struct KarWorkbench {
     pub active_http_server_url: Option<String>,
 
     // Keyed KUI rich timeline components (updated in place by turn / call ID)
+    pub turn_badges: BTreeMap<Uuid, Entity<WorkBadge>>,
     pub tool_inspectors: BTreeMap<(Uuid, String), Entity<InvocationInspector>>,
     pub reasoning_blocks: BTreeMap<(Uuid, usize), Entity<ExplanationNote>>,
     pub diff_reviews: BTreeMap<(Uuid, usize), Entity<PatchReview>>,
+    pub copy_buttons: BTreeMap<Uuid, Entity<CopyButton>>,
     pub chat_scroll: ScrollHandle,
 
     // Office tabs & selection binding
@@ -147,16 +195,34 @@ impl KarWorkbench {
         let bridge =
             KarBridgeHandle::spawn(config.chat_dir.clone(), config.workspace_dir.clone());
 
-        let runtime_items = [
-            "codex", "claude", "grok", "opencode", "kimi", "pi", "qwen", "cursor",
-        ]
-        .into_iter()
-        .map(|id| MenuItem::new(id, runtime_display_name(id)))
-        .collect();
-        let runtime_menu = cx.new(|cx| {
-            DropdownMenu::new("kar-runtime-menu", "Codex", runtime_items, cx)
-                .with_align(MenuAlign::Start)
+        let theme_switch = cx.new(|_| ThemeSwitch::new("kar-sidebar-theme-switch").with_icon_only(true));
+        cx.subscribe(&theme_switch, |this, _, ev: &ThemeChange, cx| {
+            this.theme_mode = ev.next;
+            apply_unified_theme(ev.next, cx);
+            cx.notify();
+        })
+        .detach();
+
+        let command_desk = cx.new(|cx| {
+            CommandDesk::new(
+                "kar-command-desk",
+                build_default_commands(),
+                window,
+                cx,
+            )
+            .with_model("Kar Studio · ⌘K")
         });
+
+        let provider_status_view = cx.new(|_| {
+            ProviderStatus::new("本机 Kar 供应商与账号健康诊断", Vec::new())
+                .footnote("通过真实 Kar SDK 探测本机 CLI 可执行程序与登录凭据状态")
+        });
+
+        let toast = cx.new(|_| Toast::new());
+
+        let initial_scenario = config
+            .initial_coedit_scenario
+            .unwrap_or(ScenarioKey::WordSameParagraph);
 
         let chat_action_items = vec![
             MenuItem::new("start_http", "开启只读 HTTP/SSE 订阅服务")
@@ -168,12 +234,15 @@ impl KarWorkbench {
             MenuItem::new("stop_http", "断开本会话 HTTP/SSE 端点")
                 .with_icon(Glyph::Close)
                 .with_detail("模拟断线与游标续收"),
-            MenuItem::new("refresh_all", "重新探测供应商与会话列表")
+            MenuItem::new("provider_health", "打开供应商健康诊断面板")
                 .with_icon(Glyph::Settings)
                 .with_separator(),
+            MenuItem::new("refresh_all", "重新探测供应商与会话列表")
+                .with_icon(Glyph::Settings),
             MenuItem::new("abort_turn", "中止当前运行回合")
                 .with_icon(Glyph::Pause)
-                .destructive(),
+                .destructive()
+                .with_separator(),
         ];
         let chat_actions_menu = cx.new(|cx| {
             DropdownMenu::new("kar-chat-actions", "会话", chat_action_items, cx)
@@ -216,7 +285,7 @@ impl KarWorkbench {
 
         let composer_editor = cx.new(|cx| {
             let mut ed = Editor::new("kar-composer", InputMode::InlineMulti, window, cx);
-            ed.set_placeholder("输入任务指令，或在右侧选中文档内容后点击「AI 改选区」…");
+            ed.set_placeholder("今天想推进哪份文档或任务？输入指令，或关联右侧 Office 选区…");
             ed.set_command_submit(true);
             ed
         });
@@ -317,62 +386,50 @@ impl KarWorkbench {
             .with_confirm("应用修改")
         });
 
-        // 3-pane KUI ResizablePanels (clean 1px native KUI dividers, zero duplicate borders)
-        let weak_left = cx.weak_entity();
-        let weak_center = cx.weak_entity();
-        let weak_right = cx.weak_entity();
-        let panels = cx.new(|cx| {
-            ResizablePanels::new(
-                "kar-workbench-panels",
-                "Kar Desktop Workbench",
-                vec![
-                    Pane::new("kar-sidebar", "导航与会话栏", 0.185, move |_, window, cx| {
-                        weak_left
-                            .upgrade()
-                            .map(|e| e.update(cx, |this, cx| this.render_sidebar(window, cx)))
-                            .unwrap_or_else(|| div().into_any_element())
-                    })
-                    .with_limits(224., Some(310.))
-                    .collapsible(),
-                    Pane::new("kar-chat-pane", "Kar 对话工作台", 0.375, move |_, window, cx| {
-                        weak_center
-                            .upgrade()
-                            .map(|e| e.update(cx, |this, cx| this.render_chat_pane(window, cx)))
-                            .unwrap_or_else(|| div().into_any_element())
-                    })
-                    .with_limits(360., None),
-                    Pane::new(
-                        "kar-office-pane",
-                        "Kantor Office 工作区",
-                        0.44,
-                        move |_, window, cx| {
-                            weak_right
-                                .upgrade()
-                                .map(|e| {
-                                    e.update(cx, |this, cx| this.render_office_pane(window, cx))
-                                })
-                                .unwrap_or_else(|| div().into_any_element())
-                        },
-                    )
-                    .with_limits(420., None)
-                    .collapsible(),
-                ],
-                cx,
-            )
-        });
-
         // Subscriptions
         cx.subscribe_in(
-            &runtime_menu,
+            &command_desk,
             window,
-            |this, menu, sel: &MenuSelection, _, cx| {
-                let id = sel.0.to_string();
-                this.selected_runtime = id.clone();
-                menu.update(cx, |m, cx| m.set_label(runtime_display_name(&id), cx));
-                this.refresh_provider_alert(cx);
-                cx.notify();
+            |this, desk, ev: &CommandEvent, window, cx| match ev {
+                CommandEvent::Open(cmd_id) => {
+                    let id = cmd_id.clone();
+                    this.command_palette_open = false;
+                    this.execute_command_id(&id, window, cx);
+                }
+                CommandEvent::Ask { ticket, query } => {
+                    let q = query.clone();
+                    let t = *ticket;
+                    desk.update(cx, |d, cx| {
+                        d.receive(
+                            t,
+                            Ok(format!(
+                                "已将「{q}」填入主对话输入框，按 ⌘↵ 即可由当前供应商执行。"
+                            )),
+                            true,
+                            cx,
+                        );
+                    });
+                    this.fill_starter_prompt(&q, window, cx);
+                    this.command_palette_open = false;
+                    cx.notify();
+                }
+                CommandEvent::Cancel => {
+                    this.command_palette_open = false;
+                    cx.notify();
+                }
             },
         )
+        .detach();
+
+        cx.subscribe(&provider_status_view, |this, _, ev: &ProviderStatusEvent, cx| {
+            if *ev == ProviderStatusEvent::Refresh {
+                this.bridge.send(KarCommand::RefreshStoreAndProviders {
+                    store_dir: this.config.chat_dir.clone(),
+                    workspace: this.config.workspace_dir.clone(),
+                });
+                this.notify_toast("正在重新探测本机供应商与凭据…", cx);
+            }
+        })
         .detach();
 
         cx.subscribe_in(
@@ -482,12 +539,30 @@ impl KarWorkbench {
         )
         .detach();
 
+        let initial_layout = if !config.open_files.is_empty() || config.start_coedit_demo {
+            WorkspaceLayoutMode::Split
+        } else {
+            WorkspaceLayoutMode::ChatFocus
+        };
+
         let mut this = Self {
             config: config.clone(),
             bridge: bridge.clone(),
             theme_mode,
-            panels,
-            runtime_menu,
+            focus_handle: cx.focus_handle(),
+            sidebar_open: true,
+            layout_mode: initial_layout,
+            split_ratio: 0.41,
+            dragging_split: false,
+            inset_bounds: Rc::new(Cell::new(None)),
+            composer_popover: None,
+            approval_mode: ApprovalMode::Host,
+            command_palette_open: false,
+            provider_sheet_open: false,
+            theme_switch,
+            command_desk,
+            provider_status_view,
+            toast,
             chat_actions_menu,
             office_menu,
             status_alert,
@@ -517,9 +592,11 @@ impl KarWorkbench {
             turn_targets: BTreeMap::new(),
             prompt_attempts: BTreeMap::new(),
             active_http_server_url: None,
+            turn_badges: BTreeMap::new(),
             tool_inspectors: BTreeMap::new(),
             reasoning_blocks: BTreeMap::new(),
             diff_reviews: BTreeMap::new(),
+            copy_buttons: BTreeMap::new(),
             chat_scroll: ScrollHandle::new(),
             office_tabs: Vec::new(),
             active_office_tab: None,
@@ -528,9 +605,7 @@ impl KarWorkbench {
             office_notice: None,
             coedit_engine: Box::new(DemoCoEditEngine::new()),
             coedit_panel_open: false,
-            active_coedit_scenario: config
-                .initial_coedit_scenario
-                .unwrap_or(ScenarioKey::WordSameParagraph),
+            active_coedit_scenario: initial_scenario,
             coedit_demo_dir: None,
             coedit_feedback: None,
         };
@@ -538,7 +613,6 @@ impl KarWorkbench {
         for path in &config.open_files {
             this.open_office_file_tab(path.clone(), false, None, window, cx);
         }
-        // Clear initial open notice so the toolbar opens cleanly at rest
         this.office_notice = None;
 
         if let Some(url) = &config.subscribe_http {
@@ -578,12 +652,90 @@ impl KarWorkbench {
         this
     }
 
+    pub fn notify_toast(&mut self, msg: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let message = msg.into();
+        self.toast.update(cx, |t, cx| {
+            t.show(message, None, Duration::from_millis(2800), cx);
+        });
+    }
+
+    pub fn toggle_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.command_palette_open = !self.command_palette_open;
+        self.composer_popover = None;
+        if self.command_palette_open {
+            self.provider_sheet_open = false;
+        }
+        let _ = window;
+        cx.notify();
+    }
+
+    pub fn toggle_provider_sheet(&mut self, cx: &mut Context<Self>) {
+        self.provider_sheet_open = !self.provider_sheet_open;
+        self.composer_popover = None;
+        if self.provider_sheet_open {
+            self.command_palette_open = false;
+        }
+        cx.notify();
+    }
+
+    fn execute_command_id(
+        &mut self,
+        cmd_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match cmd_id {
+            "new_chat" => self.create_new_real_chat(cx),
+            "open_docx" => self.open_working_sample("sample_minutes.docx", window, cx),
+            "open_xlsx" => self.open_working_sample("sample_formulas.xlsx", window, cx),
+            "open_pptx" => self.open_working_sample("sample_deck.pptx", window, cx),
+            "open_path" => {
+                self.open_path_dialog
+                    .update(cx, |d, cx| d.set_open(true, window, cx));
+            }
+            "bind_selection" => self.bind_active_selection_to_chat(window, cx),
+            "coedit_word" => {
+                self.enter_coedit_demo_workshop(window, cx);
+                self.switch_coedit_scenario(ScenarioKey::WordSameParagraph, window, cx);
+            }
+            "coedit_excel" => {
+                self.enter_coedit_demo_workshop(window, cx);
+                self.switch_coedit_scenario(ScenarioKey::ExcelSameCellConflict, window, cx);
+            }
+            "coedit_ppt" => {
+                self.enter_coedit_demo_workshop(window, cx);
+                self.switch_coedit_scenario(ScenarioKey::PptMoveAndText, window, cx);
+            }
+            "demo_chat" => self.bridge.send(KarCommand::EnterDemoShowcase),
+            "http_sub" => {
+                self.http_dialog
+                    .update(cx, |d, cx| d.set_open(true, window, cx));
+            }
+            "start_http" => self.handle_chat_menu_action("start_http", window, cx),
+            "second_win" => self.open_subscriber_second_window(cx),
+            "provider_health" => self.toggle_provider_sheet(cx),
+            "toggle_theme" => {
+                self.theme_mode = self.theme_mode.toggle();
+                apply_unified_theme(self.theme_mode, cx);
+            }
+            "toggle_sidebar" => {
+                self.sidebar_open = !self.sidebar_open;
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
     // ── Bridge Event Handling ───────────────────────────────────────────────
 
     fn on_bridge_event(&mut self, ev: KarBridgeEvent, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             KarBridgeEvent::StoreReady { .. } => {}
             KarBridgeEvent::ProvidersUpdated(list) => {
+                let status_items = build_kui_provider_items(&list);
+                self.provider_status_view.update(cx, |ps, cx| {
+                    ps.set_providers(status_items, cx);
+                });
                 self.providers = list;
                 self.refresh_provider_alert(cx);
             }
@@ -616,13 +768,13 @@ impl KarWorkbench {
                             "只读观察模式 — 另一窗口持有本会话写入锁，当前仅实时订阅"
                         }
                         ChatAccessMode::NoneSelected => {
-                            "先在左侧新建真实对话，或进入演示对话体验…"
+                            "输入任务指令直接开启新对话，或关联右侧 Office 文档选区…"
                         }
                         ChatAccessMode::DemoShowcase => {
                             "演示模式（样例数据）— 输入任意问题体验回合流与工具卡片原地更新…"
                         }
                         ChatAccessMode::WriteController { .. } => {
-                            "输入指令，或在右侧选中文档段落 / 单元格 / 幻灯片对象后点击「AI 改选区」…"
+                            "回复 Claude / Codex，或在右侧选中文档内容后点击「AI 改选区」…"
                         }
                     };
                     ed.set_placeholder(ph);
@@ -636,7 +788,12 @@ impl KarWorkbench {
                 self.sync_alerts(cx);
             }
             KarBridgeEvent::ChatStateUpdated(proj) => {
-                self.sync_timeline_entities(&proj.turns, cx);
+                let rt_id = proj
+                    .info
+                    .as_ref()
+                    .map(|i| i.runtime.clone())
+                    .unwrap_or_else(|| self.selected_runtime.clone());
+                self.sync_timeline_entities(&proj.turns, &rt_id, cx);
                 self.projected = proj;
                 self.sync_alerts(cx);
             }
@@ -648,6 +805,9 @@ impl KarWorkbench {
                 message,
                 ..
             } => {
+                if let Some(ref url) = listening_url {
+                    self.notify_toast(format!("只读 HTTP/SSE 已启动 · {url}"), cx);
+                }
                 self.active_http_server_url = listening_url;
                 if let Some(msg) = message
                     && self.active_http_server_url.is_none()
@@ -672,13 +832,38 @@ impl KarWorkbench {
         cx.notify();
     }
 
-    fn sync_timeline_entities(&mut self, turns: &[ChatTurn], cx: &mut Context<Self>) {
+    fn sync_timeline_entities(
+        &mut self,
+        turns: &[ChatTurn],
+        runtime_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let brand_name = match runtime_id {
+            "codex" => "OpenAI",
+            "claude" => "Claude",
+            "grok" => "Grok",
+            "qwen" => "Qwen",
+            _ => runtime_display_name(runtime_id),
+        };
+
         for turn in turns {
+            let mut assistant_concat = String::new();
+            let mut badge_steps: Vec<AgentStep> = Vec::new();
+
             for (item_ix, item) in turn.items.iter().enumerate() {
                 match &item.item {
                     Item::Tool { id, activity } => {
                         let key = (turn.id, id.clone());
                         let inv = tool_to_invocation(id, activity);
+                        badge_steps.push(AgentStep {
+                            label: format!("调用工具 · {}", inv.name),
+                            result: if activity.finished {
+                                "执行完成".into()
+                            } else {
+                                "正在执行…".into()
+                            },
+                            complete: activity.finished,
+                        });
                         if let Some(existing) = self.tool_inspectors.get(&key) {
                             existing.update(cx, |inspector, cx| {
                                 if let Some(first) = inspector.calls.first_mut() {
@@ -707,6 +892,15 @@ impl KarWorkbench {
                         if text.trim().is_empty() {
                             continue;
                         }
+                        badge_steps.push(AgentStep {
+                            label: "思考与上下文规划".into(),
+                            result: if *complete {
+                                "规划完成".into()
+                            } else {
+                                "推理中…".into()
+                            },
+                            complete: *complete,
+                        });
                         let key = (turn.id, item_ix);
                         let note_state = if !*complete {
                             NoteState::Live
@@ -744,9 +938,34 @@ impl KarWorkbench {
                             self.reasoning_blocks.insert(key, entity);
                         }
                     }
+                    Item::Message {
+                        role: Role::Assistant,
+                        text,
+                        complete,
+                        ..
+                    } => {
+                        if !text.is_empty() {
+                            if !assistant_concat.is_empty() {
+                                assistant_concat.push('\n');
+                            }
+                            assistant_concat.push_str(text);
+                        }
+                        if !*complete {
+                            badge_steps.push(AgentStep {
+                                label: "生成回复流".into(),
+                                result: "输出中…".into(),
+                                complete: false,
+                            });
+                        }
+                    }
                     Item::Diff { diff, .. } => {
                         let key = (turn.id, item_ix);
                         let (file, hunk) = parse_diff_to_hunk(diff);
+                        badge_steps.push(AgentStep {
+                            label: format!("生成补丁 · {file}"),
+                            result: "已记录变更".into(),
+                            complete: true,
+                        });
                         if let Some(existing) = self.diff_reviews.get(&key) {
                             existing.update(cx, |pr, cx| {
                                 pr.file = file;
@@ -768,6 +987,57 @@ impl KarWorkbench {
                         }
                     }
                     _ => {}
+                }
+            }
+
+            if turn.status == TurnStatus::Running && badge_steps.is_empty() {
+                badge_steps.push(AgentStep {
+                    label: "正在连接会话并调度推理…".into(),
+                    result: String::new(),
+                    complete: false,
+                });
+            }
+
+            if !badge_steps.is_empty() {
+                let activity_summary = match turn.status {
+                    TurnStatus::Running => format!("正在执行 {} 个步骤…", badge_steps.len()),
+                    TurnStatus::Completed => format!("已完成 {} 个执行步骤", badge_steps.len()),
+                    TurnStatus::Interrupted | TurnStatus::Aborted => "执行已中断".into(),
+                    TurnStatus::Failed => "执行遇到错误".into(),
+                };
+                if let Some(existing_badge) = self.turn_badges.get(&turn.id) {
+                    existing_badge.update(cx, |wb, cx| {
+                        wb.agent = brand_name.to_owned();
+                        wb.activity = activity_summary;
+                        wb.steps = badge_steps;
+                        cx.notify();
+                    });
+                } else {
+                    let entity = cx.new(|_| {
+                        WorkBadge::new(
+                            format!("wb-{}", &turn.id.to_string()[..8]),
+                            brand_name.to_owned(),
+                            activity_summary,
+                            badge_steps,
+                        )
+                    });
+                    self.turn_badges.insert(turn.id, entity);
+                }
+            }
+
+            if !assistant_concat.is_empty() {
+                if let Some(existing_copy) = self.copy_buttons.get(&turn.id) {
+                    existing_copy.update(cx, |cb, _| cb.set_text(assistant_concat));
+                } else {
+                    let copy_entity = cx.new(|_| {
+                        CopyButton::new(
+                            format!("copy-{}", &turn.id.to_string()[..8]),
+                            assistant_concat,
+                            "复制回复",
+                        )
+                        .icon_only()
+                    });
+                    self.copy_buttons.insert(turn.id, copy_entity);
                 }
             }
         }
@@ -804,7 +1074,6 @@ impl KarWorkbench {
                 );
             }
             FeedConnectionState::Connected { .. } if self.access_mode.is_http_read_only() => {
-                // Shown quietly via the top read-only capsule strip instead of a heavy alert box!
                 self.show_alert = false;
             }
             _ => {
@@ -874,8 +1143,7 @@ impl KarWorkbench {
 
     pub fn select_runtime_by_id(&mut self, id: &str, cx: &mut Context<Self>) {
         self.selected_runtime = id.to_owned();
-        self.runtime_menu
-            .update(cx, |m, cx| m.set_label(runtime_display_name(id), cx));
+        self.composer_popover = None;
         self.refresh_provider_alert(cx);
         cx.notify();
     }
@@ -908,6 +1176,7 @@ impl KarWorkbench {
     }
 
     pub fn create_new_real_chat(&mut self, cx: &mut Context<Self>) {
+        self.composer_popover = None;
         if let Some(prov) = self.providers.iter().find(|p| p.id == self.selected_runtime)
             && let Some(reason) = prov.diagnostic_reason()
         {
@@ -926,14 +1195,14 @@ impl KarWorkbench {
             .iter()
             .find(|p| p.id == self.selected_runtime)
             .and_then(|p| match &p.availability {
-                crate::types::ProviderAvailability::Available { command, .. } => command.clone(),
+                ProviderAvailability::Available { command, .. } => command.clone(),
                 _ => None,
             });
         self.bridge.send(KarCommand::CreateChat {
             runtime_id: self.selected_runtime.clone(),
             program,
             workspace: self.config.workspace_dir.clone(),
-            approval_mode: ApprovalMode::Host,
+            approval_mode: self.approval_mode,
         });
     }
 
@@ -951,13 +1220,33 @@ impl KarWorkbench {
     }
 
     pub fn submit_composer_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.access_mode.is_writable() {
-            return;
-        }
+        self.composer_popover = None;
         let raw = self.composer_editor.read(cx).value().trim().to_owned();
         if raw.is_empty() {
             return;
         }
+        // If no session is selected yet, seamlessly create a new real chat or prompt if unavailable!
+        if matches!(self.access_mode, ChatAccessMode::NoneSelected) {
+            if let Some(prov) = self.providers.iter().find(|p| p.id == self.selected_runtime)
+                && let Some(reason) = prov.diagnostic_reason()
+            {
+                self.show_custom_alert(
+                    &format!("无法用 `{}` 发送真实消息", prov.id),
+                    &reason,
+                    Severity::Error,
+                    true,
+                    cx,
+                );
+                cx.notify();
+                return;
+            }
+            self.create_new_real_chat(cx);
+            return;
+        }
+        if !self.access_mode.is_writable() {
+            return;
+        }
+
         let request_id = Uuid::new_v4();
         let target = self.pinned_target.clone();
         let payload = match &target {
@@ -1046,11 +1335,15 @@ impl KarWorkbench {
             "open_second_window" => {
                 self.open_subscriber_second_window(cx);
             }
+            "provider_health" => {
+                self.toggle_provider_sheet(cx);
+            }
             "refresh_all" => {
                 self.bridge.send(KarCommand::RefreshStoreAndProviders {
                     store_dir: self.config.chat_dir.clone(),
                     workspace: self.config.workspace_dir.clone(),
                 });
+                self.notify_toast("已刷新会话存储与供应商状态", cx);
             }
             "abort_turn" => {
                 self.bridge.send(KarCommand::AbortTurn);
@@ -1072,20 +1365,7 @@ impl KarWorkbench {
             Some(url) => format!("Kar Studio · 只读订阅观察 ({url})"),
             None => "Kar Studio · 第二客户端窗口".into(),
         };
-        let options = WindowOptions {
-            app_id: Some("kar-desktop".into()),
-            titlebar: Some(TitlebarOptions {
-                title: Some(title.into()),
-                ..Default::default()
-            }),
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                None,
-                size(px(1260.), px(800.)),
-                cx,
-            ))),
-            window_min_size: Some(size(px(860.), px(540.))),
-            ..Default::default()
-        };
+        let options = studio_window_options(title, size(px(1260.), px(800.)), size(px(860.), px(540.)), cx);
         let _ = gpui_kit::open_window(options, cx, move |w, cx| {
             cx.new(|cx| KarWorkbench::new(sub_cfg, w, cx))
         });
@@ -1132,16 +1412,43 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.composer_popover = None;
         let saved_variant = filename.replace('.', ".saved.");
         let candidate = if self.config.docs_dir.join(filename).is_file() {
             self.config.docs_dir.join(filename)
-        } else {
+        } else if self.config.docs_dir.join(&saved_variant).is_file() {
             self.config.docs_dir.join(&saved_variant)
+        } else {
+            let corpus_fallback = match filename {
+                "sample_minutes.docx" => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .map(|r| r.join("tests/corpus/docx/minutes.docx")),
+                "sample_formulas.xlsx" => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .map(|r| r.join("tests/corpus/xlsx/01_formulas.xlsx")),
+                "sample_deck.pptx" => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .map(|r| r.join("tests/corpus/pptx/deck.pptx")),
+                _ => None,
+            };
+            if let Some(src) = corpus_fallback.filter(|p| p.is_file()) {
+                let _ = std::fs::create_dir_all(&self.config.docs_dir);
+                let dst = self.config.docs_dir.join(filename);
+                let _ = std::fs::copy(&src, &dst);
+                dst
+            } else {
+                self.config.docs_dir.join(filename)
+            }
         };
+
         if candidate.is_file() {
             self.open_office_file_tab(candidate, false, None, window, cx);
         } else {
             self.office_notice = Some(format!("未找到样本 {filename}，可点击文件夹图标按路径加载"));
+            self.layout_mode = WorkspaceLayoutMode::Split;
             cx.notify();
         }
     }
@@ -1154,6 +1461,9 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.layout_mode == WorkspaceLayoutMode::ChatFocus {
+            self.layout_mode = WorkspaceLayoutMode::Split;
+        }
         let canonical = path.canonicalize().unwrap_or(path);
         if let Some(idx) = self.office_tabs.iter().position(|t| {
             t.is_demo == is_demo
@@ -1189,6 +1499,9 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.layout_mode == WorkspaceLayoutMode::ChatFocus {
+            self.layout_mode = WorkspaceLayoutMode::Split;
+        }
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         let tab = OfficeTab::new_blank(id, kind, window, cx);
@@ -1200,6 +1513,7 @@ impl KarWorkbench {
     }
 
     pub fn bind_active_selection_to_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer_popover = None;
         let Some(idx) = self.active_office_tab else {
             return;
         };
@@ -1207,8 +1521,10 @@ impl KarWorkbench {
             return;
         };
         let target = tab.capture_selection(cx);
-        self.office_notice = Some(format!("已关联选区 · {}", target.locator.target_label()));
+        let label = target.locator.target_label();
+        self.office_notice = Some(format!("已关联选区 · {label}"));
         self.pinned_target = Some(target);
+        self.notify_toast(format!("已将「{label}」关联至对话输入框"), cx);
         self.composer_editor
             .update(cx, |ed, cx| ed.focus(window, cx));
         cx.notify();
@@ -1220,6 +1536,9 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.layout_mode == WorkspaceLayoutMode::ChatFocus {
+            self.layout_mode = WorkspaceLayoutMode::Split;
+        }
         let found_idx = self
             .office_tabs
             .iter()
@@ -1373,7 +1692,10 @@ impl KarWorkbench {
         };
 
         match outcome {
-            Ok(msg) => self.office_notice = Some(msg),
+            Ok(msg) => {
+                self.notify_toast(msg.clone(), cx);
+                self.office_notice = Some(msg);
+            }
             Err(err) => self.office_notice = Some(format!("修改未生效: {err:#}")),
         }
         cx.notify();
@@ -1419,7 +1741,9 @@ impl KarWorkbench {
                 self.office_tabs.remove(idx);
                 self.active_office_tab = None;
                 self.open_office_file_tab(copy_dest, false, None, window, cx);
-                self.office_notice = Some(format!("已保存副本并重开验证 · {fname}"));
+                let msg = format!("已保存副本并重开验证 · {fname}");
+                self.office_notice = Some(msg.clone());
+                self.notify_toast(msg, cx);
             }
             Err(err) => {
                 self.office_notice = Some(format!("保存副本失败: {err:#}"));
@@ -1431,6 +1755,9 @@ impl KarWorkbench {
     // ── Co-Editing Demo Workshop (Strictly Isolated Demo Tabs) ──────────────
 
     pub fn enter_coedit_demo_workshop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.layout_mode == WorkspaceLayoutMode::ChatFocus {
+            self.layout_mode = WorkspaceLayoutMode::Split;
+        }
         let demo_dir = self.coedit_demo_dir.clone().unwrap_or_else(|| {
             std::env::temp_dir().join(format!("kar_desktop_coedit_demo_{}", std::process::id()))
         });
@@ -1736,6 +2063,9 @@ impl KarWorkbench {
                 };
                 match apply_res {
                     Ok(()) => {
+                        if let Some(ref summary) = proposal.resolution_result {
+                            self.notify_toast(summary.clone(), cx);
+                        }
                         self.coedit_feedback = proposal.resolution_result;
                     }
                     Err(err) => {
@@ -1749,14 +2079,336 @@ impl KarWorkbench {
         }
         cx.notify();
     }
+
+    fn handle_global_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let cmd = ev.keystroke.modifiers.platform || ev.keystroke.modifiers.control;
+        let key = ev.keystroke.key.as_str();
+        if cmd && key.eq_ignore_ascii_case("k") {
+            self.toggle_command_palette(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if cmd && (key == "." || key.eq_ignore_ascii_case("b")) {
+            self.sidebar_open = !self.sidebar_open;
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        if key == "escape"
+            && (self.command_palette_open
+                || self.provider_sheet_open
+                || self.composer_popover.is_some())
+        {
+            self.command_palette_open = false;
+            self.provider_sheet_open = false;
+            self.composer_popover = None;
+            cx.notify();
+            cx.stop_propagation();
+        }
+    }
+
+    fn render_command_palette_modal(&self, s: &StudioPalette, cx: &mut Context<Self>) -> AnyElement {
+        let desk = self.command_desk.clone();
+        let shadows = s.popover_shadows();
+        let weak_close = cx.weak_entity();
+        pro_presence("kar-cmd-modal", self.command_palette_open, 0.18, 0.13, move |amt| {
+            div()
+                .id("kar-cmd-backdrop")
+                .absolute()
+                .inset_0()
+                .bg(hsla(0., 0., 0., 0.34 * amt))
+                .flex()
+                .flex_col()
+                .items_center()
+                .pt(px(86. + 8. * (1. - amt)))
+                .occlude()
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    if let Some(e) = weak_close.upgrade() {
+                        e.update(cx, |this, cx| {
+                            this.command_palette_open = false;
+                            cx.notify();
+                        });
+                    }
+                })
+                .child(
+                    div()
+                        .id("kar-cmd-card")
+                        .w(px(522.))
+                        .max_w(relative(0.92))
+                        .opacity(amt)
+                        .rounded(px(12.))
+                        .shadow(shadows)
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(desk),
+                )
+                .into_any_element()
+        })
+    }
+
+    fn render_provider_health_modal(
+        &self,
+        s: &StudioPalette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let ps = self.provider_status_view.clone();
+        let card_bg = s.card_bg;
+        let border_c = s.border_strong;
+        let muted_c = s.muted;
+        let hover_c = s.stage_hover;
+        let shadows = s.popover_shadows();
+        let weak_close = cx.weak_entity();
+        let weak_btn_close = cx.weak_entity();
+        pro_presence("kar-provider-modal", self.provider_sheet_open, 0.18, 0.13, move |amt| {
+            div()
+                .id("kar-prov-backdrop")
+                .absolute()
+                .inset_0()
+                .bg(hsla(0., 0., 0., 0.34 * amt))
+                .flex()
+                .flex_col()
+                .items_center()
+                .pt(px(64. + 8. * (1. - amt)))
+                .occlude()
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    if let Some(e) = weak_close.upgrade() {
+                        e.update(cx, |this, cx| {
+                            this.provider_sheet_open = false;
+                            cx.notify();
+                        });
+                    }
+                })
+                .child(
+                    div()
+                        .id("kar-prov-card")
+                        .relative()
+                        .w(px(560.))
+                        .max_w(relative(0.92))
+                        .max_h(px(640.))
+                        .opacity(amt)
+                        .rounded(px(16.))
+                        .bg(card_bg)
+                        .border_1()
+                        .border_color(border_c)
+                        .shadow(shadows)
+                        .overflow_hidden()
+                        .flex()
+                        .flex_col()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .id("kar-prov-scroll")
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .p(px(14.))
+                                .child(ps),
+                        )
+                        .child(
+                            div()
+                                .id("kar-prov-modal-close")
+                                .absolute()
+                                .top(px(10.))
+                                .right(px(10.))
+                                .size(px(28.))
+                                .rounded(px(7.))
+                                .bg(card_bg)
+                                .hover(move |st| st.bg(hover_c))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .on_click(move |_, _, cx| {
+                                    if let Some(e) = weak_btn_close.upgrade() {
+                                        e.update(cx, |this, cx| {
+                                            this.provider_sheet_open = false;
+                                            cx.notify();
+                                        });
+                                    }
+                                })
+                                .child(kui::primitives::pro_icons::pro_icon(
+                                    ProIcon::Close,
+                                    14.,
+                                    muted_c,
+                                )),
+                        ),
+                )
+                .into_any_element()
+        })
+    }
 }
 
 impl Render for KarWorkbench {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let s = StudioPalette::get(cx);
+        let bounds_cell = self.inset_bounds.clone();
+        let show_office = self.layout_mode != WorkspaceLayoutMode::ChatFocus;
+        let chat_frac = match self.layout_mode {
+            WorkspaceLayoutMode::ChatFocus => 1.0,
+            WorkspaceLayoutMode::Split => self.split_ratio.clamp(0.30, 0.68),
+            WorkspaceLayoutMode::CanvasWide => 0.33,
+        };
+        let office_frac = (1.0 - chat_frac).max(0.28);
+
+        let chat_view = self.render_chat_pane(window, cx);
+        let office_view = show_office.then(|| self.render_office_pane(window, cx));
+        let sidebar_el = self.sidebar_open.then(|| self.render_sidebar(window, cx));
+
+        let hover_divider = s.accent.opacity(0.45);
+        let rest_divider = s.border;
+        let is_dragging = self.dragging_split;
+
+        // Claude-style Rounded Inset Workspace Frame (`m(8)`, `rounded(14)`, elevated shadow)
+        let inset_workspace = div()
+            .id("kar-inset-workspace")
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .p(px(7.))
+            .when(self.sidebar_open, |d| d.pl_0())
+            .child(
+                div()
+                    .relative()
+                    .size_full()
+                    .rounded(px(14.))
+                    .bg(s.inset_bg)
+                    .border_1()
+                    .border_color(s.border)
+                    .shadow(s.inset_shadows())
+                    .overflow_hidden()
+                    .flex()
+                    .flex_row()
+                    .child(
+                        canvas(
+                            move |b, _, _| {
+                                bounds_cell.set(Some(b));
+                            },
+                            |_, _, _, _| (),
+                        )
+                        .absolute()
+                        .size_0(),
+                    )
+                    .child(
+                        div()
+                            .h_full()
+                            .min_w(px(340.))
+                            .when(!show_office, |d| d.flex_1())
+                            .when(show_office, |d| d.w(relative(chat_frac)))
+                            .overflow_hidden()
+                            .child(chat_view),
+                    )
+                    .when_some(office_view, |d, ov| {
+                        d.child(
+                            // Interactive tactile split handle between Chat & Artifact Studio
+                            div()
+                                .id("kar-split-divider")
+                                .w(px(7.))
+                                .h_full()
+                                .flex_none()
+                                .cursor_col_resize()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .group("split-handle")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.dragging_split = true;
+                                        if this.layout_mode == WorkspaceLayoutMode::CanvasWide {
+                                            this.split_ratio = 0.33;
+                                            this.layout_mode = WorkspaceLayoutMode::Split;
+                                        }
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(if is_dragging { 2.5 } else { 1. }))
+                                        .h_full()
+                                        .bg(if is_dragging {
+                                            hover_divider
+                                        } else {
+                                            rest_divider
+                                        })
+                                        .group_hover("split-handle", move |st| {
+                                            st.w(px(2.5)).bg(hover_divider)
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .h_full()
+                                .w(relative(office_frac))
+                                .min_w(px(400.))
+                                .flex_1()
+                                .overflow_hidden()
+                                .child(ov),
+                        )
+                    }),
+            );
+
+        let cmd_modal = self.render_command_palette_modal(&s, cx);
+        let prov_modal = self.render_provider_health_modal(&s, cx);
+
         div()
+            .id("kar-workbench-root")
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::handle_global_key))
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                if this.dragging_split
+                    && let Some(b) = this.inset_bounds.get()
+                {
+                    let total_w = f32::from(b.size.width).max(600.);
+                    let rel_x = f32::from(ev.position.x - b.origin.x);
+                    this.split_ratio = (rel_x / total_w).clamp(0.30, 0.68);
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.dragging_split {
+                        this.dragging_split = false;
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.composer_popover.is_some() {
+                        this.composer_popover = None;
+                        cx.notify();
+                    }
+                }),
+            )
             .size_full()
             .relative()
-            .child(self.panels.clone())
+            .bg(s.stage)
+            .flex()
+            .flex_row()
+            .overflow_hidden()
+            .when_some(sidebar_el, |d, sb| {
+                d.child(
+                    div()
+                        .w(px(248.))
+                        .h_full()
+                        .flex_none()
+                        .overflow_hidden()
+                        .child(sb),
+                )
+            })
+            .child(inset_workspace)
+            // Floating bottom-right KUI Toast stack
+            .child(
+                div()
+                    .absolute()
+                    .right(px(22.))
+                    .bottom(px(20.))
+                    .child(self.toast.clone()),
+            )
+            .child(cmd_modal)
+            .child(prov_modal)
             .child(self.http_dialog.clone())
             .child(self.open_path_dialog.clone())
             .child(self.quick_edit_dialog.clone())
@@ -1784,8 +2436,158 @@ pub(crate) fn status_short_text(st: Option<TurnStatus>) -> &'static str {
         Some(TurnStatus::Interrupted) => "已中断",
         Some(TurnStatus::Failed) => "失败",
         Some(TurnStatus::Aborted) => "已中止",
-        None => "空闲",
+        None => "就绪",
     }
+}
+
+fn build_default_commands() -> Vec<Command> {
+    vec![
+        Command {
+            id: "new_chat".into(),
+            label: "新建真实 Kar 对话".into(),
+            section: "对话工作台".into(),
+            hint: "⌘N".into(),
+        },
+        Command {
+            id: "bind_selection".into(),
+            label: "将当前 Office 文档选区关联至对话".into(),
+            section: "对话工作台".into(),
+            hint: "AI 改选区".into(),
+        },
+        Command {
+            id: "open_docx".into(),
+            label: "打开 Word 会议纪要样本 (.docx)".into(),
+            section: "Kantor Office 画布".into(),
+            hint: "DocsView".into(),
+        },
+        Command {
+            id: "open_xlsx".into(),
+            label: "打开 Excel 季度预算公式表 (.xlsx)".into(),
+            section: "Kantor Office 画布".into(),
+            hint: "SheetsView".into(),
+        },
+        Command {
+            id: "open_pptx".into(),
+            label: "打开 PPT 产品发布演示文稿 (.pptx)".into(),
+            section: "Kantor Office 画布".into(),
+            hint: "SlidesView".into(),
+        },
+        Command {
+            id: "open_path".into(),
+            label: "按本地路径打开文档…".into(),
+            section: "Kantor Office 画布".into(),
+            hint: "Path".into(),
+        },
+        Command {
+            id: "coedit_word".into(),
+            label: "人机双写演练：Word 同段日期与负责人合并".into(),
+            section: "双写协议演练 (样例)".into(),
+            hint: "双项保留".into(),
+        },
+        Command {
+            id: "coedit_excel".into(),
+            label: "人机双写演练：Excel 同单元格三选一冲突裁决".into(),
+            section: "双写协议演练 (样例)".into(),
+            hint: "冲突裁决".into(),
+        },
+        Command {
+            id: "coedit_ppt".into(),
+            label: "人机双写演练：PPT 文本框移位与删除冲突".into(),
+            section: "双写协议演练 (样例)".into(),
+            hint: "对象定位".into(),
+        },
+        Command {
+            id: "start_http".into(),
+            label: "启动当前会话 HTTP/SSE 只读广播服务".into(),
+            section: "连接与诊断".into(),
+            hint: "/snapshot + /events".into(),
+        },
+        Command {
+            id: "second_win".into(),
+            label: "新开第二客户端窗口观察当前会话".into(),
+            section: "连接与诊断".into(),
+            hint: "单写入锁验证".into(),
+        },
+        Command {
+            id: "provider_health".into(),
+            label: "查看本机供应商与账号健康度诊断".into(),
+            section: "连接与诊断".into(),
+            hint: "ProviderStatus".into(),
+        },
+        Command {
+            id: "demo_chat".into(),
+            label: "进入独立演示对话沙盒 (样例数据)".into(),
+            section: "连接与诊断".into(),
+            hint: "离线可用".into(),
+        },
+        Command {
+            id: "toggle_theme".into(),
+            label: "切换浅色 / 深色主题 (KUI + Kantor 同步)".into(),
+            section: "外观与布局".into(),
+            hint: "Theme".into(),
+        },
+        Command {
+            id: "toggle_sidebar".into(),
+            label: "展开 / 收起左侧导航栏".into(),
+            section: "外观与布局".into(),
+            hint: "⌘.".into(),
+        },
+    ]
+}
+
+fn build_kui_provider_items(list: &[ProviderStatusInfo]) -> Vec<ProviderStatusItem> {
+    let mut sorted = list.to_vec();
+    sorted.sort_by_key(|p| {
+        if p.is_ready() {
+            0u8
+        } else if matches!(p.availability, ProviderAvailability::Available { .. }) {
+            1u8
+        } else {
+            2u8
+        }
+    });
+    sorted
+        .iter()
+        .map(|p| {
+            let (badge_txt, ready) = p.status_badge();
+            let health = match &p.availability {
+                ProviderAvailability::Available { .. } if ready => ProviderHealth::Operational,
+                ProviderAvailability::Available { .. } => ProviderHealth::Degraded,
+                ProviderAvailability::Missing => ProviderHealth::Unknown,
+                ProviderAvailability::Failed { .. } => ProviderHealth::Outage,
+            };
+            let mut item = ProviderStatusItem::new(
+                p.id.clone(),
+                format!("{} ({})", runtime_display_name(&p.id), p.protocol),
+                health,
+            );
+            item.detail = badge_txt.into();
+            item.uptime = Some(if ready {
+                100.0
+            } else if matches!(p.availability, ProviderAvailability::Available { .. }) {
+                65.0
+            } else {
+                0.0
+            });
+            item.days = (1..=14)
+                .map(|d| {
+                    ProviderDay::new(
+                        format!("11-{d:02}"),
+                        health,
+                        item.uptime,
+                    )
+                    .note(badge_txt)
+                })
+                .collect();
+            if let Some(reason) = p.diagnostic_reason() {
+                item.incident = Some(ProviderIncident::new(
+                    format!("{} 环境诊断提示", runtime_display_name(&p.id)),
+                    vec![ProviderIncidentUpdate::new("本机探测", "实时", reason)],
+                ));
+            }
+            item
+        })
+        .collect()
 }
 
 fn parse_diff_to_hunk(diff: &str) -> (String, Hunk) {
