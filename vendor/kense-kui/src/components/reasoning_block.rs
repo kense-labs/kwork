@@ -27,6 +27,7 @@ pub struct ExplanationNote {
     pub error: Option<SharedString>,
     expanded: bool,
     plain: bool,
+    compact: bool,
     surrounding_color: Option<Hsla>,
     preview_height: Rc<Cell<Pixels>>,
     preview_y: Slide,
@@ -53,6 +54,7 @@ impl ExplanationNote {
             error: None,
             expanded: false,
             plain: false,
+            compact: false,
             surrounding_color: None,
             preview_height: Rc::new(Cell::new(px(0.))),
             preview_y: Slide::new(0.),
@@ -76,6 +78,11 @@ impl ExplanationNote {
     /// Set inside an existing message surface.
     pub fn plain(mut self) -> Self {
         self.plain = true;
+        self
+    }
+    /// Use compact desktop row height and full column width.
+    pub fn with_compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
         self
     }
     /// Embed on a custom message background, keeping the live text fade color-matched.
@@ -460,7 +467,7 @@ impl ParagraphInk {
 }
 
 /// Use the same transparent artwork as the site header, cached across streaming frames.
-fn kense_mark(cx: &App) -> impl IntoElement {
+fn kense_mark(compact: bool, cx: &App) -> impl IntoElement {
     use crate::{
         foundation::{Theme, ThemeMode},
         primitives::kense_mark,
@@ -473,16 +480,18 @@ fn kense_mark(cx: &App) -> impl IntoElement {
         ThemeMode::Dark => (&DARK, kense_mark::DARK),
     };
     let mark = cache.get_or_init(|| Arc::new(Image::from_bytes(ImageFormat::Png, bytes.to_vec())));
+    let outer = if compact { 15. } else { 18. };
+    let inner = if compact { 15. } else { 22. };
     div()
         .id("reasoning-kense-mark")
         .role(Role::Image)
         .aria_label("Kense")
-        .size(px(18.))
+        .size(px(outer))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .child(img(mark.clone()).size(px(22.)).flex_none())
+        .child(img(mark.clone()).size(px(inner)).flex_none())
 }
 impl Render for ExplanationNote {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -513,8 +522,8 @@ impl Render for ExplanationNote {
         let mut heading = row()
             .min_w_0()
             .flex_1()
-            .gap(px(10.))
-            .child(kense_mark(cx))
+            .gap(px(if self.compact { 7.5 } else { 10. }))
+            .child(kense_mark(self.compact, cx))
             .when(self.state == NoteState::Interrupted, |el| {
                 el.child(icon(Glyph::Alert, 14., p.danger))
             });
@@ -574,7 +583,7 @@ impl Render for ExplanationNote {
             .child(heading);
         let mut header = row()
             .relative()
-            .h(px(44.))
+            .h(px(if self.compact { 30. } else { 44. }))
             .flex_none()
             .gap(px(8.))
             .child(toggle);
@@ -643,10 +652,10 @@ impl Render for ExplanationNote {
             .id(self.id.clone())
             .role(Role::Group)
             .w_full()
-            .max_w(px(522.))
+            .max_w(px(if self.compact { 9999. } else { 522. }))
             .gap_0()
-            .text_size(px(14.))
-            .line_height(px(20.))
+            .text_size(px(if self.compact { 12.5 } else { 14. }))
+            .line_height(px(if self.compact { 19. } else { 20. }))
             .text_color(p.ink)
             .when(!self.plain, |el| {
                 el.rounded(radius)

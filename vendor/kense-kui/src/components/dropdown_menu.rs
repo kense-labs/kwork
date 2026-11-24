@@ -13,6 +13,8 @@ pub struct DropdownMenu {
     label: SharedString,
     icon: Option<Glyph>,
     icon_only: bool,
+    compact: bool,
+    ghost: bool,
     width: Option<Slide>,
     previous: SharedString,
     changed: PhaseClock,
@@ -34,6 +36,8 @@ impl DropdownMenu {
             label,
             icon: None,
             icon_only: false,
+            compact: false,
+            ghost: false,
             width: None,
             turn: Slide::snappy(0.),
         }
@@ -48,6 +52,14 @@ impl DropdownMenu {
     }
     pub fn icon_only(mut self) -> Self {
         self.icon_only = true;
+        self
+    }
+    pub fn with_compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
+    }
+    pub fn with_ghost(mut self, ghost: bool) -> Self {
+        self.ghost = ghost;
         self
     }
     pub fn set_label(&mut self, label: impl Into<SharedString>, cx: &mut Context<Self>) {
@@ -81,9 +93,27 @@ impl MenuControl for DropdownMenu {
 impl Render for DropdownMenu {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Paint::get(cx);
-        let r = Theme::global(cx).tokens.radius.md;
-        let target = if self.icon_only {
+        let r = if self.compact {
+            px(7.)
+        } else {
+            Theme::global(cx).tokens.radius.md
+        };
+        let fs = if self.compact { 12.5 } else { 14. };
+        let btn_h = if self.compact {
+            28.
+        } else if self.icon_only {
             32.
+        } else {
+            36.
+        };
+        let extra_pad = if self.compact { 36. } else { 52. };
+        let icon_extra = if self.icon.is_some() {
+            if self.compact { 18. } else { 22. }
+        } else {
+            0.
+        };
+        let target = if self.icon_only {
+            btn_h
         } else {
             let mut style = w.text_style();
             style.font_weight = FontWeight::MEDIUM;
@@ -91,34 +121,58 @@ impl Render for DropdownMenu {
                 .text_system()
                 .shape_line(
                     self.label.clone(),
-                    px(14.),
+                    px(fs),
                     &[style.to_run(self.label.len())],
                     None,
                 )
                 .width
                 .into();
-            advance.ceil() + 52. + if self.icon.is_some() { 22. } else { 0. }
+            advance.ceil() + extra_pad + icon_extra
         }
         .min(f32::from(w.viewport_size().width) - 16.);
         let sw = self.width.get_or_insert_with(|| Slide::new(target));
         sw.set(target, cx);
         let width = sw.get(w, cx);
         self.turn.set(if self.core.open { 1. } else { 0. }, cx);
+        let use_ghost = self.ghost || (self.compact && self.icon_only);
         let btn = face(
             "trigger",
             self.label.clone(),
-            if self.icon_only { 32. } else { 36. },
+            btn_h,
             r.into(),
-            Tone::Surface,
+            if use_ghost { Tone::Clear } else { Tone::Surface },
             cx,
         )
         .w(px(width))
-        .gap(px(6.))
-        .when(!self.icon_only, |e| e.border_1().border_color(p.line))
+        .gap(px(if self.compact { 4.5 } else { 6. }))
+        .text_size(px(fs))
+        .when(self.icon_only, |e| e.px_0())
+        .when(!self.icon_only && self.compact, |e| e.px(px(8.)))
+        .when(!self.icon_only && !use_ghost, |e| e.border_1().border_color(p.line))
+        .when(use_ghost && self.core.open, |e| e.bg(p.hover))
         .hover(move |s| s.bg(p.hover))
-        .when_some(self.icon, |e, g| e.child(icon(g, 15., p.secondary)))
+        .when_some(self.icon, |e, g| {
+            if g == Glyph::More && self.compact {
+                let dot_c = p.ink.opacity(0.68);
+                e.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.5))
+                        .child(div().size(px(2.6)).rounded_full().bg(dot_c))
+                        .child(div().size(px(2.6)).rounded_full().bg(dot_c))
+                        .child(div().size(px(2.6)).rounded_full().bg(dot_c)),
+                )
+            } else {
+                e.child(icon(
+                    g,
+                    if self.compact { 14.5 } else { 15. },
+                    p.secondary,
+                ))
+            }
+        })
         .when(!self.icon_only, |e| {
-            let text_width = (width - 51. - if self.icon.is_some() { 22. } else { 0. }).max(1.);
+            let text_width = (width - (extra_pad - 1.) - icon_extra).max(1.);
             let age = self.changed.time(0.48, w, cx);
             e.child(
                 div()
@@ -130,7 +184,7 @@ impl Render for DropdownMenu {
                             self.label.clone(),
                             age,
                             false,
-                            14.,
+                            fs,
                             p.ink,
                             text_width,
                         )
@@ -144,7 +198,7 @@ impl Render for DropdownMenu {
             )
             .child(transformed(
                 Glyph::Down,
-                13.,
+                if self.compact { 11.5 } else { 13. },
                 p.secondary,
                 self.turn.get(w, cx) * std::f32::consts::PI,
                 1.,

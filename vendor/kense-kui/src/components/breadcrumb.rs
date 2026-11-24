@@ -12,6 +12,7 @@ pub struct Breadcrumb {
     mounted: bool,
     limit: usize,
     more: bool,
+    compact: bool,
 }
 pub struct Navigated(pub usize);
 impl EventEmitter<Navigated> for Breadcrumb {}
@@ -24,7 +25,22 @@ impl Breadcrumb {
             segments: items,
             limit: usize::MAX,
             more: false,
+            compact: false,
         }
+    }
+    pub fn with_compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
+    }
+    pub fn set_segments(&mut self, items: Vec<SharedString>, cx: &mut Context<Self>) {
+        if self.segments == items {
+            return;
+        }
+        self.current = items.len().saturating_sub(1);
+        self.presence = vec![Slide::new(1.); items.len()];
+        self.segments = items;
+        self.more = false;
+        cx.notify();
     }
     pub fn limit(mut self, n: usize) -> Self {
         self.limit = n.max(2);
@@ -50,8 +66,9 @@ impl Breadcrumb {
         let p = Paint::get(cx);
         let name = self.segments[i].clone();
         button(("crumb", i), name.clone(), cx)
-            .h(px(28.))
+            .h(px(if self.compact { 22. } else { 28. }))
             .px_1()
+            .when(self.compact, |b| b.text_size(px(11.5)))
             .text_color(if i == self.current {
                 p.ink
             } else {
@@ -72,7 +89,9 @@ impl Render for Breadcrumb {
             self.limit
         };
         let hidden = n.saturating_sub(limit);
-        let mut trail = row().flex_wrap().gap(px(3.));
+        let mut trail = row()
+            .when(!self.compact, |r| r.flex_wrap())
+            .gap(px(if self.compact { 2. } else { 3. }));
         let mut menu = column().gap_1();
         for i in 0..self.segments.len() {
             let a = self.presence[i].get(w, cx).clamp(0., 1.);
@@ -103,7 +122,17 @@ impl Render for Breadcrumb {
                 )
             }
             if i + 1 < self.segments.len() && self.presence[i + 1].get(w, cx) > 0.001 {
-                trail = trail.child(icon(Glyph::Slash, 12., p.faint))
+                if self.compact {
+                    trail = trail.child(
+                        div()
+                            .px(px(1.5))
+                            .text_size(px(11.))
+                            .text_color(p.faint)
+                            .child("/"),
+                    );
+                } else {
+                    trail = trail.child(icon(Glyph::Slash, 12., p.faint));
+                }
             }
         }
         column()

@@ -30,6 +30,7 @@ pub struct ThemeSwitch {
     id: ElementId,
     mode: Transition,
     icon_only: bool,
+    compact: bool,
     accessible_label: Option<SharedString>,
     progress: Option<Slide>,
     pressed: Slide,
@@ -41,6 +42,7 @@ impl ThemeSwitch {
             id: id.into(),
             mode: Transition::Reveal,
             icon_only: false,
+            compact: false,
             accessible_label: None,
             progress: None,
             pressed: Slide::snappy(0.),
@@ -50,9 +52,14 @@ impl ThemeSwitch {
         self.mode = m;
         self
     }
-    /// Use a 38px square control with an accessible name and no visible label.
+    /// Use a square control with an accessible name and no visible label.
     pub fn with_icon_only(mut self, icon_only: bool) -> Self {
         self.icon_only = icon_only;
+        self
+    }
+    /// Use a 28px subtle chrome trigger suited for dense desktop headers and footers.
+    pub fn with_compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
         self
     }
     /// Override the localized name announced for the action.
@@ -79,16 +86,31 @@ impl Render for ThemeSwitch {
         p.line = light.line.blend(night.line.opacity(t));
         let depression = self.pressed.get(w, cx).clamp(0., 1.);
         let lang = UiLanguage::current(cx);
-        let icon_size = if self.mode == Transition::Reveal && !self.icon_only {
+        let icon_size = if self.compact {
+            14.5
+        } else if self.mode == Transition::Reveal && !self.icon_only {
             18.
         } else {
             16.
         };
-        let radius = Theme::global(cx).tokens.radius.md;
+        let radius = if self.compact {
+            px(7.)
+        } else {
+            Theme::global(cx).tokens.radius.md
+        };
+        let box_side = if self.compact { 18. } else { 20. };
         // The document mask changes with the mode; both marks share one pivot.
-        let icon_inset = px((20. - icon_size) * 0.5);
+        let icon_inset = px((box_side - icon_size) * 0.5);
         let bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
         let dest = bounds.clone();
+        let btn_h = if self.compact {
+            28.
+        } else if self.icon_only {
+            38.
+        } else {
+            36.
+        };
+        let compact = self.compact;
         let f = face(
             self.id.clone(),
             self.accessible_label.clone().unwrap_or_else(|| {
@@ -98,19 +120,19 @@ impl Render for ThemeSwitch {
                     lang.text("Switch to dark mode", "切换至深色").into()
                 }
             }),
-            if self.icon_only { 38. } else { 36. },
+            btn_h,
             radius.into(),
             Tone::Clear,
             cx,
         )
         .relative()
         .aria_toggled(dark.into())
-        .px(px(12.))
-        .when(self.icon_only, |button| button.w(px(38.)).px(px(0.)))
+        .px(px(if compact { 8. } else { 12. }))
+        .when(self.icon_only, |button| button.w(px(btn_h)).px(px(0.)))
         .gap(px(6.))
         .border_1()
         .border_color(transparent_black())
-        .text_color(p.ink)
+        .text_color(if compact { p.secondary } else { p.ink })
         .group("theme-key")
         .child(
             div()
@@ -118,17 +140,25 @@ impl Render for ThemeSwitch {
                 .inset(px(depression))
                 .rounded(radius)
                 .border_1()
-                .border_color(p.line)
-                .bg(p.panel.blend(p.ink.opacity(depression * 0.07)))
-                .group_hover("theme-key", |style| {
-                    style.border_color(p.secondary.opacity(0.55))
+                .border_color(if compact { transparent_black() } else { p.line })
+                .bg(if compact {
+                    transparent_black()
+                } else {
+                    p.panel.blend(p.ink.opacity(depression * 0.07))
+                })
+                .group_hover("theme-key", move |style| {
+                    if compact {
+                        style.bg(p.hover)
+                    } else {
+                        style.border_color(p.secondary.opacity(0.55))
+                    }
                 }),
         )
         .child(
             div()
                 .relative()
-                .w(px(20.))
-                .h(px(20.))
+                .w(px(box_side))
+                .h(px(box_side))
                 .child(
                     div()
                         .absolute()

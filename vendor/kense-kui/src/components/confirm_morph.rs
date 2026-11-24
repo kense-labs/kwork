@@ -108,6 +108,9 @@ pub struct ConfirmMorph {
     id: ElementId,
     label: SharedString,
     prompt: SharedString,
+    confirm_label: Option<SharedString>,
+    done_label: Option<SharedString>,
+    compact: bool,
     mode: ConfirmMode,
     available: bool,
     state: State,
@@ -138,6 +141,9 @@ impl ConfirmMorph {
             id: id.into(),
             label: label.into(),
             prompt: prompt.into(),
+            confirm_label: None,
+            done_label: None,
+            compact: false,
             mode: ConfirmMode::Click,
             available: true,
             state: State::Idle,
@@ -153,6 +159,19 @@ impl ConfirmMorph {
             timer: None,
             _blur: blur,
         }
+    }
+    pub fn with_compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
+    }
+    pub fn with_labels(
+        mut self,
+        confirm: impl Into<SharedString>,
+        done: impl Into<SharedString>,
+    ) -> Self {
+        self.confirm_label = Some(confirm.into());
+        self.done_label = Some(done.into());
+        self
     }
     pub fn set_available(&mut self, available: bool, cx: &mut Context<Self>) {
         self.available = available;
@@ -294,28 +313,38 @@ impl Render for ConfirmMorph {
         let radii = Theme::global(cx).tokens.radius.clone();
         let l = UiLanguage::current(cx);
         let text = |en, zh| l.text(en, zh);
-        let mw = |s: &str| measure(&s.to_owned().into(), 14., w);
+        let fs = if self.compact { 12.5 } else { 14. };
+        let shell_h = if self.compact { 28. } else { 36. };
+        let inner_h = if self.compact { 22. } else { 28. };
+        let mw = |s: &str| measure(&s.to_owned().into(), fs, w);
         let cancel = text("Cancel", "取消");
-        let answer = if self.mode == ConfirmMode::Hold {
-            text("Hold to delete", "按住删除")
+        let answer: SharedString = if let Some(custom) = self.confirm_label.clone() {
+            custom
+        } else if self.mode == ConfirmMode::Hold {
+            text("Hold to delete", "按住删除").into()
         } else {
-            text("Delete", "删除")
+            text("Delete", "删除").into()
         };
-        let deleted = text("Deleted", "已删除");
+        let deleted: SharedString = self
+            .done_label
+            .clone()
+            .unwrap_or_else(|| text("Deleted", "已删除").into());
         let undo = text("Undo", "撤销");
         let target = match self.state {
-            State::Idle => mw(&self.label) + 54.,
-            State::Armed | State::Holding => mw(&self.prompt) + mw(cancel) + mw(answer) + 80.,
+            State::Idle => mw(&self.label) + if self.compact { 42. } else { 54. },
+            State::Armed | State::Holding => {
+                mw(&self.prompt) + mw(cancel) + mw(&answer) + if self.compact { 62. } else { 80. }
+            }
             State::Counting => mw(text("Deleting in 3", "即将删除 3")) + mw(cancel) + 78.,
             State::Done => {
                 // Labels in this face use GPUI's natural advance, without tracking.
                 let mut style = w.text_style();
                 style.font_weight = FontWeight::MEDIUM;
-                let status_width = [deleted, undo]
+                let status_width = [deleted.as_ref(), undo]
                     .map(|s| {
                         f32::from(
                             w.text_system()
-                                .shape_line(s.into(), px(14.), &[style.to_run(s.len())], None)
+                                .shape_line(s.to_owned().into(), px(fs), &[style.to_run(s.len())], None)
                                 .width,
                         )
                     })
@@ -330,7 +359,7 @@ impl Render for ConfirmMorph {
                 mw(if intent == Intent::Undo {
                     text("Restoring", "正在还原")
                 } else {
-                    text("Deleting", "正在删除")
+                    text("Deleting", "正在处理")
                 }) + 52.
             }
         }
@@ -358,9 +387,10 @@ impl Render for ConfirmMorph {
             .relative()
             .flex_none()
             .w(px(width))
-            .h(px(36.))
-            .rounded(radii.md)
+            .h(px(shell_h))
+            .rounded(if self.compact { px(7.) } else { radii.md })
             .bg(p.panel.blend(p.stage.opacity(0.55)))
+            .when(self.compact, |e| e.border_1().border_color(p.line))
             .overflow_hidden();
         let mut root = div()
             .id(self.id.clone())
@@ -370,13 +400,13 @@ impl Render for ConfirmMorph {
             .justify_start()
             .gap(px(2.))
             .w(px(target))
-            .h(px(36.))
+            .h(px(shell_h))
             .flex_none()
             .text_color(p.ink)
-            .text_size(px(14.))
+            .text_size(px(fs))
             .font_weight(FontWeight::MEDIUM)
             .whitespace_nowrap()
-            .when(self.state != State::Idle, |e| e.px(px(4.)))
+            .when(self.state != State::Idle, |e| e.px(px(if self.compact { 3. } else { 4. })))
             .on_key_down(cx.listener(|v, e: &KeyDownEvent, w, cx| {
                 if e.keystroke.key == "escape" {
                     v.cancel(w, cx);
@@ -384,11 +414,13 @@ impl Render for ConfirmMorph {
                 }
             }))
             .on_mouse_down_out(cx.listener(|v, _, w, cx| v.cancel(w, cx)));
+        let compact = self.compact;
         let small = |name: &'static str, label: &'static str| {
             let delay = if name == "answer" { 0.12 } else { 0.085 };
             let t = ease((age - delay) / 0.26);
-            face(name, label, 28., radii.md.into(), Tone::Clear, cx)
-                .px(px(12.))
+            face(name, label, inner_h, radii.md.into(), Tone::Clear, cx)
+                .px(px(if compact { 8. } else { 12. }))
+                .text_size(px(fs))
                 .opacity(t)
                 .child(label)
         };
@@ -403,14 +435,16 @@ impl Render for ConfirmMorph {
                 let f = face(
                     "trigger",
                     self.label.clone(),
-                    36.,
-                    radii.md.into(),
+                    shell_h,
+                    if compact { 7. } else { radii.md.into() },
                     Tone::Surface,
                     cx,
                 )
                 .w_full()
+                .text_size(px(fs))
+                .when(compact, |e| e.px(px(8.)).gap(px(5.)))
                 .track_focus(&self.focus)
-                .child(icon(Glyph::Trash, 16., p.secondary))
+                .child(icon(Glyph::Trash, if compact { 13.5 } else { 16. }, p.secondary))
                 .child(self.label.clone());
                 root = if self.available {
                     root.child(activate(f, cx, |v, w, cx| v.arm(w, cx)))
@@ -425,26 +459,23 @@ impl Render for ConfirmMorph {
                     |v, w, cx| v.cancel(w, cx),
                 );
                 let hold = self.mode == ConfirmMode::Hold;
-                let text = if hold {
-                    l.text("Hold to delete", "按住删除")
-                } else {
-                    l.text("Delete", "删除")
-                };
+                let text = answer.clone();
                 let progress = if self.state == State::Holding {
                     seconds.min(1.)
                 } else {
                     self.drain.get(w, cx).clamp(0., 1.)
                 };
-                let label_width = mw(text);
-                let button_w = label_width + 24.;
-                let mut f = face("answer", text, 28., radii.md.into(), Tone::Clear, cx)
+                let label_width = mw(&text);
+                let button_w = label_width + if compact { 18. } else { 24. };
+                let mut f = face("answer", text.clone(), inner_h, radii.md.into(), Tone::Clear, cx)
                     .track_focus(&self.answer)
                     .relative()
                     .w(px(button_w))
+                    .text_size(px(fs))
                     .overflow_hidden()
                     .text_color(p.danger)
                     .bg(p.danger.opacity(0.14))
-                    .child(text)
+                    .child(text.clone())
                     .opacity(ease((age - 0.12) / 0.26));
                 if progress > 0. {
                     f = f.child(
@@ -525,13 +556,13 @@ impl Render for ConfirmMorph {
                 } else {
                     f = activate(f, cx, |v, w, cx| v.begin(w, cx))
                 }
-                root = root
-                    .child(div().pl(px(12.)).pr(px(8.)).flex_none().child(lettering(
+                    root = root
+                    .child(div().pl(px(if compact { 9. } else { 12. })).pr(px(if compact { 6. } else { 8. })).flex_none().child(lettering(
                         "".into(),
                         self.prompt.clone(),
                         (age - 0.05).max(0.),
                         false,
-                        14.,
+                        fs,
                         p.ink,
                         mw(&self.prompt),
                     )))

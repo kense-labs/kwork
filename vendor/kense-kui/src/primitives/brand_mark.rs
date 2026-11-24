@@ -43,9 +43,9 @@ enum Mark {
 fn identify(name: &str) -> Option<Mark> {
     let name = name.trim().to_ascii_lowercase();
     let mark = match name.as_str() {
-        "kense" | "kense assistant" | "kense 助手" => Mark::Kense,
+        "kense" | "kense assistant" | "kense 助手" | "kense · kar" => Mark::Kense,
         "anthropic" | "claude" => Mark::Claude,
-        "openai" | "chatgpt" | "gpt" => Mark::OpenAi,
+        "openai" | "chatgpt" | "gpt" | "codex" => Mark::OpenAi,
         "google ai" | "google gemini" | "gemini" => Mark::Gemini,
         "mistral" | "mistral ai" => Mark::Mistral,
         "deepseek" => Mark::DeepSeek,
@@ -72,7 +72,9 @@ fn identify(name: &str) -> Option<Mark> {
         "intercom" => Mark::Intercom,
         "zendesk" => Mark::Zendesk,
         _ if name.starts_with("claude ") => Mark::Claude,
-        _ if name.starts_with("gpt-") || name.starts_with("gpt ") => Mark::OpenAi,
+        _ if name.starts_with("gpt-") || name.starts_with("gpt ") || name.starts_with("codex ") => {
+            Mark::OpenAi
+        }
         _ if name.starts_with("gemini ") => Mark::Gemini,
         _ if name.starts_with("mistral ") => Mark::Mistral,
         _ if name.starts_with("grok ") => Mark::XAi,

@@ -17,6 +17,7 @@ pub struct CopyButton {
     text: SharedString,
     label: SharedString,
     icon_only: bool,
+    compact: bool,
     result: Option<bool>,
     previous: Option<bool>,
     clock: PhaseClock,
@@ -37,6 +38,7 @@ impl CopyButton {
             text: text.into(),
             label: label.into(),
             icon_only: false,
+            compact: false,
             result: None,
             previous: None,
             clock: Default::default(),
@@ -48,6 +50,10 @@ impl CopyButton {
     }
     pub fn icon_only(mut self) -> Self {
         self.icon_only = true;
+        self
+    }
+    pub fn with_compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
         self
     }
     pub fn set_text(&mut self, text: impl Into<SharedString>) {
@@ -102,12 +108,19 @@ impl Render for CopyButton {
         let (g, label, ink) = phase(self.result);
         let (old, prev, old_ink) = phase(self.previous);
         let age = self.clock.time(0.26, w, cx);
-        let natural = measure(&label, 14., w);
+        let fs = if self.compact { 12. } else { 14. };
+        let btn_h = if self.compact { 26. } else { 36. };
+        let natural = measure(&label, fs, w);
         let width = self.width.get_or_insert_with(|| Slide::new(natural));
         width.duration(natural, 0.22, cx);
         let visible = width.get(w, cx);
         let scale = 1. - self.pressed.get(w, cx) * if self.icon_only { 0.04 } else { 0.03 };
-        let side = 16. * scale;
+        let side = (if self.compact { 13.5 } else { 16. }) * scale;
+        let idle_ink = if self.compact && self.result.is_none() {
+            p.secondary
+        } else {
+            ink
+        };
         let mut glyph = div().relative().size(px(side));
         if age < 0.10 {
             glyph = glyph.child(div().absolute().inset_0().child(transformed(
@@ -123,7 +136,7 @@ impl Render for CopyButton {
         glyph = glyph.child(div().absolute().inset_0().child(transformed(
             g,
             side,
-            ink.opacity(ease(age / 0.16)),
+            idle_ink.opacity(ease(age / 0.16)),
             0.,
             0.85 + 0.15 * ease(age / 0.16),
             (0., 0.),
@@ -133,12 +146,19 @@ impl Render for CopyButton {
                 1.
             },
         )));
+        let compact = self.compact;
+        let icon_only = self.icon_only;
+        let pad_base = if compact { 36. } else { 50. };
         let f = face(
             self.id.clone(),
             self.label.clone(),
-            36.,
-            Theme::global(cx).tokens.radius.md.into(),
-            if self.icon_only {
+            btn_h,
+            if compact {
+                6.5
+            } else {
+                Theme::global(cx).tokens.radius.md.into()
+            },
+            if icon_only {
                 Tone::Clear
             } else {
                 Tone::Surface
@@ -146,24 +166,31 @@ impl Render for CopyButton {
             cx,
         )
         .border_1()
-        .border_color(if self.icon_only {
+        .border_color(if icon_only {
             transparent_black()
         } else {
             p.line
         })
-        .h(px(36. * scale))
+        .h(px(btn_h * scale))
         .w(px(
-            (if self.icon_only { 36. } else { 50. + visible }) * scale
+            (if icon_only { btn_h } else { pad_base + visible }) * scale
         ))
-        .hover(|s| s.border_color(p.secondary.opacity(0.48)))
+        .when(compact && icon_only, |e| e.px_0())
+        .hover(move |s| {
+            if compact && icon_only {
+                s.bg(p.hover)
+            } else {
+                s.border_color(p.secondary.opacity(0.48))
+            }
+        })
         .child(glyph)
-        .when(!self.icon_only, |e| {
+        .when(!icon_only, |e| {
             e.child(lettering(
                 prev,
                 label.clone(),
                 age,
                 false,
-                14. * scale,
+                fs * scale,
                 p.ink,
                 visible * scale,
             ))
@@ -177,8 +204,8 @@ impl Render for CopyButton {
             .flex()
             .items_center()
             .justify_center()
-            .h(px(36.))
-            .w(px(if self.icon_only { 36. } else { 50. + visible }))
+            .h(px(btn_h))
+            .w(px(if self.icon_only { btn_h } else { pad_base + visible }))
             .child(activate(
                 press(f, cx, |v| &mut v.pressed),
                 cx,

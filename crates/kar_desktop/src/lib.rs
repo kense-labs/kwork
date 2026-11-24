@@ -1,4 +1,4 @@
-//! Pure-Rust GPUI desktop workbench combining KUI components, Claude-style Inset Shell,
+//! Pure-Rust GPUI desktop workbench combining KUI components, Kense architectural monochrome,
 //! Kar Rust SDK (`ChatStore`/`ChatSession`/`HttpChatFeed`/`ChatReplica`), and Kantor Office editors.
 
 extern crate gpui_kit as gpui;
@@ -20,6 +20,7 @@ use gpui::{prelude::*, *};
 use kui::{
     ThemeMode,
     components::{
+        ai_spark::{AiSpark, SparkStatus, SparkTone},
         badge::{Badge, BadgeTone},
         copy_button::CopyButton,
         input::Input,
@@ -48,54 +49,54 @@ pub fn init_runtime_ui(cx: &mut App) {
     apply_unified_theme(ThemeMode::Light, cx);
 }
 
-/// Apply a cohesive Claude-inspired warm Light or Dark theme across KUI (`kui::Theme`) and Kantor (`kantor_theme`).
+/// Apply authentic Kense architectural monochrome tokens (`DESIGN.md` & `BRAND.md`) across KUI and Kantor.
 pub fn apply_unified_theme(mode: ThemeMode, cx: &mut App) {
     {
         let theme = kui::Theme::global_mut(cx);
         theme.set_mode(mode);
         theme.tokens.radius = RadiusTokens {
-            sm: px(7.),
-            md: px(9.),
+            sm: px(6.),
+            md: px(8.),
             lg: px(12.),
-            panel: px(14.),
+            panel: px(12.),
             full: px(9999.),
         };
         theme.tokens.colors = match mode {
             ThemeMode::Light => ColorTokens {
-                background: rgb(0xfaf9f5).into(),
+                background: rgb(0xf6f6f7).into(),
                 surface: rgb(0xffffff).into(),
-                surface_muted: rgb(0xf0eee6).into(),
-                foreground: rgb(0x141413).into(),
-                text_secondary: rgb(0x3d3d3a).into(),
-                text_muted: rgb(0x73726c).into(),
-                border: rgb(0xe3e0d6).into(),
-                border_strong: rgb(0xc7c3b7).into(),
-                accent: rgb(0xc6613f).into(),
+                surface_muted: rgb(0xf4f4f5).into(),
+                foreground: rgb(0x09090b).into(),
+                text_secondary: rgb(0x52525b).into(),
+                text_muted: rgb(0x71717a).into(),
+                border: rgb(0xe4e4e7).into(),
+                border_strong: rgb(0xd4d4d8).into(),
+                accent: rgb(0x171717).into(),
                 accent_foreground: rgb(0xffffff).into(),
-                accent_subtle: rgb(0xf3ece7).into(),
-                danger: rgb(0xb5332a).into(),
+                accent_subtle: rgb(0xf4f4f5).into(),
+                danger: rgb(0xdc2626).into(),
                 danger_foreground: rgb(0xffffff).into(),
-                success: rgb(0x1e7e46).into(),
-                warning: rgb(0xb85d00).into(),
-                focus_outline: rgb(0xc6613f).into(),
+                success: rgb(0x16a34a).into(),
+                warning: rgb(0xd97706).into(),
+                focus_outline: rgb(0x18181b).into(),
             },
             ThemeMode::Dark => ColorTokens {
-                background: rgb(0x1f1e1d).into(),
-                surface: rgb(0x30302e).into(),
-                surface_muted: rgb(0x262624).into(),
-                foreground: rgb(0xfaf9f5).into(),
-                text_secondary: rgb(0xc2c0b6).into(),
-                text_muted: rgb(0x918f86).into(),
-                border: rgb(0x383734).into(),
-                border_strong: rgb(0x52504b).into(),
-                accent: rgb(0xd97757).into(),
-                accent_foreground: rgb(0xffffff).into(),
-                accent_subtle: rgb(0x362823).into(),
-                danger: rgb(0xf97066).into(),
-                danger_foreground: rgb(0x141413).into(),
-                success: rgb(0x5fc88a).into(),
+                background: rgb(0x0c0c0e).into(),
+                surface: rgb(0x18181c).into(),
+                surface_muted: rgb(0x131316).into(),
+                foreground: rgb(0xfafafa).into(),
+                text_secondary: rgb(0xa1a1aa).into(),
+                text_muted: rgb(0x71717a).into(),
+                border: rgb(0x27272a).into(),
+                border_strong: rgb(0x3f3f46).into(),
+                accent: rgb(0xf4f4f5).into(),
+                accent_foreground: rgb(0x09090b).into(),
+                accent_subtle: rgb(0x27272a).into(),
+                danger: rgb(0xf87171).into(),
+                danger_foreground: rgb(0x09090b).into(),
+                success: rgb(0x4ade80).into(),
                 warning: rgb(0xfbbf24).into(),
-                focus_outline: rgb(0xd97757).into(),
+                focus_outline: rgb(0xa1a1aa).into(),
             },
         };
     }
@@ -103,37 +104,37 @@ pub fn apply_unified_theme(mode: ThemeMode, cx: &mut App) {
     let palette = match mode {
         ThemeMode::Light => kantor_theme::Palette {
             dark: false,
-            background: 0xfaf9f5,
-            dark_background: 0xf4f3ec,
-            lighter_background: 0xf0eee6,
-            foreground: 0x141413,
-            dark_foreground: 0x57554e,
-            accent: 0xc6613f,
-            selection: 0xe6e2d6,
-            muted: 0x73726c,
-            red: 0xb5332a,
-            green: 0x1e7e46,
-            yellow: 0xb85d00,
+            background: 0xffffff,
+            dark_background: 0xf4f4f5,
+            lighter_background: 0xfafafb,
+            foreground: 0x09090b,
+            dark_foreground: 0x52525b,
+            accent: 0x18181b,
+            selection: 0xe4e4e7,
+            muted: 0x71717a,
+            red: 0xdc2626,
+            green: 0x16a34a,
+            yellow: 0xd97706,
             blue: 0x2563eb,
-            magenta: 0x7142b6,
-            cyan: 0x08776d,
+            magenta: 0x7c3aed,
+            cyan: 0x0d9488,
         },
         ThemeMode::Dark => kantor_theme::Palette {
             dark: true,
-            background: 0x1f1e1d,
-            dark_background: 0x141413,
-            lighter_background: 0x262624,
-            foreground: 0xfaf9f5,
-            dark_foreground: 0xa3a096,
-            accent: 0xd97757,
-            selection: 0x363430,
-            muted: 0x918f86,
-            red: 0xf97066,
-            green: 0x5fc88a,
+            background: 0x131316,
+            dark_background: 0x0c0c0e,
+            lighter_background: 0x1b1b1f,
+            foreground: 0xfafafa,
+            dark_foreground: 0xa1a1aa,
+            accent: 0x60a5fa,
+            selection: 0x27272a,
+            muted: 0x71717a,
+            red: 0xf87171,
+            green: 0x4ade80,
             yellow: 0xfbbf24,
             blue: 0x60a5fa,
-            magenta: 0xbc9cff,
-            cyan: 0x4fc3b4,
+            magenta: 0xc084fc,
+            cyan: 0x2dd4bf,
         },
     };
     kantor_ui::tokens::apply_palette(&palette, cx);
@@ -153,7 +154,7 @@ pub fn studio_window_options(
         titlebar: Some(TitlebarOptions {
             title: Some(title.into()),
             appears_transparent: true,
-            traffic_light_position: Some(point(px(16.), px(16.))),
+            traffic_light_position: Some(point(px(16.), px(15.))),
         }),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
@@ -165,11 +166,12 @@ pub fn studio_window_options(
     }
 }
 
-/// Stage 1 integration smoke view: renders real KUI controls (`ResizablePanels`, `ThemeSwitch`,
-/// `Badge`, `Input`, `CopyButton`, `pro_btn`) alongside a real Kantor `DocsView` inside our
-/// warm Claude-style rounded Inset frame, proving unified `gpui-pre 0.3.11` type compatibility.
+/// Stage 1 integration smoke view: renders real KUI controls (`ResizablePanels`, `AiSpark`,
+/// `ThemeSwitch`, `Badge`, `Input`, `CopyButton`, `pro_btn`) alongside a real Kantor `DocsView`
+/// inside our Kense monochrome Inset frame, proving unified `gpui-pre 0.3.11` type compatibility.
 pub struct SmokeIntegrationView {
     panels: Entity<ResizablePanels>,
+    spark: Entity<AiSpark>,
     theme_switch: Entity<ThemeSwitch>,
     badge: Entity<Badge>,
     input: Entity<Input>,
@@ -180,14 +182,24 @@ pub struct SmokeIntegrationView {
 
 impl SmokeIntegrationView {
     pub fn new(sample_docx: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let theme_switch = cx.new(|_| ThemeSwitch::new("smoke-theme-switch").with_icon_only(true));
+        let spark = cx.new(|_| {
+            AiSpark::new("smoke-ai-spark")
+                .with_size(18.)
+                .with_tone(SparkTone::Foreground)
+                .with_status(SparkStatus::Idle)
+        });
+        let theme_switch = cx.new(|_| {
+            ThemeSwitch::new("smoke-theme-switch")
+                .with_icon_only(true)
+                .with_compact(true)
+        });
         cx.subscribe(&theme_switch, |_, _, ev: &ThemeChange, cx| {
             apply_unified_theme(ev.next, cx);
             cx.notify();
         })
         .detach();
 
-        let badge = cx.new(|_| Badge::new("gpui-pre 0.3.11 统一类型树", BadgeTone::Success));
+        let badge = cx.new(|_| Badge::new("gpui-pre 0.3.11", BadgeTone::Success));
         let input = cx.new(|cx| {
             Input::new("smoke-kui-input", "新增段落内容 (KUI Input)", window, cx)
                 .with_value("来自同窗 KUI 组件库的原生联动段落", window, cx)
@@ -199,6 +211,7 @@ impl SmokeIntegrationView {
                 "gpui-pre v0.3.11 (KUI + Kantor unified)",
                 "复制依赖信息",
             )
+            .with_compact(true)
         });
         let docs_view = cx.new(|cx| DocsView::new(sample_docx, window, cx));
 
@@ -231,6 +244,7 @@ impl SmokeIntegrationView {
 
         Self {
             panels,
+            spark,
             theme_switch,
             badge,
             input,
@@ -257,7 +271,7 @@ impl SmokeIntegrationView {
                     } else {
                         16.
                     }))
-                    .pr(px(14.))
+                    .pr(px(12.))
                     .window_control_area(WindowControlArea::Drag)
                     .flex()
                     .items_center()
@@ -267,15 +281,15 @@ impl SmokeIntegrationView {
             )
             .child(
                 div()
-                    .px(px(16.))
-                    .py(px(14.))
+                    .px(px(14.))
+                    .py(px(12.))
                     .flex()
                     .flex_col()
-                    .gap(px(14.))
+                    .gap(px(12.))
                     .child(
                         div()
-                            .p(px(16.))
-                            .rounded(px(14.))
+                            .p(px(14.))
+                            .rounded(px(12.))
                             .bg(s.card_bg)
                             .border_1()
                             .border_color(s.border)
@@ -291,20 +305,27 @@ impl SmokeIntegrationView {
                                     .gap(px(8.))
                                     .child(
                                         div()
-                                            .text_size(px(15.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(s.ink)
-                                            .child("同窗原生集成验证"),
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(7.))
+                                            .child(self.spark.clone())
+                                            .child(
+                                                div()
+                                                    .text_size(px(14.))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(s.ink)
+                                                    .child("同窗原生集成验证"),
+                                            ),
                                     )
                                     .child(self.badge.clone()),
                             )
                             .child(
                                 div()
-                                    .text_size(px(13.))
-                                    .line_height(px(20.))
+                                    .text_size(px(12.5))
+                                    .line_height(px(19.))
                                     .text_color(s.text)
                                     .child(format!(
-                                        "左侧 KUI 原生组件（Input / Badge / CopyButton / ThemeSwitch）与右侧 Kantor DocsView 共享唯一 gpui-pre 0.3.11 实例。当前共 {para_count} 个段落，已写入 {} 次。",
+                                        "KUI 原生控件（AiSpark / Input / Badge / CopyButton / ThemeSwitch）与 Kantor DocsView 共享同一 gpui-pre 0.3.11 实例。当前共 {para_count} 个段落，已联动 {} 次。",
                                         self.clicks
                                     )),
                             )
@@ -319,10 +340,10 @@ impl SmokeIntegrationView {
                                     .child(self.copy_btn.clone())
                                     .child(pro_btn(
                                         "smoke-insert-btn",
-                                        "插入段落至右侧 Word",
+                                        "插入段落至 Word",
                                         Some(ProIcon::Plus),
                                         ProBtnStyle::Primary,
-                                        false,
+                                        true,
                                         cx,
                                         |this, window, cx| {
                                             this.clicks += 1;
@@ -334,9 +355,12 @@ impl SmokeIntegrationView {
                                             } else {
                                                 format!("{custom} (#{next})")
                                             };
+                                            this.spark.update(cx, |sp, cx| {
+                                                sp.set_status(SparkStatus::Done, cx);
+                                            });
                                             this.badge.update(cx, |b, cx| {
                                                 b.set(
-                                                    format!("已联动 #{next}"),
+                                                    format!("已写入 #{next}"),
                                                     BadgeTone::Success,
                                                     cx,
                                                 );
@@ -391,12 +415,12 @@ impl SmokeIntegrationView {
         div()
             .size_full()
             .bg(s.stage)
-            .p(px(8.))
+            .p(px(6.))
             .pl_0()
             .child(
                 div()
                     .size_full()
-                    .rounded(px(14.))
+                    .rounded(px(12.))
                     .bg(s.inset_bg)
                     .border_1()
                     .border_color(s.border)
@@ -406,10 +430,10 @@ impl SmokeIntegrationView {
                     .flex_col()
                     .child(
                         div()
-                            .h(px(42.))
-                            .px(px(14.))
+                            .h(px(40.))
+                            .px(px(12.))
                             .border_b_1()
-                            .border_color(s.border)
+                            .border_color(s.border_soft)
                             .bg(s.artifact_bg)
                             .window_control_area(WindowControlArea::Drag)
                             .flex()
@@ -419,25 +443,25 @@ impl SmokeIntegrationView {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(8.))
+                                    .gap(px(7.))
                                     .child(render_office_chip(
                                         crate::types::OfficeKind::Word,
-                                        false,
+                                        true,
                                         &s,
                                     ))
                                     .child(
                                         div()
-                                            .text_size(px(13.))
+                                            .text_size(px(12.5))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(s.ink)
-                                            .child("Kantor DocsView · 原生 GPUI 画布"),
+                                            .child("Kantor DocsView"),
                                     ),
                             )
                             .child(
                                 div()
-                                    .text_size(px(11.5))
+                                    .text_size(px(11.))
                                     .text_color(s.muted)
-                                    .child("纯 Rust · 零 WebView"),
+                                    .child("纯 Rust · 原生 GPUI"),
                             ),
                     )
                     .child(

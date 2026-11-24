@@ -18,6 +18,7 @@ pub struct Alert {
     previous_tone: Severity,
     severity: Severity,
     action: Option<SharedString>,
+    compact_inline: bool,
     clock: PhaseClock,
 }
 pub struct AlertAction;
@@ -34,11 +35,16 @@ impl Alert {
             previous_tone: severity,
             severity,
             action: None,
+            compact_inline: false,
             clock: Default::default(),
         }
     }
     pub fn with_action(mut self, label: impl Into<SharedString>) -> Self {
         self.action = Some(label.into());
+        self
+    }
+    pub fn with_compact_inline(mut self, compact: bool) -> Self {
+        self.compact_inline = compact;
         self
     }
     pub fn replace(&mut self, next: Self, cx: &mut Context<Self>) {
@@ -47,6 +53,9 @@ impl Alert {
         self.previous_tone = self.severity;
         self.severity = next.severity;
         self.action = next.action;
+        if next.compact_inline {
+            self.compact_inline = true;
+        }
         self.clock.restart(cx);
         cx.notify()
     }
@@ -62,6 +71,103 @@ impl Render for Alert {
                 Severity::Info => p.secondary,
             }
         };
+        let glyph_el = {
+            let glyph = |s| {
+                if matches!(s, Severity::Success) {
+                    Glyph::Check
+                } else {
+                    Glyph::Alert
+                }
+            };
+            let age = self.clock.time(0.32, w, cx);
+            let a = if std::mem::discriminant(&self.severity)
+                == std::mem::discriminant(&self.previous_tone)
+            {
+                1.
+            } else {
+                ease(age / 0.26)
+            };
+            let leave = 1. - ease(age / 0.16);
+            let ic_sz = if self.compact_inline { 15. } else { 18. };
+            div()
+                .relative()
+                .flex_none()
+                .mt(px(if self.compact_inline { 1.5 } else { 0. }))
+                .size(px(ic_sz))
+                .child(transformed(
+                    glyph(self.severity),
+                    ic_sz,
+                    color(self.severity).opacity(a),
+                    0.,
+                    0.6 + 0.4 * a,
+                    (0., 0.),
+                    1.,
+                ))
+                .when(a < 1. && leave > 0., |e| {
+                    e.child(div().absolute().inset_0().child(transformed(
+                        glyph(self.previous_tone),
+                        ic_sz,
+                        color(self.previous_tone).opacity(leave),
+                        0.,
+                        0.6 + 0.4 * leave,
+                        (0., 0.),
+                        1.,
+                    )))
+                })
+        };
+        if self.compact_inline {
+            let mut card = row()
+                .id("alert-alert")
+                .role(Role::Alert)
+                .w_full()
+                .items_center()
+                .justify_between()
+                .gap(px(12.))
+                .px(px(13.))
+                .py(px(10.))
+                .rounded(px(10.))
+                .bg(p.panel)
+                .border_1()
+                .border_color(p.line)
+                .text_color(p.ink)
+                .child(
+                    row()
+                        .flex_1()
+                        .min_w_0()
+                        .items_start()
+                        .gap(px(9.))
+                        .child(glyph_el)
+                        .child(
+                            column()
+                                .flex_1()
+                                .min_w_0()
+                                .gap(px(2.))
+                                .child(
+                                    self.title
+                                        .render(13., w, cx)
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::MEDIUM),
+                                )
+                                .child(
+                                    self.body
+                                        .render(12., w, cx)
+                                        .text_size(px(12.))
+                                        .line_height(px(17.))
+                                        .text_color(p.secondary),
+                                ),
+                        ),
+                );
+            if let Some(a) = self.action.clone() {
+                card = card.child(
+                    command("alert-action", a, cx, |_, _, cx| cx.emit(AlertAction))
+                        .h(px(28.))
+                        .px(px(10.))
+                        .text_size(px(12.))
+                        .flex_none(),
+                );
+            }
+            return column().w_full().max_w_full().child(card);
+        }
         column()
             .max_w_full()
             .gap_3()
@@ -73,47 +179,7 @@ impl Render for Alert {
                     .flex_row()
                     .items_start()
                     .gap_3()
-                    .child({
-                        let glyph = |s| {
-                            if matches!(s, Severity::Success) {
-                                Glyph::Check
-                            } else {
-                                Glyph::Alert
-                            }
-                        };
-                        let age = self.clock.time(0.32, w, cx);
-                        let a = if std::mem::discriminant(&self.severity)
-                            == std::mem::discriminant(&self.previous_tone)
-                        {
-                            1.
-                        } else {
-                            ease(age / 0.26)
-                        };
-                        let leave = 1. - ease(age / 0.16);
-                        div()
-                            .relative()
-                            .size(px(18.))
-                            .child(transformed(
-                                glyph(self.severity),
-                                18.,
-                                color(self.severity).opacity(a),
-                                0.,
-                                0.6 + 0.4 * a,
-                                (0., 0.),
-                                1.,
-                            ))
-                            .when(a < 1. && leave > 0., |e| {
-                                e.child(div().absolute().inset_0().child(transformed(
-                                    glyph(self.previous_tone),
-                                    18.,
-                                    color(self.previous_tone).opacity(leave),
-                                    0.,
-                                    0.6 + 0.4 * leave,
-                                    (0., 0.),
-                                    1.,
-                                )))
-                            })
-                    })
+                    .child(glyph_el)
                     .child(
                         column()
                             .gap_1()

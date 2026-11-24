@@ -39,6 +39,8 @@ pub struct InvocationInspector {
     group_open: bool,
     group_epoch: usize,
     compact: Option<bool>,
+    full_width: bool,
+    compact_rows: bool,
     open: Option<usize>,
     copied: Option<(usize, bool)>,
     visibility: fn() -> bool,
@@ -55,10 +57,32 @@ impl InvocationInspector {
             group_open: true,
             group_epoch: 0,
             compact: None,
+            full_width: false,
+            compact_rows: false,
             open: None,
             copied: None,
             visibility: || true,
             clock: Instant::now(),
+        }
+    }
+
+    pub fn with_full_width(mut self, full_width: bool) -> Self {
+        self.full_width = full_width;
+        self
+    }
+
+    pub fn with_compact_rows(mut self, compact_rows: bool) -> Self {
+        self.compact_rows = compact_rows;
+        self
+    }
+
+    pub fn set_group_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.group_open != open {
+            self.group_open = open;
+            if open {
+                self.group_epoch = self.group_epoch.wrapping_add(1);
+            }
+            cx.notify();
         }
     }
 
@@ -194,8 +218,8 @@ impl Render for InvocationInspector {
             },
         )
         .w_full()
-        .h(px(45.))
-        .px(px(14.))
+        .h(px(if self.compact_rows { 36. } else { 45. }))
+        .px(px(if self.compact_rows { 11. } else { 14. }))
         .py_0()
         .gap_2()
         .border_1()
@@ -207,7 +231,7 @@ impl Render for InvocationInspector {
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(px(13.)),
+                .text_size(px(if self.compact_rows { 12.5 } else { 13. })),
         )
         .when(failed > 0, |v| {
             v.child(
@@ -220,24 +244,27 @@ impl Render for InvocationInspector {
             } else {
                 Glyph::Down
             },
-            13.,
+            if self.compact_rows { 12. } else { 13. },
             p.secondary,
         ));
-        let mut root = panel(&self.id, 560., cx).p_0().gap_0().child(
-            div()
-                .on_children_prepainted(move |bounds, _, cx| {
-                    if let Some(head) = bounds.first() {
-                        let narrow = head.size.width + px(2.) < px(440.);
-                        if narrow != compact {
-                            let _ = weak.update(cx, |s, cx| {
-                                s.compact = Some(narrow);
-                                cx.notify();
-                            });
+        let mut root = panel(&self.id, if self.full_width { 9999. } else { 560. }, cx)
+            .p_0()
+            .gap_0()
+            .child(
+                div()
+                    .on_children_prepainted(move |bounds, _, cx| {
+                        if let Some(head) = bounds.first() {
+                            let narrow = head.size.width + px(2.) < px(440.);
+                            if narrow != compact {
+                                let _ = weak.update(cx, |s, cx| {
+                                    s.compact = Some(narrow);
+                                    cx.notify();
+                                });
+                            }
                         }
-                    }
-                })
-                .child(head),
-        );
+                    })
+                    .child(head),
+            );
         let group = Fold::get("tool-rows-fold", self.group_open, 125., 0.26, w, cx);
         if !group.mounted() {
             return root;
@@ -293,7 +320,7 @@ impl Render for InvocationInspector {
                 cx.notify();
             })
             .w_full()
-            .h(px(40.))
+            .h(px(if self.compact_rows { 34. } else { 40. }))
             .py_0()
             .px(px(10.))
             .gap(px(9.))
@@ -301,10 +328,14 @@ impl Render for InvocationInspector {
             .aria_expanded(open)
             .child(
                 div()
-                    .size(px(16.))
+                    .size(px(if self.compact_rows { 14. } else { 16. }))
                     .flex_none()
                     .debug_selector(move || format!("tool-name-{i}"))
-                    .child(tool_mark(&c.name, 16., cx)),
+                    .child(tool_mark(
+                        &c.name,
+                        if self.compact_rows { 14. } else { 16. },
+                        cx,
+                    )),
             )
             .child(action_label)
             .when(!meta.is_empty(), |v| {

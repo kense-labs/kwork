@@ -14,7 +14,7 @@ use kar_desktop::{
 };
 
 const USAGE: &str = "\
-kar-desktop — Pure-Rust GPUI desktop client for Kar + Kantor Office (Claude-style Inset + KUI)
+kar-desktop — Pure-Rust GPUI desktop client for Kar + Kantor Office (Kense Monochrome + KUI)
 
 USAGE:
   kar-desktop [OPTIONS] [FILE...]
@@ -245,7 +245,7 @@ fn main() {
         init_runtime_ui(cx);
 
         let window_options = studio_window_options(
-            "Kar Studio",
+            "Kar",
             size(px(1480.), px(900.)),
             size(px(960.), px(600.)),
             cx,

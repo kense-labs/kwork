@@ -56,6 +56,8 @@ pub struct GlassSegmented {
     last: (f32, f32),
     clock: PhaseClock,
     small: bool,
+    compact: bool,
+    fixed_width: Option<f32>,
     disabled: bool,
     hovered: Option<usize>,
 }
@@ -86,6 +88,8 @@ impl GlassSegmented {
             last: (0., 0.),
             clock: Default::default(),
             small: false,
+            compact: false,
+            fixed_width: None,
             disabled: false,
             hovered: None,
         }
@@ -106,6 +110,19 @@ impl GlassSegmented {
         self.small = small;
         self
     }
+    pub fn with_compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        if compact {
+            self.small = true;
+        }
+        self
+    }
+    pub fn with_width(mut self, width: f32) -> Self {
+        if width.is_finite() && width > 20. {
+            self.fixed_width = Some(width);
+        }
+        self
+    }
     pub fn with_disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -120,6 +137,23 @@ impl GlassSegmented {
             .position(|o| !o.disabled && o.value.as_ref() == value)
         {
             self.select(i, cx);
+        }
+    }
+    /// Synchronize active option smoothly without re-emitting `GlassSegmentChanged`.
+    pub fn sync_value(&mut self, value: &str, cx: &mut Context<Self>) {
+        if let Some(i) = self
+            .options
+            .iter()
+            .position(|o| !o.disabled && o.value.as_ref() == value)
+            && self.selected != Some(i)
+        {
+            self.selected = Some(i);
+            let forward = self.left.value(cx) < i as f32;
+            self.left
+                .duration(i as f32, if forward { 0.36 } else { 0.22 }, cx);
+            self.right
+                .duration(i as f32 + 1., if forward { 0.22 } else { 0.36 }, cx);
+            cx.notify();
         }
     }
     fn select(&mut self, i: usize, cx: &mut Context<Self>) {
@@ -228,50 +262,77 @@ impl Render for GlassSegmented {
         let p = Paint::get(cx);
         let dark = crate::foundation::Theme::global(cx).mode == crate::foundation::ThemeMode::Dark;
         let radius = crate::foundation::Theme::global(cx).tokens.radius.full;
-        let glass_shadow = vec![
-            gpui::BoxShadow {
-                color: white().opacity(if dark { 0.12 } else { 0.5 }),
-                offset: gpui::point(px(0.), px(1.)),
-                blur_radius: px(0.),
-                spread_radius: px(0.),
-                inset: true,
-            },
-            gpui::BoxShadow {
-                color: black().opacity(if dark { 0.3 } else { 0.06 }),
+        let glass_shadow = if self.compact {
+            vec![gpui::BoxShadow {
+                color: black().opacity(if dark { 0.20 } else { 0.03 }),
                 offset: gpui::point(px(0.), px(1.)),
                 blur_radius: px(2.),
                 spread_radius: px(0.),
                 inset: false,
-            },
-            gpui::BoxShadow {
-                color: black().opacity(if dark { 0.55 } else { 0.24 }),
-                offset: gpui::point(px(0.), px(if dark { 12. } else { 10. })),
-                blur_radius: px(if dark { 32. } else { 28. }),
-                spread_radius: px(0.),
-                inset: false,
-            },
-        ];
+            }]
+        } else {
+            vec![
+                gpui::BoxShadow {
+                    color: white().opacity(if dark { 0.12 } else { 0.5 }),
+                    offset: gpui::point(px(0.), px(1.)),
+                    blur_radius: px(0.),
+                    spread_radius: px(0.),
+                    inset: true,
+                },
+                gpui::BoxShadow {
+                    color: black().opacity(if dark { 0.3 } else { 0.06 }),
+                    offset: gpui::point(px(0.), px(1.)),
+                    blur_radius: px(2.),
+                    spread_radius: px(0.),
+                    inset: false,
+                },
+                gpui::BoxShadow {
+                    color: black().opacity(if dark { 0.55 } else { 0.24 }),
+                    offset: gpui::point(px(0.), px(if dark { 12. } else { 10. })),
+                    blur_radius: px(if dark { 32. } else { 28. }),
+                    spread_radius: px(0.),
+                    inset: false,
+                },
+            ]
+        };
         let count = self.options.len().max(1) as f32;
         let l = self.left.get(w, cx).clamp(0., count);
         let r = self.right.get(w, cx).clamp(l, count);
         let stretch = (r - l - 1.).abs().min(1.);
         let bounds = self.bounds.clone();
+        let pad = if self.compact { 2. } else { 4. };
+        let track_h = if self.compact {
+            28.
+        } else if self.small {
+            36.
+        } else {
+            44.
+        };
         let mut root = div()
             .id("glass-segmented")
             .relative()
             .flex()
-            .w_full()
+            .when_some(self.fixed_width, |v, fw| v.w(px(fw)).flex_none())
+            .when(self.fixed_width.is_none(), |v| v.w_full())
             .max_w_full()
-            .p(px(4.))
-            .h(px(if self.small { 36. } else { 44. }))
+            .p(px(pad))
+            .h(px(track_h))
             .rounded(radius)
             .border_1()
             .border_color(if dark {
-                white().opacity(0.1)
+                white().opacity(if self.compact { 0.08 } else { 0.1 })
             } else {
-                p.ink.opacity(0.1)
+                p.ink.opacity(if self.compact { 0.08 } else { 0.1 })
             })
-            .bg(p.panel.opacity(if dark { 0.52 } else { 0.58 }))
+            .bg(if self.compact {
+                if dark {
+                    white().opacity(0.045)
+                } else {
+                    p.ink.opacity(0.04)
+                }
+            } else {
+                p.panel.opacity(if dark { 0.52 } else { 0.58 })
+            })
             .shadow(glass_shadow)
             .overflow_hidden()
             .role(Role::RadioGroup)
@@ -279,11 +340,11 @@ impl Render for GlassSegmented {
             .child(
                 canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {})
                     .absolute()
-                    .inset(px(4.)),
+                    .inset(px(pad)),
             )
             .when(self.selected.is_some(), |v| {
                 v.child(
-                    div().absolute().inset(px(4.)).child(
+                    div().absolute().inset(px(pad)).child(
                         div()
                             .absolute()
                             .left(relative(l / count))
@@ -291,13 +352,27 @@ impl Render for GlassSegmented {
                             .top(relative(stretch * 0.09))
                             .h(relative(1. - stretch * 0.18))
                             .rounded(radius)
-                            .bg(if dark {
+                            .bg(if self.compact {
+                                if dark {
+                                    white().opacity(0.13)
+                                } else {
+                                    white()
+                                }
+                            } else if dark {
                                 white().opacity(0.1).blend(p.bright.opacity(0.3))
                             } else {
                                 white().opacity(0.82).blend(p.bright.opacity(0.14))
                             })
                             .border_1()
-                            .border_color(white().opacity(if dark { 0.16 } else { 0.9 })),
+                            .border_color(if self.compact {
+                                if dark {
+                                    white().opacity(0.12)
+                                } else {
+                                    p.ink.opacity(0.08)
+                                }
+                            } else {
+                                white().opacity(if dark { 0.16 } else { 0.9 })
+                            }),
                     ),
                 )
             });
@@ -305,7 +380,11 @@ impl Render for GlassSegmented {
             let active = self.selected == Some(i);
             let disabled = self.disabled || option.disabled;
             let ink = if active {
-                p.ink.blend(p.bright.opacity(0.7))
+                if self.compact {
+                    p.ink
+                } else {
+                    p.ink.blend(p.bright.opacity(0.7))
+                }
             } else if self.hovered == Some(i) {
                 p.ink
             } else {
@@ -324,10 +403,22 @@ impl Render for GlassSegmented {
                 .flex()
                 .items_center()
                 .justify_center()
-                .gap(px(6.))
-                .px(px(if self.small { 12. } else { 16. }))
+                .gap(px(if self.compact { 4. } else { 6. }))
+                .px(px(if self.compact {
+                    8.
+                } else if self.small {
+                    12.
+                } else {
+                    16.
+                }))
                 .rounded(radius)
-                .text_size(px(if self.small { 12. } else { 14. }))
+                .text_size(px(if self.compact {
+                    12.
+                } else if self.small {
+                    12.
+                } else {
+                    14.
+                }))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(ink)
                 .when(!active && !disabled, |v| v.hover(|s| s.text_color(p.ink)))

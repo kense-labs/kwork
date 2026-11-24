@@ -117,6 +117,7 @@ icon_assets!(
         ChevronsRight,
         FilePlus,
         FileText,
+        NotepadText,
         // PDF signature checker
         ShieldCheck,
         ShieldX,

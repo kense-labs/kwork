@@ -1,5 +1,6 @@
-//! Claude Desktop-inspired Conversational Stage + KUI `AssistantHomeScreen` Double-Deck Composer
-//! + Real KUI Turn Components (`WorkBadge`, `ExplanationNote`, `InvocationInspector`, `PatchReview`, `CopyButton`).
+//! Kense Monochrome Conversational Stage powered by tailored KUI micro-components:
+//! `AiSpark`, `GlassSegmented`, `Alert`, `WorkBadge`, `ExplanationNote`, `InvocationInspector`,
+//! `PatchReview`, `CopyButton`, and KUI `AssistantHomeScreen`'s Double-Deck Composer.
 
 use std::path::Path;
 
@@ -15,7 +16,7 @@ use kui::{
     },
     primitives::{
         control::activate,
-        pro_icons::{ProIcon, pro_icon},
+        pro_icons::{ProIcon, pro_app_artwork, pro_icon},
     },
 };
 
@@ -24,8 +25,8 @@ use crate::{
     types::{ChatAccessMode, FeedConnectionState, OfficeKind},
     ui_primitives::{
         DotTone, HEADER_H, MACOS_TRAFFIC_LIGHT_PAD, StudioPalette, clean_display_doc_name,
-        render_approval_hand, render_claude_spark, render_demo_pill, render_keycap,
-        render_office_chip, render_runtime_mark, render_status_pill, render_tray_folder,
+        render_approval_hand, render_demo_pill, render_doc_outline_icon, render_office_chip,
+        render_runtime_mark, render_status_pill, render_tray_folder,
     },
     workbench::{ComposerPopover, KarWorkbench, WorkspaceLayoutMode, runtime_display_name},
 };
@@ -38,130 +39,31 @@ impl KarWorkbench {
     ) -> AnyElement {
         let s = StudioPalette::get(cx);
 
-        let rt_id = self
-            .projected
-            .info
-            .as_ref()
-            .map(|i| i.runtime.as_str())
-            .unwrap_or(&self.selected_runtime);
-
-        let (crumb_main, crumb_sub) = match &self.access_mode {
-            ChatAccessMode::DemoShowcase => {
-                ("样例对话沙盒".to_owned(), Some("隔离内存样例".to_owned()))
-            }
-            ChatAccessMode::HttpReadOnly { url, .. } => {
-                ("HTTP 只读副本".to_owned(), Some(url.clone()))
-            }
-            _ => match &self.projected.info {
-                Some(info) => {
-                    let ws_name = info
-                        .workspace
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| info.workspace.display().to_string());
-                    (
-                        format!(
-                            "{} · {}",
-                            runtime_display_name(&info.runtime),
-                            &info.id.to_string()[..8]
-                        ),
-                        Some(ws_name),
-                    )
-                }
-                None => {
-                    let ws_name = self
-                        .config
-                        .workspace_dir
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| self.config.workspace_dir.display().to_string());
-                    ("新对话".to_owned(), Some(ws_name))
-                }
-            },
+        let active_id = self.current_chat_id();
+        let header_title: String = match &self.access_mode {
+            ChatAccessMode::DemoShowcase => "演示对话沙盒".into(),
+            ChatAccessMode::HttpReadOnly { .. } => "HTTP 只读副本".into(),
+            _ => active_id
+                .and_then(|cid| self.chat_list.iter().find(|e| e.info.id == cid))
+                .map(|e| e.title.clone())
+                .unwrap_or_else(|| "新对话".into()),
         };
 
-        let (mode_label, mode_tone) = self.compute_mode_pill();
-        let (phase_label, phase_tone) = self.compute_phase_pill();
+        // Contextual status pill — shown ONLY when state is non-default (zero resting clutter!)
+        let contextual_pill = self.compute_contextual_header_pill();
 
-        // Claude Desktop 3-Segment Workspace Mode Switcher (`对话` | `协作` | `画布`)
-        let mode_sensor = pro_selection_sensor();
-        let active_layout_key: SharedString = match self.layout_mode {
-            WorkspaceLayoutMode::ChatFocus => "layout-chat".into(),
-            WorkspaceLayoutMode::Split => "layout-split".into(),
-            WorkspaceLayoutMode::CanvasWide => "layout-wide".into(),
-        };
-        let layouts: [(WorkspaceLayoutMode, &'static str); 3] = [
-            (WorkspaceLayoutMode::ChatFocus, "对话"),
-            (WorkspaceLayoutMode::Split, "协作"),
-            (WorkspaceLayoutMode::CanvasWide, "画布"),
-        ];
-        let seg_hover = s.stage_hover;
-        let layout_switcher = div()
-            .relative()
-            .h(px(30.))
-            .p(px(3.))
-            .rounded(px(9.))
-            .bg(s.tray_bg)
-            .border_1()
-            .border_color(s.border)
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .child(pro_pill_indicator(
-                "kar-layout-mode-pill",
-                active_layout_key,
-                mode_sensor.clone(),
-                6.5,
-                s.card_bg,
-                Some(s.border),
-                false,
-            ))
-            .children(layouts.into_iter().enumerate().map(|(li, (mode, label))| {
-                let active = self.layout_mode == mode;
-                activate(
-                    div()
-                        .id(SharedString::from(format!("hdr-layout-{li}")))
-                        .role(Role::Tab)
-                        .tab_index(0)
-                        .relative()
-                        .h(px(24.))
-                        .px(px(10.))
-                        .rounded(px(6.5))
-                        .when(active, |d| d.child(pro_mark_selected(&mode_sensor)))
-                        .when(!active, |d| d.hover(move |st| st.bg(seg_hover)))
-                        .flex()
-                        .items_center()
-                        .text_size(px(12.))
-                        .font_weight(if active {
-                            FontWeight::MEDIUM
-                        } else {
-                            FontWeight::NORMAL
-                        })
-                        .text_color(if active { s.ink } else { s.muted })
-                        .cursor_pointer()
-                        .child(label),
-                    cx,
-                    move |this, _, cx| {
-                        this.layout_mode = mode;
-                        cx.notify();
-                    },
-                )
-            }));
-
-        // Clear macOS traffic lights when sidebar is collapsed!
+        // Clear macOS traffic lights when sidebar is collapsed
         let left_header_pad = if !self.sidebar_open && cfg!(target_os = "macos") {
             MACOS_TRAFFIC_LIGHT_PAD - 4.
         } else {
             14.
         };
 
+        // 1. Unified 44px Header Bar (every control on a strict 28px height grid)
         let header = div()
             .h(px(HEADER_H))
             .pl(px(left_header_pad))
-            .pr(px(14.))
+            .pr(px(12.))
             .border_b_1()
             .border_color(s.border_soft)
             .window_control_area(WindowControlArea::Drag)
@@ -190,42 +92,21 @@ impl KarWorkbench {
                                 cx.notify();
                             },
                         ))
+                        .when_some(pro_app_artwork("kense", 17., cx), |el, mark| el.child(mark))
                     })
-                    .child(layout_switcher)
                     .child(
                         div()
                             .min_w_0()
-                            .pl(px(4.))
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(render_runtime_mark(rt_id, 14., &s, cx))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(13.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(s.ink)
-                                    .child(crumb_main),
-                            )
-                            .when_some(
-                                crumb_sub.filter(|_| {
-                                    self.layout_mode == WorkspaceLayoutMode::ChatFocus
-                                }),
-                                |d, sub| {
-                                    d.child(div().text_size(px(12.)).text_color(s.faint).child("/"))
-                                        .child(
-                                            div()
-                                                .min_w_0()
-                                                .truncate()
-                                                .text_size(px(12.))
-                                                .text_color(s.muted)
-                                                .child(sub),
-                                        )
-                                },
-                            ),
-                    ),
+                            .max_w(px(340.))
+                            .truncate()
+                            .text_size(px(13.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(s.ink)
+                            .child(header_title),
+                    )
+                    .when_some(contextual_pill, |d, (lbl, tone)| {
+                        d.child(render_status_pill(lbl, tone, &s))
+                    }),
             )
             .child(
                 div()
@@ -233,37 +114,15 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .child(render_status_pill(mode_label, mode_tone, &s))
-                    .child(render_status_pill(phase_label, phase_tone, &s))
-                    .child(self.chat_actions_menu.clone())
-                    .child(pro_icon_btn(
-                        "hdr-toggle-office-pane",
-                        if self.layout_mode == WorkspaceLayoutMode::ChatFocus {
-                            "打开右侧 Kantor Office 协作画布"
-                        } else {
-                            "收起右侧 Office 画布"
-                        },
-                        ProIcon::SidebarRight,
-                        28.,
-                        self.layout_mode != WorkspaceLayoutMode::ChatFocus,
-                        cx,
-                        |this, _, cx| {
-                            this.layout_mode = if this.layout_mode == WorkspaceLayoutMode::ChatFocus
-                            {
-                                WorkspaceLayoutMode::Split
-                            } else {
-                                WorkspaceLayoutMode::ChatFocus
-                            };
-                            cx.notify();
-                        },
-                    )),
+                    .child(self.layout_segmented.clone())
+                    .child(self.chat_actions_menu.clone()),
             );
 
-        // Optional local HTTP/SSE publisher strip
+        // Optional local HTTP/SSE publisher strip (only visible while actively serving SSE)
         let http_host_bar = self.active_http_server_url.clone().map(|srv_url| {
             div()
-                .px(px(16.))
-                .h(px(36.))
+                .px(px(14.))
+                .h(px(34.))
                 .border_b_1()
                 .border_color(s.border_soft)
                 .bg(s.subtle_bg)
@@ -280,7 +139,7 @@ impl KarWorkbench {
                         .gap(px(7.))
                         .text_size(px(12.))
                         .text_color(s.text)
-                        .child(div().size(px(6.)).rounded_full().bg(s.pro.green))
+                        .child(div().size(px(5.5)).rounded_full().bg(s.pro.green))
                         .child(
                             div()
                                 .min_w_0()
@@ -296,7 +155,7 @@ impl KarWorkbench {
                         .gap(px(6.))
                         .child(pro_btn(
                             "btn-spawn-sub-win",
-                            "新窗口观察",
+                            "第二窗口观察",
                             Some(ProIcon::ExternalArrow),
                             ProBtnStyle::Secondary,
                             true,
@@ -305,7 +164,7 @@ impl KarWorkbench {
                         ))
                         .child(pro_btn(
                             "btn-stop-srv-inline",
-                            "停止服务",
+                            "停止广播",
                             None,
                             ProBtnStyle::Ghost,
                             true,
@@ -315,57 +174,11 @@ impl KarWorkbench {
                 )
         });
 
-        // Quiet HTTP Replica Read-Only Capsule
-        let replica_capsule = match (&self.access_mode, &self.connection_state) {
-            (
-                ChatAccessMode::HttpReadOnly { .. },
-                FeedConnectionState::Connected {
-                    cursor,
-                    duplicates_ignored,
-                    gaps_recovered,
-                },
-            ) => {
-                let cur = short_cursor_label(cursor.as_deref().unwrap_or("-"));
-                Some(
-                    div()
-                        .w_full()
-                        .pt(px(10.))
-                        .px(px(18.))
-                        .flex_none()
-                        .flex()
-                        .justify_center()
-                        .child(
-                            div()
-                                .max_w_full()
-                                .h(px(30.))
-                                .px(px(12.))
-                                .rounded_full()
-                                .bg(s.subtle_bg)
-                                .border_1()
-                                .border_color(s.border)
-                                .overflow_hidden()
-                                .flex()
-                                .items_center()
-                                .gap(px(7.))
-                                .text_size(px(11.5))
-                                .text_color(s.text)
-                                .child(pro_icon(ProIcon::Lock, 12., s.muted))
-                                .child(
-                                    div().min_w_0().truncate().child(format!(
-                                        "HTTP 只读副本 (GET /snapshot + /events) · 游标 {cur} · 去重 {duplicates_ignored} · 补缺 {gaps_recovered}"
-                                    )),
-                                ),
-                        ),
-                )
-            }
-            _ => None,
-        };
-
-        // Contextual KUI Alert (provider diagnostics, disconnects, read-only lock, etc.)
+        // Contextual KUI Inline Alert (full-width inside the 680px column)
         let alert_banner = self.show_alert.then(|| {
             div()
                 .w_full()
-                .max_w(px(720.))
+                .max_w(px(680.))
                 .mx_auto()
                 .px(px(22.))
                 .pt(px(12.))
@@ -373,9 +186,6 @@ impl KarWorkbench {
                 .child(self.status_alert.clone())
         });
 
-        // Claude Desktop Signature Experience:
-        // - Empty writable/idle state -> Vertically centered Greeting + Double-Deck Composer + Starter Pills!
-        // - Active thread / HTTP stream -> Editorial turn timeline + Bottom-anchored Double-Deck Composer!
         let use_centered_start = self.projected.turns.is_empty()
             && !self.access_mode.is_http_read_only()
             && !matches!(
@@ -392,14 +202,14 @@ impl KarWorkbench {
                 let turns_snapshot = self.projected.turns.clone();
                 let mut stream = div()
                     .w_full()
-                    .max_w(px(720.))
+                    .max_w(px(680.))
                     .mx_auto()
-                    .px(px(24.))
+                    .px(px(22.))
                     .pt(px(20.))
-                    .pb(px(28.))
+                    .pb(px(24.))
                     .flex()
                     .flex_col()
-                    .gap(px(28.));
+                    .gap(px(26.));
                 for (idx, turn) in turns_snapshot.iter().enumerate() {
                     stream = stream.child(self.render_turn_editorial(idx + 1, turn, &s, cx));
                 }
@@ -412,7 +222,7 @@ impl KarWorkbench {
 
             let bottom_composer = div()
                 .w_full()
-                .max_w(px(720.))
+                .max_w(px(680.))
                 .mx_auto()
                 .px(px(20.))
                 .pt(px(4.))
@@ -447,7 +257,6 @@ impl KarWorkbench {
             .overflow_hidden()
             .child(header)
             .when_some(http_host_bar, |d, bar| d.child(bar))
-            .when_some(replica_capsule, |d, cap| d.child(cap))
             .when_some(alert_banner, |d, al| d.child(al))
             .child(
                 div()
@@ -467,8 +276,10 @@ impl KarWorkbench {
             .into_any_element()
     }
 
-    /// Claude Desktop + KUI `AssistantHomeScreen` Centered Start Screen:
-    /// Starburst Spark + Editorial Greeting + Double-Deck Composer + Starter Pills + Office Artifact Cards!
+    /// Restrained, High-Signal Centered Start Screen:
+    /// 1. Living KUI `AiSpark` + Clean Single-Line Heading
+    /// 2. Monochrome KUI Double-Deck Composer (`max_w(640px)`)
+    /// 3. ONE Single Row of 4 Tactile Quick-Launch Capsules (with spring hover indicator)
     fn render_centered_start_stage(
         &self,
         s: &StudioPalette,
@@ -478,217 +289,99 @@ impl KarWorkbench {
         let has_pinned = self.pinned_target.is_some();
 
         let greeting = if is_demo {
-            "独立演示工作台已就绪"
+            "演示对话沙盒已就绪"
         } else if has_pinned {
-            "已关联文档选区，想怎样润色或分析它？"
+            "已引用文档选区，想怎样修改或分析？"
         } else {
-            "下午好，今天想推进哪份文档或代码？"
+            "今天想推进什么？"
         };
 
-        let sub_greeting = if is_demo {
-            "当前运行于内存隔离沙盒（演示数据），输入任意指令即可体验工具流与文件变更卡片。"
-        } else {
-            "直接输入任务创建真实持久化 Kar 会话，或与右侧原生 Kantor Word / Excel / PPT 画布实时联动。"
-        };
+        // 4 clean, non-redundant capsules (opens Word / Excel / PPT coworking or 3-way Co-Edit!)
+        let chip_sensor = pro_selection_sensor();
+        let hovered_key: SharedString = self
+            .hovered_starter_chip
+            .map(|i| format!("chip-{i}").into())
+            .unwrap_or_else(|| "none".into());
+        let hovered_idx = self.hovered_starter_chip;
 
-        let starter_pills: [(&'static str, &'static str, ProIcon); 5] = [
-            (
-                "审阅文档选区",
-                "请审阅当前绑定的文档内容，提炼核心行动项并给出可直接替换的精炼版本。",
-                ProIcon::PageDoc,
-            ),
-            (
-                "核验预算公式",
-                "请核对当前表格选区的公式逻辑，检查合计行是否覆盖全部明细项并说明口径。",
-                ProIcon::UsageChart,
-            ),
-            (
-                "润色路演文稿",
-                "请结合当前幻灯片标题与要点，给出更有说服力的路演金句与排版建议。",
-                ProIcon::Sparkles,
-            ),
-            (
-                "检查工作区变更",
-                "请检查当前工作区目录中的文件列表，并用简短中文总结当前文件状态。",
-                ProIcon::Terminal,
-            ),
-            (
-                "双写冲突演练",
-                "__OPEN_COEDIT__",
-                ProIcon::GitBranch,
-            ),
+        let quick_actions: [(Option<OfficeKind>, &'static str, &'static str); 4] = [
+            (Some(OfficeKind::Word), "会议纪要 .docx", "sample_minutes.docx"),
+            (Some(OfficeKind::Excel), "预算公式 .xlsx", "sample_formulas.xlsx"),
+            (Some(OfficeKind::Ppt), "产品路演 .pptx", "sample_deck.pptx"),
+            (None, "双写冲突演练", "__COEDIT__"),
         ];
 
-        let chip_bg = s.card_bg;
-        let chip_hover = s.stage_hover;
         let chip_border = s.border;
-        let chip_border_hi = s.border_strong;
         let ink_c = s.ink;
-        let accent_c = s.accent;
+        let text_c = s.text;
         let muted_c = s.muted;
 
-        let pills_row = div()
+        let capsules_row = div()
             .mt(px(16.))
+            .relative()
             .w_full()
             .flex()
             .flex_wrap()
             .justify_center()
             .gap(px(8.))
+            .child(pro_pill_indicator(
+                "kar-start-chip-hover-pill",
+                hovered_key,
+                chip_sensor.clone(),
+                999.,
+                s.subtle_bg,
+                None,
+                false,
+            ))
             .children(
-                starter_pills
+                quick_actions
                     .into_iter()
                     .enumerate()
-                    .map(|(pi, (label, prompt, icon))| {
-                        let is_coedit = prompt == "__OPEN_COEDIT__";
+                    .map(|(ci, (kind_opt, label, target))| {
+                        let is_hov = hovered_idx == Some(ci);
+                        let sensor_ref = chip_sensor.clone();
+                        let icon_el = match kind_opt {
+                            Some(k) => render_doc_outline_icon(k, 14., muted_c),
+                            None => pro_icon(ProIcon::GitBranch, 13.5, muted_c),
+                        };
                         activate(
                             div()
-                                .id(SharedString::from(format!("start-pill-{pi}")))
+                                .id(SharedString::from(format!("start-capsule-{ci}")))
                                 .role(Role::Button)
                                 .tab_index(0)
-                                .h(px(32.))
+                                .relative()
+                                .h(px(30.))
                                 .px(px(12.))
                                 .rounded_full()
-                                .bg(chip_bg)
                                 .border_1()
                                 .border_color(chip_border)
-                                .hover(move |st| st.bg(chip_hover).border_color(chip_border_hi))
+                                .when(is_hov, |d| d.child(pro_mark_selected(&sensor_ref)))
+                                .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                                    let next = (*inside).then_some(ci);
+                                    if this.hovered_starter_chip != next {
+                                        this.hovered_starter_chip = next;
+                                        cx.notify();
+                                    }
+                                }))
                                 .flex()
                                 .items_center()
                                 .gap(px(6.5))
                                 .text_size(px(12.5))
-                                .text_color(ink_c)
+                                .text_color(if is_hov { ink_c } else { text_c })
                                 .cursor_pointer()
-                                .child(pro_icon(
-                                    icon,
-                                    13.5,
-                                    if is_coedit { accent_c } else { muted_c },
-                                ))
+                                .child(icon_el)
                                 .child(label),
                             cx,
                             move |this, window, cx| {
-                                if is_coedit {
+                                if target == "__COEDIT__" {
                                     this.enter_coedit_demo_workshop(window, cx);
                                 } else {
-                                    this.fill_starter_prompt(prompt, window, cx);
+                                    this.open_working_sample(target, window, cx);
                                 }
                             },
                         )
                     }),
             );
-
-        // When in single-column ChatFocus mode, show a sleek 3-card Office Cowork Shelf right underneath!
-        let show_cowork_cards = self.layout_mode == WorkspaceLayoutMode::ChatFocus;
-        let cowork_shelf = show_cowork_cards.then(|| {
-            let cards: [(OfficeKind, &'static str, &'static str, &'static str); 3] = [
-                (
-                    OfficeKind::Word,
-                    "sample_minutes.docx",
-                    "会议纪要.docx",
-                    "段落选区修改与保存重开",
-                ),
-                (
-                    OfficeKind::Excel,
-                    "sample_formulas.xlsx",
-                    "季度预算表.xlsx",
-                    "SUM 公式实时重算验证",
-                ),
-                (
-                    OfficeKind::Ppt,
-                    "sample_deck.pptx",
-                    "产品路演.pptx",
-                    "形状文字与坐标精准调整",
-                ),
-            ];
-            let c_bg = s.card_bg;
-            let c_hover = s.stage_hover;
-            let c_border = s.border;
-            let c_border_hi = s.border_strong;
-            div()
-                .mt(px(26.))
-                .w_full()
-                .flex()
-                .flex_col()
-                .gap(px(10.))
-                .child(
-                    div()
-                        .px(px(4.))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .text_size(px(11.5))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(s.muted)
-                                .child("在右侧开启原生 Kantor Office 协作画布"),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(s.faint)
-                                .child("点击即分栏打开测试副本"),
-                        ),
-                )
-                .child(
-                    div().w_full().flex().gap(px(10.)).children(
-                        cards
-                            .into_iter()
-                            .enumerate()
-                            .map(|(ci, (kind, fname, title, desc))| {
-                                activate(
-                                    div()
-                                        .id(SharedString::from(format!("hero-doc-card-{ci}")))
-                                        .role(Role::Button)
-                                        .tab_index(0)
-                                        .flex_1()
-                                        .min_w_0()
-                                        .p(px(12.))
-                                        .rounded(px(12.))
-                                        .bg(c_bg)
-                                        .border_1()
-                                        .border_color(c_border)
-                                        .hover(move |st| st.bg(c_hover).border_color(c_border_hi))
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(6.))
-                                        .cursor_pointer()
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .justify_between()
-                                                .child(render_office_chip(kind, false, s))
-                                                .child(pro_icon(
-                                                    ProIcon::ExternalArrow,
-                                                    12.,
-                                                    s.faint,
-                                                )),
-                                        )
-                                        .child(
-                                            div()
-                                                .pt(px(2.))
-                                                .text_size(px(13.))
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .text_color(s.ink)
-                                                .truncate()
-                                                .child(title),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(11.5))
-                                                .text_color(s.muted)
-                                                .truncate()
-                                                .child(desc),
-                                        ),
-                                    cx,
-                                    move |this, window, cx| {
-                                        this.open_working_sample(fname, window, cx);
-                                    },
-                                )
-                            }),
-                    ),
-                )
-        });
 
         div()
             .id("kar-centered-start-scroll")
@@ -701,56 +394,39 @@ impl KarWorkbench {
                 div()
                     .my_auto()
                     .w_full()
-                    .max_w(px(688.))
-                    .px(px(24.))
+                    .max_w(px(640.))
+                    .px(px(22.))
                     .py(px(36.))
                     .flex()
                     .flex_col()
                     .items_center()
-                    // 1. Claude-style Starburst Spark + Editorial Greeting
+                    // 1. Living KUI AiSpark + Crisp Monochrome Heading
                     .child(
                         div()
                             .flex()
-                            .flex_col()
                             .items_center()
-                            .text_center()
+                            .justify_center()
                             .gap(px(10.))
+                            .child(self.home_spark.clone())
                             .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(10.))
-                                    .child(render_claude_spark(26., s.accent))
-                                    .when(is_demo, |d| d.child(render_demo_pill("演示数据", s))),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(25.))
-                                    .line_height(px(32.))
+                                    .text_size(px(22.))
+                                    .line_height(px(28.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(s.ink)
                                     .child(greeting),
                             )
-                            .child(
-                                div()
-                                    .max_w(px(520.))
-                                    .text_size(px(13.))
-                                    .line_height(px(20.))
-                                    .text_color(s.muted)
-                                    .child(sub_greeting),
-                            ),
+                            .when(is_demo, |d| d.child(render_demo_pill("演示数据", s))),
                     )
-                    // 2. Centered Double-Deck Composer Tray
+                    // 2. Monochrome KUI Double-Deck Composer
                     .child(
                         div()
-                            .mt(px(24.))
+                            .mt(px(22.))
                             .w_full()
                             .child(self.render_double_deck_composer(s, cx)),
                     )
-                    // 3. Starter Prompt Capsules
-                    .child(pills_row)
-                    // 4. Optional Cowork Office Quick-Launch Shelf
-                    .when_some(cowork_shelf, |d, shelf| d.child(shelf)),
+                    // 3. Single Row of 4 Tactile Capsules
+                    .child(capsules_row),
             )
     }
 
@@ -763,18 +439,18 @@ impl KarWorkbench {
         let (title, sub) = if is_http {
             (
                 "正在监听远程 HTTP/SSE 会话流",
-                "当前连接仅提供 GET /snapshot 与 GET /events 只读视图；新回合与工具事件到达时将实时渲染。",
+                "当前连接提供 GET /snapshot 与 GET /events 只读视图；新回合与工具事件到达时将实时渲染。",
             )
         } else {
             (
-                "只读观察模式（另一客户端持有写入控制器）",
-                "本窗口自动订阅同一持久化会话状态，所有工具执行与回复将实时同步更新。",
+                "只读观察模式",
+                "另一窗口持有本会话写入锁；本窗口实时同步全部回合、工具执行与文件变更。",
             )
         };
         div()
             .w_full()
             .min_h(px(320.))
-            .max_w(px(560.))
+            .max_w(px(520.))
             .mx_auto()
             .px(px(24.))
             .py(px(48.))
@@ -786,7 +462,7 @@ impl KarWorkbench {
             .gap(px(10.))
             .child(
                 div()
-                    .size(px(42.))
+                    .size(px(38.))
                     .rounded_full()
                     .bg(s.subtle_bg)
                     .border_1()
@@ -794,30 +470,27 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(pro_icon(ProIcon::Eye, 18., s.muted)),
+                    .child(pro_icon(ProIcon::Eye, 16., s.muted)),
             )
             .child(
                 div()
-                    .text_size(px(16.5))
+                    .text_size(px(15.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(s.ink)
                     .child(title),
             )
             .child(
                 div()
-                    .max_w(px(440.))
-                    .text_size(px(13.))
-                    .line_height(px(20.))
+                    .max_w(px(420.))
+                    .text_size(px(12.5))
+                    .line_height(px(19.))
                     .text_color(s.muted)
                     .child(sub),
             )
             .into_any_element()
     }
 
-    /// Signature Double-Deck Composer Tray (`AssistantHomeScreen` + Claude Desktop):
-    /// Upper Deck = Elevated `write_card` with `pro_fold` attachment pill, multiline KUI `Editor`,
-    /// `+` Quick Attach popover, Approval Policy popover, inline Runtime Picker popover, and Terracotta Send button.
-    /// Lower Deck = Context tray showing workspace folder & open Office documents pill.
+    /// KUI `AssistantHomeScreen` Double-Deck Monochrome Composer (`28px` harmonic control bar).
     fn render_double_deck_composer(&self, s: &StudioPalette, cx: &mut Context<Self>) -> Div {
         let draft = self.composer_editor.read(cx).value().to_owned();
         let line_count = draft
@@ -825,7 +498,7 @@ impl KarWorkbench {
             .count()
             .max((draft.chars().count() / 54) + 1)
             .clamp(2, 6);
-        let field_h = (line_count as f32) * 21.5;
+        let field_h = (line_count as f32) * 21.0;
 
         let can_type = self.access_mode.is_writable()
             || matches!(self.access_mode, ChatAccessMode::NoneSelected);
@@ -837,7 +510,7 @@ impl KarWorkbench {
             || self.prompt_attempts.values().any(|a| a.in_flight);
         let can_send = can_type && !is_running && !draft.trim().is_empty();
 
-        // 1. Folded Selection Target Attachment Strip inside Upper Deck (`pro_fold`)
+        // 1. Folded Selection Target Attachment Strip (`pro_fold`)
         let has_pinned = self.pinned_target.is_some();
         let pinned_snapshot = self.pinned_target.clone();
         let s_copy = *s;
@@ -847,7 +520,7 @@ impl KarWorkbench {
         let pinned_fold = pro_fold(
             "composer-pinned-target-fold",
             has_pinned,
-            40.,
+            38.,
             0.,
             move || {
                 let Some(tgt) = pinned_snapshot else {
@@ -864,10 +537,11 @@ impl KarWorkbench {
                 let hover_c = s_copy.stage_hover;
                 div()
                     .w_full()
-                    .h(px(34.))
+                    .h(px(32.))
                     .pl(px(8.))
-                    .pr(px(6.))
-                    .rounded(px(10.))
+                    .pr(px(5.))
+                    .mb(px(4.))
+                    .rounded(px(8.5))
                     .bg(s_copy.subtle_bg)
                     .border_1()
                     .border_color(s_copy.border)
@@ -881,7 +555,7 @@ impl KarWorkbench {
                             .min_w_0()
                             .flex()
                             .items_center()
-                            .gap(px(7.))
+                            .gap(px(6.5))
                             .child(render_office_chip(tgt.kind, false, &s_copy))
                             .child(
                                 div()
@@ -910,16 +584,16 @@ impl KarWorkbench {
                             .child(
                                 div()
                                     .id("cmp-jump-target")
-                                    .h(px(24.))
-                                    .px(px(7.))
-                                    .rounded(px(6.))
+                                    .h(px(22.))
+                                    .px(px(6.5))
+                                    .rounded(px(5.5))
                                     .hover(move |st| st.bg(hover_c))
                                     .flex()
                                     .items_center()
                                     .gap(px(3.))
-                                    .text_size(px(11.5))
+                                    .text_size(px(11.))
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(s_copy.accent_ink)
+                                    .text_color(s_copy.ink)
                                     .cursor_pointer()
                                     .on_click(move |_, window, cx| {
                                         if let Some(e) = weak_jump.upgrade() {
@@ -930,13 +604,13 @@ impl KarWorkbench {
                                         }
                                     })
                                     .child("定位")
-                                    .child(pro_icon(ProIcon::ExternalArrow, 11., s_copy.accent_ink)),
+                                    .child(pro_icon(ProIcon::ExternalArrow, 10.5, s_copy.muted)),
                             )
                             .child(
                                 div()
                                     .id("cmp-clear-target")
-                                    .size(px(24.))
-                                    .rounded(px(6.))
+                                    .size(px(22.))
+                                    .rounded(px(5.5))
                                     .hover(move |st| st.bg(hover_c))
                                     .flex()
                                     .items_center()
@@ -950,14 +624,14 @@ impl KarWorkbench {
                                             });
                                         }
                                     })
-                                    .child(pro_icon(ProIcon::Close, 11., s_copy.muted)),
+                                    .child(pro_icon(ProIcon::Close, 10.5, s_copy.muted)),
                             ),
                     )
                     .into_any_element()
             },
         );
 
-        // 2. Composer Action Bar Controls + Spring-Animated Popovers (`pro_presence`)
+        // 2. Composer 28px Control Bar
         let has_office_tab = self.active_office_tab.is_some();
         let hover_pill = s.stage_hover;
         let approval_label = match self.approval_mode {
@@ -969,12 +643,11 @@ impl KarWorkbench {
             .flex()
             .items_center()
             .gap(px(4.))
-            // `+` Add / Open Document Popover Trigger
             .child(
                 div()
                     .id("cmp-plus-btn")
-                    .size(px(30.))
-                    .rounded(px(8.))
+                    .size(px(28.))
+                    .rounded(px(7.))
                     .bg(if self.composer_popover == Some(ComposerPopover::AddContext) {
                         s.stage_active
                     } else {
@@ -995,43 +668,41 @@ impl KarWorkbench {
                             };
                         cx.notify();
                     }))
-                    .child(pro_icon(ProIcon::Plus, 16., s.text)),
+                    .child(pro_icon(ProIcon::Plus, 15., s.text)),
             )
-            // `引用选区` Quick Action when an Office tab is open
             .when(has_office_tab && can_type, |d| {
-                let accent_soft = s.accent_soft;
-                let accent_ink = s.accent_ink;
                 d.child(activate(
                     div()
                         .id("cmp-bind-selection")
                         .role(Role::Button)
                         .tab_index(0)
                         .h(px(28.))
-                        .px(px(9.))
-                        .rounded(px(8.))
-                        .bg(accent_soft)
-                        .hover(move |st| st.opacity(0.88))
+                        .px(px(8.5))
+                        .rounded(px(7.))
+                        .bg(s.subtle_bg)
+                        .border_1()
+                        .border_color(s.border)
+                        .hover(move |st| st.bg(hover_pill))
                         .flex()
                         .items_center()
                         .gap(px(5.))
                         .text_size(px(12.))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(accent_ink)
+                        .text_color(s.ink)
                         .cursor_pointer()
-                        .child(render_claude_spark(12., s.accent))
+                        .child(pro_icon(ProIcon::Pin, 12., s.muted))
                         .child("引用选区"),
                     cx,
                     |this, window, cx| this.bind_active_selection_to_chat(window, cx),
                 ))
             })
-            // Approval Policy Trigger (`请求审批` / `只读拒绝`)
             .when(can_type, |d| {
                 d.child(
                     div()
                         .id("cmp-approval-btn")
                         .h(px(28.))
                         .px(px(8.))
-                        .rounded(px(8.))
+                        .rounded(px(7.))
                         .bg(
                             if self.composer_popover == Some(ComposerPopover::ApprovalPolicy) {
                                 s.stage_active
@@ -1058,12 +729,10 @@ impl KarWorkbench {
                             cx.notify();
                         }))
                         .child(render_approval_hand(13.5, s.muted))
-                        .child(approval_label)
-                        .child(pro_icon(ProIcon::ChevronDown, 11., s.faint)),
+                        .child(approval_label),
                 )
             });
 
-        // Inline Runtime / Model Picker + Send/Stop Button
         let submit_control = if is_running && can_type {
             activate(
                 div()
@@ -1071,8 +740,8 @@ impl KarWorkbench {
                     .role(Role::Button)
                     .aria_label("中止当前回合")
                     .tab_index(0)
-                    .size(px(32.))
-                    .rounded(px(10.))
+                    .size(px(28.))
+                    .rounded(px(8.))
                     .bg(s.stage_active)
                     .border_1()
                     .border_color(s.border_strong)
@@ -1080,13 +749,19 @@ impl KarWorkbench {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .child(div().size(px(9.5)).rounded(px(2.5)).bg(s.ink)),
+                    .child(div().size(px(8.5)).rounded(px(2.)).bg(s.ink)),
                 cx,
                 |this, _, _| this.bridge.send(KarCommand::AbortTurn),
             )
             .into_any_element()
         } else {
-            let send_bg = if can_send { s.accent } else { s.tray_bg };
+            let send_bg = if can_send {
+                s.primary_bg
+            } else if s.dark {
+                hsla(0., 0., 1., 0.08)
+            } else {
+                hsla(0., 0., 0., 0.06)
+            };
             let send_hover = s.accent_hover;
             activate(
                 div()
@@ -1094,8 +769,8 @@ impl KarWorkbench {
                     .role(Role::Button)
                     .aria_label("发送消息")
                     .tab_index(0)
-                    .size(px(32.))
-                    .rounded(px(10.))
+                    .size(px(28.))
+                    .rounded(px(8.))
                     .bg(send_bg)
                     .when(can_send, move |d| {
                         d.hover(move |st| st.bg(send_hover)).cursor_pointer()
@@ -1105,7 +780,7 @@ impl KarWorkbench {
                     .justify_center()
                     .child(pro_icon(
                         ProIcon::ArrowUp,
-                        16.,
+                        15.,
                         if can_send { s.on_primary } else { s.faint },
                     )),
                 cx,
@@ -1117,14 +792,14 @@ impl KarWorkbench {
         let right_controls = div()
             .flex()
             .items_center()
-            .gap(px(6.))
-            // Claude Desktop-style Inline Runtime/Model Selector Pill
+            .gap(px(5.))
             .child(
                 div()
                     .id("cmp-runtime-picker-btn")
                     .h(px(28.))
-                    .px(px(8.5))
-                    .rounded(px(8.))
+                    .pl(px(8.))
+                    .pr(px(6.5))
+                    .rounded(px(7.))
                     .bg(
                         if self.composer_popover == Some(ComposerPopover::RuntimePicker) {
                             s.stage_active
@@ -1135,10 +810,9 @@ impl KarWorkbench {
                     .hover(move |st| st.bg(hover_pill))
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(px(5.5))
                     .text_size(px(12.5))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(s.text)
+                    .text_color(s.ink)
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1154,40 +828,39 @@ impl KarWorkbench {
                     .child(runtime_display_name(&self.selected_runtime))
                     .child(pro_icon(ProIcon::ChevronDown, 11.5, s.muted)),
             )
-            .when(can_type, |d| d.child(render_keycap("⌘↵", s)))
             .child(submit_control);
 
-        // Floating Popover Surfaces anchored cleanly above the composer (`pro_presence`)
         let add_pop = self.render_add_context_popover(s, cx);
         let approval_pop = self.render_approval_popover(s, cx);
         let runtime_pop = self.render_runtime_popover(s, cx);
 
-        // Upper Deck (`write_card`)
+        // Upper Deck (`write_card` — KUI `AssistantHomeScreen` geometry)
         let write_card = div()
             .relative()
             .w_full()
-            .rounded(px(16.))
+            .rounded(px(12.))
             .bg(s.card_bg)
             .border_1()
             .border_color(if can_type { s.border_strong } else { s.border })
             .shadow(s.composer_shadows())
-            .p(px(10.))
+            .pt(px(10.))
+            .px(px(10.))
+            .pb(px(8.))
             .flex()
             .flex_col()
-            .gap(px(6.))
             .child(pinned_fold)
             .child(
                 div()
                     .w_full()
                     .h(px(field_h))
                     .px(px(4.))
-                    .py(px(2.))
                     .child(self.composer_editor.clone()),
             )
             .child(
                 div()
                     .w_full()
-                    .pt(px(2.))
+                    .mt(px(8.))
+                    .h(px(28.))
                     .flex()
                     .items_center()
                     .justify_between()
@@ -1199,7 +872,7 @@ impl KarWorkbench {
             .child(approval_pop)
             .child(runtime_pop);
 
-        // Lower Deck (`32px` Context Tray Row inside outer tray)
+        // Lower Deck (`28px` Whisper-Quiet Context Tray)
         let ws_folder = self
             .config
             .workspace_dir
@@ -1207,18 +880,23 @@ impl KarWorkbench {
             .and_then(|n| n.to_str())
             .map(str::to_owned)
             .unwrap_or_else(|| "workspace".into());
-        let open_doc_count = self.office_tabs.len();
-        let tray_note = if !can_type {
-            "只读观察模式 · 输入已锁定"
+
+        let active_doc_label: Option<String> = self
+            .active_office_tab
+            .and_then(|i| self.office_tabs.get(i))
+            .map(|t| clean_display_doc_name(&t.doc_name(cx)));
+
+        let mode_note: Option<&'static str> = if !can_type {
+            Some("只读已锁定")
         } else if matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
-            "演示沙盒 · 不写入真实存储"
+            Some("演示沙盒")
         } else {
-            "幂等 UUID 重试保护"
+            None
         };
 
         let tray_footer = div()
-            .h(px(30.))
-            .px(px(10.))
+            .h(px(28.))
+            .px(px(8.))
             .flex()
             .items_center()
             .justify_between()
@@ -1228,20 +906,15 @@ impl KarWorkbench {
                     .min_w_0()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(px(6.))
                     .text_size(px(11.5))
                     .text_color(s.muted)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(5.))
-                            .text_color(s.text)
-                            .child(render_tray_folder(13.5, s.accent))
-                            .child(ws_folder),
-                    )
-                    .child(div().text_color(s.faint).child("·"))
-                    .child(div().min_w_0().truncate().child(tray_note)),
+                    .child(render_tray_folder(13.5, s.muted))
+                    .child(div().min_w_0().truncate().child(ws_folder))
+                    .when_some(mode_note, |d, note| {
+                        d.child(div().text_color(s.faint).child("·"))
+                            .child(div().text_color(s.text).child(note))
+                    }),
             )
             .child(activate(
                 div()
@@ -1250,38 +923,37 @@ impl KarWorkbench {
                     .tab_index(0)
                     .h(px(22.))
                     .px(px(7.))
-                    .rounded(px(6.))
+                    .rounded_full()
                     .hover(move |st| st.bg(hover_pill))
                     .flex()
                     .items_center()
                     .gap(px(5.))
                     .text_size(px(11.5))
-                    .text_color(s.text)
+                    .text_color(s.muted)
                     .cursor_pointer()
                     .child(pro_icon(ProIcon::PageDoc, 12., s.muted))
-                    .child(if open_doc_count > 0 {
-                        format!("已开 {open_doc_count} 份 Office 文档")
-                    } else {
-                        "打开 Office 画布".into()
+                    .child(match active_doc_label {
+                        Some(doc) => doc,
+                        None => "Office 画布".into(),
                     }),
                 cx,
                 |this, _, cx| {
-                    this.layout_mode = if this.layout_mode == WorkspaceLayoutMode::ChatFocus {
+                    let next = if this.layout_mode == WorkspaceLayoutMode::ChatFocus {
                         WorkspaceLayoutMode::Split
                     } else {
                         WorkspaceLayoutMode::ChatFocus
                     };
-                    cx.notify();
+                    this.set_layout_mode(next, cx);
                 },
             ));
 
         div()
             .w_full()
-            .rounded(px(20.))
+            .rounded(px(15.))
             .bg(s.tray_bg)
             .border_1()
             .border_color(s.border)
-            .p(px(5.))
+            .p(px(4.))
             .flex()
             .flex_col()
             .gap(px(2.))
@@ -1308,19 +980,23 @@ impl KarWorkbench {
             let items: Vec<(&'static str, &'static str, ProIcon)> = vec![
                 ("bind_sel", "关联当前 Office 文档选区", ProIcon::Pin),
                 ("open_docx", "打开 Word 会议纪要样本 (.docx)", ProIcon::PageDoc),
-                ("open_xlsx", "打开 Excel 预算公式表 (.xlsx)", ProIcon::UsageChart),
+                (
+                    "open_xlsx",
+                    "打开 Excel 预算公式表 (.xlsx)",
+                    ProIcon::UsageChart,
+                ),
                 ("open_pptx", "打开 PPT 产品发布文稿 (.pptx)", ProIcon::Sparkles),
-                ("open_coedit", "启动人机双写协议演练 (样例)", ProIcon::GitBranch),
+                ("open_coedit", "人机双写协议演练 (演示数据)", ProIcon::GitBranch),
             ];
             div()
                 .id("cmp-add-pop-surface")
                 .absolute()
                 .left(px(8.))
-                .bottom(px(44. + 6. * amt))
+                .bottom(px(42. + 6. * amt))
                 .opacity(amt)
-                .w(px(252.))
+                .w(px(248.))
                 .p(px(5.))
-                .rounded(px(12.))
+                .rounded(px(10.))
                 .bg(card_bg)
                 .border_1()
                 .border_color(border_c)
@@ -1329,7 +1005,7 @@ impl KarWorkbench {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .flex()
                 .flex_col()
-                .gap(px(2.))
+                .gap(px(1.5))
                 .children(items.into_iter().enumerate().filter_map(|(ix, (act, label, ic))| {
                     if act == "bind_sel" && !has_tab {
                         return None;
@@ -1338,9 +1014,9 @@ impl KarWorkbench {
                     Some(
                         div()
                             .id(SharedString::from(format!("cmp-add-item-{ix}")))
-                            .h(px(32.))
+                            .h(px(30.))
                             .px(px(9.))
-                            .rounded(px(8.))
+                            .rounded(px(7.))
                             .hover(move |st| st.bg(hover_c))
                             .flex()
                             .items_center()
@@ -1380,7 +1056,7 @@ impl KarWorkbench {
                                     });
                                 }
                             })
-                            .child(pro_icon(ic, 14., muted_c))
+                            .child(pro_icon(ic, 13.5, muted_c))
                             .child(label),
                     )
                 }))
@@ -1396,7 +1072,6 @@ impl KarWorkbench {
         let hover_c = s.stage_hover;
         let ink_c = s.ink;
         let muted_c = s.muted;
-        let accent_c = s.accent;
         let shadows = s.popover_shadows();
         let weak = cx.weak_entity();
 
@@ -1416,12 +1091,12 @@ impl KarWorkbench {
             div()
                 .id("cmp-approval-pop-surface")
                 .absolute()
-                .left(px(42.))
-                .bottom(px(44. + 6. * amt))
+                .left(px(40.))
+                .bottom(px(42. + 6. * amt))
                 .opacity(amt)
-                .w(px(276.))
-                .p(px(6.))
-                .rounded(px(12.))
+                .w(px(268.))
+                .p(px(5.))
+                .rounded(px(10.))
                 .bg(card_bg)
                 .border_1()
                 .border_color(border_c)
@@ -1436,9 +1111,9 @@ impl KarWorkbench {
                     let weak_c = weak.clone();
                     div()
                         .id(SharedString::from(format!("cmp-appr-opt-{ix}")))
-                        .px(px(10.))
-                        .py(px(7.))
-                        .rounded(px(8.))
+                        .px(px(9.))
+                        .py(px(6.5))
+                        .rounded(px(7.))
                         .hover(move |st| st.bg(hover_c))
                         .flex()
                         .items_start()
@@ -1460,7 +1135,7 @@ impl KarWorkbench {
                                 .min_w_0()
                                 .flex()
                                 .flex_col()
-                                .gap(px(2.))
+                                .gap(px(1.5))
                                 .child(
                                     div()
                                         .text_size(px(12.5))
@@ -1477,11 +1152,7 @@ impl KarWorkbench {
                                 ),
                         )
                         .when(selected, |d| {
-                            d.child(
-                                div()
-                                    .pt(px(2.))
-                                    .child(pro_icon(ProIcon::Check, 13.5, accent_c)),
-                            )
+                            d.child(div().pt(px(2.)).child(pro_icon(ProIcon::Check, 13., ink_c)))
                         })
                 }))
                 .into_any_element()
@@ -1497,7 +1168,6 @@ impl KarWorkbench {
         let weak = cx.weak_entity();
         let weak_diag = cx.weak_entity();
 
-        // Pre-render brand marks on `&App` before closure!
         let runtimes = [
             "codex", "claude", "grok", "opencode", "kimi", "pi", "qwen", "cursor",
         ];
@@ -1509,7 +1179,7 @@ impl KarWorkbench {
                     .find(|p| p.id == id)
                     .map(|p| p.status_badge())
                     .unwrap_or(("待探测", false));
-                let mark = render_runtime_mark(id, 14., &s_copy, cx);
+                let mark = render_runtime_mark(id, 13.5, &s_copy, cx);
                 (id.to_owned(), runtime_display_name(id), badge, ok, mark)
             })
             .collect();
@@ -1519,11 +1189,11 @@ impl KarWorkbench {
                 .id("cmp-runtime-pop-surface")
                 .absolute()
                 .right(px(8.))
-                .bottom(px(44. + 6. * amt))
+                .bottom(px(42. + 6. * amt))
                 .opacity(amt)
-                .w(px(268.))
-                .p(px(6.))
-                .rounded(px(12.))
+                .w(px(256.))
+                .p(px(5.))
+                .rounded(px(10.))
                 .bg(s_copy.card_bg)
                 .border_1()
                 .border_color(s_copy.border_strong)
@@ -1532,7 +1202,7 @@ impl KarWorkbench {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .flex()
                 .flex_col()
-                .gap(px(2.));
+                .gap(px(1.5));
 
             for (ix, (id, disp, badge, ok, mark)) in rows_data.into_iter().enumerate() {
                 let is_sel = selected_rt == id;
@@ -1543,9 +1213,9 @@ impl KarWorkbench {
                 list = list.child(
                     div()
                         .id(SharedString::from(format!("cmp-rt-opt-{ix}")))
-                        .h(px(32.))
-                        .px(px(9.))
-                        .rounded(px(8.))
+                        .h(px(30.))
+                        .px(px(8.5))
+                        .rounded(px(7.))
                         .bg(if is_sel {
                             s_copy.stage_active
                         } else {
@@ -1569,7 +1239,7 @@ impl KarWorkbench {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(7.5))
+                                .gap(px(7.))
                                 .child(mark)
                                 .child(
                                     div()
@@ -1587,7 +1257,7 @@ impl KarWorkbench {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(5.5))
+                                .gap(px(5.))
                                 .child(div().size(px(5.5)).rounded_full().bg(dot_c))
                                 .child(
                                     div()
@@ -1596,7 +1266,7 @@ impl KarWorkbench {
                                         .child(badge),
                                 )
                                 .when(is_sel, |d| {
-                                    d.child(pro_icon(ProIcon::Check, 12.5, s_copy.accent))
+                                    d.child(pro_icon(ProIcon::Check, 12., s_copy.ink))
                                 }),
                         ),
                 );
@@ -1606,21 +1276,21 @@ impl KarWorkbench {
             list.child(
                 div()
                     .mt(px(3.))
-                    .pt(px(4.))
+                    .pt(px(3.))
                     .border_t_1()
                     .border_color(s_copy.border_soft)
                     .child(
                         div()
                             .id("cmp-rt-open-health")
                             .h(px(28.))
-                            .px(px(9.))
-                            .rounded(px(7.))
+                            .px(px(8.5))
+                            .rounded(px(6.5))
                             .hover(move |st| st.bg(hover_diag))
                             .flex()
                             .items_center()
                             .justify_between()
                             .text_size(px(11.5))
-                            .text_color(s_copy.accent_ink)
+                            .text_color(s_copy.text)
                             .cursor_pointer()
                             .on_click(move |_, _, cx| {
                                 if let Some(e) = weak_diag.upgrade() {
@@ -1629,59 +1299,79 @@ impl KarWorkbench {
                                     });
                                 }
                             })
-                            .child("查看完整供应商健康面板…")
-                            .child(pro_icon(ProIcon::ExternalArrow, 11.5, s_copy.accent_ink)),
+                            .child("查看完整健康度面板…")
+                            .child(pro_icon(ProIcon::ExternalArrow, 11., s_copy.muted)),
                     ),
             )
             .into_any_element()
         })
     }
 
-    fn compute_mode_pill(&self) -> (String, DotTone) {
-        match &self.access_mode {
-            ChatAccessMode::NoneSelected => ("新会话".into(), DotTone::Accent),
-            ChatAccessMode::WriteController { .. } => ("写入控制".into(), DotTone::Success),
-            ChatAccessMode::LocalReadOnlySubscriber { .. } => ("只读订阅".into(), DotTone::Warning),
-            ChatAccessMode::HttpReadOnly { .. } => ("HTTP 只读".into(), DotTone::Info),
-            ChatAccessMode::DemoShowcase => ("演示数据".into(), DotTone::Warning),
-        }
-    }
-
-    fn compute_phase_pill(&self) -> (String, DotTone) {
-        let in_flight_send = self.prompt_attempts.values().any(|a| a.in_flight);
+    /// Return a header status pill ONLY when in a non-default state (read-only, HTTP, reconnecting, demo, or active run).
+    fn compute_contextual_header_pill(&self) -> Option<(String, DotTone)> {
         match &self.connection_state {
             FeedConnectionState::Reconnecting { attempt, .. } => {
-                (format!("重连中 #{attempt}"), DotTone::Warning)
+                return Some((format!("重连中 #{attempt}"), DotTone::Warning));
             }
-            FeedConnectionState::Disconnected { .. } => ("已断开".into(), DotTone::Danger),
-            FeedConnectionState::Connecting { .. } => ("连接中".into(), DotTone::Info),
-            _ => {
-                if self.projected.turns.is_empty() && !in_flight_send {
-                    ("空闲".into(), DotTone::Neutral)
-                } else if let Some(last) = self.projected.turns.last() {
-                    let any_tool_running = last.items.iter().any(|it| {
-                        matches!(&it.item, Item::Tool { activity, .. } if !activity.finished)
-                    });
-                    if any_tool_running && last.status == TurnStatus::Running {
-                        ("工具运行中".into(), DotTone::Info)
-                    } else if last.status == TurnStatus::Running || in_flight_send {
-                        ("生成中".into(), DotTone::Accent)
-                    } else {
-                        match last.status {
-                            TurnStatus::Completed => ("已完成".into(), DotTone::Success),
-                            TurnStatus::Interrupted => ("已中断".into(), DotTone::Warning),
-                            TurnStatus::Failed => ("失败".into(), DotTone::Danger),
-                            TurnStatus::Aborted => ("已中止".into(), DotTone::Warning),
-                            TurnStatus::Running => ("运行中".into(), DotTone::Info),
-                        }
-                    }
-                } else if in_flight_send {
-                    ("发送中".into(), DotTone::Accent)
+            FeedConnectionState::Disconnected { .. } => {
+                return Some(("连接已断开".into(), DotTone::Danger));
+            }
+            FeedConnectionState::Connecting { .. } => {
+                return Some(("连接中…".into(), DotTone::Info));
+            }
+            FeedConnectionState::Connected {
+                cursor,
+                duplicates_ignored,
+                ..
+            } if self.access_mode.is_http_read_only() => {
+                let cur = short_cursor_label(cursor.as_deref().unwrap_or("-"));
+                let lbl = if *duplicates_ignored > 0 {
+                    format!("只读流 · 游标 {cur} · 去重 {duplicates_ignored}")
                 } else {
-                    ("就绪".into(), DotTone::Neutral)
-                }
+                    format!("只读流 · 游标 {cur}")
+                };
+                return Some((lbl, DotTone::Info));
             }
+            _ => {}
         }
+
+        match &self.access_mode {
+            ChatAccessMode::LocalReadOnlySubscriber { .. } => {
+                return Some(("只读观察".into(), DotTone::Warning));
+            }
+            ChatAccessMode::HttpReadOnly { .. } => {
+                return Some(("HTTP 只读".into(), DotTone::Info));
+            }
+            ChatAccessMode::DemoShowcase => {
+                return Some(("演示数据".into(), DotTone::Warning));
+            }
+            _ => {}
+        }
+
+        let in_flight_send = self.prompt_attempts.values().any(|a| a.in_flight);
+        if let Some(last) = self.projected.turns.last() {
+            if last.status == TurnStatus::Running || in_flight_send {
+                let any_tool = last
+                    .items
+                    .iter()
+                    .any(|it| matches!(&it.item, Item::Tool { activity, .. } if !activity.finished));
+                return Some(if any_tool {
+                    ("工具运行中".into(), DotTone::Info)
+                } else {
+                    ("生成中".into(), DotTone::Accent)
+                });
+            }
+            if matches!(
+                last.status,
+                TurnStatus::Failed | TurnStatus::Interrupted | TurnStatus::Aborted
+            ) {
+                return Some(("已中断".into(), DotTone::Warning));
+            }
+        } else if in_flight_send {
+            return Some(("发送中".into(), DotTone::Accent));
+        }
+
+        None
     }
 
     fn render_turn_editorial(
@@ -1693,13 +1383,6 @@ impl KarWorkbench {
     ) -> Div {
         let turn_id = turn.id;
         let short_uuid = turn_id.to_string()[..8].to_owned();
-        let (st_text, st_dot) = match turn.status {
-            TurnStatus::Running => ("运行中", DotTone::Accent),
-            TurnStatus::Completed => ("已完成", DotTone::Success),
-            TurnStatus::Interrupted => ("已中断", DotTone::Warning),
-            TurnStatus::Failed => ("失败", DotTone::Danger),
-            TurnStatus::Aborted => ("已中止", DotTone::Warning),
-        };
 
         let first_user_msg = turn
             .items
@@ -1720,7 +1403,7 @@ impl KarWorkbench {
         ) && matches!(self.access_mode, ChatAccessMode::WriteController { .. });
         let retry_text = first_user_msg;
 
-        // Claude Artifact-style Selection Target Reference Card (persists across tab switches!)
+        // Selection Target Reference Pill (persists across tab switches)
         let target_ref = self.turn_targets.get(&turn_id).cloned().map(|tgt| {
             let clean_doc = clean_display_doc_name(&tgt.doc_name);
             let loc = tgt.locator.target_label();
@@ -1734,17 +1417,17 @@ impl KarWorkbench {
                     .id(SharedString::from(format!("turn-tgt-{turn_id}")))
                     .role(Role::Button)
                     .tab_index(0)
-                    .max_w(px(420.))
-                    .px(px(11.))
-                    .py(px(8.))
-                    .rounded(px(12.))
+                    .max_w(px(400.))
+                    .px(px(10.))
+                    .py(px(7.))
+                    .rounded(px(10.))
                     .bg(s.card_bg)
                     .border_1()
                     .border_color(s.border)
                     .hover(move |st| st.bg(hover_c).border_color(border_hi))
                     .flex()
                     .flex_col()
-                    .gap(px(3.))
+                    .gap(px(2.5))
                     .cursor_pointer()
                     .child(
                         div()
@@ -1757,7 +1440,7 @@ impl KarWorkbench {
                                     .min_w_0()
                                     .flex()
                                     .items_center()
-                                    .gap(px(6.5))
+                                    .gap(px(6.))
                                     .child(render_office_chip(kind, false, s))
                                     .child(
                                         div()
@@ -1776,9 +1459,9 @@ impl KarWorkbench {
                                     .items_center()
                                     .gap(px(3.))
                                     .text_size(px(11.))
-                                    .text_color(s.accent_ink)
-                                    .child("定位原目标")
-                                    .child(pro_icon(ProIcon::ExternalArrow, 11., s.accent_ink)),
+                                    .text_color(s.muted)
+                                    .child("定位")
+                                    .child(pro_icon(ProIcon::ExternalArrow, 10.5, s.muted)),
                             ),
                     )
                     .when(!excerpt.is_empty(), |d| {
@@ -1797,8 +1480,7 @@ impl KarWorkbench {
             )
         });
 
-        // Separate user bubble(s) and assistant response blocks cleanly
-        let mut user_blocks = div().w_full().flex().flex_col().items_end().gap(px(7.));
+        let mut user_blocks = div().w_full().flex().flex_col().items_end().gap(px(6.));
         if let Some(chip) = target_ref {
             user_blocks = user_blocks.child(chip);
         }
@@ -1808,7 +1490,7 @@ impl KarWorkbench {
             .flex()
             .flex_col()
             .items_start()
-            .gap(px(12.));
+            .gap(px(10.));
         let mut has_agent_items = false;
         let mut tool_file_changes: Vec<(String, &'static str)> = Vec::new();
 
@@ -1819,34 +1501,36 @@ impl KarWorkbench {
             .map(|i| i.runtime.as_str())
             .unwrap_or(&self.selected_runtime);
         let agent_name = if self.projected.is_demo {
-            "Kar 演示助手"
+            "Kar 演示"
         } else {
             runtime_display_name(rt_id)
         };
 
-        // Mount KUI `WorkBadge` while the turn is actively executing; when settled,
-        // render a clean left-aligned Claude-style author eyebrow so prose & tool cards align on one vertical axis!
-        if turn.status == TurnStatus::Running {
-            if let Some(work_badge) = self.turn_badges.get(&turn_id) {
-                has_agent_items = true;
-                agent_blocks = agent_blocks.child(div().w_full().child(work_badge.clone()));
-            }
-        } else {
-            agent_blocks = agent_blocks.child(
-                div()
-                    .h(px(22.))
-                    .flex()
-                    .items_center()
-                    .gap(px(7.))
-                    .child(render_runtime_mark(rt_id, 14.5, s, cx))
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(s.ink)
-                            .child(agent_name),
-                    ),
-            );
+        // Assistant Author Row: KUI `AiSpark` (14.5px monochrome) + Provider Name
+        let spark_el = self.turn_sparks.get(&turn_id).cloned();
+        agent_blocks = agent_blocks.child(
+            div()
+                .h(px(22.))
+                .flex()
+                .items_center()
+                .gap(px(7.))
+                .when_some(spark_el, |d, sp| d.child(sp))
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(s.ink)
+                        .child(agent_name),
+                )
+                .when(self.projected.is_demo, |d| d.child(render_demo_pill("演示数据", s))),
+        );
+
+        // Live KUI `WorkBadge` while running (left-aligned!)
+        if turn.status == TurnStatus::Running
+            && let Some(work_badge) = self.turn_badges.get(&turn_id)
+        {
+            has_agent_items = true;
+            agent_blocks = agent_blocks.child(div().w_full().child(work_badge.clone()));
         }
 
         for (item_ix, tl_item) in turn.items.iter().enumerate() {
@@ -1859,9 +1543,9 @@ impl KarWorkbench {
                     user_blocks = user_blocks.child(
                         div()
                             .max_w(relative(0.84))
-                            .px(px(15.))
-                            .py(px(10.))
-                            .rounded(px(18.))
+                            .px(px(14.))
+                            .py(px(9.))
+                            .rounded(px(14.))
                             .bg(s.user_bubble)
                             .text_size(px(14.))
                             .line_height(px(22.))
@@ -1892,8 +1576,8 @@ impl KarWorkbench {
                     agent_blocks = agent_blocks.child(
                         div()
                             .w_full()
-                            .text_size(px(14.5))
-                            .line_height(px(23.5))
+                            .text_size(px(14.))
+                            .line_height(px(22.5))
                             .text_color(s.ink)
                             .child(if *complete {
                                 text.clone()
@@ -1947,7 +1631,7 @@ impl KarWorkbench {
             }
         }
 
-        // Claude-style File & Artifact Cards
+        // Recorded Workspace & Office File Change Chips
         let mut all_files: Vec<(String, &'static str)> = Vec::new();
         if let Some(cp) = &turn.checkpoint {
             for fc in &cp.files {
@@ -1974,7 +1658,7 @@ impl KarWorkbench {
 
         if !all_files.is_empty() {
             has_agent_items = true;
-            let mut chips = div().pt(px(2.)).flex().flex_wrap().items_center().gap(px(8.));
+            let mut chips = div().pt(px(2.)).flex().flex_wrap().items_center().gap(px(6.));
             for (rel_path, kind_label) in all_files {
                 let full = ws_root.join(&rel_path);
                 let office_kind = OfficeKind::for_path(Path::new(&rel_path));
@@ -1982,25 +1666,25 @@ impl KarWorkbench {
                 let tag_color = match kind_label {
                     "新增" => s.pro.green_ink,
                     "删除" => s.pro.red_ink,
-                    _ => s.accent_ink,
+                    _ => s.muted,
                 };
                 let hover_c = s.stage_hover;
                 let pill = div()
                     .id(SharedString::from(format!("fc-{turn_id}-{rel_path}")))
-                    .h(px(30.))
-                    .pl(px(9.))
-                    .pr(px(10.))
-                    .rounded(px(8.5))
+                    .h(px(28.))
+                    .pl(px(8.))
+                    .pr(px(9.))
+                    .rounded(px(7.5))
                     .bg(s.card_bg)
                     .border_1()
                     .border_color(s.border)
                     .flex()
                     .items_center()
-                    .gap(px(7.))
+                    .gap(px(6.5))
                     .text_size(px(12.))
                     .when_some(office_kind, |d, ok| d.child(render_office_chip(ok, true, s)))
                     .when(office_kind.is_none(), |d| {
-                        d.child(pro_icon(ProIcon::PageDoc, 13., s.muted))
+                        d.child(pro_icon(ProIcon::PageDoc, 12.5, s.muted))
                     })
                     .child(
                         div()
@@ -2008,15 +1692,9 @@ impl KarWorkbench {
                             .text_color(s.ink)
                             .child(rel_path.clone()),
                     )
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(tag_color)
-                            .child(kind_label),
-                    )
+                    .child(div().text_size(px(11.)).text_color(tag_color).child(kind_label))
                     .when(can_open, |d| {
-                        d.child(pro_icon(ProIcon::ExternalArrow, 11.5, s.muted))
+                        d.child(pro_icon(ProIcon::ExternalArrow, 11., s.muted))
                     });
 
                 if can_open {
@@ -2040,8 +1718,8 @@ impl KarWorkbench {
                 div()
                     .w_full()
                     .px(px(12.))
-                    .py(px(9.))
-                    .rounded(px(10.))
+                    .py(px(8.5))
+                    .rounded(px(9.))
                     .bg(s.pro.red_soft)
                     .border_1()
                     .border_color(s.pro.red.opacity(0.24))
@@ -2055,10 +1733,17 @@ impl KarWorkbench {
             );
         }
 
-        // Turn Footer Action Bar: KUI `CopyButton` + Turn Metadata + UUID Retry
+        // Razor-Sharp 26px Turn Footer: 26x26 KUI `CopyButton` + Subtle Meta + Same-UUID Retry
         let copy_btn = self.copy_buttons.get(&turn_id).cloned();
+        let status_note = match turn.status {
+            TurnStatus::Interrupted => Some("已中断"),
+            TurnStatus::Aborted => Some("已中止"),
+            TurnStatus::Failed => Some("执行失败"),
+            _ => None,
+        };
+
         let footer_actions = div()
-            .pt(px(2.))
+            .h(px(26.))
             .flex()
             .items_center()
             .justify_between()
@@ -2067,28 +1752,21 @@ impl KarWorkbench {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(px(6.))
                     .when_some(copy_btn, |d, cb| d.child(cb))
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap(px(5.))
-                            .text_size(px(11.5))
-                            .text_color(s.muted)
-                            .child(
-                                div()
-                                    .size(px(5.5))
-                                    .rounded_full()
-                                    .bg(st_dot.dot_color(s)),
-                            )
-                            .child(format!(
-                                "{agent_name} · 回合 {:02} ({short_uuid}) · {st_text}",
-                                turn_number
-                            )),
+                            .text_size(px(11.))
+                            .text_color(s.faint)
+                            .child(format!("回合 {turn_number:02} · {short_uuid}")),
                     )
-                    .when(self.projected.is_demo, |d| {
-                        d.child(render_demo_pill("演示数据", s))
+                    .when_some(status_note, |d, st| {
+                        d.child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(s.pro.amber_ink)
+                                .child(format!("· {st}")),
+                        )
                     }),
             )
             .when(can_retry, |d| {
@@ -2109,7 +1787,7 @@ impl KarWorkbench {
             .w_full()
             .flex()
             .flex_col()
-            .gap(px(16.))
+            .gap(px(14.))
             .child(user_blocks)
             .when(has_agent_items || turn.status == TurnStatus::Running, |d| {
                 d.child(
@@ -2117,7 +1795,7 @@ impl KarWorkbench {
                         .w_full()
                         .flex()
                         .flex_col()
-                        .gap(px(10.))
+                        .gap(px(6.))
                         .child(agent_blocks)
                         .child(footer_actions),
                 )
@@ -2127,7 +1805,7 @@ impl KarWorkbench {
     fn render_permission_dock(&self, s: &StudioPalette, cx: &mut Context<Self>) -> Div {
         let mut stack = div()
             .w_full()
-            .max_w(px(720.))
+            .max_w(px(680.))
             .mx_auto()
             .px(px(20.))
             .pb(px(6.))
@@ -2148,8 +1826,8 @@ impl KarWorkbench {
 
             stack = stack.child(
                 div()
-                    .p(px(12.))
-                    .rounded(px(14.))
+                    .p(px(11.))
+                    .rounded(px(12.))
                     .bg(s.card_bg)
                     .border_1()
                     .border_color(s.border_strong)
@@ -2157,24 +1835,24 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap(px(12.))
+                    .gap(px(10.))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .flex()
                             .items_center()
-                            .gap(px(10.))
+                            .gap(px(9.))
                             .child(
                                 div()
-                                    .size(px(30.))
-                                    .rounded(px(8.))
+                                    .size(px(28.))
+                                    .rounded(px(7.))
                                     .bg(s.pro.amber_soft)
                                     .flex_none()
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(pro_icon(ProIcon::Shield, 15., s.pro.amber_ink)),
+                                    .child(pro_icon(ProIcon::Shield, 14., s.pro.amber_ink)),
                             )
                             .child(
                                 div()
@@ -2184,14 +1862,14 @@ impl KarWorkbench {
                                     .flex_col()
                                     .child(
                                         div()
-                                            .text_size(px(13.))
+                                            .text_size(px(12.5))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(s.ink)
                                             .child(format!("工具执行需要确认 · {}", req.method)),
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(12.))
+                                            .text_size(px(11.5))
                                             .text_color(s.muted)
                                             .truncate()
                                             .child(req.body.to_string()),
@@ -2240,8 +1918,8 @@ impl KarWorkbench {
 }
 
 fn short_cursor_label(raw: &str) -> String {
-    if raw.len() > 22 {
-        format!("{}…", &raw[..22])
+    if raw.len() > 18 {
+        format!("{}…", &raw[..18])
     } else {
         raw.to_owned()
     }

@@ -53,6 +53,8 @@ pub struct Field<S: FieldStyle> {
     note_clock: PhaseClock,
     action_motion: Slide,
     height: f32,
+    compact_bar: bool,
+    trailing_hint: Option<SharedString>,
     resize: Option<(Pixels, f32)>,
     _sub: Subscription,
     style: PhantomData<S>,
@@ -101,10 +103,25 @@ impl<S: FieldStyle> Field<S> {
             } else {
                 44.
             },
+            compact_bar: false,
+            trailing_hint: None,
             resize: None,
             _sub: sub,
             style: PhantomData,
         }
+    }
+    pub fn with_compact_bar(mut self, height: f32) -> Self {
+        self.compact_bar = true;
+        if height.is_finite() && height >= 24. {
+            self.height = height;
+        } else {
+            self.height = 30.;
+        }
+        self
+    }
+    pub fn with_trailing_hint(mut self, hint: impl Into<SharedString>) -> Self {
+        self.trailing_hint = Some(hint.into());
+        self
     }
     pub fn with_value(self, value: impl Into<String>, w: &Window, cx: &mut Context<Self>) -> Self {
         self.editor.update(cx, |s, cx| s.set_value(value, w, cx));
@@ -204,29 +221,31 @@ impl<S: FieldStyle> Render for Field<S> {
                 w.request_virtual_keyboard()
             });
         let content = self.editor.clone();
+        let compact = self.compact_bar;
         let mut shell = div()
             .relative()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(px(if compact { 6. } else { 8. }))
             .w_full()
             .min_w_0()
             .h(px(self.height))
             .flex_none()
-            .rounded(r.md)
+            .rounded(if compact { px(7.5) } else { r.md })
             .border_1()
             .bg(p.panel)
             .border_color(if !self.error.is_empty() {
                 p.danger
             } else if focused {
-                p.ink
+                if compact { p.secondary } else { p.ink }
             } else {
                 p.line
             })
             .when(!disabled && !focused && self.error.is_empty(), |e| {
                 e.hover(move |s| s.border_color(p.faint))
             })
-            .px(px(12.))
+            .px(px(if compact { 8.5 } else { 12. }))
+            .when(compact, |e| e.text_size(px(12.5)))
             .when(multi, |e| e.py(px(10.)))
             .on_mouse_down(MouseButton::Left, move |_, w, cx| {
                 if !content.read(cx).disabled {
@@ -235,7 +254,11 @@ impl<S: FieldStyle> Render for Field<S> {
                 }
             });
         if search {
-            shell = shell.child(icon(Glyph::Search, 16., p.secondary))
+            shell = shell.child(icon(
+                Glyph::Search,
+                if compact { 13.5 } else { 16. },
+                p.secondary,
+            ))
         }
         shell = shell.child(div().flex_1().min_w_0().h_full().child(self.editor.clone()));
         if secret || search {
@@ -246,11 +269,13 @@ impl<S: FieldStyle> Render for Field<S> {
             } else {
                 l.text("Show password", "显示密码")
             };
-            let mut slot = div().relative().size(px(30.)).flex_none();
+            let slot_sz = if compact { 20. } else { 30. };
             if secret || has_value || slide > 0.01 {
-                let action = face("trailing", name, 30., r.md.into(), Tone::Clear, cx)
+                let mut slot = div().relative().size(px(slot_sz)).flex_none();
+                let action = face("trailing", name, slot_sz, r.md.into(), Tone::Clear, cx)
                     .tab_stop(!disabled && (secret || has_value))
                     .w_full()
+                    .when(compact, |e| e.px_0())
                     .hover(move |s| s.bg(p.hover))
                     .when(secret, |e| e.aria_toggled(revealed.into()))
                     .opacity(if secret { 1. } else { slide })
@@ -272,7 +297,7 @@ impl<S: FieldStyle> Render for Field<S> {
                     } else {
                         transformed(
                             Glyph::Close,
-                            16.,
+                            if compact { 12.5 } else { 16. },
                             p.secondary,
                             0.,
                             0.8 + 0.2 * slide,
@@ -297,9 +322,27 @@ impl<S: FieldStyle> Render for Field<S> {
                             s.clear(w, cx)
                         }
                     }));
-                slot = slot.child(action)
+                slot = slot.child(action);
+                shell = shell.child(slot);
+            } else if let Some(hint) = self.trailing_hint.clone() {
+                shell = shell.child(
+                    div()
+                        .h(px(18.))
+                        .px(px(5.))
+                        .rounded(px(4.5))
+                        .bg(p.stage)
+                        .border_1()
+                        .border_color(p.line)
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .text_size(px(10.))
+                        .text_color(p.secondary)
+                        .child(hint),
+                );
+            } else if !compact {
+                shell = shell.child(div().relative().size(px(slot_sz)).flex_none());
             }
-            shell = shell.child(slot)
         }
         if multi && !disabled {
             let handle = div()
@@ -376,10 +419,10 @@ impl<S: FieldStyle> Render for Field<S> {
             .w_full()
             .text_color(p.ink)
             .when(disabled, |e| e.opacity(0.55))
-            .child(label)
+            .when(!compact, |e| e.child(label))
             .child(
                 div()
-                    .mt(px(7.))
+                    .when(!compact, |d| d.mt(px(7.)))
                     .on_children_prepainted({
                         let width = self.width.clone();
                         move |b, _, _| {

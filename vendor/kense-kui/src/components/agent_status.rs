@@ -19,6 +19,7 @@ pub struct WorkBadge {
     pub steps: Vec<Step>,
     open: bool,
     working: bool,
+    compact_left: bool,
     ring: PhaseClock,
 }
 impl WorkBadge {
@@ -36,8 +37,13 @@ impl WorkBadge {
             elapsed: 0,
             open: false,
             working: false,
+            compact_left: false,
             ring: PhaseClock::default(),
         }
+    }
+    pub fn with_compact_left(mut self, compact_left: bool) -> Self {
+        self.compact_left = compact_left;
+        self
     }
 }
 impl Render for WorkBadge {
@@ -65,12 +71,14 @@ impl Render for WorkBadge {
             0.
         };
         let text: SharedString = self.activity.clone().into();
-        let width = (measure(&text, 14., w).ceil() + 4.)
+        let fs = if self.compact_left { 12.5 } else { 14. };
+        let width = (measure(&text, fs, w).ceil() + 4.)
             .min((f32::from(w.viewport_size().width) - 120.).max(24.));
         let width = animated_value("activity-width", width, 0.24, w, cx);
         column()
             .id(id)
-            .items_center()
+            .when(self.compact_left, |c| c.items_start())
+            .when(!self.compact_left, |c| c.items_center())
             .w_full()
             .gap_0()
             .child(
@@ -84,6 +92,7 @@ impl Render for WorkBadge {
                     },
                 )
                 .aria_expanded(self.open)
+                .when(self.compact_left, |e| e.h(px(32.)).py_0().text_size(px(12.5)))
                 .rounded(radius)
                 .border_1()
                 .border_color(p.line)
