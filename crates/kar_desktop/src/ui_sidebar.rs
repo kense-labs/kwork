@@ -603,19 +603,31 @@ impl KarWorkbench {
                                     .flex_col()
                                     .child(
                                         div()
-                                            .text_size(px(12.5))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(s.ink)
-                                            .truncate()
-                                            .child(format!(
-                                                "{} · {prov_status_text}",
-                                                runtime_display_name(&self.selected_runtime)
-                                            )),
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .gap(px(4.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.5))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(s.ink)
+                                                    .truncate()
+                                                    .child(runtime_display_name(
+                                                        &self.selected_runtime,
+                                                    )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(10.5))
+                                                    .text_color(s.muted)
+                                                    .child(prov_status_text),
+                                            ),
                                     )
                                     .child(
                                         div()
                                             .text_size(px(10.5))
-                                            .text_color(s.muted)
+                                            .text_color(s.faint)
                                             .truncate()
                                             .child(format!("ChatStore · {store_tail}")),
                                     ),

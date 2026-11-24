@@ -1534,12 +1534,12 @@ impl KarWorkbench {
                 .flex_col()
                 .gap(px(2.));
 
-            for (ix, (id, disp, badge, ok, _)) in rows_data.iter().enumerate() {
-                let is_sel = &selected_rt == id;
-                let id_owned = id.clone();
+            for (ix, (id, disp, badge, ok, mark)) in rows_data.into_iter().enumerate() {
+                let is_sel = selected_rt == id;
+                let id_owned = id;
                 let weak_c = weak.clone();
                 let hover_c = s_copy.stage_hover;
-                let dot_c = if *ok { s_copy.pro.green } else { s_copy.pro.amber };
+                let dot_c = if ok { s_copy.pro.green } else { s_copy.pro.amber };
                 list = list.child(
                     div()
                         .id(SharedString::from(format!("cmp-rt-opt-{ix}")))
@@ -1569,8 +1569,8 @@ impl KarWorkbench {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(7.))
-                                .child(div().size(px(6.)).rounded_full().bg(dot_c))
+                                .gap(px(7.5))
+                                .child(mark)
                                 .child(
                                     div()
                                         .text_size(px(12.5))
@@ -1580,19 +1580,20 @@ impl KarWorkbench {
                                             FontWeight::NORMAL
                                         })
                                         .text_color(s_copy.ink)
-                                        .child(*disp),
+                                        .child(disp),
                                 ),
                         )
                         .child(
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(5.))
+                                .gap(px(5.5))
+                                .child(div().size(px(5.5)).rounded_full().bg(dot_c))
                                 .child(
                                     div()
                                         .text_size(px(11.))
                                         .text_color(s_copy.muted)
-                                        .child(*badge),
+                                        .child(badge),
                                 )
                                 .when(is_sel, |d| {
                                     d.child(pro_icon(ProIcon::Check, 12.5, s_copy.accent))
