@@ -72,6 +72,12 @@ impl KarWorkbench {
                     .child("Office 画布"),
             );
         } else {
+            let tab_count = self.office_tabs.len();
+            let label_max_w = match tab_count {
+                0 | 1 => 176.0,
+                2 => 106.0,
+                _ => 76.0,
+            };
             for (idx, tab) in self.office_tabs.iter().enumerate() {
                 let selected = self.active_office_tab == Some(idx);
                 let clean_name = clean_display_doc_name(&tab.doc_name(cx));
@@ -80,20 +86,22 @@ impl KarWorkbench {
                 let kind = tab.kind;
                 let tid = tab.id;
                 let hover_c = s.stage_hover;
+                let show_full_demo_pill = is_demo && (selected || tab_count <= 2);
+                let show_compact_demo_dot = is_demo && !show_full_demo_pill;
 
                 tabs_row = tabs_row.child(
                     div()
                         .relative()
                         .h(px(30.))
-                        .pl(px(8.))
-                        .pr(px(5.))
+                        .pl(px(7.))
+                        .pr(px(if selected || tab_count <= 2 { 5. } else { 7. }))
                         .rounded(px(7.))
                         .group("otab-item")
                         .when(selected, |d| d.child(pro_mark_selected(&tab_sensor)))
                         .when(!selected, |d| d.hover(move |st| st.bg(hover_c)))
                         .flex()
                         .items_center()
-                        .gap(px(5.))
+                        .gap(px(4.))
                         .child(activate(
                             div()
                                 .id(SharedString::from(format!("office-tab-{tid}")))
@@ -101,12 +109,12 @@ impl KarWorkbench {
                                 .tab_index(0)
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
+                                .gap(px(5.))
                                 .cursor_pointer()
                                 .child(render_office_chip(kind, true, &s))
                                 .child(
                                     div()
-                                        .max_w(px(132.))
+                                        .max_w(px(label_max_w))
                                         .truncate()
                                         .text_size(px(12.5))
                                         .font_weight(if selected {
@@ -117,10 +125,12 @@ impl KarWorkbench {
                                         .text_color(if selected { s.ink } else { s.muted })
                                         .child(clean_name),
                                 )
-                                .when(dirty, |d| {
+                                .when(dirty || show_compact_demo_dot, |d| {
                                     d.child(div().size(px(5.)).rounded_full().bg(s.pro.amber))
                                 })
-                                .when(is_demo, |d| d.child(render_demo_pill("演示", &s))),
+                                .when(show_full_demo_pill, |d| {
+                                    d.child(render_demo_pill("演示", &s))
+                                }),
                             cx,
                             move |this, _, cx| {
                                 this.active_office_tab = Some(idx);
@@ -140,39 +150,44 @@ impl KarWorkbench {
                                 cx.notify();
                             },
                         ))
-                        .child(
-                            div()
-                                .when(!selected, |d| {
-                                    d.opacity(0.).group_hover("otab-item", |st| st.opacity(1.))
-                                })
-                                .child(activate(
-                                    div()
-                                        .id(SharedString::from(format!("office-tab-close-{tid}")))
-                                        .role(Role::Button)
-                                        .aria_label("关闭文档标签")
-                                        .tab_index(0)
-                                        .size(px(18.))
-                                        .rounded(px(4.5))
-                                        .hover(move |st| st.bg(hover_c))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .cursor_pointer()
-                                        .child(pro_icon(ProIcon::Close, 10., s.faint)),
-                                    cx,
-                                    move |this, _, cx| {
-                                        if idx < this.office_tabs.len() {
-                                            this.office_tabs.remove(idx);
-                                            this.active_office_tab =
-                                                this.office_tabs.len().checked_sub(1);
-                                            if !this.office_tabs.iter().any(|t| t.is_demo) {
-                                                this.coedit_panel_open = false;
+                        .when(selected || tab_count <= 2, |d| {
+                            d.child(
+                                div()
+                                    .when(!selected, |el| {
+                                        el.opacity(0.)
+                                            .group_hover("otab-item", |st| st.opacity(1.))
+                                    })
+                                    .child(activate(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "office-tab-close-{tid}"
+                                            )))
+                                            .role(Role::Button)
+                                            .aria_label("关闭文档标签")
+                                            .tab_index(0)
+                                            .size(px(16.))
+                                            .rounded(px(4.))
+                                            .hover(move |st| st.bg(hover_c))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .cursor_pointer()
+                                            .child(pro_icon(ProIcon::Close, 9.5, s.faint)),
+                                        cx,
+                                        move |this, _, cx| {
+                                            if idx < this.office_tabs.len() {
+                                                this.office_tabs.remove(idx);
+                                                this.active_office_tab =
+                                                    this.office_tabs.len().checked_sub(1);
+                                                if !this.office_tabs.iter().any(|t| t.is_demo) {
+                                                    this.coedit_panel_open = false;
+                                                }
+                                                cx.notify();
                                             }
-                                            cx.notify();
-                                        }
-                                    },
-                                )),
-                        ),
+                                        },
+                                    )),
+                            )
+                        }),
                 );
             }
         }
@@ -253,7 +268,7 @@ impl KarWorkbench {
                             ))
                             .child(pro_btn(
                                 "btn-office-roundtrip",
-                                "重开核验",
+                                "重开",
                                 Some(ProIcon::Refresh),
                                 ProBtnStyle::Secondary,
                                 true,
@@ -267,9 +282,9 @@ impl KarWorkbench {
                             el.child(pro_btn(
                                 "btn-toggle-coedit-panel",
                                 if self.coedit_panel_open {
-                                    "收起裁决"
+                                    "收起"
                                 } else {
-                                    "展开裁决"
+                                    "裁决"
                                 },
                                 Some(ProIcon::GitBranch),
                                 ProBtnStyle::Secondary,

@@ -314,7 +314,7 @@ fn main() {
             let wb_entity = entity;
             cx.spawn(async move |cx| {
                 cx.background_executor()
-                    .timer(Duration::from_millis(650))
+                    .timer(Duration::from_millis(850))
                     .await;
                 let _ = win_handle.update(cx, |_, window, cx| {
                     wb_entity.update(cx, |wb, cx| {

@@ -587,7 +587,22 @@ pub fn materialize_coedit_demo_files(demo_dir: &Path) -> Result<(PathBuf, PathBu
         {
             xfrm.x = (2.0 * EMU_PER_CM) as i64;
             xfrm.y = (3.0 * EMU_PER_CM) as i64;
+            xfrm.cy = (3.6 * EMU_PER_CM) as i64;
             let _ = pres.set_xfrm((0, 0), xfrm, false);
+        }
+    }
+    if pres.slide(0).shapes.len() >= 2 {
+        let _ = pres.set_shape_text((0, 1), "纯 Rust · GPUI · Kantor 双写协议演练（演示数据）");
+        if let Some(mut xfrm) = pres
+            .slide(0)
+            .shapes
+            .get(1)
+            .and_then(|s| s.xfrm)
+            .or_else(|| pres.placed((0, 1)).map(|p| p.xfrm))
+        {
+            xfrm.x = (6.5 * EMU_PER_CM) as i64;
+            xfrm.y = (11.2 * EMU_PER_CM) as i64;
+            let _ = pres.set_xfrm((0, 1), xfrm, false);
         }
     }
     pres.save_as(&ppt_path)?;
