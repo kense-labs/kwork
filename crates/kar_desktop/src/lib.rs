@@ -2,30 +2,50 @@
 
 extern crate gpui_kit as gpui;
 
+pub mod coedit;
+pub mod kar_bridge;
+pub mod office_host;
+pub mod types;
+pub mod workbench;
+
 use std::path::PathBuf;
 
 use docs_ui::DocsView;
 use gpui::{prelude::*, *};
-use kui::components::{
-    badge::{Badge, BadgeTone},
-    button::Button,
-    input::Input,
-    resizable_panels::{Pane, ResizablePanels},
+use kui::{
+    ThemeMode,
+    components::{
+        badge::{Badge, BadgeTone},
+        button::Button,
+        input::Input,
+        resizable_panels::{Pane, ResizablePanels},
+    },
 };
 
 /// Initialize shared GPUI Kit, Kantor Office editors, and KUI foundation globals.
 pub fn init_runtime_ui(cx: &mut App) {
     gpui_kit::init(cx);
     kantor_ui::widget_strings::init();
-    let palette =
-        kantor_theme::catalog::resolve(&kantor_theme::catalog::ThemeId::parse("light"));
-    kantor_ui::tokens::apply_palette(&palette, cx);
-    kantor_ui::fonts::apply(None, cx);
     kantor_ui::find_bar::init(cx);
     sheets_ui::init(cx);
     docs_ui::init(cx);
     slides_ui::init(cx);
     kui::init(cx);
+    apply_unified_theme(ThemeMode::Light, cx);
+}
+
+/// Apply a cohesive Light or Dark theme across both KUI (`kui::Theme`) and Kantor (`kantor_theme`).
+pub fn apply_unified_theme(mode: ThemeMode, cx: &mut App) {
+    kui::Theme::global_mut(cx).set_mode(mode);
+    let kantor_id = match mode {
+        ThemeMode::Light => "ghostty:GitHub Light Default",
+        ThemeMode::Dark => "ghostty:GitHub Dark Default",
+    };
+    let palette =
+        kantor_theme::catalog::resolve(&kantor_theme::catalog::ThemeId::parse(kantor_id));
+    kantor_ui::tokens::apply_palette(&palette, cx);
+    kantor_ui::fonts::apply(None, cx);
+    cx.refresh_windows();
 }
 
 /// Stage 1 integration smoke view: renders real KUI controls alongside a real Kantor `DocsView`
