@@ -8,6 +8,7 @@ use kar_desktop::{
     SmokeIntegrationView,
     coedit::{ScenarioKey, UserResolutionChoice},
     init_runtime_ui,
+    kar_bridge::KarCommand,
     workbench::{KarWorkbench, WorkbenchConfig},
 };
 
@@ -44,6 +45,7 @@ struct CliOptions {
     coedit_steps: Vec<&'static str>,
     coedit_resolve: Option<UserResolutionChoice>,
     bind_selection: bool,
+    new_chat: bool,
     switch_tab_after_bind: Option<usize>,
     select_runtime: Option<String>,
     select_cell: Option<String>,
@@ -71,6 +73,7 @@ fn parse_cli() -> CliOptions {
     let mut coedit_steps = Vec::new();
     let mut coedit_resolve = None;
     let mut bind_selection = false;
+    let mut new_chat = false;
     let mut switch_tab_after_bind = None;
     let mut select_runtime = None;
     let mut select_cell = None;
@@ -147,6 +150,9 @@ fn parse_cli() -> CliOptions {
             "--bind-selection" => {
                 bind_selection = true;
             }
+            "--new-chat" => {
+                new_chat = true;
+            }
             "--switch-tab" => {
                 if let Some(v) = args.next() {
                     switch_tab_after_bind = v.parse::<usize>().ok();
@@ -189,6 +195,7 @@ fn parse_cli() -> CliOptions {
         coedit_steps,
         coedit_resolve,
         bind_selection,
+        new_chat,
         switch_tab_after_bind,
         select_runtime,
         select_cell,
@@ -236,7 +243,13 @@ fn main() {
                 }
             };
             cx.activate(true);
-            schedule_screenshot(window, opts.screenshot_out, opts.screenshot_delay_ms, cx);
+            schedule_screenshot(
+                window,
+                None,
+                opts.screenshot_out,
+                opts.screenshot_delay_ms,
+                cx,
+            );
             return;
         }
 
@@ -250,18 +263,21 @@ fn main() {
                 std::process::exit(1);
             }
         };
+        let bridge_tx = entity.read(cx).bridge.tx.clone();
         cx.activate(true);
 
         // Optional scripted UI steps (used for deterministic verification & screenshot capture)
         let steps = opts.coedit_steps.clone();
         let resolve = opts.coedit_resolve.clone();
         let bind_sel = opts.bind_selection;
+        let create_chat = opts.new_chat;
         let switch_tab = opts.switch_tab_after_bind;
         let sel_rt = opts.select_runtime.clone();
         let sel_cell = opts.select_cell.clone();
         if !steps.is_empty()
             || resolve.is_some()
             || bind_sel
+            || create_chat
             || switch_tab.is_some()
             || sel_rt.is_some()
             || sel_cell.is_some()
@@ -277,8 +293,8 @@ fn main() {
                         if let Some(ref rt_id) = sel_rt {
                             wb.select_runtime_by_id(rt_id, cx);
                         }
-                        if let Some(ref a1) = sel_cell {
-                            wb.select_excel_cell_on_active_tab(a1, window, cx);
+                        if create_chat {
+                            wb.create_new_real_chat(cx);
                         }
                         if bind_sel {
                             wb.bind_active_selection_to_chat(window, cx);
@@ -288,6 +304,9 @@ fn main() {
                         {
                             wb.active_office_tab = Some(tab_i);
                             cx.notify();
+                        }
+                        if let Some(ref a1) = sel_cell {
+                            wb.select_excel_cell_on_active_tab(a1, window, cx);
                         }
                         for st in &steps {
                             wb.trigger_coedit_human_step(st, window, cx);
@@ -310,12 +329,19 @@ fn main() {
             .detach();
         }
 
-        schedule_screenshot(window, opts.screenshot_out, opts.screenshot_delay_ms, cx);
+        schedule_screenshot(
+            window,
+            Some(bridge_tx),
+            opts.screenshot_out,
+            opts.screenshot_delay_ms,
+            cx,
+        );
     });
 }
 
 fn schedule_screenshot(
     window: AnyWindowHandle,
+    shutdown_tx: Option<async_channel::Sender<KarCommand>>,
     screenshot_out: Option<PathBuf>,
     delay_ms: u64,
     cx: &mut App,
@@ -326,7 +352,7 @@ fn schedule_screenshot(
             cx.background_executor()
                 .timer(Duration::from_millis(delay_ms))
                 .await;
-            let _ = window.update(cx, |_, window, cx| {
+            let _ = window.update(cx, |_, window, _| {
                 match window.render_to_image() {
                     Ok(img) => {
                         if let Some(parent) = out.parent() {
@@ -340,11 +366,17 @@ fn schedule_screenshot(
                     }
                     Err(err) => eprintln!("render_to_image failed: {err:#}"),
                 }
-                cx.quit();
             });
+            if let Some(tx) = shutdown_tx {
+                let _ = tx.send(KarCommand::Shutdown).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(80))
+                    .await;
+            }
+            cx.update(|cx| cx.quit());
         })
         .detach();
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = (window, screenshot_out, delay_ms, cx);
+    let _ = (window, shutdown_tx, screenshot_out, delay_ms, cx);
 }

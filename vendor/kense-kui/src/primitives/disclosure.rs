@@ -30,6 +30,7 @@ pub struct Surface<S: SurfaceStyle> {
     confirm: Option<SharedString>,
     cancel: Option<SharedString>,
     glyph: Option<Glyph>,
+    hide_trigger: bool,
     open: bool,
     presence: Slide,
     anchor: TriggerBounds,
@@ -62,6 +63,7 @@ impl<S: SurfaceStyle> Surface<S> {
             confirm: None,
             cancel: None,
             glyph: None,
+            hide_trigger: false,
             open: false,
             presence: Slide::new(0.),
             anchor: Default::default(),
@@ -96,6 +98,10 @@ impl<S: SurfaceStyle> Surface<S> {
         self.cancel = Some(label.into());
         self
     }
+    pub fn without_trigger(mut self) -> Self {
+        self.hide_trigger = true;
+        self
+    }
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -115,7 +121,7 @@ impl<S: SurfaceStyle> Surface<S> {
             } else {
                 self.panel.focus(w, cx)
             }
-        } else {
+        } else if !self.hide_trigger {
             self.trigger.focus(w, cx)
         }
         cx.emit(if open {
@@ -196,7 +202,10 @@ impl<S: SurfaceStyle> Render for Surface<S> {
             cx,
             |v, w, cx| v.set_open(!v.open, w, cx),
         );
-        let mut root = div().flex().child(trig);
+        let mut root = div().flex();
+        if !self.hide_trigger {
+            root = root.child(trig);
+        }
         let a = self.presence.get(w, cx).clamp(0., 1.);
         if !self.open && a < 0.002 {
             return root;
