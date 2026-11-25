@@ -96,7 +96,7 @@ bun x tauri build --bundles nsis
 
 `tauri build` 会按锁定版本准备内置 Host。Windows 开发调试可先运行一次 `bun scripts/prepare-windows-host.mjs`，再运行 `bun run dev`。开发者也可以用 `DSH_ACP_PATH` 和 `DSH_NODE` 指定自己的 Host 或 Node.js。
 
-`.github/workflows/windows.yml` 会将 NSIS 安装包和便携版上传为 `KWork-Windows-x64`。使用便携版时，把 `account-platform/` 和 `harness-runtime/` 保留在 `KWork.exe` 旁边。
+`.github/workflows/windows.yml` 会将 NSIS 安装包、MSIX 商店包和便携版上传为 `KWork-Windows-x64`，并单独上传 `KWork-Windows-MSIX` 供 Microsoft Partner Center 提交（可在仓库变量或手动运行参数中配置 `MS_STORE_IDENTITY_NAME`、`MS_STORE_PUBLISHER`、`MS_STORE_PUBLISHER_DISPLAY_NAME` 和 `MS_STORE_VERSION`；通过 Microsoft Store 审核后由微软免费自动重签名）。使用便携版时，把 `account-platform/` 和 `harness-runtime/` 保留在 `KWork.exe` 旁边。
 
 卸载时打开「Windows 设置 → 应用 → 安装的应用 → KWork → 卸载」。卸载不会自动删除用户工作区和 Harness 数据。
 

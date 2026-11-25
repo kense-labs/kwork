@@ -2413,11 +2413,10 @@ fn default_workspace() -> Result<PathBuf, String> {
             dir = current.parent().map(Path::to_path_buf);
         }
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        candidates.push(home.join("Documents"));
-        candidates.push(home);
-    }
+    candidates.extend(home_workspace_candidates(
+        std::env::var_os("HOME").as_deref(),
+        std::env::var_os("USERPROFILE").as_deref(),
+    ));
     if let Ok(cwd) = std::env::current_dir()
         && cwd != Path::new("/")
     {
@@ -2429,6 +2428,20 @@ fn default_workspace() -> Result<PathBuf, String> {
         }
     }
     Err("无法确定工作区目录，请在设置中指定工作区".to_owned())
+}
+
+fn home_workspace_candidates(
+    home: Option<&std::ffi::OsStr>,
+    userprofile: Option<&std::ffi::OsStr>,
+) -> Vec<PathBuf> {
+    let Some(home) = home
+        .filter(|v| !v.is_empty())
+        .or(userprofile.filter(|v| !v.is_empty()))
+    else {
+        return Vec::new();
+    };
+    let home = PathBuf::from(home);
+    vec![home.join("Documents"), home]
 }
 
 /// Resolve a Node.js binary for spawning dsh-acp and the credential helper.
@@ -2635,9 +2648,23 @@ impl AcpService {
 #[cfg(test)]
 mod tests {
     use super::{
-        MessageFeedbackRequest, decode_response, filter_account_models, module_import_specifier,
+        MessageFeedbackRequest, decode_response, filter_account_models, home_workspace_candidates,
+        module_import_specifier,
     };
     use serde_json::json;
+    use std::{ffi::OsStr, path::PathBuf};
+
+    #[test]
+    fn windows_userprofile_supplies_default_workspace_candidates_when_home_is_unset() {
+        let candidates = home_workspace_candidates(None, Some(OsStr::new(r"C:\Users\Alice")));
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from(r"C:\Users\Alice").join("Documents"),
+                PathBuf::from(r"C:\Users\Alice"),
+            ]
+        );
+    }
 
     #[test]
     fn generated_esm_import_encodes_spaces_and_hashes_in_the_file_url() {

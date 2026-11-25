@@ -21,12 +21,12 @@ Maintainers must use multi-factor authentication for GitHub and SignPath access.
 ## Build and signing process
 
 1. Windows binaries are built from this public repository on GitHub-hosted runners by `.github/workflows/windows.yml`.
-2. For a signing run, the maintainer manually starts that workflow on `main` with `sign_release` enabled.
-3. GitHub Actions uploads the unsigned `KWork.exe` and NSIS installer as a build artifact and submits that artifact to SignPath.
-4. SignPath verifies the GitHub build origin. An authorized approver approves the signing request.
-5. The workflow downloads the signed binaries, verifies their Authenticode signatures, runs the Windows installation smoke test, and only then uploads the release artifact.
+2. For a SignPath release run, a maintainer manually starts `.github/workflows/windows.yml` on `main` with `sign_release` enabled.
+3. **Stage 1 (inner executables):** GitHub Actions uploads the unsigned `KWork.exe` and NSIS-generated `uninstall.exe` as a build artifact and submits it to SignPath. SignPath verifies the GitHub build origin and an authorized approver approves the signing request.
+4. **Stage 2 (outer installer):** The workflow verifies the inner Authenticode signatures, repacks the NSIS installer around the signed `KWork.exe` and `uninstall.exe`, submits the outer NSIS installer to SignPath for signing, verifies the outer signature, installs the signed package in the Windows smoke test (asserting valid signatures on the installed `KWork.exe` and `uninstall.exe` on disk), and only then uploads the release artifact.
+5. **Microsoft Store MSIX:** `.github/workflows/windows.yml` also produces an unsigned `KWork_<version>_x64.msix` (`KWork-Windows-MSIX`) for Microsoft Partner Center submission; upon Store certification, Microsoft automatically re-signs the MSIX package and its bundled binaries with a Microsoft Store certificate.
 
-The signed artifacts are the KWork main executable and its NSIS installer. Third-party binaries bundled inside the installer retain their upstream signatures where available. The enforced product name is `KWork`; the product version comes from `src-tauri/tauri.conf.json` and must be identical for all signed binaries in a release.
+For SignPath releases, the signed artifacts are `KWork.exe`, `uninstall.exe`, and the outer NSIS installer. Third-party binaries bundled inside the installer retain their upstream signatures where available. The enforced product name is `KWork`; the product version comes from `src-tauri/tauri.conf.json` and must be identical for all SignPath-signed binaries in a release.
 
 ## Installation and removal
 

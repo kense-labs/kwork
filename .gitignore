@@ -9,6 +9,7 @@
 *.log
 /src-tauri/gen/
 /.learnings/
+/.browser-automation/
 
 /services/macos-host/node_modules/
 /services/windows-host/

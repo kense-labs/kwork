@@ -99,7 +99,7 @@ Double-click the x64 NSIS installer to install KWork for the current Windows use
 
 `tauri build` prepares the bundled Host from the frozen dependency lock. For Windows development, run `bun scripts/prepare-windows-host.mjs` before `bun run dev`. Set `DSH_ACP_PATH` or `DSH_NODE` to choose a different Host or Node executable.
 
-`.github/workflows/windows.yml` builds the NSIS installer and portable app in the `KWork-Windows-x64` artifact. Keep `account-platform/` and `harness-runtime/` next to the portable `KWork.exe`.
+`.github/workflows/windows.yml` builds the NSIS installer, Microsoft Store `.msix` package, and portable app in `KWork-Windows-x64`, and uploads `KWork-Windows-MSIX` separately for Microsoft Partner Center submission (configure `MS_STORE_IDENTITY_NAME`, `MS_STORE_PUBLISHER`, `MS_STORE_PUBLISHER_DISPLAY_NAME`, and optional `MS_STORE_VERSION` via repository variables or `workflow_dispatch` inputs; Microsoft Store re-signs certified MSIX submissions automatically). Keep `account-platform/` and `harness-runtime/` next to the portable `KWork.exe`.
 
 ### Embedded Node modules
 

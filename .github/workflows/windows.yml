@@ -2,6 +2,37 @@ name: Windows build
 
 on:
   workflow_dispatch:
+    inputs:
+      sign_release:
+        description: Submit the Windows NSIS binaries to SignPath for approved release signing
+        required: false
+        type: boolean
+        default: false
+      fast_build:
+        description: Skip Rust LTO and wasm-opt for a faster non-release smoke run
+        required: false
+        type: boolean
+        default: false
+      ms_store_identity_name:
+        description: Microsoft Partner Center Package/Identity/Name override (optional)
+        required: false
+        type: string
+        default: ''
+      ms_store_publisher:
+        description: Microsoft Partner Center Publisher DN override, e.g. CN=... (optional)
+        required: false
+        type: string
+        default: ''
+      ms_store_publisher_display_name:
+        description: Microsoft Partner Center PublisherDisplayName override (optional)
+        required: false
+        type: string
+        default: ''
+      ms_store_version:
+        description: 4-part MSIX version Major.Minor.Build.0 override (optional)
+        required: false
+        type: string
+        default: ''
   push:
     # workflow_dispatch requires the workflow on the default branch; push
     # events read the workflow from the pushed ref, so build branches work too.
@@ -17,6 +48,10 @@ on:
       - 'package.json'
       - '.github/workflows/windows.yml'
 
+permissions:
+  actions: read
+  contents: read
+
 jobs:
   build:
     # The manual desktop test needs a runner with a working WebView2 DevTools endpoint.
@@ -24,9 +59,9 @@ jobs:
     runs-on: ${{ github.event_name == 'workflow_dispatch' && 'windows-2022' || 'windows-latest' }}
     env:
       KWORK_UI_BUILD: always
-      # First Windows pipeline: skip the optional wasm-opt size pass (it needs
-      # a .cmd shim); the installer ships the unoptimized 27MB wasm instead.
-      KWORK_WASM_OPT: off
+      # Release and signed builds always run wasm-opt -Oz (~28% smaller WASM);
+      # only opt-in non-signed fast smoke dispatches skip it.
+      KWORK_WASM_OPT: ${{ (github.event_name == 'workflow_dispatch' && inputs.fast_build && !inputs.sign_release) && 'off' || 'on' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -101,10 +136,29 @@ jobs:
         run: bun run ui:build
 
       - name: Build Windows installer (NSIS)
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.sign_release) }}
         env:
-          CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'workflow_dispatch' && 'false' || 'thin' }}
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'workflow_dispatch' && '16' || '1' }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ (github.event_name == 'workflow_dispatch' && inputs.fast_build) && 'false' || 'thin' }}
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ (github.event_name == 'workflow_dispatch' && inputs.fast_build) && '16' || '1' }}
         run: bun x tauri build --bundles nsis
+
+      - name: Build Windows release and collect inner binaries for SignPath
+        if: github.event_name == 'workflow_dispatch' && inputs.sign_release
+        shell: pwsh
+        env:
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '1'
+          SIGNPATH_STAGE: collect
+        run: |
+          node scripts/windows-packaging.mjs write-tauri-sign-config target/tauri-signpath.conf.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          bun x tauri build --bundles nsis --config target/tauri-signpath.conf.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($file in @('KWork.exe', 'uninstall.exe')) {
+            if (!(Test-Path -LiteralPath "target/signpath-inner-unsigned/$file" -PathType Leaf)) {
+              throw "Missing staged unsigned inner binary: target/signpath-inner-unsigned/$file"
+            }
+          }
 
       - name: Verify the portable app layout
         id: portable-layout
@@ -120,16 +174,103 @@ jobs:
             }
           }
 
-      - name: Upload installer and portable app
+      - name: Upload unsigned inner binaries for SignPath (Stage 1)
+        if: github.event_name == 'workflow_dispatch' && inputs.sign_release
+        id: upload-unsigned-inner
         uses: actions/upload-artifact@v4
         with:
-          name: KWork-Windows-x64
+          name: KWork-Windows-Unsigned-Inner-${{ github.run_id }}
           if-no-files-found: error
           path: |
-            target/release/KWork.exe
-            target/release/account-platform/
-            target/release/harness-runtime/
-            target/release/bundle/nsis/*.exe
+            target/signpath-inner-unsigned/KWork.exe
+            target/signpath-inner-unsigned/uninstall.exe
+
+      - name: Submit SignPath signing request for inner binaries (Stage 1)
+        if: github.event_name == 'workflow_dispatch' && inputs.sign_release
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: kwork
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG || 'kwork-windows' }}
+          github-artifact-id: ${{ steps.upload-unsigned-inner.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: target/signpath-inner-out
+
+      - name: Verify SignPath-signed inner binaries and repack NSIS installer
+        if: github.event_name == 'workflow_dispatch' && inputs.sign_release
+        shell: pwsh
+        env:
+          SIGNPATH_STAGE: inject
+        run: |
+          New-Item -ItemType Directory -Force target/signpath-inner-signed | Out-Null
+          foreach ($name in @('KWork.exe', 'uninstall.exe')) {
+            $signed = Get-ChildItem target/signpath-inner-out -Recurse -Filter $name | Select-Object -First 1
+            if (!$signed) { throw "SignPath Stage 1 did not return $name." }
+            $sig = Get-AuthenticodeSignature -FilePath $signed.FullName
+            if ($sig.Status -ne 'Valid' -or !$sig.SignerCertificate) {
+              throw "Invalid Authenticode signature on $($signed.FullName): $($sig.Status) $($sig.StatusMessage)"
+            }
+            Write-Host "Verified inner $($signed.Name): $($sig.SignerCertificate.Subject)"
+            Copy-Item -LiteralPath $signed.FullName -Destination "target/signpath-inner-signed/$name" -Force
+          }
+          bun x tauri bundle --bundles nsis --config target/tauri-signpath.conf.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload outer NSIS installer for SignPath (Stage 2)
+        if: github.event_name == 'workflow_dispatch' && inputs.sign_release
+        id: upload-unsigned-installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: KWork-Windows-Unsigned-Installer-${{ github.run_id }}
+          if-no-files-found: error
+          path: target/release/bundle/nsis/*.exe
+
+      - name: Submit SignPath signing request for outer NSIS installer (Stage 2)
+        if: github.event_name == 'workflow_dispatch' && inputs.sign_release
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: kwork
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: ${{ vars.SIGNPATH_INSTALLER_CONFIGURATION_SLUG || vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG || 'kwork-windows' }}
+          github-artifact-id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: target/signpath-installer-out
+
+      - name: Verify and stage final SignPath-signed binaries
+        if: github.event_name == 'workflow_dispatch' && inputs.sign_release
+        shell: pwsh
+        run: |
+          $signedInstaller = Get-ChildItem target/signpath-installer-out -Recurse -Filter *.exe | Select-Object -First 1
+          if (!$signedInstaller) { throw 'SignPath Stage 2 did not return the NSIS installer.' }
+          $originalInstaller = Get-ChildItem target/release/bundle/nsis/*.exe | Select-Object -First 1
+          Copy-Item -LiteralPath target/signpath-inner-signed/KWork.exe -Destination target/release/KWork.exe -Force
+          Copy-Item -LiteralPath $signedInstaller.FullName -Destination $originalInstaller.FullName -Force
+          foreach ($path in @('target/release/KWork.exe', $originalInstaller.FullName)) {
+            $sig = Get-AuthenticodeSignature -FilePath $path
+            if ($sig.Status -ne 'Valid' -or !$sig.SignerCertificate) {
+              throw "Invalid Authenticode signature on ${path}: $($sig.Status) $($sig.StatusMessage)"
+            }
+            Write-Host "Verified staged ${path}: $($sig.SignerCertificate.Subject)"
+          }
+
+      - name: Package Microsoft Store MSIX
+        shell: pwsh
+        env:
+          MS_STORE_IDENTITY_NAME: ${{ inputs.ms_store_identity_name || vars.MS_STORE_IDENTITY_NAME || '' }}
+          MS_STORE_PUBLISHER: ${{ inputs.ms_store_publisher || vars.MS_STORE_PUBLISHER || '' }}
+          MS_STORE_PUBLISHER_DISPLAY_NAME: ${{ inputs.ms_store_publisher_display_name || vars.MS_STORE_PUBLISHER_DISPLAY_NAME || '' }}
+          MS_STORE_VERSION: ${{ inputs.ms_store_version || vars.MS_STORE_VERSION || '' }}
+        run: |
+          $argsList = @('scripts/windows-packaging.mjs', 'build-msix')
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            $argsList += '--smoke-test'
+          }
+          node @argsList
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Exercise previews on Windows Chromium
         if: github.event_name == 'workflow_dispatch'
@@ -157,11 +298,39 @@ jobs:
               throw "Missing installed resource: $file"
             }
           }
+          if ('${{ inputs.sign_release }}' -eq 'true') {
+            foreach ($installedExe in @("$directory/KWork.exe", "$directory/uninstall.exe")) {
+              $sig = Get-AuthenticodeSignature -FilePath $installedExe
+              if ($sig.Status -ne 'Valid' -or !$sig.SignerCertificate) {
+                throw "Installed binary missing valid Authenticode signature ($installedExe): $($sig.Status) $($sig.StatusMessage)"
+              }
+              Write-Host "Verified installed signature on ${installedExe}: $($sig.SignerCertificate.Subject)"
+            }
+          }
           bun scripts/account-platform-windows-smoke.mjs "$directory/KWork.exe"
 
       - name: Require a passing renderer smoke test
         if: github.event_name == 'workflow_dispatch' && steps.electron-smoke.outcome != 'success'
         run: exit 1
+
+      - name: Upload installer and portable app
+        uses: actions/upload-artifact@v4
+        with:
+          name: KWork-Windows-x64
+          if-no-files-found: error
+          path: |
+            target/release/KWork.exe
+            target/release/account-platform/
+            target/release/harness-runtime/
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/msix/*.msix
+
+      - name: Upload Microsoft Store MSIX package
+        uses: actions/upload-artifact@v4
+        with:
+          name: KWork-Windows-MSIX
+          if-no-files-found: error
+          path: target/release/bundle/msix/*.msix
 
       - name: Upload Windows visual regression evidence
         if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
