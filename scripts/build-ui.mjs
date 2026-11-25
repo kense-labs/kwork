@@ -158,13 +158,29 @@ function distIsComplete() {
   return true;
 }
 
+function resolveWasmOptBin(prefix, native) {
+  const candidates = [];
+  if (native) {
+    candidates.push(
+      join(prefix, 'node_modules', ...native.split('/'), 'bin', process.platform === 'win32' ? 'wasm-opt.exe' : 'wasm-opt'),
+    );
+  }
+  const dotBin = join(prefix, 'node_modules', '.bin');
+  if (process.platform === 'win32') {
+    candidates.push(join(dotBin, 'wasm-opt.exe'), join(dotBin, 'wasm-opt.cmd'), join(dotBin, 'wasm-opt.bunx'));
+  } else {
+    candidates.push(join(dotBin, 'wasm-opt'));
+  }
+  return candidates.find((candidate) => existsSync(candidate)) || null;
+}
+
 function ensureWasmOpt(tools) {
   if (process.env.KWORK_WASM_OPT === 'off') return null;
   const prefix = join(tools, 'wasm-opt');
-  const bin = join(prefix, 'node_modules', '.bin', process.platform === 'win32' ? 'wasm-opt.cmd' : 'wasm-opt');
-  if (existsSync(bin)) return bin;
   const platform = `${process.platform}-${process.arch}`;
   const native = NATIVE_WASM_OPT_PACKAGES[platform];
+  const cachedBin = resolveWasmOptBin(prefix, native);
+  if (cachedBin) return cachedBin;
   const packages = native
     ? [`wasm-opt@${WASM_OPT_VERSION}`, `${native}@${WASM_OPT_VERSION}`]
     : [`binaryen@${BINARYEN_VERSION}`];
@@ -180,7 +196,8 @@ function ensureWasmOpt(tools) {
   run(process.env.KWORK_BUN || 'bun', [
     'install', `--cwd=${prefix}`, '--no-save', ...packages,
   ]);
-  if (!existsSync(bin)) throw new Error('wasm-opt 安装失败：找不到可执行文件。');
+  const bin = resolveWasmOptBin(prefix, native);
+  if (!bin) throw new Error('wasm-opt 安装失败：找不到可执行文件。');
   return bin;
 }
 
