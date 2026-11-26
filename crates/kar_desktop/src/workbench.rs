@@ -34,7 +34,6 @@ use kui::{
         log_stream::LogStream,
         presence_stack::{PresencePerson, PresenceSize, PresenceStack, PresenceStatus},
         pro_chrome::{pro_presence, pro_view_transition_fill},
-        text_shimmer::TextShimmer,
         tree_view::{TreeNode, TreeSelected, TreeView},
     },
     primitives::{
@@ -588,7 +587,6 @@ pub struct KarWorkbench {
     pub(crate) schedule_draft_cadence: ScheduleCadence,
     pub(crate) schedule_bind_active_doc: bool,
     pub(crate) expanded_schedule_history: BTreeSet<String>,
-    pub(crate) working_shimmer: Entity<TextShimmer>,
 
     // ── Unified Settings, Projects, Worktrees, Right Dock & Terminal ────────
     overlay_return_focus: Option<FocusHandle>,
@@ -1147,12 +1145,6 @@ impl KarWorkbench {
             )
         });
 
-        let working_shimmer = cx.new(|cx| {
-            TextShimmer::new("正在思考", cx)
-                .with_font_size(FS_UI)
-                .with_active(false)
-        });
-
         let git_commit_input = cx.new(|cx| {
             Input::new("kar-git-commit-input", "提交说明", window, cx)
                 .with_compact_bar(32.)
@@ -1490,7 +1482,6 @@ impl KarWorkbench {
             schedule_draft_cadence: ScheduleCadence::DailyNineAm,
             schedule_bind_active_doc: false,
             expanded_schedule_history: BTreeSet::new(),
-            working_shimmer,
             overlay_return_focus: None,
             settings_open: initial_settings_open,
             active_settings_tab: initial_settings_tab,

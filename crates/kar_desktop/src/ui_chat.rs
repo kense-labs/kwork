@@ -3,6 +3,7 @@
 mod context_usage;
 
 mod activity;
+mod composer_activity;
 pub(crate) mod questions;
 
 use std::path::PathBuf;
@@ -32,7 +33,7 @@ use kui::{
     primitives::{
         editor::{EditEvent, Editor, InputMode},
         glyph::Glyph,
-        ops_surface::{arrive, swap_label},
+        ops_surface::arrive,
         pro_icons::{ProIcon, pro_icon},
     },
 };
@@ -101,14 +102,20 @@ impl KarWorkbench {
             *previous = decision_cursor;
             changed && previous.is_some()
         });
-        let on_start_screen = self.projected.turns.is_empty()
+        let activity = composer_activity::current(
+            &self.access_mode,
+            &self.projected,
+            self.queued_prompt.is_some(),
+            self.prompt_attempts.values(),
+            &self.connection_state,
+        );
+        let on_start_screen = activity.is_none()
+            && self.projected.turns.is_empty()
             && self.active_briefs.is_empty()
             && self.queued_prompt.is_none()
             && decision.is_none()
             && !view_only;
         let is_working = self.turn_in_progress();
-        self.working_shimmer
-            .update(cx, |sh, cx| sh.set_active(is_working, cx));
 
         let show_review_rail = !on_start_screen
             && self.layout_mode == WorkspaceLayoutMode::ChatFocus
@@ -153,6 +160,7 @@ impl KarWorkbench {
                 && self.active_briefs.is_empty()
                 && self.queued_prompt.is_none()
                 && decision.is_none()
+                && activity.is_none()
             {
                 self.render_waiting_for_content(&s)
             } else {
@@ -177,7 +185,7 @@ impl KarWorkbench {
                 }
                 if let Some(queued) = self.queued_prompt.clone() {
                     column = column.child(arrive(
-                        self.render_queued_turn(&queued, &s, window, cx),
+                        self.render_queued_turn(&queued, &s, cx),
                         "turn-in-queued",
                         0,
                         6.,
@@ -254,6 +262,9 @@ impl KarWorkbench {
             if reveal_decision {
                 self.chat_scroll.scroll_to_item(1);
             }
+            let activity_row = activity.map(|phase| {
+                self.render_composer_activity(phase, &s, window, cx)
+            });
             let foot = chat_content_lane(center_w, window)
                 .relative()
                 .pt(px(8.))
@@ -289,9 +300,12 @@ impl KarWorkbench {
                     )
                 })
                 .child(if view_only {
-                    self.render_view_only_bar(&s, cx)
+                    div()
+                        .children(activity_row)
+                        .child(self.render_view_only_bar(&s, cx))
+                        .into_any_element()
                 } else {
-                    self.render_composer(center_w, &s, window, cx)
+                    self.render_composer(center_w, activity_row, &s, window, cx)
                         .into_any_element()
                 });
 
@@ -1522,7 +1536,7 @@ impl KarWorkbench {
                 .on_press(cx, |this, _, cx| this.open_files_dock_tab(cx))
         };
         let dropzone = self.file_dropzone.clone();
-        let composer = self.render_composer(pane_w, s, window, cx);
+        let composer = self.render_composer(pane_w, None, s, window, cx);
         let content = chat_content_lane(pane_w, window)
             .flex_none()
             .flex()
@@ -1685,6 +1699,7 @@ impl KarWorkbench {
     fn render_composer(
         &self,
         pane_w: f32,
+        activity_row: Option<AnyElement>,
         s: &StudioPalette,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -2043,6 +2058,7 @@ impl KarWorkbench {
                 this.navigate_slash_picker(ev, win, cx);
             }))
             .when_some(self.slash_popup(card_width, s, window, cx), |d, popup| d.child(popup))
+            .children(activity_row)
             .child(write_card)
             .when(is_draft, |d| {
                 let wt = self.new_chat_use_worktree;
@@ -3386,38 +3402,61 @@ impl KarWorkbench {
         &self,
         queued: &QueuedPrompt,
         s: &StudioPalette,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        let agent = runtime_display_name(&self.selected_runtime);
         let mut asked = div().w_full().flex().flex_col().items_end().gap(px(8.));
         if let Some(target) = queued.target.clone() {
             asked = asked.child(self.render_target_reference("queued", target, s, cx));
         }
-        asked = asked.child(user_bubble(queued.text.clone(), s));
-        div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap(px(16.))
-            .child(asked)
-            .child(working_line(
-                assistant_mascot(
-                    "queued-mascot",
-                    MascotStatus::Listening,
-                    self.ui_locale,
-                    window,
-                    cx,
-                ),
-                match self.ui_locale {
+        asked.child(user_bubble(queued.text.clone(), s))
+    }
+
+    fn render_composer_activity(
+        &self,
+        activity: composer_activity::Activity,
+        s: &StudioPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use composer_activity::Activity;
+        let loc = self.ui_locale;
+        let (pose, label) = match activity {
+            Activity::Starting => {
+                let agent = runtime_display_name(&self.selected_runtime);
+                let label = match loc {
                     UiLocale::Zh => format!("正在启动 {agent}"),
                     UiLocale::En => format!("Starting {agent}"),
-                },
-                "queued-status",
-                s,
-                window,
-                cx,
-            ))
+                };
+                (MascotStatus::Listening, label)
+            }
+            Activity::Thinking => (MascotStatus::Thinking, loc.pick("正在思考", "Thinking").into()),
+            Activity::Working => (MascotStatus::Thinking, loc.pick("正在处理", "Working").into()),
+            Activity::Replying => (MascotStatus::Writing, loc.pick("正在回复", "Replying").into()),
+        };
+        let mascot = window.use_keyed_state("composer-assistant-mascot", cx, |_, _| {
+            AiMascot::new(loc.pick("助手", "Assistant"))
+                .with_size(24.)
+                .with_status(pose)
+                .follow_pointer(false)
+        });
+        if mascot.read(cx).status() != pose {
+            mascot.update(cx, |view, cx| view.set_status(pose, cx));
+        }
+        div()
+            .id("composer-activity")
+            .role(Role::Status)
+            .aria_label(label.clone())
+            .h(px(24.))
+            .pl(px(6.))
+            .mb(px(6.))
+            .flex()
+            .items_center()
+            .gap(px(7.))
+            .text_size(px(FS_CONTROL))
+            .text_color(s.muted)
+            .child(mascot)
+            .child(label)
+            .into_any_element()
     }
 
     fn render_target_reference(
@@ -3699,7 +3738,7 @@ impl KarWorkbench {
                             ..
                         } if !text.trim().is_empty() => {
                             wg_body = wg_body.child(self.render_reasoning(
-                                (turn_id, wix), text, false, sub, s, window, cx,
+                                (turn_id, wix), text, sub, s, cx,
                             ));
                         }
                         Item::Tool { .. } => {
@@ -3788,7 +3827,6 @@ impl KarWorkbench {
                 Item::Message {
                     role: KarRole::Reasoning,
                     text,
-                    complete,
                     ..
                 } => {
                     if !collapse_work_group && !text.trim().is_empty() {
@@ -3796,10 +3834,8 @@ impl KarWorkbench {
                         parts = parts.child(self.render_reasoning(
                             (turn_id, ix),
                             text.trim(),
-                            !*complete && running && self.projected.pending_requests.is_empty(),
                             is_subagent,
                             s,
-                            window,
                             cx,
                         ));
                     }
@@ -4096,41 +4132,6 @@ impl KarWorkbench {
             );
         }
 
-        // A visible tool or reasoning row already explains what is happening.
-        let activity_is_visible = turn.items.iter().any(|item| match &item.item {
-            Item::Tool { activity, .. } => activity::phase(activity, running) == activity::Phase::Running,
-            Item::Message { role: KarRole::Reasoning, complete: false, text, .. } => !text.trim().is_empty(),
-            _ => false,
-        });
-        if running && !activity_is_visible && self.projected.pending_requests.is_empty() {
-            has_parts = true;
-            let (pose, activity_txt) = match turn.items.last().map(|i| &i.item) {
-                Some(Item::Message { role: KarRole::Assistant, complete: false, .. }) => {
-                    (MascotStatus::Writing, loc.pick("正在回复", "Replying"))
-                }
-                _ => (MascotStatus::Thinking, loc.pick("正在处理", "Working")),
-            };
-            let lead = assistant_mascot(
-                SharedString::from(format!("turn-mascot-{turn_id}")),
-                pose,
-                loc,
-                window,
-                cx,
-            );
-            self.working_shimmer
-                .update(cx, |sh, cx| sh.set_text(activity_txt, cx));
-            parts = parts.child(
-                div()
-                    .id(SharedString::from(format!("turn-status-{turn_id}")))
-                    .h(px(26.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(lead)
-                    .child(self.working_shimmer.clone()),
-            );
-        }
-
         // ── Actions for the completed turn ──────────────────────────────────────
         let stopped = match turn.status {
             TurnStatus::Interrupted | TurnStatus::Aborted => Some(loc.pick("已停止", "Stopped")),
@@ -4380,30 +4381,17 @@ impl KarWorkbench {
         &self,
         key: (Uuid, usize),
         text: &str,
-        live: bool,
         is_subagent: bool,
         s: &StudioPalette,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let open = self.part_is_open(key, false);
         let loc = self.ui_locale;
-        let lead = if live {
-            assistant_mascot(
-                SharedString::from(format!("reasoning-mascot-{}-{}", key.0, key.1)),
-                MascotStatus::Thinking,
-                loc,
-                window,
-                cx,
-            )
+        let lead = pro_icon(ProIcon::Sparkles, ICON_SM, s.muted);
+        let label = if is_subagent {
+            loc.pick("子智能体思考过程", "Subagent reasoning")
         } else {
-            pro_icon(ProIcon::Sparkles, ICON_SM, s.muted)
-        };
-        let label = match (live, is_subagent) {
-            (true, true) => loc.pick("子智能体正在思考", "Subagent is thinking"),
-            (true, false) => loc.pick("正在思考", "Thinking"),
-            (false, true) => loc.pick("子智能体思考过程", "Subagent reasoning"),
-            (false, false) => loc.pick("思考过程", "Reasoning"),
+            loc.pick("思考过程", "Reasoning")
         };
         let body = div()
             .text_size(px(FS_UI))
@@ -5273,44 +5261,6 @@ mod reply_copy_tests {
         ));
         assert!(!is_single_code_message("| a | b |\n| --- | --- |"));
     }
-}
-
-fn assistant_mascot(
-    id: impl Into<ElementId>,
-    status: MascotStatus,
-    loc: UiLocale,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let mascot = window.use_keyed_state(id.into(), cx, |_, _| {
-        AiMascot::new(loc.pick("助手", "Assistant"))
-            .with_size(24.)
-            .with_status(status)
-            .follow_pointer(false)
-    });
-    if mascot.read(cx).status() != status {
-        mascot.update(cx, |view, cx| view.set_status(status, cx));
-    }
-    mascot.into_any_element()
-}
-
-fn working_line(
-    lead: AnyElement,
-    status: String,
-    key: impl Into<ElementId>,
-    s: &StudioPalette,
-    window: &mut Window,
-    cx: &mut App,
-) -> Div {
-    div()
-        .h(px(24.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .text_size(px(FS_UI))
-        .text_color(s.muted)
-        .child(lead)
-        .child(swap_label(key, status, window, cx))
 }
 
 fn decision_question(text: String, s: &StudioPalette) -> Div {
