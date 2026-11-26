@@ -5905,6 +5905,7 @@ dependencies = [
  "serde_json",
  "sheets_engine",
  "sheets_ui",
+ "shell-words",
  "slides_engine",
  "slides_ui",
  "tempfile",

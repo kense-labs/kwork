@@ -162,30 +162,22 @@ pub fn tool_phase(tool: &Tool) -> ToolPhase {
     }
 }
 
-/// The command a shell wrapper runs: `/bin/zsh -lc "ls -la"` becomes `ls -la`.
+/// Remove only a shell's outer command wrapper. Compiler options and quoted script bodies
+/// are part of the user's command and must survive inspection and copying.
 pub fn unwrap_shell_command(command: &str) -> String {
     let trimmed = command.trim();
-    for flag in [" -lc ", " -c "] {
-        if let Some(pos) = trimmed.find(flag) {
-            let inner = trimmed[pos + flag.len()..].trim();
-            let unquoted = inner
-                .strip_prefix('"')
-                .and_then(|r| r.strip_suffix('"'))
-                .map(|r| r.replace("\\\"", "\"").replace("\\\\", "\\"))
-                .or_else(|| {
-                    inner
-                        .strip_prefix('\'')
-                        .and_then(|r| r.strip_suffix('\''))
-                        .map(str::to_owned)
-                });
-            return unquoted.unwrap_or_else(|| inner.to_owned());
-        }
+    if let Ok(words) = shell_words::split(trimmed)
+        && let [shell, option, script] = words.as_slice()
+        && matches!(shell.rsplit('/').next(), Some("sh" | "bash" | "zsh" | "dash" | "fish" | "ksh"))
+        && matches!(option.as_str(), "-lc" | "-cl" | "-c")
+    {
+        return script.clone();
     }
     trimmed.to_owned()
 }
 
 /// Friendly Chinese summary for hosted Kantor Office MCP calls.
-fn office_mcp_summary(raw_name: &str, input: Option<&serde_json::Value>) -> Option<String> {
+pub(crate) fn office_mcp_summary(raw_name: &str, input: Option<&serde_json::Value>) -> Option<String> {
     let bare = raw_name
         .rsplit(['/', '.', ':'])
         .next()

@@ -1,5 +1,8 @@
 //! Native conversation timeline, file review, decisions and writing controls.
 
+mod context_usage;
+
+mod activity;
 pub(crate) mod questions;
 
 use std::path::PathBuf;
@@ -19,10 +22,8 @@ use kar::{
 };
 use kui::{
     components::{
-        code_block::CodeBlock,
         code_suggestion::{Decision as PatchDecision, Hunk as PatchHunk, PatchReview},
         hold_to_confirm::{HoldEvent, HoldToConfirm},
-        json_viewer::JsonViewer,
         pro_chrome::{
             pro_fold, pro_presence, pro_progress_ring, pro_spring_f32, pro_view_transition_fill,
         },
@@ -40,9 +41,9 @@ use crate::{
     studio_hub::parse_unified_diff_hunks,
     types::{
         ChatAccessMode, DiffLine, FeedConnectionState, OfficeKind, ProviderReadiness, ProviderStatusInfo,
-        SelectionTarget, ToolPhase, describe_failure, format_tokens_compact,
+        SelectionTarget, describe_failure, format_tokens_compact,
         parse_diff, runtime_display_name, strip_selection_envelope,
-        tool_input_text, tool_output_text, tool_phase, tool_summary, unwrap_shell_command,
+        unwrap_shell_command,
     },
     ui_motion::{
         MenuPlacement, Tactile, disclosure_body, disclosure_line, icon_button, menu_caption,
@@ -70,6 +71,13 @@ use crate::{
 const DETAIL_MAX_LINES: usize = 24;
 
 impl KarWorkbench {
+    pub(crate) fn pending_decisions(&self) -> impl Iterator<Item = &PendingRequest> {
+        self.projected.pending_requests.iter().filter(|request| {
+            self.access_mode.is_writable()
+                && matches!(request.kind, RequestKind::Permission | RequestKind::Question)
+        })
+    }
+
     pub(crate) fn render_chat_pane(
         &mut self,
         pane_w: f32,
@@ -80,9 +88,20 @@ impl KarWorkbench {
 
         let view_only = !self.access_mode.is_writable()
             && !matches!(self.access_mode, ChatAccessMode::NoneSelected);
+        let mut decisions = self.pending_decisions();
+        let decision = decisions.next().cloned();
+        let pending_count = usize::from(decision.is_some()) + decisions.count();
+        let decision_cursor = decision.as_ref().map(|request| request.cursor.clone());
+        let last_presented = window.use_keyed_state("chat-presented-decision", cx, |_, _| None);
+        let reveal_decision = last_presented.update(cx, |previous, _| {
+            let changed = *previous != decision_cursor;
+            *previous = decision_cursor;
+            changed && previous.is_some()
+        });
         let on_start_screen = self.projected.turns.is_empty()
             && self.active_briefs.is_empty()
             && self.queued_prompt.is_none()
+            && decision.is_none()
             && !view_only;
         let is_working = self.turn_in_progress();
         self.working_shimmer
@@ -130,6 +149,7 @@ impl KarWorkbench {
             let thread = if self.projected.turns.is_empty()
                 && self.active_briefs.is_empty()
                 && self.queued_prompt.is_none()
+                && decision.is_none()
             {
                 self.render_waiting_for_content(&s)
             } else {
@@ -220,7 +240,17 @@ impl KarWorkbench {
                 && !self.projected.turns.is_empty()
                 && self.projected.pending_requests.is_empty();
 
-            let dock = self.render_decision_dock(&s, window, cx);
+            let card = decision.map(|request| {
+                let compact = center_w < 460.;
+                let card = self.render_decision_card(request, pending_count, compact, &s, window, cx);
+                chat_content_lane(center_w, window)
+                    .flex_none()
+                    .pb(px(8.))
+                    .child(card)
+            });
+            if reveal_decision {
+                self.chat_scroll.scroll_to_item(1);
+            }
             let foot = chat_content_lane(center_w, window)
                 .relative()
                 .pt(px(8.))
@@ -275,10 +305,12 @@ impl KarWorkbench {
                         .track_scroll(&self.chat_scroll)
                         .flex_1()
                         .min_h_0()
+                        .flex()
+                        .flex_col()
                         .overflow_y_scroll()
-                        .child(thread),
+                        .child(div().flex_none().child(thread))
+                        .when_some(card, |timeline, card| timeline.child(card)),
                 )
-                .child(dock)
                 .child(foot);
 
             center_lane.into_any_element()
@@ -1091,39 +1123,37 @@ impl KarWorkbench {
     }
 
     fn context_ratio(&self) -> Option<f32> {
-        let ctx_u = self.projected.context_usage.as_ref()?;
-        if let Some(pct) = ctx_u.percent {
-            return Some((pct as f32 / 100.0).clamp(0.0, 1.0));
-        }
-        if let (Some(tok), Some(win)) = (ctx_u.tokens, ctx_u.context_window)
-            && win > 0
-        {
-            return Some((tok as f32 / win as f32).clamp(0.0, 1.0));
-        }
-        None
+        self.projected
+            .context_usage
+            .as_ref()
+            .and_then(context_usage::fraction)
     }
 
     fn usage_summary_line(&self) -> Option<String> {
         let mut parts = Vec::new();
-        if let Some(ref ctx_u) = self.projected.context_usage {
-            if let Some(pct) = ctx_u.percent {
-                parts.push(format!("上下文 {:.0}%", pct.clamp(0.0, 100.0)));
-            } else if let (Some(tok), Some(win)) = (ctx_u.tokens, ctx_u.context_window)
-                && win > 0
-            {
-                parts.push(format!(
-                    "上下文 {} / {}",
-                    format_tokens_compact(tok as i64),
-                    format_tokens_compact(win as i64)
-                ));
-            }
+        if let Some(ratio) = self.context_ratio() {
+            let label = self.ui_locale.pick("上下文", "Context");
+            parts.push(format!("{label} {:.0}%", ratio * 100.));
+        } else if let Some(used) = self.projected.context_usage.as_ref().and_then(|u| u.tokens) {
+            parts.push(format!(
+                "{used} {}",
+                self.ui_locale.pick("上下文词元", "context tokens")
+            ));
         }
         if let Some(last) = self.projected.usage.last()
-            && let Some(tot) = last.usage.with_children.as_ref().or(last.usage.total.as_ref())
+            && let Some(tot) = last
+                .usage
+                .with_children
+                .as_ref()
+                .or(last.usage.total.as_ref())
         {
             let total_io = tot.input.saturating_add(tot.output);
             if total_io > 0 {
-                parts.push(format!("{} tokens", format_tokens_compact(total_io)));
+                parts.push(format!(
+                    "{} {}",
+                    format_tokens_compact(total_io),
+                    self.ui_locale.pick("词元", "tokens")
+                ));
             }
         }
         (!parts.is_empty()).then(|| parts.join(" · "))
@@ -1659,7 +1689,8 @@ impl KarWorkbench {
         let draft = self.composer_editor.read(cx).value().to_owned();
         // The Git split can halve the writing width. Measure the same shaped text
         // that GPUI paints so wrapped CJK drafts remain visible while editing.
-        let input_width = ((pane_w - 2. * chat_lane_gutter(pane_w, window)).min(THREAD_W) - 34.).max(60.);
+        let card_width = (pane_w - 2. * chat_lane_gutter(pane_w, window)).min(THREAD_W);
+        let input_width = (card_width - 34.).max(60.);
         let lines = if draft.is_empty() {
             2
         } else if draft.len() > 4096 {
@@ -1683,9 +1714,14 @@ impl KarWorkbench {
                 .unwrap_or_else(|_| draft.lines().count())
                 .clamp(2, 10)
         };
+        // Keep the transcript and pending requests reachable beside a long draft.
+        // The editor scrolls internally once it takes a third of the chat height.
+        let window_h = f32::from(window.viewport_size().height);
+        let drawer_h = self.bottom_terminal_anim.get(window, cx).min(window_h);
+        let max_field_h = ((window_h - drawer_h - HEADER_H) / 3.).max(2. * 22.75);
         let field_h = pro_spring_f32(
             "kar-composer-height",
-            lines as f32 * 22.75,
+            (lines as f32 * 22.75).min(max_field_h),
             0.16,
             window,
             cx,
@@ -1774,35 +1810,10 @@ impl KarWorkbench {
         let ctx_label = ctx_ratio
             .map(|r| format!("{:.0}%", r * 100.))
             .unwrap_or_else(|| loc.pick("上下文", "Context").into());
-        let mut context_rows =
-            vec![menu_caption(loc.pick("上下文用量", "Context window"), s).into_any_element()];
-        let mut values = Vec::new();
-        if let Some(tokens) = usage.and_then(|u| u.tokens) {
-            values.push(format!("Used  {tokens} tokens"));
-        }
-        if let Some(limit) = usage.and_then(|u| u.context_window) {
-            values.push(format!("Limit  {limit} tokens"));
-        }
-        if let Some(ratio) = ctx_ratio {
-            values.push(format!("Usage  {:.0}%", ratio * 100.));
-        }
-        if values.is_empty() {
-            values.push(
-                loc.pick("智能体尚未上报上下文用量", "No context telemetry yet")
-                    .into(),
-            );
-        }
-        for text in values {
-            context_rows.push(
-                div()
-                    .px(px(10.))
-                    .py(px(4.))
-                    .text_size(px(FS_META))
-                    .text_color(s.text)
-                    .child(text)
-                    .into_any_element(),
-            );
-        }
+        let mut context_rows = vec![
+            context_usage::inspector(usage, self.projected.manual_compaction.as_ref(), loc, s)
+                .into_any_element(),
+        ];
         if self.projected.can_compact
             && !turn_running
             && matches!(self.access_mode, ChatAccessMode::WriteController { .. })
@@ -1822,7 +1833,9 @@ impl KarWorkbench {
                 .into_any_element(),
             );
         }
-        let show_ctx = usage.is_some() || self.open_menu == Some(Menu::ContextUsage);
+        let show_ctx = usage.is_some()
+            || self.projected.can_compact
+            || self.open_menu == Some(Menu::ContextUsage);
         let ctx_control = show_ctx.then(|| {
             menu_host(
                 Tactile::ghost("cmp-context-inspector-btn", s)
@@ -1830,7 +1843,10 @@ impl KarWorkbench {
                     .px(px(7.))
                     .gap(px(5.))
                     .lit(self.open_menu == Some(Menu::ContextUsage))
-                    .tip(loc.pick("上下文容量与压缩", "Context window usage"))
+                    .aria(loc.pick("上下文容量与压缩", "Context window usage"))
+                    .when(self.open_menu != Some(Menu::ContextUsage), |button| {
+                        button.tip(loc.pick("上下文容量与压缩", "Context window usage"))
+                    })
                     .font_features(tnum_features())
                     .text_size(px(FS_META))
                     .ink(s.muted, s.ink)
@@ -1839,11 +1855,12 @@ impl KarWorkbench {
                     })
                     .child(ctx_label)
                     .on_press(cx, |this, _, cx| this.toggle_menu(Menu::ContextUsage, cx)),
-                self.render_menu(Menu::ContextUsage, start, 224., context_rows, s, cx),
+                self.render_menu(Menu::ContextUsage, start, 250., context_rows, s, cx),
             )
         });
 
         let left = div()
+            .flex_none()
             .flex()
             .items_center()
             .gap(px(4.))
@@ -1879,20 +1896,23 @@ impl KarWorkbench {
                 .map_or_else(|| runtime_display_name(&runtime_id), |entry| entry.label.clone())
         };
         let agent_button = Tactile::ghost("cmp-agent", s)
-            .flex_none()
+            .min_w_0()
+            .max_w_full()
             .h(px(CTRL_H))
             .px(px(8.))
             .radius(R_CTRL)
             .gap(px(5.5))
             .text_size(px(FS_UI))
             .child(render_runtime_mark(&runtime_id, 16., s, cx))
-            .child(
+            .aria(display_agent.clone())
+            .when(card_width >= 312., |b| b.child(
                 div()
-                    .max_w(px((pane_w - 165.).clamp(58., 240.)))
+                    .min_w_0()
+                    .max_w(px(240.))
                     .truncate()
                     .text_color(s.text)
                     .child(display_agent),
-            )
+            ))
             .when_some(effort_word.filter(|_| !compact_bar), |b, level| {
                 b.child(div().text_color(s.muted).child(effort_label(level, loc).to_owned()))
             });
@@ -1911,6 +1931,8 @@ impl KarWorkbench {
                     .on_press(cx, |this, _, cx| this.toggle_menu(Menu::ComposerAgent, cx)),
                 self.render_agent_menu(s, window, cx),
             )
+            .flex_shrink(1.)
+            .min_w_0()
             .into_any_element()
         };
 
@@ -1948,8 +1970,11 @@ impl KarWorkbench {
         };
 
         let right = div()
+            .flex_1()
+            .min_w_0()
             .flex()
             .items_center()
+            .justify_end()
             .gap(px(5.))
             .child(agent_control)
             .child(menu_host(
@@ -3608,7 +3633,7 @@ impl KarWorkbench {
                 }
                 Item::Tool { activity, .. } => {
                     work_items_count += 1;
-                    if tool_phase(activity) == ToolPhase::Failed {
+                    if matches!(activity::phase(activity, running), activity::Phase::Failed | activity::Phase::Cancelled | activity::Phase::Unfinished) {
                         any_work_failed = true;
                     }
                     if let Some(result) = &activity.result {
@@ -3629,7 +3654,7 @@ impl KarWorkbench {
         }
 
         // T3 Code `Worked for 2m 14s >` collapsible work-group header for finished turns
-        let collapse_work_group = !running && !any_work_failed && work_items_count > 0;
+        let collapse_work_group = !running && !any_work_failed && work_items_count > 1;
         let work_grp_key = (turn_id, 900_000);
         let work_grp_open = self.part_is_open(work_grp_key, false);
 
@@ -3655,25 +3680,21 @@ impl KarWorkbench {
                             text,
                             ..
                         } if !text.trim().is_empty() => {
-                            wg_body = wg_body.child(
-                                div()
-                                    .text_size(px(FS_META))
-                                    .line_height(px(18.))
-                                    .text_color(s.muted)
-                                    .child(text.trim().to_owned()),
-                            );
+                            wg_body = wg_body.child(self.render_reasoning(
+                                (turn_id, wix), text, false, sub, s, window, cx,
+                            ));
                         }
                         Item::Tool { .. } => {
-                            let st = wix;
+                            let source = &turn.items[wix].source;
                             let mut calls: Vec<(usize, &Tool)> = Vec::new();
                             while let Some(Item::Tool { activity, .. }) =
-                                turn.items.get(wix).map(|i| &i.item)
+                                turn.items.get(wix).filter(|i| &i.source == source).map(|i| &i.item)
                             {
                                 calls.push((wix, activity));
                                 wix += 1;
                             }
                             wg_body = wg_body.child(self.render_tool_run(
-                                turn_id, st, &calls, sub, s, window, cx,
+                                turn_id, &calls, running, sub, s, window, cx,
                             ));
                             continue;
                         }
@@ -3700,6 +3721,8 @@ impl KarWorkbench {
                         .font_features(tnum_features())
                         .text_size(px(FS_CONTROL))
                         .ink(s.muted, s.ink)
+                        .aria(worked_label.clone())
+                        .expanded(work_grp_open)
                         .child(worked_label)
                         .child(pro_icon(
                             if work_grp_open {
@@ -3788,10 +3811,10 @@ impl KarWorkbench {
                     }
                 }
                 Item::Tool { .. } => {
-                    let start = ix;
+                    let source = &turn.items[ix].source;
                     let mut calls: Vec<(usize, &Tool)> = Vec::new();
                     while let Some(Item::Tool { activity, .. }) =
-                        turn.items.get(ix).map(|item| &item.item)
+                        turn.items.get(ix).filter(|item| &item.source == source).map(|item| &item.item)
                     {
                         calls.push((ix, activity));
                         ix += 1;
@@ -3800,8 +3823,8 @@ impl KarWorkbench {
                         has_parts = true;
                         parts = parts.child(self.render_tool_run(
                             turn_id,
-                            start,
                             &calls,
+                            running,
                             is_subagent,
                             s,
                             window,
@@ -3999,7 +4022,12 @@ impl KarWorkbench {
         }
 
         // ── While it works: KUI `TextShimmer` + animated `AiSpark` ───────────
-        if running {
+        let activity_is_visible = turn.items.iter().any(|item| match &item.item {
+            Item::Tool { activity, .. } => activity::phase(activity, running) == activity::Phase::Running,
+            Item::Message { role: KarRole::Reasoning, complete: false, text, .. } => !text.trim().is_empty(),
+            _ => false,
+        });
+        if running && !activity_is_visible && self.projected.pending_requests.is_empty() {
             has_parts = true;
             let lead = self
                 .turn_sparks
@@ -4007,7 +4035,8 @@ impl KarWorkbench {
                 .cloned()
                 .map(IntoElement::into_any_element)
                 .unwrap_or_else(|| spinner(ICON_SM, s.muted, window, cx));
-            let activity_txt = self.describe_activity(turn);
+            let reply = matches!(turn.items.last().map(|i| &i.item), Some(Item::Message { role: KarRole::Assistant, complete: false, .. }));
+            let activity_txt = if reply { loc.pick("正在回复", "Replying") } else { loc.pick("正在处理", "Working") };
             self.working_shimmer
                 .update(cx, |sh, cx| sh.set_text(activity_txt, cx));
             parts = parts.child(
@@ -4308,24 +4337,6 @@ impl KarWorkbench {
         col
     }
 
-    fn describe_activity(&self, turn: &ChatTurn) -> String {
-        if !self.projected.pending_requests.is_empty() {
-            return "等待你的确认".into();
-        }
-        match turn.items.last().map(|item| &item.item) {
-            Some(Item::Tool { activity, .. }) if !activity.finished => {
-                let what: String = tool_summary(activity).chars().take(48).collect();
-                format!("正在执行 {what}")
-            }
-            Some(Item::Message {
-                role: KarRole::Assistant,
-                complete: false,
-                ..
-            }) => "正在回复".into(),
-            _ => "正在思考".into(),
-        }
-    }
-
     fn part_is_open(&self, key: (Uuid, usize), default_open: bool) -> bool {
         self.part_open.get(&key).copied().unwrap_or(default_open)
     }
@@ -4341,17 +4352,18 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        let open = self.part_is_open(key, live);
+        let open = self.part_is_open(key, false);
+        let loc = self.ui_locale;
         let lead = if live {
             spinner(ICON_SM, s.muted, window, cx)
         } else {
             pro_icon(ProIcon::Sparkles, ICON_SM, s.muted)
         };
         let label = match (live, is_subagent) {
-            (true, true) => "子智能体正在思考",
-            (true, false) => "正在思考",
-            (false, true) => "子智能体思考过程",
-            (false, false) => "思考过程",
+            (true, true) => loc.pick("子智能体正在思考", "Subagent is thinking"),
+            (true, false) => loc.pick("正在思考", "Thinking"),
+            (false, true) => loc.pick("子智能体思考过程", "Subagent reasoning"),
+            (false, false) => loc.pick("思考过程", "Reasoning"),
         };
         let body = div()
             .text_size(px(FS_UI))
@@ -4386,215 +4398,6 @@ impl KarWorkbench {
                 body,
                 s,
             ))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn render_tool_run(
-        &mut self,
-        turn_id: Uuid,
-        start_ix: usize,
-        calls: &[(usize, &Tool)],
-        is_subagent: bool,
-        s: &StudioPalette,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let key = (turn_id, start_ix);
-        let phases: Vec<ToolPhase> = calls.iter().map(|(_, tool)| tool_phase(tool)).collect();
-        let any_failed = phases.contains(&ToolPhase::Failed);
-        let running_call = calls
-            .iter()
-            .zip(&phases)
-            .find(|(_, phase)| **phase == ToolPhase::Running)
-            .map(|((_, tool), _)| *tool);
-        let open = self.part_is_open(key, any_failed);
-
-        let lead = if running_call.is_some() {
-            spinner(ICON_SM, s.muted, window, cx)
-        } else if any_failed {
-            pro_icon(ProIcon::AlertTriangle, ICON_SM, s.pro.red)
-        } else {
-            pro_icon(ProIcon::Check, ICON_SM, s.muted)
-        };
-        let base_label = match (calls, running_call) {
-            ([(_, only)], _) => tool_summary(only),
-            (_, Some(current)) => tool_summary(current),
-            (many, None) => format!("执行了 {} 步操作", many.len()),
-        };
-        let label = if is_subagent {
-            format!("子智能体 · {base_label}")
-        } else {
-            base_label
-        };
-
-        let single = calls.len() == 1;
-        let mut body = div().w_full().flex().flex_col().gap(px(2.));
-        for ((item_ix, tool), phase) in calls.iter().zip(&phases) {
-            let detail_key = (turn_id, *item_ix);
-            if single {
-                body = body.child(self.render_tool_detail(detail_key, tool, s, window, cx));
-                continue;
-            }
-            let detail_open = self.tool_detail == Some(detail_key);
-            let mark = match phase {
-                ToolPhase::Running => spinner(ICON_XS, s.muted, window, cx),
-                ToolPhase::Done => pro_icon(ProIcon::Check, ICON_XS, s.muted),
-                ToolPhase::Failed => pro_icon(ProIcon::AlertTriangle, ICON_XS, s.pro.red),
-                ToolPhase::Cancelled => pro_icon(ProIcon::Minus, ICON_XS, s.faint),
-            };
-            let detail =
-                detail_open.then(|| self.render_tool_detail(detail_key, tool, s, window, cx));
-            body = body
-                .child(
-                    Tactile::ghost(
-                        SharedString::from(format!("tool-{turn_id}-{item_ix}")),
-                        s,
-                    )
-                    .ml(px(-8.))
-                    .max_w_full()
-                    .h(px(CTRL_H))
-                    .px(px(8.))
-                    .gap(px(8.))
-                    .text_size(px(FS_UI))
-                    .ink(s.text, s.ink)
-                    .lit(detail_open)
-                    .child(mark)
-                    .child(div().min_w_0().truncate().child(tool_summary(tool)))
-                    .on_press(cx, move |this, _, cx| {
-                        this.tool_detail = (!detail_open).then_some(detail_key);
-                        cx.notify();
-                    }),
-                )
-                .child(pro_fold(
-                    SharedString::from(format!("tool-detail-{turn_id}-{item_ix}")),
-                    detail_open,
-                    128.,
-                    0.,
-                    move || {
-                        div()
-                            .pb(px(4.))
-                            .when_some(detail, |d, detail| d.child(detail))
-                            .into_any_element()
-                    },
-                ));
-        }
-
-        div()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .items_start()
-            .child(
-                disclosure_line(
-                    SharedString::from(format!("tools-{turn_id}-{start_ix}")),
-                    lead,
-                    label,
-                    open,
-                    s,
-                )
-                .on_press(cx, move |this, _, cx| {
-                    this.part_open.insert(key, !open);
-                    cx.notify();
-                }),
-            )
-            .child(disclosure_body(
-                SharedString::from(format!("tools-body-{turn_id}-{start_ix}")),
-                open,
-                if single {
-                    112.
-                } else {
-                    calls.len() as f32 * 30.
-                },
-                body.into_any_element(),
-                s,
-            ))
-    }
-
-    fn render_tool_detail(
-        &mut self,
-        key: (Uuid, usize),
-        tool: &Tool,
-        s: &StudioPalette,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mono = mono_font(cx);
-        let input = tool_input_text(tool);
-        let raw_output = tool_output_text(tool);
-        let failed = tool_phase(tool) == ToolPhase::Failed;
-
-        let input_el: Option<AnyElement> = input.map(|inp| {
-            let trimmed = inp.trim();
-            if (trimmed.starts_with('{') || trimmed.starts_with('['))
-                && let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
-                && (val.is_object() || val.is_array())
-            {
-                let cache_k = format!("tool-in-json-{}-{}", key.0, key.1);
-                let jv = self
-                    .tool_json_viewers
-                    .entry(cache_k)
-                    .or_insert_with(|| {
-                        cx.new(|cx| JsonViewer::new("参数", val, window, cx).with_max_height(180.))
-                    })
-                    .clone();
-                return div().w_full().child(jv).into_any_element();
-            }
-            let is_shell = matches!(tool.name.as_deref(), Some("Bash" | "shell"))
-                || tool.native_type.as_deref() == Some("commandExecution");
-            if is_shell && (trimmed.contains('\n') || trimmed.len() >= 56) {
-                let cache_k = format!("tool-in-sh-{}-{}", key.0, key.1);
-                let clean_cmd = unwrap_shell_command(trimmed).to_owned();
-                let cb = self
-                    .code_block_cache
-                    .entry(cache_k)
-                    .or_insert_with(|| cx.new(|cx| CodeBlock::new("bash", "bash", clean_cmd, cx)))
-                    .clone();
-                return div().w_full().child(cb).into_any_element();
-            }
-            div().text_color(s.ink).child(inp).into_any_element()
-        });
-
-        let output_el: Option<AnyElement> = raw_output.map(|out| {
-            let trimmed = out.trim();
-            if !failed
-                && (trimmed.starts_with('{') || trimmed.starts_with('['))
-                && let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
-                && (val.is_object() || val.is_array())
-            {
-                let cache_k = format!("tool-out-json-{}-{}", key.0, key.1);
-                let jv = self
-                    .tool_json_viewers
-                    .entry(cache_k)
-                    .or_insert_with(|| {
-                        cx.new(|cx| JsonViewer::new("输出", val, window, cx).with_max_height(200.))
-                    })
-                    .clone();
-                return div().w_full().child(jv).into_any_element();
-            }
-            div()
-                .text_color(if failed { s.pro.red_ink } else { s.muted })
-                .child(clip_lines(&out, DETAIL_MAX_LINES))
-                .into_any_element()
-        });
-
-        div()
-            .id(SharedString::from(format!("tool-box-{}-{}", key.0, key.1)))
-            .w_full()
-            .overflow_x_scroll()
-            .px(px(12.))
-            .py(px(8.))
-            .rounded(px(R_CTRL))
-            .bg(s.soft)
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .font_family(mono)
-            .text_size(px(FS_META))
-            .line_height(px(18.))
-            .when_some(input_el, |d, el| d.child(el))
-            .when_some(output_el, |d, el| d.child(el))
-            .into_any_element()
     }
 
     fn render_diff(
@@ -5075,46 +4878,11 @@ impl KarWorkbench {
 
     // ── Decisions (Permissions + Full Structured QuestionForm) ──────────────
 
-    fn render_decision_dock(
-        &mut self,
-        s: &StudioPalette,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let waiting: Vec<PendingRequest> = if self.access_mode.is_writable() {
-            self.projected
-                .pending_requests
-                .iter()
-                .filter(|r| matches!(r.kind, RequestKind::Permission | RequestKind::Question))
-                .cloned()
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let total = waiting.len();
-        let max_height = (f32::from(window.viewport_size().height) * 0.44).clamp(140., 420.);
-        let card = waiting
-            .into_iter()
-            .next()
-            .map(|request| self.render_decision_card(request, total, max_height, s, window, cx));
-        let open = card.is_some();
-        pro_fold("kar-decision-dock", open, 184., 0., move || {
-            div()
-                .w_full()
-                .max_w(px(THREAD_W))
-                .mx_auto()
-                .px(px(THREAD_PAD))
-                .pb(px(8.))
-                .when_some(card, |d, card| d.child(card))
-                .into_any_element()
-        })
-    }
-
     fn render_decision_card(
         &mut self,
         request: PendingRequest,
         total: usize,
-        max_height: f32,
+        compact: bool,
         s: &StudioPalette,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -5146,9 +4914,8 @@ impl KarWorkbench {
             });
 
         let card = div()
-            .max_h(px(max_height))
             .w_full()
-            .p(px(if max_height < 190. { 8. } else { 16. }))
+            .p(px(if compact { 8. } else { 16. }))
             .rounded(px(R_HERO))
             .bg(s.card)
             .border_1()
@@ -5166,13 +4933,7 @@ impl KarWorkbench {
                 window,
                 cx,
             );
-            return card.child(
-                div()
-                    .id("question-scroll")
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(content),
-            );
+            return card.child(content);
         }
 
         let controls = request.controls();
@@ -5252,7 +5013,7 @@ impl KarWorkbench {
             }
         };
 
-        let button_padding = if max_height < 190. { 6. } else { 12. };
+        let button_padding = if compact { 6. } else { 12. };
         let mut actions = div()
             .pt(px(2.))
             .w_full()
@@ -5337,13 +5098,7 @@ impl KarWorkbench {
                 );
             }
         }
-        let details = div()
-            .id("permission-details-scroll")
-            .w_full()
-            .min_h_0()
-            .overflow_y_scroll()
-            .child(detail.child(policy_rows));
-        card.child(details).child(actions.flex_none())
+        card.child(detail.child(policy_rows)).child(actions)
     }
 
     pub(crate) fn handle_dropped_paths(
@@ -5387,7 +5142,11 @@ fn policy_option_label(pol: &PolicyOption, idx: usize, loc: UiLocale) -> String 
 
 // The reference caps the content itself at 46rem, with the viewport gutters outside it.
 fn chat_lane_gutter(width: f32, window: &Window) -> f32 {
-    if f32::from(window.viewport_size().width) >= 640. && width >= 300. { 48. } else { 12. }
+    if f32::from(window.viewport_size().width) < 640. {
+        12.
+    } else {
+        (12. + (width - 360.) * 0.12).clamp(12., 48.)
+    }
 }
 
 fn chat_content_lane(width: f32, window: &Window) -> Div {
@@ -5543,16 +5302,6 @@ fn decision_question(text: String, s: &StudioPalette) -> Div {
         .font_weight(FontWeight::MEDIUM)
         .text_color(s.ink)
         .child(text)
-}
-
-fn clip_lines(text: &str, max: usize) -> String {
-    let total = text.lines().count();
-    if total <= max {
-        return text.to_owned();
-    }
-    let mut clipped: String = text.lines().take(max).collect::<Vec<_>>().join("\n");
-    clipped.push_str(&format!("\n… 还有 {} 行", total - max));
-    clipped
 }
 
 fn request_facts(request: &PendingRequest, loc: UiLocale) -> Vec<(&'static str, String)> {

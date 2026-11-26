@@ -271,21 +271,48 @@ impl KarWorkbench {
                 .on_press(cx, |this, _, cx| this.toggle_menu(Menu::SidebarFilter, cx)),
             self.render_sidebar_filter_menu(&s, cx),
         );
+        let search_focused = self.sidebar_search.read(cx).focus.is_focused(window);
+        let search_group = "sidebar-thread-search";
         let search = div()
             .id("side-search-field")
+            .group(search_group)
+            .relative()
             .flex_1()
             .min_w_0()
             .h(px(32.))
             .px(px(8.))
             .gap(px(8.))
-            .rounded(px(6.))
             .flex()
             .items_center()
-            .hover(|st| st.bg(s.sidebar_hover))
+            .cursor(CursorStyle::IBeam)
             .on_click(cx.listener(|this, _, win, cx| {
                 this.sidebar_search.update(cx, |ed, cx| ed.focus(win, cx))
             }))
-            .child(pro_icon(ProIcon::Search, 16., s.muted))
+            .child(
+                div()
+                    .size(px(16.))
+                    .flex_none()
+                    .opacity(if search_focused || has_query { 1. } else { 0.65 })
+                    .group_hover(search_group, |style| style.opacity(1.))
+                    .child(pro_icon(ProIcon::Search, 16., s.ink)),
+            )
+            .when(search_focused, |row| {
+                let alpha = if window.last_input_was_keyboard() {
+                    0.34
+                } else {
+                    0.20
+                };
+                row.child(
+                    div()
+                        .absolute()
+                        .left(px(8.))
+                        .right(px(8.))
+                        .bottom(px(1.))
+                        .h(px(1.))
+                        .rounded_full()
+                        .bg(s.ink.opacity(alpha)),
+                )
+            })
             .child(
                 div()
                     .flex_1()
@@ -293,7 +320,7 @@ impl KarWorkbench {
                     .h(px(21.))
                     .child(self.sidebar_search.clone()),
             )
-            .when(has_query, |d| {
+            .when(!self.sidebar_filter.is_empty(), |d| {
                 d.child(
                     Tactile::ghost("side-search-clear", &s)
                         .size(px(20.))

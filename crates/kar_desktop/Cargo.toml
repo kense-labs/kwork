@@ -34,6 +34,7 @@ log.workspace = true
 ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+shell-words = "1.1"
 sheets_engine.workspace = true
 sheets_ui.workspace = true
 slides_engine.workspace = true

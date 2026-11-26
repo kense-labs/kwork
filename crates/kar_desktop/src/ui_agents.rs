@@ -16,8 +16,8 @@ use crate::{
     types::{ProviderAvailability, ProviderReadiness},
     ui_motion::{Tactile, disclosure_line, soft_button, spinner},
     ui_primitives::{
-        FS_META, FS_UI, ICON_SM, ICON_XS, LH_META, LH_UI, R_CARD, R_CTRL,
-        StudioPalette, mono_font, render_provider_color_tile,
+        DotTone, FS_META, FS_UI, ICON_SM, ICON_XS, LH_META, LH_UI, R_CARD, R_CTRL,
+        StudioPalette, mono_font, render_provider_color_tile, render_status,
     },
     workbench::KarWorkbench,
 };
@@ -26,7 +26,7 @@ impl KarWorkbench {
     pub(crate) fn render_agents_panel(
         &self,
         s: &StudioPalette,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let loc = self.ui_locale;
@@ -134,7 +134,7 @@ impl KarWorkbench {
 
         let mut body = div().p(px(20.)).flex().flex_col().gap(px(16.)).child(routing_card);
 
-        if agents.is_empty() {
+        if agents.is_empty() && self.providers_probing {
             body = body.child(
                 div()
                     .px(px(12.))
@@ -154,6 +154,15 @@ impl KarWorkbench {
             );
         }
 
+        if agents.is_empty() && !self.providers_probing {
+            body = body.child(
+                div()
+                    .text_size(px(FS_META))
+                    .text_color(s.muted)
+                    .child(loc.pick("未检测到本机智能体", "No local agents detected")),
+            );
+        }
+
         // ── 2. Ready Agents Fleet (`agents.rs` Sculpted Cards + Model Capsules) ─
         if !usable.is_empty() {
             let mut ready_col = div()
@@ -166,7 +175,53 @@ impl KarWorkbench {
                 let chosen = agent.id == self.selected_runtime;
                 let id = agent.id.clone();
                 let detail = agent.ready_detail_line_in(loc);
-
+                let store = window.use_keyed_state(
+                    SharedString::from(format!("provider-detail-{}", agent.id)),
+                    cx,
+                    |_, _| false,
+                );
+                let expanded = *store.read(cx);
+                let (status, tone) = match agent.readiness() {
+                    ProviderReadiness::Ready => (loc.pick("已登录", "Signed in"), DotTone::Success),
+                    _ => (
+                        loc.pick("登录状态未确认", "Sign-in unverified"),
+                        DotTone::Neutral,
+                    ),
+                };
+                let status_line = render_status(status, tone, s);
+                let account_control = if detail.is_empty() {
+                    status_line.into_any_element()
+                } else {
+                    Tactile::ghost(
+                        SharedString::from(format!("provider-account-{}", agent.id)),
+                        s,
+                    )
+                    .h(px(26.))
+                    .px(px(5.))
+                    .ml(px(-5.))
+                    .gap(px(4.))
+                    .aria(format!(
+                        "{} · {status} · {}",
+                        agent.display_name(),
+                        loc.pick("连接详情", "Connection details")
+                    ))
+                    .expanded(expanded)
+                    .child(status_line)
+                    .child(pro_icon(
+                        if expanded {
+                            ProIcon::ChevronDown
+                        } else {
+                            ProIcon::ChevronRight
+                        },
+                        ICON_XS,
+                        s.muted,
+                    ))
+                    .on_press(cx, move |_, _, cx| {
+                        store.update(cx, |open, _| *open = !*open);
+                        cx.notify();
+                    })
+                    .into_any_element()
+                };
 
                 let mut card = div()
                     .w_full()
@@ -199,31 +254,14 @@ impl KarWorkbench {
                                             .flex_1()
                                             .flex()
                                             .flex_col()
-                                            .gap(px(2.5))
                                             .child(
                                                 div()
-                                                    .flex()
-                                                    .items_center()
-                                                    .flex_wrap()
-                                                    .gap(px(6.))
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(FS_UI))
-                                                            .font_weight(FontWeight::SEMIBOLD)
-                                                            .text_color(s.ink)
-                                                            .child(agent.display_name()),
-                                                    )
+                                                    .text_size(px(FS_UI))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(s.ink)
+                                                    .child(agent.display_name()),
                                             )
-                                            .when(!detail.is_empty(), |col| {
-                                                col.child(
-                                                    div()
-                                                        .truncate()
-                                                        .text_size(px(FS_META))
-                                                        .line_height(px(LH_META))
-                                                        .text_color(s.muted)
-                                                        .child(detail),
-                                                )
-                                            }),
+                                            .child(div().flex().items_center().child(account_control)),
                                     ),
                             )
                             .child(if chosen {
@@ -251,6 +289,20 @@ impl KarWorkbench {
                                     .into_any_element()
                             }),
                     );
+
+                if expanded && !detail.is_empty() {
+                    card = card.child(
+                        div()
+                            .w_full()
+                            .pt(px(8.))
+                            .border_t_1()
+                            .border_color(s.line_soft)
+                            .text_size(px(FS_META))
+                            .line_height(px(LH_META))
+                            .text_color(s.text)
+                            .child(detail),
+                    );
+                }
 
                 if chosen && !agent.models.is_empty() {
                     let selected = self.selected_model.clone();
@@ -569,7 +621,6 @@ fn agent_text(name: String, detail: String, s: &StudioPalette) -> Div {
         .when(!detail.is_empty(), |d| {
             d.child(
                 div()
-                    .truncate()
                     .text_size(px(FS_META))
                     .line_height(px(LH_META))
                     .text_color(s.muted)

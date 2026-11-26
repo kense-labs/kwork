@@ -726,7 +726,7 @@ impl KarWorkbench {
         crate::apply_ui_language(ui_locale, cx);
         let sidebar_search = cx.new(|cx| {
             let mut ed = Editor::new(
-                ui_locale.pick("搜索对话与文档", "Search threads"),
+                ui_locale.pick("搜索对话", "Search threads"),
                 InputMode::Search,
                 window,
                 cx,
@@ -735,12 +735,23 @@ impl KarWorkbench {
             ed.font_size = FS_UI;
             ed
         });
-        cx.subscribe(&sidebar_search, |this, ed, ev: &EditEvent, cx| {
-            if *ev == EditEvent::Changed {
-                this.sidebar_filter = ed.read(cx).value().to_owned();
-                cx.notify();
-            }
-        })
+        cx.subscribe_in(
+            &sidebar_search,
+            window,
+            |this, editor, event: &EditEvent, window, cx| match event {
+                EditEvent::Changed => {
+                    this.sidebar_filter = editor.read(cx).value().to_owned();
+                    cx.notify();
+                }
+                EditEvent::Escape if editor.read(cx).value().is_empty() => {
+                    this.focus_handle.focus(window, cx);
+                }
+                EditEvent::Escape => {
+                    editor.update(cx, |ed, cx| ed.set_value("", window, cx));
+                }
+                _ => {}
+            },
+        )
         .detach();
 
         let mut collection_search = |label: &'static str| {
@@ -1852,6 +1863,7 @@ impl KarWorkbench {
         }
         let search_ph = self.ui_locale.pick("搜索", "Search");
         self.sidebar_search.update(cx, |ed, cx| {
+            ed.set_label(self.ui_locale.pick("搜索对话", "Search threads"));
             ed.set_placeholder(search_ph);
             cx.notify();
         });
@@ -2511,10 +2523,14 @@ impl KarWorkbench {
                 {
                     self.run_terminal_command_str(command, window, cx);
                 }
-                if switched_chat && self.projected.turns.len() <= 1 && !self.turn_in_progress() {
-                    self.chat_scroll.set_offset(point(px(0.), px(0.)));
-                } else if switched_chat || at_end || new_turn_appended {
-                    self.chat_scroll.scroll_to_bottom();
+                // A newly displayed decision reveals its first field. Subsequent feed
+                // updates must preserve the reader's position while they fill it out.
+                if self.pending_decisions().next().is_none() {
+                    if switched_chat && self.projected.turns.len() <= 1 && !self.turn_in_progress() {
+                        self.chat_scroll.set_offset(point(px(0.), px(0.)));
+                    } else if switched_chat || at_end || new_turn_appended {
+                        self.chat_scroll.scroll_to_bottom();
+                    }
                 }
             }
             KarBridgeEvent::PromptLifecycle { attempt } => {

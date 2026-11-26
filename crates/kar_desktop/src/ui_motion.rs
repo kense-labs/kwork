@@ -36,6 +36,7 @@ struct TactileAnim {
     hover: Slide,
     press: Slide,
     lit: Slide,
+    focus: Option<FocusHandle>,
 }
 
 /// A pressable surface with spring hover, tactile press and an optional lit state.
@@ -62,6 +63,7 @@ pub struct Tactile {
     aria: Option<SharedString>,
     role: Role,
     selection: Option<bool>,
+    expanded: Option<bool>,
     focus: Option<FocusHandle>,
     tab_stop: bool,
 }
@@ -88,6 +90,7 @@ impl Tactile {
             aria: None,
             role: Role::Button,
             selection: None,
+            expanded: None,
             focus: None,
             tab_stop: true,
         }
@@ -173,6 +176,11 @@ impl Tactile {
         self
     }
 
+    pub fn expanded(mut self, open: bool) -> Self {
+        self.expanded = Some(open);
+        self
+    }
+
     pub fn role(mut self, role: Role) -> Self {
         self.role = role;
         self
@@ -209,13 +217,24 @@ impl RenderOnce for Tactile {
             hover: Slide::snappy(0.),
             press: Slide::snappy(0.),
             lit: Slide::snappy(lit_target),
+            focus: None,
         });
-        let (hov, down, lit) = anim.update(cx, |a, cx| {
+        let (hov, down, lit, button_focus) = anim.update(cx, |a, cx| {
             a.lit.set(lit_target, cx);
+            let focus = (!self.disabled && self.selection.is_none()).then(|| {
+                let handle = a
+                    .focus
+                    .get_or_insert_with(|| cx.focus_handle().tab_stop(self.tab_stop));
+                if handle.tab_stop != self.tab_stop {
+                    *handle = handle.clone().tab_stop(self.tab_stop);
+                }
+                handle.clone()
+            });
             (
                 a.hover.get(window, cx).clamp(0., 1.),
                 a.press.get(window, cx).clamp(0., 1.),
                 a.lit.get(window, cx).clamp(0., 1.),
+                focus,
             )
         });
 
@@ -231,6 +250,11 @@ impl RenderOnce for Tactile {
         let reduce_motion = disabled_motion(cx);
         let down = if reduce_motion { 0. } else { down };
         let lifts = self.lifts && !disabled && !self.dark && !reduce_motion;
+        let focus_ring = StudioPalette::get(cx).pro.focus;
+        let show_button_ring = window.last_input_was_keyboard()
+            && button_focus
+                .as_ref()
+                .is_some_and(|handle| handle.is_focused(window));
 
         // The face is painted, not laid out: pressing insets it without moving the hit box.
         let paint_face = canvas(
@@ -261,6 +285,11 @@ impl RenderOnce for Tactile {
                 }
                 if face.a > 0.001 {
                     window.paint_quad(fill(rect, face).corner_radii(r));
+                }
+                if show_button_ring {
+                    window.paint_quad(
+                        outline(bounds, focus_ring, BorderStyle::default()).corner_radii(r),
+                    );
                 }
             },
         )
@@ -306,12 +335,11 @@ impl RenderOnce for Tactile {
         let press_up_out = set_press(0.);
         let key_down = set_press(1.);
         let key_up = set_press(0.);
-        let focus_ring = StudioPalette::get(cx).pro.focus;
         let on_click = self.on_click;
         let selection_control = self.selection.is_some();
 
         root.role(self.role)
-            .when_some(self.focus, |d, focus| d.track_focus(&focus))
+            .when_some(self.focus.or(button_focus), |d, focus| d.track_focus(&focus))
             .when_some(self.selection, |d, selected| {
                 if self.role == Role::RadioButton {
                     d.aria_toggled(selected.into())
@@ -320,6 +348,7 @@ impl RenderOnce for Tactile {
                 }
             })
             .when_some(self.aria, |d, label| d.aria_label(label))
+            .when_some(self.expanded, |d, open| d.aria_expanded(open))
             .when_some(self.ink, |d, (rest, hovered)| {
                 d.text_color(if disabled {
                     rest
@@ -337,7 +366,6 @@ impl RenderOnce for Tactile {
                             .border_color(transparent_black())
                             .focus_visible(move |st| st.border_color(focus_ring))
                     })
-                    .when(!selection_control, |d| d.focus_visible(move |st| st.shadow(vec![BoxShadow { color: focus_ring, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(1.), inset: false }])))
                     .on_hover(set_hover)
                     .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         press_down(window, cx)
@@ -641,7 +669,10 @@ pub fn disclosure_line(
     open: bool,
     s: &StudioPalette,
 ) -> Tactile {
+    let label = label.into();
     Tactile::ghost(id, s)
+        .aria(label.clone())
+        .expanded(open)
         .ml(px(-8.))
         .max_w_full()
         .h(px(CTRL_H))
@@ -650,7 +681,7 @@ pub fn disclosure_line(
         .text_size(px(FS_UI))
         .ink(s.muted, s.text)
         .child(lead)
-        .child(div().min_w_0().truncate().child(label.into()))
+        .child(div().min_w_0().truncate().child(label))
         .child(pro_icon(
             if open {
                 ProIcon::ChevronDown
