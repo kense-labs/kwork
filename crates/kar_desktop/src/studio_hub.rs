@@ -895,6 +895,17 @@ pub struct SlashCommandItem {
     pub source: String,
 }
 
+impl SlashCommandItem {
+    pub(crate) fn normalized_name(raw: &str) -> Option<String> {
+        let raw = raw.trim();
+        let name = raw.strip_prefix('/').unwrap_or(raw);
+        if name.is_empty() || name.starts_with('/') || name.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+            return None;
+        }
+        Some(format!("/{name}"))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolSchemaItem {
     pub name: String,
@@ -948,7 +959,17 @@ impl WorkspaceInventorySnapshot {
         }
     }
 
+    /// A partial probe still proves that the commands it returned are available.
+    pub(crate) fn advertised_commands_for(&self, workspace: &Path, runtime_id: &str) -> &[SlashCommandItem] {
+        if self.belongs_to(workspace, runtime_id) {
+            &self.commands
+        } else {
+            &[]
+        }
+    }
+
     fn record_command_result(&mut self, result: kar::Result<InventoryResult<CommandEntry>>) {
+        self.commands.clear();
         let Ok(InventoryResult::Ok { items, partial, .. }) = result else {
             self.command_status = CommandCatalogStatus::Unavailable;
             return;
@@ -959,20 +980,20 @@ impl WorkspaceInventorySnapshot {
             CommandCatalogStatus::Ready
         };
         for cmd in items {
-            let slash = if cmd.name.starts_with('/') {
-                cmd.name
-            } else {
-                format!("/{}", cmd.name)
-            };
-            if self.commands.iter().any(|c| c.name == slash) {
-                continue;
+            let description = cmd.description.unwrap_or_default();
+            let source = cmd.source.unwrap_or_else(|| runtime_display_name(&self.runtime_id));
+            for name in std::iter::once(cmd.name).chain(cmd.aliases.into_iter().flatten()) {
+                if let Some(name) = SlashCommandItem::normalized_name(&name)
+                    && !self.commands.iter().any(|item| item.name == name)
+                {
+                    self.commands.push(SlashCommandItem {
+                        name,
+                        description: description.clone(),
+                        hint: cmd.argument_hint.clone(),
+                        source: source.clone(),
+                    });
+                }
             }
-            self.commands.push(SlashCommandItem {
-                name: slash,
-                description: cmd.description.unwrap_or_else(|| "运行时原生指令".into()),
-                hint: cmd.argument_hint,
-                source: cmd.source.unwrap_or_else(|| runtime_display_name(&self.runtime_id)),
-            });
         }
     }
 }
@@ -2047,6 +2068,31 @@ mod tests {
             }));
             assert_eq!(snap.commands_for(workspace, "pi"), (!partial).then_some(&[][..]));
         }
+    }
+
+    #[test]
+    fn partial_inventory_keeps_reported_names_and_aliases_scoped_to_the_workspace() {
+        use kar::inventory::{CommandEntry, InventoryScope, View};
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path();
+        let mut snap = seed_local_workspace_inventory(workspace, "claude");
+        snap.record_command_result(Ok(InventoryResult::Ok {
+            scope: InventoryScope::Workspace { cwd: workspace.to_owned() },
+            view: View::Discovered,
+            observed_at: String::new(),
+            items: vec![CommandEntry {
+                name: "/explain".into(),
+                aliases: Some(vec!["exp".into(), " /explain ".into()]),
+                description: None, source: None, argument_hint: None,
+            }],
+            partial: true,
+        }));
+        let names: Vec<_> = snap.advertised_commands_for(workspace, "claude")
+            .iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(names, ["/explain", "/exp"]);
+        assert!(snap.commands_for(workspace, "claude").is_none());
+        assert!(snap.advertised_commands_for(workspace, "codex").is_empty());
+        assert!(snap.advertised_commands_for(&workspace.join("other"), "claude").is_empty());
     }
 
     fn write_usage_journal(

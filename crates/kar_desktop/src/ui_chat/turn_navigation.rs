@@ -76,7 +76,7 @@ impl TurnNavigation {
 }
 
 impl KarWorkbench {
-    pub(super) fn jump_to_rail_turn(
+    pub(crate) fn jump_to_rail_turn(
         &mut self,
         index: usize,
         _window: &mut Window,

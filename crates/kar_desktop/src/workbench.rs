@@ -5,6 +5,7 @@
 //! actions they trigger, and talks to Kar strictly through [`KarBridgeHandle`].
 
 mod commands;
+mod slash_actions;
 mod resize;
 use resize::{Divider, PaneDrag, Span};
 use std::collections::{BTreeMap, BTreeSet};
@@ -170,6 +171,7 @@ pub enum Menu {
     ComposerAdd,
     ComposerSkills,
     ComposerApproval,
+    ComposerEffort,
     ComposerWorkspaceMode,
     SettingsEffort,
     ComposerAgent,
@@ -191,6 +193,7 @@ impl Menu {
         match self {
             Self::ComposerAdd => "menu-composer-add",
             Self::ComposerSkills => "menu-composer-skills",
+            Self::ComposerEffort => "menu-composer-effort",
             Self::ComposerApproval => "menu-composer-approval",
             Self::ComposerWorkspaceMode => "menu-composer-workspace-mode",
             Self::SettingsEffort => "menu-settings-effort",
@@ -538,6 +541,7 @@ pub struct KarWorkbench {
     pub access_mode: ChatAccessMode,
     pub connection_state: FeedConnectionState,
     pub projected: ProjectedChatState,
+    session_commands: Option<(Uuid, Vec<crate::studio_hub::SlashCommandItem>)>,
     pub turn_targets: BTreeMap<Uuid, SelectionTarget>,
     pub prompt_attempts: BTreeMap<Uuid, PendingPromptAttempt>,
     pub active_http_server_url: Option<String>,
@@ -1035,12 +1039,19 @@ impl KarWorkbench {
         .detach();
 
         for (field, dialog) in [(&rename_input, rename_dialog.clone()), (&goal_input, goal_dialog.clone())] {
-            cx.subscribe_in(field, window, move |_, _, event: &kui::primitives::field::FieldEvent, window, cx| {
-                if *event == kui::primitives::field::FieldEvent::Submitted && dialog.read(cx).is_open() {
-                    dialog.update(cx, |d, cx| {
+            let editor = field.read(cx).editor();
+            cx.subscribe_in(&editor, window, move |this, _, event: &EditEvent, window, cx| {
+                if !dialog.read(cx).is_open() { return; }
+                match event {
+                    EditEvent::Submitted => dialog.update(cx, |d, cx| {
                         d.set_open(false, window, cx);
                         cx.emit(SurfaceEvent::Confirmed);
-                    });
+                    }),
+                    EditEvent::Escape => {
+                        dialog.update(cx, |d, cx| d.set_open(false, window, cx));
+                        this.composer_editor.update(cx, |editor, cx| editor.focus(window, cx));
+                    }
+                    _ => {}
                 }
             }).detach();
         }
@@ -1447,6 +1458,7 @@ impl KarWorkbench {
             access_mode: ChatAccessMode::NoneSelected,
             connection_state: FeedConnectionState::Idle,
             projected: ProjectedChatState::default(),
+            session_commands: None,
             turn_targets: BTreeMap::new(),
             prompt_attempts: BTreeMap::new(),
             active_http_server_url: None,
@@ -2378,7 +2390,13 @@ impl KarWorkbench {
                     self.notify_toast("已同步恢复右侧打开的文档", cx);
                 }
             }
+            KarBridgeEvent::SessionCommandsUpdated { chat_id, commands } => {
+                if matches!(self.access_mode, ChatAccessMode::WriteController { chat_id: active } if active == chat_id) {
+                    self.session_commands = Some((chat_id, commands));
+                }
+            }
             KarBridgeEvent::AccessModeChanged(mode) => {
+                self.session_commands = None;
                 let writable =
                     mode.is_writable() || matches!(mode, ChatAccessMode::NoneSelected);
                 let placeholder = self.composer_placeholder_for_mode(&mode);

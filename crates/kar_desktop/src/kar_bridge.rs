@@ -4,6 +4,8 @@
 //! Every disk, subprocess, and HTTP/SSE operation runs on a dedicated Tokio runtime thread,
 //! communicating with GPUI strictly over `async_channel`.
 
+mod session_commands;
+
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::net::SocketAddr;
@@ -356,6 +358,10 @@ pub enum KarBridgeEvent {
         files: Vec<PathBuf>,
     },
     AccessModeChanged(ChatAccessMode),
+    SessionCommandsUpdated {
+        chat_id: Uuid,
+        commands: Vec<crate::studio_hub::SlashCommandItem>,
+    },
     ConnectionStateChanged(FeedConnectionState),
     ChatStateUpdated(ProjectedChatState),
     GoalSetFailed { chat_id: Uuid, objective: String, reason: String },
@@ -1633,10 +1639,14 @@ fn spawn_local_follower(
     store: ChatStore,
     store_dir: PathBuf,
     chat_id: Uuid,
-    caps: Option<Capabilities>,
+    controller: Option<&ChatSession>,
     evt_tx: async_channel::Sender<KarBridgeEvent>,
 ) -> watch::Sender<bool> {
     let (cancel_tx, mut cancel_rx) = watch::channel(false);
+    let caps = controller.map(ChatSession::capabilities);
+    if let Some(controller) = controller {
+        session_commands::watch(controller, evt_tx.clone(), cancel_tx.subscribe());
+    }
     tokio::spawn(async move {
         let lock_path = store_dir.join(format!("{chat_id}.lock"));
         if !lock_path.exists() {
@@ -2445,7 +2455,7 @@ async fn worker_loop(
                             store,
                             state.store_dir.clone(),
                             chat_id,
-                            caps,
+                            state.active_controller.as_deref(),
                             state.evt_tx.clone(),
                         ));
                         if let Some(objective) = initial_goal {
@@ -2582,7 +2592,6 @@ async fn worker_loop(
                             chat_id,
                             state.evt_tx.clone(),
                         ));
-                        let caps = Some(session.capabilities());
                         let session = Arc::new(session);
                         state.active_controller = Some(session);
                         state.emit(KarBridgeEvent::AccessModeChanged(
@@ -2592,7 +2601,7 @@ async fn worker_loop(
                             store,
                             state.store_dir.clone(),
                             chat_id,
-                            caps,
+                            state.active_controller.as_deref(),
                             state.evt_tx.clone(),
                         ));
                         state.refresh_chat_list();
@@ -3085,7 +3094,7 @@ async fn worker_loop(
                             store,
                             state.store_dir.clone(),
                             new_id,
-                            caps,
+                            state.active_controller.as_deref(),
                             state.evt_tx.clone(),
                         ));
                         state.refresh_chat_list();
@@ -3110,7 +3119,6 @@ async fn worker_loop(
                             .await
                         {
                             state.selected_chat_id = Some(chat_id);
-                            let caps = Some(resumed.capabilities());
                             state.active_controller = Some(Arc::new(resumed));
                             state.emit(KarBridgeEvent::AccessModeChanged(
                                 ChatAccessMode::WriteController { chat_id },
@@ -3119,7 +3127,7 @@ async fn worker_loop(
                                 store,
                                 state.store_dir.clone(),
                                 chat_id,
-                                caps,
+                                state.active_controller.as_deref(),
                                 state.evt_tx.clone(),
                             ));
                         }
@@ -4672,7 +4680,6 @@ async fn worker_loop(
                             )),
                         );
                         state.selected_chat_id = Some(new_id);
-                        let caps = Some(session.capabilities());
                         state.active_controller = Some(Arc::new(session));
                         state.emit(KarBridgeEvent::AccessModeChanged(
                             ChatAccessMode::WriteController { chat_id: new_id },
@@ -4681,7 +4688,7 @@ async fn worker_loop(
                             store.clone(),
                             state.store_dir.clone(),
                             new_id,
-                            caps,
+                            state.active_controller.as_deref(),
                             state.evt_tx.clone(),
                         ));
                         state.refresh_chat_list();

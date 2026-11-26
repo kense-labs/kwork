@@ -1,5 +1,5 @@
 //! Composer commands use the active runtime's inventory and the local chat controller.
-use super::{DraftLocation, KarWorkbench, QueuedPrompt};
+use super::{DraftLocation, KarWorkbench, QueuedPrompt, slash_actions::LocalSlash};
 use crate::kar_bridge::KarCommand;
 use crate::studio_hub::SlashCommandItem;
 use crate::types::ChatAccessMode;
@@ -49,19 +49,320 @@ impl SlashPicker {
 enum Command {
     Goal,
     PlanDraft,
+    Local(LocalSlash),
     Native(String),
 }
 
 struct Choice {
     name: String,
+    label: String,
     description: String,
+    icon: ProIcon,
+    aliases: &'static [&'static str],
     action: Command,
-    enabled: bool,
 }
 
+impl Choice {
+    fn accepts_token(&self, token: &str) -> bool {
+        matches_command(token, &self.name, self.aliases)
+    }
+
+    fn search_rank(&self, token: &str) -> Option<u8> {
+        if self.accepts_token(token) {
+            return Some(0);
+        }
+        if self.name.to_lowercase().starts_with(token)
+            || self.aliases.iter().any(|name| name.starts_with(token))
+        {
+            return Some(1);
+        }
+        let term = token.strip_prefix('/')?;
+        self.label.to_lowercase().contains(term).then_some(2)
+    }
+}
+
+fn matches_command(token: &str, name: &str, aliases: &[&str]) -> bool {
+    name.eq_ignore_ascii_case(token) || aliases.iter().any(|name| name.eq_ignore_ascii_case(token))
+}
+
+fn is_desktop_command(token: &str) -> bool {
+    token.eq_ignore_ascii_case("/goal")
+        || LOCAL
+            .iter()
+            .any(|entry| matches_command(token, entry.name, entry.aliases))
+}
+
+struct LocalEntry {
+    action: LocalSlash,
+    name: &'static str,
+    labels: (&'static str, &'static str),
+    descriptions: (&'static str, &'static str),
+    icon: ProIcon,
+    aliases: &'static [&'static str],
+}
+
+impl LocalEntry {
+    const fn new(
+        action: LocalSlash,
+        name: &'static str,
+        labels: (&'static str, &'static str),
+        descriptions: (&'static str, &'static str),
+        icon: ProIcon,
+        aliases: &'static [&'static str],
+    ) -> Self {
+        Self {
+            action,
+            name,
+            labels,
+            descriptions,
+            icon,
+            aliases,
+        }
+    }
+
+    fn choice(&self, loc: UiLocale) -> Choice {
+        Choice {
+            name: self.name.into(),
+            label: loc.pick(self.labels.0, self.labels.1).into(),
+            description: loc.pick(self.descriptions.0, self.descriptions.1).into(),
+            icon: self.icon,
+            aliases: self.aliases,
+            action: Command::Local(self.action),
+        }
+    }
+}
+
+const LOCAL: &[LocalEntry] = &[
+    LocalEntry::new(
+        LocalSlash::Model,
+        "/model",
+        ("模型", "Model"),
+        (
+            "查看会话模型或选择新对话的模型",
+            "View the session model or choose one for a new chat",
+        ),
+        ProIcon::Sliders,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Reasoning,
+        "/reasoning",
+        ("推理深度", "Reasoning effort"),
+        ("查看或选择推理档位", "View or choose the reasoning effort"),
+        ProIcon::Sparkles,
+        &["/effort"],
+    ),
+    LocalEntry::new(
+        LocalSlash::Permissions,
+        "/permissions",
+        ("审批权限", "Permissions"),
+        (
+            "查看会话权限或设置新对话默认值",
+            "View session permissions or set defaults for new chats",
+        ),
+        ProIcon::Shield,
+        &["/approval", "/approvals"],
+    ),
+    LocalEntry::new(
+        LocalSlash::Status,
+        "/status",
+        ("会话状态", "Session status"),
+        (
+            "查看会话 ID、智能体与上下文用量",
+            "View the chat ID, agent and context usage",
+        ),
+        ProIcon::Activity,
+        &["/context"],
+    ),
+    LocalEntry::new(
+        LocalSlash::New,
+        "/new",
+        ("新对话", "New chat"),
+        ("在当前工作区开始一段对话", "Start a chat in this workspace"),
+        ProIcon::NewChat,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Rename,
+        "/rename",
+        ("重命名", "Rename"),
+        ("修改当前对话的名称", "Rename this chat"),
+        ProIcon::Note,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Pin,
+        "/pin",
+        ("置顶对话", "Pin chat"),
+        (
+            "在侧栏置顶这段对话",
+            "Keep this chat at the top of the sidebar",
+        ),
+        ProIcon::Pin,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Unpin,
+        "/unpin",
+        ("取消置顶", "Unpin chat"),
+        (
+            "将对话移回侧栏列表",
+            "Return this chat to its usual position",
+        ),
+        ProIcon::Pin,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Fork,
+        "/fork",
+        ("创建分支", "Fork chat"),
+        ("从已完成的回合创建对话分支", "Branch from a completed turn"),
+        ProIcon::GitBranch,
+        &["/branch"],
+    ),
+    LocalEntry::new(
+        LocalSlash::Compact,
+        "/compact",
+        ("压缩上下文", "Compact context"),
+        (
+            "请求智能体整理当前会话的上下文",
+            "Ask the agent to compact this chat’s context",
+        ),
+        ProIcon::Memory,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Stop,
+        "/stop",
+        ("停止执行", "Stop generation"),
+        ("停止当前正在执行的回合", "Stop the turn that is running"),
+        ProIcon::Close,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Review,
+        "/review",
+        ("审查改动", "Review changes"),
+        (
+            "查看最近一次文件改动的差异",
+            "View the diff for the latest file change",
+        ),
+        ProIcon::Code,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Diff,
+        "/diff",
+        ("Git 变更", "Git changes"),
+        (
+            "查看工作区差异与提交历史",
+            "Open workspace changes and commit history",
+        ),
+        ProIcon::GitBranch,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Attach,
+        "/attach",
+        ("添加附件", "Attach files"),
+        (
+            "选择要随消息发送的文件",
+            "Choose files to attach to a message",
+        ),
+        ProIcon::Paperclip,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Files,
+        "/files",
+        ("工作区文件", "Workspace files"),
+        ("浏览当前工作区的文件", "Browse the workspace file tree"),
+        ProIcon::Folder,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Terminal,
+        "/terminal",
+        ("终端", "Terminal"),
+        ("打开工作区终端", "Open the workspace terminal"),
+        ProIcon::Terminal,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Search,
+        "/search",
+        ("搜索对话", "Search chats"),
+        ("查找对话和消息", "Find conversations and messages"),
+        ProIcon::Search,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Tasks,
+        "/tasks",
+        ("任务收件箱", "Task inbox"),
+        ("打开任务与待办列表", "Open the task inbox"),
+        ProIcon::Inbox,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Skills,
+        "/skills",
+        ("技能", "Skills"),
+        (
+            "查看工作区中的智能体技能",
+            "Browse skills in this workspace",
+        ),
+        ProIcon::Tasks,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Handoff,
+        "/handoff",
+        ("交接对话", "Hand off chat"),
+        (
+            "将当前对话交接给其他智能体",
+            "Hand this chat over to another agent",
+        ),
+        ProIcon::ExternalArrow,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::SideQuestion,
+        "/side",
+        ("旁路提问", "Side question"),
+        (
+            "针对这段对话另行提问",
+            "Ask a side question about this chat",
+        ),
+        ProIcon::Thread,
+        &["/side-question"],
+    ),
+    LocalEntry::new(
+        LocalSlash::Share,
+        "/share",
+        ("共享设置", "Sharing settings"),
+        (
+            "查看本机共享链接与配对设置",
+            "View sharing links and pairing settings for this device",
+        ),
+        ProIcon::Link,
+        &[],
+    ),
+    LocalEntry::new(
+        LocalSlash::Delete,
+        "/delete",
+        ("删除对话", "Delete chat"),
+        ("确认后删除此对话", "Confirm before deleting this chat"),
+        ProIcon::Trash,
+        &[],
+    ),
+];
+
 fn args<'a>(text: &'a str, command: &str) -> Option<&'a str> {
-    let tail = text.strip_prefix(command)?;
-    (tail.is_empty() || tail.starts_with(char::is_whitespace)).then(|| tail.trim_start())
+    let token = text.split_whitespace().next()?;
+    token
+        .eq_ignore_ascii_case(command)
+        .then(|| text[token.len()..].trim_start())
 }
 
 fn command_choices(
@@ -70,42 +371,86 @@ fn command_choices(
     known: bool,
     query: &str,
     loc: UiLocale,
+    available: impl Fn(LocalSlash) -> bool,
 ) -> Vec<Choice> {
     let mut choices = Vec::new();
-    if goal || (known && !native.iter().any(|c| c.name == "/goal")) {
+    let advertised = |name: &str| native.iter().any(|cmd| cmd.name.eq_ignore_ascii_case(name));
+    if goal {
         choices.push(Choice {
             name: "/goal".into(),
-            description: if goal {
-                loc.pick("设置对话目标", "Set a conversation goal")
-            } else {
-                loc.pick("当前会话不支持目标", "Goals unavailable in this session")
-            }
-            .into(),
-            enabled: goal,
+            label: loc.pick("目标", "Goal").into(),
+            description: loc.pick("设置对话目标", "Set a conversation goal").into(),
             action: Command::Goal,
+            icon: ProIcon::Tasks,
+            aliases: &[],
         });
     }
-    if known && !native.iter().any(|c| c.name == "/plan") {
+    if known && !advertised("/plan") {
         choices.push(Choice {
             name: "/plan".into(),
+            label: loc.pick("计划", "Plan").into(),
             description: loc.pick("起草计划请求", "Draft a planning request").into(),
-            enabled: true,
             action: Command::PlanDraft,
+            icon: ProIcon::Tasks,
+            aliases: &[],
         });
+    }
+    for entry in LOCAL {
+        if available(entry.action) && !advertised(entry.name) {
+            choices.push(entry.choice(loc));
+        }
     }
     for cmd in native {
-        if cmd.name == "/goal" && goal {
+        if choices
+            .iter()
+            .any(|c| c.name.eq_ignore_ascii_case(&cmd.name))
+        {
             continue;
         }
+        let hint = cmd.hint.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let description = match (hint, cmd.description.is_empty()) {
+            (Some(hint), false) => format!("{hint} · {}", cmd.description),
+            (Some(hint), true) => hint.to_owned(),
+            (None, _) => cmd.description.clone(),
+        };
         choices.push(Choice {
             name: cmd.name.clone(),
-            description: cmd.description.clone(),
+            label: cmd.name.clone(),
+            description,
             action: Command::Native(cmd.name.clone()),
-            enabled: true,
+            icon: ProIcon::Terminal,
+            aliases: &[],
         });
     }
-    let prefix = query.to_ascii_lowercase();
-    choices.retain(|c| c.name.to_ascii_lowercase().starts_with(&prefix));
+    if query != "/" {
+        // An unavailable /pin must never complete to “Unpin chat” on Enter.
+        if is_desktop_command(query) && !choices.iter().any(|choice| choice.accepts_token(query)) {
+            return Vec::new();
+        }
+        let token = query.to_lowercase();
+        let mut matches: Vec<_> = choices
+            .into_iter()
+            .filter_map(|choice| choice.search_rank(&token).map(|rank| (rank, choice)))
+            .collect();
+        // Exact spellings win over search aliases, including native commands named like one.
+        matches.sort_by_key(|(rank, choice)| (*rank, !choice.name.eq_ignore_ascii_case(&token)));
+        return matches.into_iter().map(|(_, choice)| choice).collect();
+    }
+    let frequent = [
+        "/model",
+        "/reasoning",
+        "/permissions",
+        "/new",
+        "/status",
+        "/goal",
+        "/plan",
+    ];
+    choices.sort_by_key(|choice| {
+        frequent
+            .iter()
+            .position(|name| choice.name.eq_ignore_ascii_case(name))
+            .unwrap_or(frequent.len())
+    });
     choices
 }
 
@@ -125,25 +470,44 @@ impl KarWorkbench {
     }
 
     fn slash_choices(&self, query: &str) -> Vec<Choice> {
-        let goal = self.can_set_chat_goal();
-        let inventory = if matches!(
-            self.access_mode,
-            ChatAccessMode::RemoteController { .. } | ChatAccessMode::DemoShowcase
-        ) {
-            Some(&[][..])
-        } else {
-            self.workspace_inventory.commands_for(
-                &self.effective_workspace_dir(),
-                self.active_or_selected_runtime_id(),
-            )
+        let goal =
+            self.can_set_chat_goal() && !self.slash.creating_goal && self.queued_prompt.is_none();
+        let session = self.session_commands.as_ref().filter(|(id, _)| {
+            self.projected.chat_id == Some(*id)
+                && matches!(self.access_mode, ChatAccessMode::WriteController { chat_id } if chat_id == *id)
+        });
+        let (native, complete) = match (&self.access_mode, session) {
+            (_, Some((_, commands))) => (commands.as_slice(), true),
+            (ChatAccessMode::WriteController { .. } | ChatAccessMode::NoneSelected, None) => {
+                let workspace = self.effective_workspace_dir();
+                let runtime = self.active_or_selected_runtime_id();
+                let catalog = &self.workspace_inventory;
+                // ACP publishes its commands on the session stream, after a chat opens.
+                // An empty workspace inventory cannot yet rule out a native /plan.
+                let acp = self
+                    .current_chat_info()
+                    .map(|info| info.protocol == kar::Protocol::Acp)
+                    .or_else(|| {
+                        self.providers
+                            .iter()
+                            .find(|p| p.id == runtime)
+                            .map(|p| p.protocol == "acp")
+                    })
+                    .unwrap_or_else(|| {
+                        kar::runtime(runtime).is_ok_and(|rt| rt.protocol == kar::Protocol::Acp)
+                    });
+                (
+                    catalog.advertised_commands_for(&workspace, runtime),
+                    !acp && catalog.commands_for(&workspace, runtime).is_some(),
+                )
+            }
+            (ChatAccessMode::DemoShowcase, _) => (&[][..], true),
+            // Local discovery never describes a remote session.
+            _ => (&[][..], false),
         };
-        command_choices(
-            goal,
-            inventory.unwrap_or_default(),
-            inventory.is_some(),
-            query,
-            self.ui_locale,
-        )
+        command_choices(goal, native, complete, query, self.ui_locale, |action| {
+            self.slash_action_available(action)
+        })
     }
 
     pub(crate) fn open_slash_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -161,6 +525,12 @@ impl KarWorkbench {
     }
 
     fn choose_slash(&mut self, cmd: Command, window: &mut Window, cx: &mut Context<Self>) {
+        // A provider update or a chat switch can invalidate the row between paint and click.
+        if !self.slash_choices("/").iter().any(|row| row.action == cmd) {
+            self.slash.close();
+            self.warn_unavailable_slash(cx);
+            return;
+        }
         let draft = self.composer_editor.read(cx).value().to_owned();
         let existing = if self.slash.browse { &draft } else { "" };
         self.slash.close();
@@ -173,6 +543,13 @@ impl KarWorkbench {
                 self.open_goal_dialog(window, cx);
             }
             Command::PlanDraft => self.fill_plan_request(existing, window, cx),
+            Command::Local(action) => {
+                if existing.is_empty() {
+                    self.composer_editor
+                        .update(cx, |ed, cx| ed.set_value("", window, cx));
+                }
+                self.run_slash_action(action, window, cx);
+            }
             Command::Native(name) => {
                 self.composer_editor.update(cx, |ed, cx| {
                     ed.set_value(format!("{name} {existing}"), window, cx);
@@ -181,6 +558,16 @@ impl KarWorkbench {
             }
         }
         cx.notify();
+    }
+
+    fn warn_unavailable_slash(&mut self, cx: &mut Context<Self>) {
+        self.notify_warning(
+            self.ui_locale.pick(
+                "当前会话无法执行此命令。输入 / 可查看可用命令。",
+                "This command is unavailable in this chat. Type / to see available commands.",
+            ),
+            cx,
+        );
     }
 
     fn fill_plan_request(&mut self, topic: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -276,19 +663,11 @@ impl KarWorkbench {
         let choice = self
             .slash_choices(token)
             .into_iter()
-            .find(|row| row.name == token);
+            .find(|row| row.accepts_token(token));
         match choice.map(|c| c.action) {
             Some(Command::Goal) => {
                 let objective = args(text, "/goal").unwrap_or_default();
-                if !self.can_set_chat_goal() {
-                    self.notify_warning(
-                        self.ui_locale.pick(
-                            "当前会话不支持目标",
-                            "Goals are unavailable in this session",
-                        ),
-                        cx,
-                    );
-                } else if objective.is_empty() {
+                if objective.is_empty() {
                     self.choose_slash(Command::Goal, window, cx);
                 } else {
                     self.submit_chat_goal(objective.into(), window, cx);
@@ -299,8 +678,26 @@ impl KarWorkbench {
                 self.fill_plan_request(args(text, "/plan").unwrap_or_default(), window, cx);
                 true
             }
+            Some(cmd @ Command::Local(_)) => {
+                if text[token.len()..].trim().is_empty() {
+                    self.choose_slash(cmd, window, cx);
+                } else {
+                    self.notify_warning(
+                        self.ui_locale.pick(
+                            "此命令不接收参数，请仅输入命令后再执行。",
+                            "This command takes no arguments. Run it on its own.",
+                        ),
+                        cx,
+                    );
+                }
+                true
+            }
             _ if text == "/" => {
                 self.open_slash_picker(window, cx);
+                true
+            }
+            None if is_desktop_command(token) => {
+                self.warn_unavailable_slash(cx);
                 true
             }
             _ => false,
@@ -329,7 +726,7 @@ impl KarWorkbench {
         };
         let choices = self.slash_choices(query);
         if choices.is_empty() {
-            if query == "/" && ev.keystroke.key == "escape" {
+            if ev.keystroke.key == "escape" {
                 self.slash.close();
                 win.prevent_default();
                 cx.stop_propagation();
@@ -337,29 +734,20 @@ impl KarWorkbench {
             }
             return;
         }
-        let index = selected_index(&choices, self.slash.index);
+        let index = self.slash.index.min(choices.len() - 1);
         match ev.keystroke.key.as_str() {
             "down" | "up" => {
                 let n = choices.len();
                 let down = ev.keystroke.key == "down";
-                self.slash.index = (1..=n)
-                    .map(|step| {
-                        if down {
-                            (index + step) % n
-                        } else {
-                            (index + n - step) % n
-                        }
-                    })
-                    .find(|&i| choices[i].enabled)
-                    .unwrap_or(index);
+                self.slash.index = if down {
+                    (index + 1) % n
+                } else {
+                    (index + n - 1) % n
+                };
             }
             "escape" => self.slash.close(),
             "enter" | "tab" => {
-                if choices[index].enabled {
-                    self.choose_slash(choices[index].action.clone(), win, cx);
-                } else {
-                    self.notify_warning(choices[index].description.clone(), cx);
-                }
+                self.choose_slash(choices[index].action.clone(), win, cx);
             }
             _ => return,
         }
@@ -384,7 +772,7 @@ impl KarWorkbench {
         if choices.is_empty() && query != "/" {
             return None;
         }
-        let selected = selected_index(&choices, self.slash.index);
+        let selected = self.slash.index.min(choices.len().saturating_sub(1));
         let mut menu = frosted_panel(s)
             .id("composer-slash-picker")
             .role(Role::ListBox)
@@ -409,24 +797,17 @@ impl KarWorkbench {
             );
         }
         for (i, choice) in choices.into_iter().enumerate() {
-            let enabled = choice.enabled;
-            let label = match &choice.action {
-                Command::Goal => self.ui_locale.pick("目标", "Goal"),
-                Command::PlanDraft => self.ui_locale.pick("计划", "Plan"),
-                Command::Native(_) => &choice.name,
-            };
-            let ink = if enabled { s.ink } else { s.muted };
-            // Keep the advertised slash spelling beside its localized name.
+            let label = choice.label;
             let alias = (label != choice.name).then(|| choice.name.clone());
-            let icon = match choice.name.as_str() {
-                "/goal" => pro_svg(
+            let icon = if choice.action == Command::Goal {
+                pro_svg(
                     "0 0 24 24",
                     r#"<g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 10.1a9 9 0 1 1-6.7-6.7M16.8 11a5 5 0 1 1-3.8-3.8M12 12l8-8M17 4h3v3"/></g>"#,
                     ICON_SM,
-                    ink,
-                ),
-                "/plan" => pro_icon(ProIcon::Tasks, ICON_SM, ink),
-                _ => pro_icon(ProIcon::Terminal, ICON_SM, ink),
+                    s.ink,
+                )
+            } else {
+                pro_icon(choice.icon, ICON_SM, s.ink)
             };
             let spoken = format!("{} · {}", choice.name, choice.description);
             menu = menu.child(
@@ -444,8 +825,8 @@ impl KarWorkbench {
                     .px(px(9.))
                     .gap(px(8.))
                     .rounded(px(R_CTRL))
-                    .when(i == selected && enabled, |d| d.bg(s.hover))
-                    .when(enabled, |d| d.cursor_pointer())
+                    .when(i == selected, |d| d.bg(s.hover))
+                    .cursor_pointer()
                     .child(icon)
                     .child(
                         div()
@@ -454,8 +835,8 @@ impl KarWorkbench {
                             .truncate()
                             .text_size(px(FS_UI))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(ink)
-                            .child(label.to_owned()),
+                            .text_color(s.ink)
+                            .child(label),
                     )
                     .child(
                         div()
@@ -480,20 +861,16 @@ impl KarWorkbench {
                         win.prevent_default();
                         cx.stop_propagation();
                     })
-                    .when(enabled, |d| {
-                        d.on_mouse_move(cx.listener(move |this, _, _, cx| {
-                            if this.slash.index != i {
-                                this.slash.index = i;
-                                cx.notify();
-                            }
-                        }))
-                        .on_click(cx.listener(
-                            move |this, _, win, cx| {
-                                this.choose_slash(choice.action.clone(), win, cx);
-                                cx.stop_propagation();
-                            },
-                        ))
-                    }),
+                    .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                        if this.slash.index != i {
+                            this.slash.index = i;
+                            cx.notify();
+                        }
+                    }))
+                    .on_click(cx.listener(move |this, _, win, cx| {
+                        this.choose_slash(choice.action.clone(), win, cx);
+                        cx.stop_propagation();
+                    })),
             );
         }
 
@@ -531,52 +908,79 @@ impl KarWorkbench {
     }
 }
 
-fn selected_index(choices: &[Choice], index: usize) -> usize {
-    if choices.get(index).is_some_and(|c| c.enabled) {
-        index
-    } else {
-        choices.iter().position(|c| c.enabled).unwrap_or(0)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Command, SlashCommandItem, SlashPicker, UiLocale, args, command_choices};
+    use super::{
+        Command, LocalSlash, SlashCommandItem, SlashPicker, UiLocale, args, command_choices,
+        is_desktop_command,
+    };
 
     #[test]
     fn advertised_commands_keep_native_semantics() {
-        let native = ["/goal", "/plan"].map(|name| SlashCommandItem {
-            name: name.into(),
-            description: "From provider".into(),
-            hint: None,
-            source: "runtime".into(),
-        });
-        let actions = |goal, inventory: &[SlashCommandItem]| {
-            command_choices(goal, inventory, true, "/", UiLocale::En)
-                .into_iter()
-                .map(|c| c.action)
-                .collect::<Vec<_>>()
-        };
+        let mut native =
+            ["/goal", "/plan", "/model", "/MODEL", "/context"].map(|name| SlashCommandItem {
+                name: name.into(),
+                description: "From provider".into(),
+                hint: None,
+                source: "runtime".into(),
+            });
+        native[2].hint = Some("<name>".into());
+        let choices =
+            |goal, query| command_choices(goal, &native, true, query, UiLocale::En, |_| true);
         assert_eq!(
-            actions(false, &native),
-            vec![
-                Command::Native("/goal".into()),
-                Command::Native("/plan".into())
-            ]
+            choices(false, "/goal")[0].action,
+            Command::Native("/goal".into())
         );
+        assert_eq!(choices(true, "/goal")[0].action, Command::Goal);
         assert_eq!(
-            actions(true, &native),
-            vec![Command::Goal, Command::Native("/plan".into())]
+            choices(true, "/plan")[0].action,
+            Command::Native("/plan".into())
         );
-        assert_eq!(actions(true, &[]), vec![Command::Goal, Command::PlanDraft]);
-        assert!(command_choices(false, &[], false, "/plan", UiLocale::En).is_empty());
-        assert!(command_choices(false, &[], false, "/goal", UiLocale::En).is_empty());
-        let unsupported_goal = command_choices(false, &[], true, "/", UiLocale::En);
-        assert!(!unsupported_goal[0].enabled);
+        let model = choices(false, "/model");
+        assert_eq!(model.len(), 1);
+        assert_eq!(model[0].action, Command::Native("/model".into()));
+        assert_eq!(model[0].description, "<name> · From provider");
         assert_eq!(
-            unsupported_goal[super::selected_index(&unsupported_goal, 0)].action,
+            choices(false, "/context")[0].action,
+            Command::Native("/context".into())
+        );
+        assert!(command_choices(false, &[], false, "/goal", UiLocale::En, |_| false).is_empty());
+        assert!(command_choices(false, &[], false, "/plan", UiLocale::En, |_| false).is_empty());
+        let partial = command_choices(false, &native, false, "/plan", UiLocale::En, |_| false);
+        assert_eq!(partial[0].action, Command::Native("/plan".into()));
+        assert_eq!(
+            command_choices(true, &[], true, "/plan", UiLocale::En, |_| false)[0].action,
             Command::PlanDraft
         );
+    }
+
+    #[test]
+    fn slash_catalog_uses_action_availability_and_localized_search() {
+        let available = |a| {
+            matches!(
+                a,
+                LocalSlash::Model | LocalSlash::Reasoning | LocalSlash::Pin
+            )
+        };
+        let choices = |query| command_choices(false, &[], true, query, UiLocale::Zh, available);
+        assert_eq!(choices("/置顶")[0].action, Command::Local(LocalSlash::Pin));
+        assert_eq!(
+            choices("/EFFORT")[0].action,
+            Command::Local(LocalSlash::Reasoning)
+        );
+        assert!(choices("/compact").is_empty());
+        assert!(
+            command_choices(false, &[], true, "/pin", UiLocale::En, |a| a
+                == LocalSlash::Unpin)
+            .is_empty()
+        );
+        let names = choices("/")
+            .into_iter()
+            .map(|row| row.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["/model", "/reasoning", "/plan", "/pin"]);
+        let pending = command_choices(false, &[], false, "/model", UiLocale::Zh, available);
+        assert_eq!(pending[0].action, Command::Local(LocalSlash::Model));
     }
 
     #[test]
@@ -587,6 +991,13 @@ mod tests {
         assert_eq!(picker.query("note /plan"), None);
         assert_eq!(args("/goal/path", "/goal"), None);
         assert_eq!(args("/planner", "/plan"), None);
+        assert!(is_desktop_command("/PIN"));
+        assert!(is_desktop_command("/context"));
+        assert!(is_desktop_command("/goal"));
+        assert!(!is_desktop_command("/tmp/plan"));
+        assert!(!is_desktop_command("/my-provider-command"));
+        // /plan may be supplied by a provider which has not finished discovery.
+        assert!(!is_desktop_command("/plan"));
         assert_eq!(
             args(
                 "/plan  path with spaces

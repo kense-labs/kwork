@@ -1845,10 +1845,36 @@ impl KarWorkbench {
         let ctx_label = ctx_ratio
             .map(|r| format!("{:.0}%", r * 100.))
             .unwrap_or_else(|| loc.pick("上下文", "Context").into());
-        let mut context_rows = vec![
+        let mut context_rows = Vec::new();
+        if self.open_menu == Some(Menu::ContextUsage)
+            && let Some(info) = self.projected.info.as_ref().filter(|info| Some(info.id) == self.current_chat_id())
+        {
+            let default = loc.pick("运行时默认", "Runtime default");
+            let mut metadata = div().px(px(8.)).py(px(5.)).flex().flex_col().gap(px(4.));
+            for (label, value) in [
+                (loc.pick("智能体", "Agent"), runtime_display_name(&info.runtime)),
+                (loc.pick("模型", "Model"), info.model.as_deref().unwrap_or(default).to_owned()),
+                (loc.pick("推理档位", "Reasoning"), info.settings.effort.as_deref().map(|level| effort_label(level, loc)).unwrap_or(default).to_owned()),
+            ] {
+                metadata = metadata.child(div().flex().gap(px(8.)).justify_between()
+                    .text_size(px(FS_META)).child(div().flex_none().text_color(s.muted).child(label))
+                    .child(div().min_w_0().text_color(s.ink).child(value)));
+            }
+            context_rows.push(metadata.into_any_element());
+            let id = info.id.to_string();
+            context_rows.push(menu_icon_item("copy-session-id", ProIcon::Copy,
+                format!("{} · {}", loc.pick("复制会话 ID", "Copy chat ID"), &id[..8]), s)
+                .on_press(cx, move |this, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(id.clone()));
+                    this.close_menu(cx);
+                    this.notify_toast(loc.pick("已复制会话 ID", "Chat ID copied"), cx);
+                }).into_any_element());
+            context_rows.push(menu_divider(s).into_any_element());
+        }
+        context_rows.push(
             context_usage::inspector(usage, self.projected.manual_compaction.as_ref(), loc, s)
                 .into_any_element(),
-        ];
+        );
         if self.projected.can_compact
             && !turn_running
             && matches!(self.access_mode, ChatAccessMode::WriteController { .. })
@@ -1964,7 +1990,11 @@ impl KarWorkbench {
                     .child(pro_icon(ProIcon::ChevronDown, 12., s.muted))
                     .lit(self.open_menu == Some(Menu::ComposerAgent))
                     .on_press(cx, |this, _, cx| this.toggle_menu(Menu::ComposerAgent, cx)),
-                self.render_agent_menu(s, window, cx),
+                if self.open_menu == Some(Menu::ComposerEffort) {
+                    self.render_effort_menu(Menu::ComposerEffort, end, s, cx)
+                } else {
+                    self.render_agent_menu(s, window, cx)
+                },
             )
             .flex_shrink(1.)
             .min_w_0()
@@ -4683,11 +4713,7 @@ impl KarWorkbench {
                         if this.turn_review.as_ref().is_some_and(|r| r.key == key) {
                             this.close_file_review(win, cx);
                         } else {
-                            this.turn_review = Some(crate::turn_review::FileReview {
-                                key: key.clone(),
-                                patch: None,
-                            });
-                            this.bridge.send(KarCommand::LoadTurnDiff(key.clone()));
+                            this.open_checkpoint_review(key.clone());
                         }
                         cx.notify();
                     })
