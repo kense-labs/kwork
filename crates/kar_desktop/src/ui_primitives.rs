@@ -8,7 +8,7 @@ use std::{
 use gpui::{prelude::*, *};
 use kui::{
     components::pro_chrome::ProPalette,
-    primitives::pro_icons::{ProIcon, pro_app_artwork, pro_icon, pro_svg},
+    primitives::pro_icons::{ProIcon, pro_app_artwork, pro_icon, pro_symbol},
 };
 
 use crate::types::{OfficeKind, runtime_brand_svg, runtime_display_name};
@@ -250,89 +250,15 @@ impl StudioPalette {
     }
 }
 
-// ── T3 Code `ProjectMonogram` (`ProjectMonogram.tsx` + `projectIconColors.ts`) ─
-
-/// Compact project identity shared by the breadcrumb, project picker and thread list.
-pub fn project_monogram_letters(name: &str) -> String {
-    let mut words = name
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty());
-    let Some(first_word) = words.next() else {
-        return "PR".into();
-    };
-    let mut chars = first_word.chars();
-    let first = chars.next().unwrap();
-    if matches!(first as u32, 0x3040..=0x30ff | 0x3400..=0x9fff | 0xac00..=0xd7af | 0x20000..=0x323af)
+/// Project identity shared by breadcrumbs, the project picker and conversation rows.
+pub(crate) fn render_project_mark(name: &str, side: f32, s: &StudioPalette, cx: &App) -> AnyElement {
+    if (name.eq_ignore_ascii_case("Kwork") || name.eq_ignore_ascii_case(crate::APP_NAME))
+        && let Some(mark) = pro_app_artwork("kense", side, cx)
     {
-        return first.to_string();
+        mark
+    } else {
+        render_folder_icon(side, s.muted)
     }
-    let second = chars
-        .clone()
-        .find(|c| c.is_numeric())
-        .or_else(|| words.next_back().and_then(|w| w.chars().next()))
-        .or_else(|| chars.next_back())
-        .unwrap_or(first);
-    first
-        .to_uppercase()
-        .chain(second.to_uppercase())
-        .take(2)
-        .collect()
-}
-
-pub fn project_monogram_colors(name: &str, dark: bool) -> (Hsla, Hsla) {
-    const PALETTE: &[(u32, u32)] = &[
-        (0x4a5565, 0x99a1af), // gray
-        (0xe7000b, 0xff6467), // red
-        (0xf54900, 0xff8904), // orange
-        (0xe17100, 0xffb900), // amber
-        (0xd08700, 0xfdc700), // yellow
-        (0x5ea500, 0x9ae600), // lime
-        (0x00a63e, 0x05df72), // green
-        (0x009966, 0x00d492), // emerald
-        (0x009689, 0x00d5be), // teal
-        (0x0092b8, 0x00d3f2), // cyan
-        (0x0084d1, 0x00bcff), // sky
-        (0x155dfc, 0x51a2ff), // blue
-        (0x4f39f6, 0x7c86ff), // indigo
-        (0x7f22fe, 0xa684ff), // violet
-        (0x9810fa, 0xc27aff), // purple
-        (0xc800de, 0xed6aff), // fuchsia
-        (0xe60076, 0xfb64b6), // pink
-        (0xec003f, 0xff637e), // rose
-    ];
-    let name = name.trim();
-    let key = if name.is_empty() { "project" } else { name };
-    let index = key
-        .chars()
-        .flat_map(char::to_lowercase)
-        .fold(0, |acc, c| (acc * 31 + c as usize) % PALETTE.len());
-    let (light, night) = PALETTE[index];
-    let ink: Hsla = rgb(if dark { night } else { light }).into();
-    (ink, ink.opacity(0.14))
-}
-
-/// Render T3 Code's signature `16x16` (`rounded-[25%]`) two-letter `ProjectMonogram` tile.
-pub fn render_project_monogram(
-    project_name: &str,
-    side: f32,
-    s: &StudioPalette,
-    cx: &App,
-) -> Div {
-    let letters = project_monogram_letters(project_name);
-    let (fg, bg) = project_monogram_colors(project_name, s.dark);
-    div()
-        .size(px(side))
-        .flex_none()
-        .rounded(px((side * 0.25).max(3.5)))
-        .bg(bg)
-        .flex()
-        .items_center()
-        .justify_center()
-        .font_family(mono_font(cx))
-        .text_size(px(side * 8.25 / 16.))
-        .font_weight(FontWeight::BOLD)
-        .text_color(fg)
-        .child(letters)
 }
 
 /// A quiet empty state shared by workspace panes and settings.
@@ -424,7 +350,7 @@ pub fn mono_font(cx: &App) -> SharedString {
 }
 
 pub fn render_approval_hand(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 68.155 68.155", HAND_APPROVAL_SVG, side, color)
+    pro_symbol("0 0 68.155 68.155", HAND_APPROVAL_SVG, side, color)
 }
 
 /// KUI's signature glossy sky-blue folder artwork (`assistant_home.rs::tray_folder_icon`).
@@ -448,9 +374,9 @@ pub fn render_kantor_tray_marks(s: &StudioPalette) -> Div {
         .flex()
         .items_center()
         .gap(px(4.5))
-        .child(pro_svg("0 0 12 12", ART_DOC_SVG, 12.5, s.pro.blue))
-        .child(pro_svg("0 0 12 12", ART_SHEET_SVG, 12.5, s.pro.green))
-        .child(pro_svg("0 0 12 12", ART_SLIDE_SVG, 12.5, s.pro.orange))
+        .child(pro_symbol("0 0 12 12", ART_DOC_SVG, 12.5, s.pro.blue))
+        .child(pro_symbol("0 0 12 12", ART_SHEET_SVG, 12.5, s.pro.green))
+        .child(pro_symbol("0 0 12 12", ART_SLIDE_SVG, 12.5, s.pro.orange))
 }
 
 /// Sculpted KUI starter chip icon categories (`assistant_home.rs:147-169`).
@@ -474,7 +400,7 @@ impl StarterChipIcon {
             Self::Research => CHIP_RESEARCH_SVG,
             Self::Visualize => CHIP_VISUALIZE_SVG,
         };
-        pro_svg("0 0 24 24", svg, side, color)
+        pro_symbol("0 0 24 24", svg, side, color)
     }
 }
 
@@ -487,7 +413,7 @@ pub fn render_folder_plus_icon(side: f32, color: Hsla) -> AnyElement {
 }
 
 pub fn render_folder_git_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_FOLDER_GIT2, side, color)
+    pro_symbol("0 0 24 24", SVG_FOLDER_GIT2, side, color)
 }
 
 pub fn render_square_pen_icon(side: f32, color: Hsla) -> AnyElement {
@@ -495,7 +421,7 @@ pub fn render_square_pen_icon(side: f32, color: Hsla) -> AnyElement {
 }
 
 pub fn render_list_filter_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_LIST_FILTER, side, color)
+    pro_symbol("0 0 24 24", SVG_LIST_FILTER, side, color)
 }
 
 pub fn render_paperclip_icon(side: f32, color: Hsla) -> AnyElement {
@@ -511,19 +437,19 @@ pub fn render_panel_right_icon(side: f32, color: Hsla) -> AnyElement {
 }
 
 pub fn render_square_menu_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_SQUARE_MENU, side, color)
+    pro_symbol("0 0 24 24", SVG_SQUARE_MENU, side, color)
 }
 
 pub fn render_file_diff_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_FILE_DIFF, side, color)
+    pro_symbol("0 0 24 24", SVG_FILE_DIFF, side, color)
 }
 
 pub fn render_workflows_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_WORKFLOWS_FORK, side, color)
+    pro_symbol("0 0 24 24", SVG_WORKFLOWS_FORK, side, color)
 }
 
 pub fn render_chart_columns_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_CHART_COLUMNS, side, color)
+    pro_symbol("0 0 24 24", SVG_CHART_COLUMNS, side, color)
 }
 
 pub fn render_arrow_up_icon(side: f32, color: Hsla) -> AnyElement {
@@ -531,35 +457,35 @@ pub fn render_arrow_up_icon(side: f32, color: Hsla) -> AnyElement {
 }
 
 pub fn render_circle_check_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_CIRCLE_CHECK, side, color)
+    pro_symbol("0 0 24 24", SVG_CIRCLE_CHECK, side, color)
 }
 
 pub fn render_machine_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_MONITOR_MACHINE, side, color)
+    pro_symbol("0 0 24 24", SVG_MONITOR_MACHINE, side, color)
 }
 
 pub fn render_git_commit_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_GIT_COMMIT_CIRCLE, side, color)
+    pro_symbol("0 0 24 24", SVG_GIT_COMMIT_CIRCLE, side, color)
 }
 
 pub fn render_radar_link_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_RADAR_LINK, side, color)
+    pro_symbol("0 0 24 24", SVG_RADAR_LINK, side, color)
 }
 
 pub fn render_schedule_repeat_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_SCHEDULE_REPEAT, side, color)
+    pro_symbol("0 0 24 24", SVG_SCHEDULE_REPEAT, side, color)
 }
 
 pub fn render_brief_chart_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_BRIEF_CARDS, side, color)
+    pro_symbol("0 0 24 24", SVG_BRIEF_CARDS, side, color)
 }
 
 pub fn render_steer_merge_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_STEER_MERGE, side, color)
+    pro_symbol("0 0 24 24", SVG_STEER_MERGE, side, color)
 }
 
 pub fn render_bg_layers_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_BG_LAYERS, side, color)
+    pro_symbol("0 0 24 24", SVG_BG_LAYERS, side, color)
 }
 
 pub fn render_git_branch_icon(side: f32, color: Hsla) -> AnyElement {
@@ -567,23 +493,23 @@ pub fn render_git_branch_icon(side: f32, color: Hsla) -> AnyElement {
 }
 
 pub fn render_skills_puzzle_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_SKILLS_PUZZLE, side, color)
+    pro_symbol("0 0 24 24", SVG_SKILLS_PUZZLE, side, color)
 }
 
 pub fn render_usage_pulse_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_USAGE_PULSE, side, color)
+    pro_symbol("0 0 24 24", SVG_USAGE_PULSE, side, color)
 }
 
 pub fn render_handoff_relay_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_HANDOFF_RELAY, side, color)
+    pro_symbol("0 0 24 24", SVG_HANDOFF_RELAY, side, color)
 }
 
 pub fn render_terminal_logs_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_TERMINAL_LOGS, side, color)
+    pro_symbol("0 0 24 24", SVG_TERMINAL_LOGS, side, color)
 }
 
 pub fn render_side_question_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_SIDE_QUESTION, side, color)
+    pro_symbol("0 0 24 24", SVG_SIDE_QUESTION, side, color)
 }
 
 /// Line icon for a kind of document.
@@ -593,7 +519,7 @@ pub fn render_doc_outline_icon(kind: OfficeKind, side: f32, color: Hsla) -> AnyE
         OfficeKind::Excel => SVG_SHEET_CHIP,
         OfficeKind::Ppt => SVG_SLIDE_CHIP,
     };
-    pro_svg("0 0 24 24", path, side, color)
+    pro_symbol("0 0 24 24", path, side, color)
 }
 
 /// A fixed paper grain and a warm KUI crest anchored to the top of the sidebar.
@@ -972,7 +898,7 @@ impl SkillCardGlyph {
             .flex()
             .items_center()
             .justify_center()
-            .child(pro_svg("0 0 24 24", svg, (side * 0.52).round(), accent))
+            .child(pro_symbol("0 0 24 24", svg, (side * 0.52).round(), accent))
     }
 }
 

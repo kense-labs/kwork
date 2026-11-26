@@ -3,7 +3,7 @@
 //! Line icon geometry from Hugeicons Free (MIT); provider marks documented in `docs/BRAND-MARKS.md`.
 
 use crate::primitives::brand_mark::brand_mark;
-use gpui::{AnyElement, App, Hsla, Image, ImageFormat, Rgba, img, prelude::*, px};
+use gpui::{AnyElement, App, Hsla, Image, ImageFormat, Rgba, img, prelude::*, px, svg};
 use std::{
     collections::HashMap,
     sync::{Arc, LazyLock, Mutex, OnceLock},
@@ -88,6 +88,8 @@ pub enum ProIcon {
     Download,
     PanelBottom,
     FolderPlus,
+    Sun,
+    Moon,
 }
 
 // Navigation controls share one frame; only the position of the divider changes.
@@ -108,6 +110,8 @@ impl ProIcon {
             Self::SidebarLeft => panel_icon!("M9 3v18"),
             Self::SidebarRight => panel_icon!("M15 3v18"),
             Self::PanelBottom => panel_icon!("M3 15h18"),
+            Self::Sun => r#"<g stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M19 5l-1.5 1.5m-11 11L5 19"/></g>"#,
+            Self::Moon => r#"<path d="M20.3 14.2A8.7 8.7 0 0 1 9.8 3.7a8.7 8.7 0 1 0 10.5 10.5Z" stroke="currentColor" stroke-width="1.8"/>"#,
             Self::ChevronDown => {
                 r##"<path d="M18 9.00005C18 9.00005 13.5811 15 12 15C10.4188 15 6 9 6 9" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.9"></path>"##
             }
@@ -327,33 +331,37 @@ fn color_key(color: Hsla) -> (u32, String, f32) {
     )
 }
 
-type IconCacheMap = HashMap<(u16, u32), Arc<Image>>;
+type SymbolCache = HashMap<(&'static str, &'static str), String>;
 type RawCacheMap = HashMap<(usize, u32), Arc<Image>>;
 
-static ICON_CACHE: LazyLock<Mutex<IconCacheMap>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static SYMBOL_CACHE: LazyLock<Mutex<SymbolCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 static RAW_CACHE: LazyLock<Mutex<RawCacheMap>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Render a cached 24x24 [`ProIcon`] tinted with `color`.
+/// Paint a line icon at its layout size and the window's current device scale.
 pub fn pro_icon(icon: ProIcon, side: f32, color: Hsla) -> AnyElement {
-    let (rgb_key, hex, alpha) = color_key(color);
-    let image = {
-        let mut guard = ICON_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        guard
-            .entry((icon as u16, rgb_key))
-            .or_insert_with(|| {
-                let body = icon.inner_svg().replace("currentColor", &hex);
-                let doc = format!(
-                    r#"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">{body}</svg>"#
-                );
-                Arc::new(Image::from_bytes(ImageFormat::Svg, doc.into_bytes()))
-            })
-            .clone()
+    pro_symbol("0 0 24 24", icon.inner_svg(), side, color)
+}
+
+/// A single-color symbol uses GPUI's scale-aware SVG mask. The same geometry
+/// is shared between themes, focus states and tints.
+pub fn pro_symbol(
+    view_box: &'static str,
+    inner: &'static str,
+    side: f32,
+    color: Hsla,
+) -> AnyElement {
+    let symbol = {
+        let mut cache = SYMBOL_CACHE.lock().unwrap_or_else(|err| err.into_inner());
+        let document = cache.entry((view_box, inner)).or_insert_with(|| {
+            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view_box}" fill="none" stroke-linecap="round" stroke-linejoin="round">{inner}</svg>"#)
+        });
+        svg().data(document.as_bytes())
     };
-    img(image)
+    symbol
         .size(px(side))
         .flex_none()
-        .opacity(alpha)
+        .text_color(color)
         .into_any_element()
 }
 

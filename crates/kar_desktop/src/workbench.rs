@@ -4,6 +4,7 @@
 //! Rendering lives in the `ui_*` modules. This file owns the state those modules draw and the
 //! actions they trigger, and talks to Kar strictly through [`KarBridgeHandle`].
 
+mod commands;
 mod resize;
 use resize::{Divider, PaneDrag, Span};
 use std::collections::{BTreeMap, BTreeSet};
@@ -496,6 +497,7 @@ pub struct KarWorkbench {
     pub(crate) http_dialog: Entity<Dialog>,
     pub(crate) http_url_input: Entity<Input>,
     pub(crate) goal_dialog: Entity<Dialog>,
+    goal_dialog_owner: Option<DraftLocation>,
     pub(crate) goal_input: Entity<Input>,
     pub(crate) rename_dialog: Entity<Dialog>,
     pub(crate) rename_input: Entity<Input>,
@@ -533,6 +535,7 @@ pub struct KarWorkbench {
     /// Typed on the start screen and waiting for its chat to be created.
     drafts: ComposerDrafts,
     pub(crate) queued_prompt: Option<QueuedPrompt>,
+    slash: commands::SlashPicker,
     /// Local files/images queued as attachments on the next prompt.
     pub(crate) pending_attachments: Vec<PathBuf>,
 
@@ -874,7 +877,22 @@ impl KarWorkbench {
             &composer_editor,
             window,
             |this, _, ev: &EditEvent, window, cx| match ev {
-                EditEvent::Changed => cx.notify(),
+                EditEvent::Changed => {
+                    this.slash.edited();
+                    if this.composer_editor.read(cx).value() == "/"
+                        && this.workspace_inventory.commands_for(
+                            &this.effective_workspace_dir(), this.active_or_selected_runtime_id(),
+                        ).is_none()
+                    {
+                        this.bridge.send(KarCommand::ProbeWorkspaceInventory {
+                            workspace: this.effective_workspace_dir(),
+                            runtime_id: this.active_or_selected_runtime_id().to_owned(),
+                        });
+                    }
+                    cx.notify();
+                }
+                EditEvent::Blurred => { this.slash.close(); cx.notify(); }
+                EditEvent::Focused => cx.notify(),
                 EditEvent::Submitted => this.submit_composer_prompt(window, cx),
                 EditEvent::Escape => this.close_menu(cx),
                 _ => {}
@@ -971,14 +989,9 @@ impl KarWorkbench {
         cx.subscribe_in(
             &goal_dialog,
             window,
-            |this, _, ev: &SurfaceEvent, _, cx| {
+            |this, _, ev: &SurfaceEvent, win, cx| {
                 if *ev == SurfaceEvent::Confirmed {
-                    let objective = this.goal_input.read(cx).value(cx).trim().to_owned();
-                    if !objective.is_empty() {
-                        this.bridge.send(KarCommand::SetGoal { objective });
-                    } else {
-                        this.bridge.send(KarCommand::ClearGoal);
-                    }
+                    this.confirm_chat_goal(win, cx);
                 }
             },
         )
@@ -1408,6 +1421,7 @@ impl KarWorkbench {
             http_dialog,
             http_url_input,
             goal_dialog,
+            goal_dialog_owner: None,
             goal_input,
             rename_dialog,
             rename_input,
@@ -1438,6 +1452,7 @@ impl KarWorkbench {
             active_http_server_url: None,
             drafts: ComposerDrafts::new(config.workspace_dir.clone()),
             queued_prompt: None,
+            slash: commands::SlashPicker::default(),
             pending_attachments: Vec::new(),
             turn_sparks: BTreeMap::new(),
             copy_buttons: BTreeMap::new(),
@@ -2022,6 +2037,8 @@ impl KarWorkbench {
     }
 
     pub(crate) fn open_goal_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_set_chat_goal() { return; }
+        self.goal_dialog_owner = Some(DraftLocation::for_mode(&self.access_mode, &self.config.workspace_dir));
         self.open_menu = None;
         self.command_palette_open = false;
         self.provider_sheet_open = false;
@@ -2532,9 +2549,22 @@ impl KarWorkbench {
             KarBridgeEvent::PromptLifecycle { attempt } => {
                 self.prompt_attempts.insert(attempt.request_id, attempt);
             }
-            KarBridgeEvent::ChatCreateFailed { cause, mut detail } => {
+            KarBridgeEvent::GoalSetFailed { chat_id, objective, reason } => {
+                self.prepend_composer_draft(DraftLocation::Chat(chat_id),
+                    QueuedPrompt { text: format!("/goal {objective}"), ..Default::default() }, window, cx);
+                self.notify_warning(format!("{} · {reason}",
+                    self.ui_locale.pick("目标已保留为草稿", "Goal kept as a draft")), cx);
+            }
+            KarBridgeEvent::GoalChatCreated => self.slash.creating_goal = false,
+            KarBridgeEvent::ChatCreateFailed { cause, mut detail, goal_draft } => {
                 self.config.initial_terminal_cmd = None;
-                self.restore_queued_prompt(window, cx);
+                if let Some((workspace, objective)) = goal_draft {
+                    self.slash.creating_goal = false;
+                    self.prepend_composer_draft(DraftLocation::Project(workspace),
+                        QueuedPrompt { text: format!("/goal {objective}"), ..Default::default() }, window, cx);
+                } else {
+                    self.restore_queued_prompt(window, cx);
+                }
                 let (title, action) = match cause {
                     ChatCreateFailure::Store => ("无法保存新对话".into(), NoticeAction::None),
                     ChatCreateFailure::Runtime(id) => (
@@ -2882,8 +2912,8 @@ impl KarWorkbench {
                     self.set_layout_mode(WorkspaceLayoutMode::Split, cx);
                 }
             }
-            KarBridgeEvent::WorkspaceInventoryUpdated { workspace, inventory } => {
-                if workspace == self.panel_workspace && inventory.runtime_id == self.active_or_selected_runtime_id() {
+            KarBridgeEvent::WorkspaceInventoryUpdated(inventory) => {
+                if inventory.belongs_to(&self.effective_workspace_dir(), self.active_or_selected_runtime_id()) {
                     self.code_block_cache.retain(|key, _| !key.starts_with("skill-md-"));
                     self.tool_json_viewers.retain(|key, _| !key.starts_with("tool-schema-"));
                     self.workspace_inventory = inventory;
@@ -3093,6 +3123,9 @@ impl KarWorkbench {
     pub fn select_runtime_by_id(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.selected_runtime != id {
             self.selected_runtime = id.to_owned();
+            if matches!(self.access_mode, ChatAccessMode::NoneSelected) {
+                self.sync_workspace_inventory(&self.effective_workspace_dir());
+            }
             if let Some(sel_model) = &self.selected_model {
                 let valid = self
                     .providers
@@ -3175,6 +3208,13 @@ impl KarWorkbench {
         })
     }
 
+    fn current_chat_info(&self) -> Option<&kar::chat::ChatInfo> {
+        let id = self.current_chat_id()?;
+        self.projected.info.as_ref().filter(|info| info.id == id).or_else(|| {
+            self.chat_list.iter().find(|entry| entry.info.id == id).map(|entry| &entry.info)
+        })
+    }
+
     /// Active workspace directory: returns the chat's isolated Git Worktree (or chat workspace)
     /// when a local chat is open, otherwise `self.config.workspace_dir`.
     pub fn effective_workspace_dir(&self) -> PathBuf {
@@ -3184,9 +3224,7 @@ impl KarWorkbench {
         {
             return wt.worktree_path.clone();
         }
-        if self.chat_is_open()
-            && let Some(ref info) = self.projected.info
-            && self.current_chat_id() == Some(info.id)
+        if let Some(info) = self.current_chat_info()
             && info.workspace.is_dir()
         {
             return info.workspace.clone();
@@ -3194,10 +3232,22 @@ impl KarWorkbench {
         self.config.workspace_dir.clone()
     }
 
+    fn sync_workspace_inventory(&mut self, workspace: &Path) {
+        let runtime = self.active_or_selected_runtime_id().to_owned();
+        if !self.workspace_inventory.belongs_to(workspace, &runtime) {
+            self.workspace_inventory = crate::studio_hub::seed_local_workspace_inventory(workspace, &runtime);
+            self.bridge.send(KarCommand::ProbeWorkspaceInventory {
+                workspace: workspace.to_owned(),
+                runtime_id: runtime,
+            });
+        }
+    }
+
     fn sync_workspace_panels(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.git_staged_limit = 32;
         self.git_unstaged_limit = 32;
         let workspace = self.effective_workspace_dir();
+        self.sync_workspace_inventory(&workspace);
         if workspace == self.panel_workspace {
             return;
         }
@@ -3226,7 +3276,6 @@ impl KarWorkbench {
             self.files_tab_open = true;
         self.right_surface = RightPaneSurface::Files;
         }
-        self.workspace_inventory = WorkspaceInventorySnapshot::default();
         self.global_search_hits.clear();
         self.bridge.send(KarCommand::RefreshGitWorkspace {
             workspace: workspace.clone(),
@@ -3237,10 +3286,6 @@ impl KarWorkbench {
                 show_hidden: true,
             });
         }
-        self.bridge.send(KarCommand::ProbeWorkspaceInventory {
-            workspace,
-            runtime_id: self.active_or_selected_runtime_id().to_owned(),
-        });
     }
 
     fn record_location(&mut self, location: WorkspaceLocation) {
@@ -3468,6 +3513,11 @@ impl KarWorkbench {
     }
 
     pub fn create_new_real_chat(&mut self, cx: &mut Context<Self>) -> bool {
+        self.create_real_chat_with_goal(None, cx)
+    }
+
+    fn create_real_chat_with_goal(&mut self, initial_goal: Option<String>, cx: &mut Context<Self>) -> bool {
+        if self.slash.creating_goal { return false; }
         self.open_menu = None;
         let agent = self
             .providers
@@ -3485,7 +3535,9 @@ impl KarWorkbench {
         self.project_registry
             .ensure_project(&self.config.workspace_dir);
         let _ = self.project_registry.save(&self.config.chat_dir);
+        self.slash.creating_goal = initial_goal.is_some();
         self.bridge.send(KarCommand::CreateChat {
+            initial_goal,
             runtime_id: self.selected_runtime.clone(),
             model: self.selected_model.clone(),
             program,
@@ -3551,6 +3603,9 @@ impl KarWorkbench {
         if (typed.is_empty() && self.pending_attachments.is_empty())
             || self.queued_prompt.is_some()
         {
+            return;
+        }
+        if self.submit_slash_command(&typed, window, cx) {
             return;
         }
         let raw = if typed.is_empty() {
@@ -5946,11 +6001,8 @@ impl KarWorkbench {
     }
 
     pub fn active_or_selected_runtime_id(&self) -> &str {
-        self.projected
-            .info
-            .as_ref()
-            .map(|i| i.runtime.as_str())
-            .unwrap_or(&self.selected_runtime)
+        self.current_chat_info()
+            .map_or(&self.selected_runtime, |info| info.runtime.as_str())
     }
 
     pub(crate) fn open_surface(&mut self, surface: &RightPaneSurface, cx: &mut Context<Self>) {
@@ -6581,8 +6633,8 @@ impl Render for KarWorkbench {
     }
 }
 
-const PLACEHOLDER_NEW_CHAT_ZH: &str = "询问任何问题，或添加文件和技能…";
-const PLACEHOLDER_NEW_CHAT_EN: &str = "Ask anything. Add files or skills…";
+const PLACEHOLDER_NEW_CHAT_ZH: &str = "输入消息，或按 / 查看指令…";
+const PLACEHOLDER_NEW_CHAT_EN: &str = "Write a message, or type / for commands…";
 const PLACEHOLDER_REMOTE_CTRL: &str = "向远端智能体发送消息…";
 const PLACEHOLDER_ELSEWHERE: &str = "这个对话正在另一个窗口里进行，当前窗口实时同步查看";
 const PLACEHOLDER_ARCHIVED: &str = "原工作文件夹已不在本机，当前以归档只读查看";

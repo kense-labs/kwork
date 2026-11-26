@@ -16,7 +16,7 @@ use anyhow::{Context as _, Result};
 use kar::{
     UsageSnapshot,
     chat::{ChatStore, Item, Role},
-    inventory::{InventoryOptions, InventoryResult, SkillScope},
+    inventory::{CommandEntry, InventoryOptions, InventoryResult, SkillScope},
     workbench_git::{BranchQuery, Repository},
 };
 use serde::{Deserialize, Serialize};
@@ -906,20 +906,84 @@ pub struct ToolSchemaItem {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceInventorySnapshot {
     pub runtime_id: String,
+    #[serde(default)]
+    workspace: PathBuf,
     pub observed_at: String,
     pub skills: Vec<SkillCardItem>,
     pub mcp_servers: Vec<McpServerCardItem>,
     pub commands: Vec<SlashCommandItem>,
+    #[serde(default)]
+    command_status: CommandCatalogStatus,
     pub tools: Vec<ToolSchemaItem>,
 }
 
-/// Synchronously seed local `SKILL.md` skills, `kar_office` MCP, slash commands, and built-in
-/// tool JSON schemas (<2ms, zero subprocesses) so the Skills & MCP Hub is rich from frame 1.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+enum CommandCatalogStatus {
+    #[default]
+    Pending,
+    Ready,
+    Unavailable,
+}
+
+impl WorkspaceInventorySnapshot {
+    pub(crate) fn belongs_to(&self, workspace: &Path, runtime_id: &str) -> bool {
+        self.workspace == workspace && self.runtime_id == runtime_id
+    }
+
+    /// Kar currently exposes workspace command discovery for Claude and Pi.
+    /// A cold or failed lookup on those runtimes cannot disprove a native command.
+    pub(crate) fn commands_for(
+        &self,
+        workspace: &Path,
+        runtime_id: &str,
+    ) -> Option<&[SlashCommandItem]> {
+        if self.belongs_to(workspace, runtime_id)
+            && self.command_status == CommandCatalogStatus::Ready
+        {
+            Some(&self.commands)
+        } else if matches!(runtime_id, "claude" | "pi") {
+            None
+        } else {
+            Some(&[])
+        }
+    }
+
+    fn record_command_result(&mut self, result: kar::Result<InventoryResult<CommandEntry>>) {
+        let Ok(InventoryResult::Ok { items, partial, .. }) = result else {
+            self.command_status = CommandCatalogStatus::Unavailable;
+            return;
+        };
+        self.command_status = if partial {
+            CommandCatalogStatus::Unavailable
+        } else {
+            CommandCatalogStatus::Ready
+        };
+        for cmd in items {
+            let slash = if cmd.name.starts_with('/') {
+                cmd.name
+            } else {
+                format!("/{}", cmd.name)
+            };
+            if self.commands.iter().any(|c| c.name == slash) {
+                continue;
+            }
+            self.commands.push(SlashCommandItem {
+                name: slash,
+                description: cmd.description.unwrap_or_else(|| "运行时原生指令".into()),
+                hint: cmd.argument_hint,
+                source: cmd.source.unwrap_or_else(|| runtime_display_name(&self.runtime_id)),
+            });
+        }
+    }
+}
+
+/// Synchronously seed local skills; native capabilities arrive from the runtime probe.
 pub fn seed_local_workspace_inventory(
     workspace: &Path,
     runtime_id: &str,
 ) -> WorkspaceInventorySnapshot {
     WorkspaceInventorySnapshot {
+        workspace: workspace.to_owned(),
         runtime_id: runtime_id.to_owned(),
         skills: scan_local_skill_markdown_files(workspace),
         ..Default::default()
@@ -953,12 +1017,20 @@ pub async fn probe_inventory_with_office(workspace: &Path, runtime_id: &str, off
     if let Ok(rt) = kar::runtime(runtime_id) {
         let mut opts = InventoryOptions::default();
         opts.installation.cwd = Some(workspace.to_path_buf());
+        opts.installation
+            .env
+            .insert("PATH".into(), Some(crate::kar_bridge::augmented_path_os()));
         opts.timeout = Some(Duration::from_millis(1100));
+        let command_opts = InventoryOptions {
+            // A cold CLI must finish its initialization handshake to advertise commands.
+            timeout: None,
+            ..opts.clone()
+        };
 
         let (skills_res, mcp_res, cmds_res, tools_res) = tokio::join!(
             rt.skills(&opts),
             rt.mcp_servers(&opts),
-            rt.commands(&opts),
+            rt.commands(&command_opts),
             rt.tools(&opts),
         );
 
@@ -1012,26 +1084,7 @@ pub async fn probe_inventory_with_office(workspace: &Path, runtime_id: &str, off
             }
         }
 
-        if let Ok(InventoryResult::Ok { items, .. }) = cmds_res {
-            for cmd in items {
-                let slash = if cmd.name.starts_with('/') {
-                    cmd.name
-                } else {
-                    format!("/{}", cmd.name)
-                };
-                if snap.commands.iter().any(|c| c.name == slash) {
-                    continue;
-                }
-                snap.commands.push(SlashCommandItem {
-                    name: slash,
-                    description: cmd.description.unwrap_or_else(|| "运行时原生指令".into()),
-                    hint: cmd.argument_hint,
-                    source: cmd
-                        .source
-                        .unwrap_or_else(|| runtime_display_name(runtime_id)),
-                });
-            }
-        }
+        snap.record_command_result(cmds_res);
 
         if let Ok(InventoryResult::Ok { items, .. }) = tools_res {
             for t in items {
@@ -1948,6 +2001,53 @@ pub fn truncate_chars(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_inventory_is_only_authoritative_for_its_runtime_and_workspace() {
+        use kar::inventory::{CommandEntry, InventoryScope, View};
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path();
+        let mut snap = seed_local_workspace_inventory(workspace, "claude");
+        assert_eq!(snap.command_status, CommandCatalogStatus::Pending);
+        assert!(snap.commands_for(workspace, "claude").is_none());
+        assert_eq!(snap.commands_for(workspace, "codex"), Some(&[][..]));
+
+        snap.record_command_result(Ok(InventoryResult::Ok {
+            scope: InventoryScope::Workspace { cwd: workspace.to_owned() },
+            view: View::Discovered,
+            observed_at: String::new(),
+            items: vec![CommandEntry {
+                name: "plan".into(), description: None, argument_hint: None, aliases: None, source: None,
+            }],
+            partial: false,
+        }));
+        assert_eq!(snap.commands_for(workspace, "claude").unwrap()[0].name, "/plan");
+        assert!(snap.commands_for(&workspace.join("other"), "claude").is_none());
+        assert!(snap.commands_for(workspace, "pi").is_none());
+    }
+
+    #[test]
+    fn command_inventory_timeout_and_partial_results_keep_native_routing_unknown() {
+        use kar::inventory::{InventoryScope, UnavailableCode, View};
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path();
+        let mut snap = seed_local_workspace_inventory(workspace, "pi");
+        snap.record_command_result(Ok(InventoryResult::Unavailable {
+            code: UnavailableCode::Timeout, reason: "cold start".into(),
+        }));
+        assert_eq!(snap.command_status, CommandCatalogStatus::Unavailable);
+        assert!(snap.commands_for(workspace, "pi").is_none());
+        for partial in [true, false] {
+            snap.record_command_result(Ok(InventoryResult::Ok {
+                scope: InventoryScope::Workspace { cwd: workspace.to_owned() },
+                view: View::Discovered,
+                observed_at: String::new(),
+                items: Vec::new(),
+                partial,
+            }));
+            assert_eq!(snap.commands_for(workspace, "pi"), (!partial).then_some(&[][..]));
+        }
+    }
 
     fn write_usage_journal(
         directory: &Path,

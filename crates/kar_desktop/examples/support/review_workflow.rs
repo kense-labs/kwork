@@ -324,7 +324,15 @@ async fn run(
                 click_footer_icon(handle, cx, 132.)?;
                 let inbox = root.join("inbox-request.png");
                 capture(handle, cx, &inbox).await?;
-                click_text(root, &inbox, "等待授权", handle, cx)?;
+                // Click the visible request title. Vision can miss the small amber
+                // status badge in dark mode, even when the row is clearly readable.
+                let row_title = ["question", "reason", "command"]
+                    .into_iter()
+                    .find_map(|key| request.body[key].as_str().filter(|s| !s.trim().is_empty()))
+                    .unwrap_or(&request.method);
+                let title_prefix: String = row_title.trim().chars().take(22).collect();
+                click_text(root, &inbox, &title_prefix, handle, cx)
+                    .or_else(|_| click_text(root, &inbox, "等待授权", handle, cx))?;
                 let returned = root.join("inbox-to-request.png");
                 capture(handle, cx, &returned).await?;
                 ensure!(

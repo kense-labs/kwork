@@ -72,6 +72,7 @@ pub enum KarCommand {
     ListChats,
     CreateChat {
         runtime_id: String,
+        initial_goal: Option<String>,
         model: Option<String>,
         program: Option<PathBuf>,
         workspace: PathBuf,
@@ -142,9 +143,10 @@ pub enum KarCommand {
     LoadTurnDiff(crate::turn_review::ReviewKey),
     CompactChat,
     SetGoal {
+        chat_id: Uuid,
         objective: String,
     },
-    ClearGoal,
+    ClearGoal { chat_id: Uuid },
     StopTask {
         task_id: String,
     },
@@ -355,6 +357,7 @@ pub enum KarBridgeEvent {
     AccessModeChanged(ChatAccessMode),
     ConnectionStateChanged(FeedConnectionState),
     ChatStateUpdated(ProjectedChatState),
+    GoalSetFailed { chat_id: Uuid, objective: String, reason: String },
     QueuedInputRetrieved {
         chat_id: Uuid,
         input_id: Uuid,
@@ -364,8 +367,10 @@ pub enum KarBridgeEvent {
     PromptLifecycle {
         attempt: PendingPromptAttempt,
     },
+    GoalChatCreated,
     /// A new chat could not be started, so whatever was waiting to be sent in it never left.
     ChatCreateFailed {
+        goal_draft: Option<(PathBuf, String)>,
         cause: ChatCreateFailure,
         detail: String,
     },
@@ -441,7 +446,7 @@ pub enum KarBridgeEvent {
         exit_code: i32,
     },
     WorkspaceFileLoaded { workspace: PathBuf, preview: WorkspaceFilePreview },
-    WorkspaceInventoryUpdated { workspace: PathBuf, inventory: WorkspaceInventorySnapshot },
+    WorkspaceInventoryUpdated(WorkspaceInventorySnapshot),
     GlobalSearchResults {
         workspace: PathBuf,
         query: String,
@@ -509,7 +514,7 @@ impl KarBridgeHandle {
 
 /// Build an augmented `PATH` so GUI-launched macOS bundles discover Homebrew, Cargo, and `~/.local/bin` CLIs
 /// without needing `unsafe { std::env::set_var(...) }`.
-fn augmented_path_os() -> OsString {
+pub(crate) fn augmented_path_os() -> OsString {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
@@ -703,6 +708,39 @@ struct WorkerState {
 }
 
 impl WorkerState {
+    fn set_goal(&self, session: Arc<ChatSession>, objective: String) {
+        let chat_id = session.info().id;
+        let store_opt = self.store.clone();
+        let evt_tx = self.evt_tx.clone();
+        let caps = Some(session.capabilities());
+        tokio::spawn(async move {
+            let opts = GoalSetOptions {
+                objective: objective.clone(),
+                status: Some("active".into()),
+                token_budget: None,
+            };
+            match session.set_goal(opts).await {
+                Ok(_) => {
+                    if let Ok(h) = session.history() {
+                        let queued = active_queued_inputs(store_opt.as_ref(), chat_id);
+                        let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
+                            state_from_history(h, caps, queued),
+                        ));
+                    }
+                    let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                        text: "已更新对话目标".into(),
+                        warning: false,
+                    });
+                }
+                Err(err) => {
+                    let _ = evt_tx.send_blocking(KarBridgeEvent::GoalSetFailed {
+                        chat_id, objective, reason: err.to_string(),
+                    });
+                }
+            }
+        });
+    }
+
     fn emit(&self, ev: KarBridgeEvent) {
         let _ = self.evt_tx.send_blocking(ev);
     }
@@ -2247,6 +2285,7 @@ async fn worker_loop(
 
     init_store_and_providers(&mut state, initial_store_dir, initial_workspace);
 
+    let mut inventory_probes = BTreeMap::<(PathBuf, String), tokio::task::JoinHandle<()>>::new();
     while let Ok(cmd) = cmd_rx.recv().await {
         match cmd {
             KarCommand::RefreshStoreAndProviders {
@@ -2290,6 +2329,7 @@ async fn worker_loop(
             }
             KarCommand::CreateChat {
                 runtime_id,
+                initial_goal,
                 model,
                 program,
                 workspace,
@@ -2299,6 +2339,7 @@ async fn worker_loop(
             } => {
                 let Some(store) = state.store.clone() else {
                     state.emit(KarBridgeEvent::ChatCreateFailed {
+                        goal_draft: initial_goal.map(|s| (workspace.clone(), s)),
                         cause: ChatCreateFailure::Store,
                         detail: format!(
                             "无法写入对话存储目录 {}，请检查它的权限。",
@@ -2329,6 +2370,7 @@ async fn worker_loop(
                         }
                         Err(detail) => {
                             state.emit(KarBridgeEvent::ChatCreateFailed {
+                                goal_draft: initial_goal.map(|s| (workspace.clone(), s)),
                                 cause: ChatCreateFailure::Worktree,
                                 detail: detail.to_string(),
                             });
@@ -2388,7 +2430,7 @@ async fn worker_loop(
                         let caps = Some(session.capabilities());
                         let history = session.history().ok();
                         let session = Arc::new(session);
-                        state.active_controller = Some(session);
+                        state.active_controller = Some(session.clone());
                         state.emit(KarBridgeEvent::AccessModeChanged(
                             ChatAccessMode::WriteController { chat_id },
                         ));
@@ -2405,6 +2447,10 @@ async fn worker_loop(
                             caps,
                             state.evt_tx.clone(),
                         ));
+                        if let Some(objective) = initial_goal {
+                            state.set_goal(session, objective);
+                            state.emit(KarBridgeEvent::GoalChatCreated);
+                        }
                         state.refresh_chat_list();
                     }
                     Err(err) => {
@@ -2420,6 +2466,7 @@ async fn worker_loop(
                         }
                         state.selected_chat_id = None;
                         state.emit(KarBridgeEvent::ChatCreateFailed {
+                            goal_draft: initial_goal.map(|s| (workspace.clone(), s)),
                             cause: ChatCreateFailure::Runtime(runtime_id),
                             detail,
                         });
@@ -3198,47 +3245,19 @@ async fn worker_loop(
                     }
                 });
             }
-            KarCommand::SetGoal { objective } => {
-                let Some(session) = state.active_controller.clone() else {
+            KarCommand::SetGoal { chat_id, objective } => {
+                let Some(session) = state.active_controller.clone().filter(|s| s.info().id == chat_id) else {
+                    state.emit(KarBridgeEvent::GoalSetFailed {
+                        chat_id, objective, reason: "当前对话已切换".into(),
+                    });
                     continue;
                 };
-                let chat_id = session.info().id;
-                let store_opt = state.store.clone();
-                let evt_tx = state.evt_tx.clone();
-                let caps = Some(session.capabilities());
-                tokio::spawn(async move {
-                    let opts = GoalSetOptions {
-                        objective,
-                        status: Some("active".into()),
-                        token_budget: None,
-                    };
-                    match session.set_goal(opts).await {
-                        Ok(_) => {
-                            if let Ok(h) = session.history() {
-                                let queued = active_queued_inputs(store_opt.as_ref(), chat_id);
-                                let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
-                                    state_from_history(h, caps, queued),
-                                ));
-                            }
-                            let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
-                                text: "已更新对话目标".into(),
-                                warning: false,
-                            });
-                        }
-                        Err(err) => {
-                            let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
-                                text: format!("设置目标失败：{err}"),
-                                warning: true,
-                            });
-                        }
-                    }
-                });
+                state.set_goal(session, objective);
             }
-            KarCommand::ClearGoal => {
-                let Some(session) = state.active_controller.clone() else {
+            KarCommand::ClearGoal { chat_id } => {
+                let Some(session) = state.active_controller.clone().filter(|s| s.info().id == chat_id) else {
                     continue;
                 };
-                let chat_id = session.info().id;
                 let store_opt = state.store.clone();
                 let evt_tx = state.evt_tx.clone();
                 let caps = Some(session.capabilities());
@@ -4483,10 +4502,15 @@ async fn worker_loop(
                 workspace,
                 runtime_id,
             } => {
+                inventory_probes.retain(|_, task| !task.is_finished());
+                let scope = (workspace.clone(), runtime_id.clone());
+                if inventory_probes.contains_key(&scope) {
+                    continue;
+                }
                 let evt_tx = state.evt_tx.clone();
                 let office_available = state.mcp_office.is_some() && state.mcp_supported_runtimes.get(&runtime_id)
                     .copied().unwrap_or_else(|| default_runtime_mcp_support(&runtime_id));
-                tokio::spawn(async move {
+                let probe = tokio::spawn(async move {
                     let inv = probe_inventory_with_office(&workspace, &runtime_id, office_available).await;
                     emit_diag_log(
                         &evt_tx,
@@ -4501,8 +4525,9 @@ async fn worker_loop(
                             inv.commands.len(),
                         ),
                     );
-                    let _ = evt_tx.send(KarBridgeEvent::WorkspaceInventoryUpdated { workspace, inventory: inv }).await;
+                    let _ = evt_tx.send(KarBridgeEvent::WorkspaceInventoryUpdated(inv)).await;
                 });
+                inventory_probes.insert(scope, probe);
             }
             KarCommand::GlobalSearch { workspace, query } => {
                 let evt_tx = state.evt_tx.clone();

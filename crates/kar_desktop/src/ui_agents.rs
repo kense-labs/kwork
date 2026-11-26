@@ -22,7 +22,36 @@ use crate::{
     workbench::KarWorkbench,
 };
 
+impl crate::ui_primitives::UiLocale {
+    pub(crate) fn approval_label(self, mode: ApprovalMode) -> &'static str {
+        match mode {
+            ApprovalMode::Host => self.pick("询问我", "Ask me"),
+            ApprovalMode::Deny => self.pick("自动拒绝", "Auto-deny"),
+        }
+    }
+}
+
 impl KarWorkbench {
+    pub(crate) fn new_chat_approval_picker(
+        &self,
+        id: &'static str,
+        s: &StudioPalette,
+        cx: &Context<Self>,
+    ) -> SelectionStrip {
+        let loc = self.ui_locale;
+        SelectionStrip::options(
+            id,
+            loc.pick("新对话的权限请求", "Permission requests in new chats"),
+            Group::Choices,
+            [ApprovalMode::Host, ApprovalMode::Deny]
+                .map(|mode| (mode, loc.approval_label(mode))),
+            self.approval_mode,
+            s,
+            cx,
+            |wb, mode, _, cx| wb.set_new_chat_approvals(mode, cx),
+        )
+    }
+
     pub(crate) fn render_agents_panel(
         &self,
         s: &StudioPalette,
@@ -70,19 +99,7 @@ impl KarWorkbench {
                 cx,
             ),
         );
-        let approval_seg = SelectionStrip::options(
-            "settings-approval",
-            loc.pick("授权请求", "Tool permissions"),
-            Group::Choices,
-            [
-                (ApprovalMode::Host, loc.pick("需确认", "Ask first")),
-                (ApprovalMode::Deny, loc.pick("自动拒绝", "Deny")),
-            ],
-            self.approval_mode,
-            s,
-            cx,
-            |wb, mode, _, cx| wb.set_new_chat_approvals(mode, cx),
-        );
+        let approval_seg = self.new_chat_approval_picker("settings-approval", s, cx);
         let wt_seg = SelectionStrip::options(
             "settings-worktree",
             loc.pick("工作目录", "Working directory"),
@@ -119,8 +136,8 @@ impl KarWorkbench {
                 .child(div().h(px(1.)).w_full().bg(s.line_soft))
             })
             .child(routing_setting_row(
-                loc.pick("授权请求", "Tool permissions"),
-                loc.pick("智能体需要额外权限时如何处理", "When an agent requests additional access"),
+                loc.pick("权限请求", "Permission requests"),
+                loc.pick("适用于之后创建的对话", "Applies to chats created from now on"),
                 approval_seg,
                 s,
             ))

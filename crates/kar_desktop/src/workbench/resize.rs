@@ -272,13 +272,8 @@ impl KarWorkbench {
                 self.doc_divider_focus.clone(),
             ),
         };
-        let focused = focus.is_focused(window);
-        let keyboard_focus = focused && window.last_input_was_keyboard();
-        let active = if collapsed {
-            keyboard_focus
-        } else {
-            focused || self.pane_drag.is_some_and(|d| d.divider == divider)
-        };
+        let keyboard_focus = focus.is_focused(window) && window.last_input_was_keyboard();
+        let active = keyboard_focus || self.pane_drag.is_some_and(|d| d.divider == divider);
         let hint = if collapsed {
             expand_label
         } else {
@@ -466,7 +461,7 @@ impl KarWorkbench {
                     .bg(s
                         .muted
                         .blend(highlight.opacity(strength))
-                        .opacity(0.38 + strength * 0.62)),
+                        .opacity(strength.clamp(0., 1.))),
             );
         }
         control.into_any_element()

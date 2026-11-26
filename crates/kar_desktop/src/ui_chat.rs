@@ -54,10 +54,10 @@ use crate::{
         CTRL_H, DETAILS_CARD_W, DotTone, FS_CONTROL, FS_META, FS_READ, FS_TAG, FS_UI, HEADER_H, ICON,
         ICON_SM, ICON_XS, LH_META, LH_READ, LH_UI, R_CARD, R_CTRL, R_HERO, R_PILL, StudioPalette, UiLocale,
         THREAD_PAD, THREAD_W, clean_display_doc_name, macos_traffic_pad, mono_font,
-        render_approval_hand, render_bg_layers_icon,
+        render_bg_layers_icon,
         render_file_diff_icon, render_folder_git_icon, render_folder_icon, render_git_branch_icon,
         render_machine_icon, render_office_chip, render_panel_bottom_icon, render_panel_right_icon,
-        render_project_monogram, render_runtime_mark, render_schedule_repeat_icon,
+        render_project_mark, render_runtime_mark, render_schedule_repeat_icon,
         render_skills_puzzle_icon, render_square_menu_icon, render_square_pen_icon, render_status,
         render_steer_merge_icon, tnum_features,
     },
@@ -464,7 +464,7 @@ impl KarWorkbench {
             .gap(px(6.))
             .tip(new_in_project)
             .aria(format!("{new_in_project} · {proj_name}"))
-            .child(render_project_monogram(&proj_name, 16., s, cx))
+            .child(render_project_mark(&proj_name, 16., s, cx))
             .when(!compact_crumb, |b| {
                 b.child(
                     div()
@@ -1254,7 +1254,7 @@ impl KarWorkbench {
 
     fn render_goal_bar(&self, s: &StudioPalette, cx: &mut Context<Self>) -> AnyElement {
         let goal = self.projected.goal.as_ref().and_then(Option::as_ref).cloned();
-        let writable = matches!(self.access_mode, ChatAccessMode::WriteController { .. });
+        let owner = self.projected.chat_id.filter(|_| self.can_set_chat_goal());
         let open = goal.is_some();
         let bar = goal.map(|g| {
             div()
@@ -1284,17 +1284,17 @@ impl KarWorkbench {
                                 .text_color(s.ink)
                                 .child(format!("目标：{}", g.objective)),
                         )
-                        .when(writable && self.projected.can_goals, |d| {
+                        .when_some(owner, |d, chat_id| {
                             d.child(
                                 text_button("goal-edit", "修改", s)
-                                    .on_press(cx, |this, window, cx| {
-                                        this.open_goal_dialog(window, cx)
+                                    .on_press(cx, move |this, window, cx| {
+                                        if this.current_chat_id() == Some(chat_id) { this.open_goal_dialog(window, cx); }
                                     }),
                             )
                             .child(
                                 icon_button("goal-clear", ProIcon::Close, "清除目标", s)
-                                    .on_press(cx, |this, _, _| {
-                                        this.bridge.send(KarCommand::ClearGoal)
+                                    .on_press(cx, move |this, _, _| {
+                                        this.bridge.send(KarCommand::ClearGoal { chat_id })
                                     }),
                             )
                         }),
@@ -1761,18 +1761,6 @@ impl KarWorkbench {
         let loc = self.ui_locale;
         let compact_bar = pane_w < 600.;
 
-        let approval = if chat_open {
-            self.projected
-                .info
-                .as_ref()
-                .map_or(self.approval_mode, |info| info.approvals)
-        } else {
-            self.approval_mode
-        };
-        let approval_label = match approval {
-            ApprovalMode::Host => loc.pick("请求审批", "Request approval"),
-            ApprovalMode::Deny => loc.pick("自动拒绝", "Deny requests"),
-        };
         let runtime_id = if matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
             "claude".to_owned()
         } else {
@@ -1783,10 +1771,13 @@ impl KarWorkbench {
             .px(px(6.))
             .gap(px(5.))
             .lit(self.open_menu == Some(Menu::ComposerApproval))
-            .tip(loc.pick("工具权限", "Tool permissions"))
+            .aria(loc.pick("权限请求", "Permission requests"))
+            .when(self.open_menu != Some(Menu::ComposerApproval), |button| {
+                button.tip(loc.pick("权限请求", "Permission requests"))
+            })
             .ink(s.muted, s.ink)
-            .child(render_approval_hand(13., s.muted))
-            .when(pane_w >= 440., |b| b.child(approval_label))
+            .child(pro_icon(ProIcon::Shield, ICON, s.muted))
+            .when(pane_w >= 440., |b| b.child(loc.approval_label(self.approval_mode)))
             .on_press(cx, |this, _, cx| {
                 this.toggle_menu(Menu::ComposerApproval, cx)
             });
@@ -1799,10 +1790,10 @@ impl KarWorkbench {
         } else {
             self.selected_model.as_deref()
         };
-        let add_menu = if self.open_menu == Some(Menu::ComposerSkills) {
-            self.render_skills_menu(end, s, cx)
-        } else {
-            self.render_add_menu(end, s, cx)
+        let add_menu = match self.open_menu {
+            Some(Menu::ComposerSkills) => self.render_skills_menu(end, s, cx),
+            Some(Menu::ComposerApproval) if chat_open => self.render_approval_menu(end, s, cx),
+            _ => self.render_add_menu(end, s, cx),
         };
 
         let ctx_ratio = self.context_ratio();
@@ -2045,6 +2036,10 @@ impl KarWorkbench {
             .flex_col()
             .when_some(bg_cmds_bar, |d, b| d.child(b))
             .when_some(queued_bar, |d, q| d.child(q))
+            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, win, cx| {
+                this.navigate_slash_picker(ev, win, cx);
+            }))
+            .when_some(self.slash_popup(card_width, s, window, cx), |d, popup| d.child(popup))
             .child(write_card)
             .when(is_draft, |d| {
                 let wt = self.new_chat_use_worktree;
@@ -2771,7 +2766,7 @@ impl KarWorkbench {
     ) -> AnyElement {
         let has_doc = self.active_office_tab.is_some();
         let loc = self.ui_locale;
-        let rows: Vec<AnyElement> = vec![
+        let mut rows: Vec<AnyElement> = vec![
             menu_icon_item(
                 "cmp-add-selection",
                 ProIcon::Pin,
@@ -2802,6 +2797,21 @@ impl KarWorkbench {
             .on_press(cx, |this, window, cx| this.pick_documents(window, cx))
             .into_any_element(),
         ];
+        if self.chat_is_open() {
+            rows.push(
+                menu_icon_item(
+                    "cmp-current-permissions",
+                    ProIcon::Shield,
+                    loc.pick("本次对话权限", "Chat permissions"),
+                    s,
+                )
+                .when_some(self.projected.info.as_ref(), |r, info| {
+                    r.child(menu_hint(loc.approval_label(info.approvals), s))
+                })
+                .on_press(cx, |wb, _, cx| wb.toggle_menu(Menu::ComposerApproval, cx))
+                .into_any_element(),
+            );
+        }
         self.render_menu(Menu::ComposerAdd, placement, 244., rows, s, cx)
     }
 
@@ -2840,26 +2850,12 @@ impl KarWorkbench {
             }
             rows.push(menu_divider(s).into_any_element());
         }
-        if !self.workspace_inventory.commands.is_empty() {
-            rows.push(menu_caption("快捷斜杠指令", s).into_any_element());
-            for (ix, cmd) in self.workspace_inventory.commands.iter().take(4).enumerate() {
-                let token = format!("{} ", cmd.name);
-                rows.push(
-                    menu_icon_item(
-                        SharedString::from(format!("cmp-cmd-{ix}")),
-                        ProIcon::Bolt,
-                        cmd.name.clone(),
-                        s,
-                    )
-                    .on_press(cx, move |this, win, cx| {
-                        this.open_menu = None;
-                        this.inject_token_into_composer(&token, win, cx);
-                    })
-                    .into_any_element(),
-                );
-            }
-            rows.push(menu_divider(s).into_any_element());
-        }
+        rows.push(
+            menu_icon_item("cmp-open-slash", ProIcon::Bolt,
+                self.ui_locale.pick("浏览对话指令…", "Browse chat commands…"), s)
+                .on_press(cx, |this, win, cx| this.open_slash_picker(win, cx))
+                .into_any_element(),
+        );
         rows.push(
             menu_item(
                 "cmp-open-skills-hub",
@@ -2880,77 +2876,85 @@ impl KarWorkbench {
         s: &StudioPalette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let current = self.approval_mode;
         let loc = self.ui_locale;
-        let mut rows: Vec<AnyElement> = vec![
-            menu_caption(
-                loc.pick("智能体请求权限时", "When an agent requests permission"),
-                s,
-            )
-            .into_any_element(),
-        ];
-        for (ix, (mode, title, detail)) in [
-            (
-                ApprovalMode::Host,
-                loc.pick("需确认", "Ask for approval"),
-                loc.pick(
-                    "将智能体的权限请求交给你处理",
-                    "Review permission requests in the conversation",
-                ),
+        let open = self.chat_is_open();
+        let info = self.projected.info.as_ref();
+        let mut panel = div()
+            .w_full()
+            .px(px(8.))
+            .py(px(6.))
+            .flex()
+            .flex_col()
+            .items_start()
+            .gap(px(8.))
+            .child(
+                div()
+                    .text_size(px(FS_META))
+                    .text_color(s.muted)
+                    .child(if open {
+                        loc.pick("本次对话的权限请求", "Permission requests in this chat")
+                    } else {
+                        loc.pick("新对话的权限请求", "Permission requests in new chats")
+                    }),
+            );
+        let mode = if open {
+            let mode = info.map(|session| session.approvals);
+            if let Some(mode) = mode {
+                panel = panel.child(
+                    div()
+                        .text_size(px(FS_UI))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(s.ink)
+                        .child(loc.approval_label(mode)),
+                );
+            }
+            mode
+        } else {
+            panel = panel.child(self.new_chat_approval_picker("composer-approval-modes", s, cx));
+            Some(self.approval_mode)
+        };
+        let explanation = match mode {
+            Some(ApprovalMode::Host) => loc.pick(
+                "智能体请求额外权限时，在对话中选择允许或拒绝。可用的授权范围由智能体提供。",
+                "Review each permission request in the chat. The agent supplies the available choices.",
             ),
-            (
-                ApprovalMode::Deny,
-                loc.pick("自动拒绝", "Deny automatically"),
-                loc.pick(
-                    "自动拒绝需要额外授权的操作",
-                    "Decline operations that need additional permission",
-                ),
+            Some(ApprovalMode::Deny) => loc.pick(
+                "智能体发来的额外权限请求会被自动拒绝。",
+                "Additional permission requests from the agent are declined automatically.",
             ),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let chosen = current == mode;
-            rows.push(
-                Tactile::ghost(("cmp-approval-option", ix), s)
-                    .role(Role::ListBoxOption)
-                    .w_full()
-                    .flex_none()
-                    .px(px(8.))
-                    .py(px(6.))
-                    .gap(px(8.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(px(FS_UI))
-                                    .line_height(px(LH_UI))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(s.ink)
-                                    .child(title),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(FS_META))
-                                    .line_height(px(LH_META))
-                                    .text_color(s.muted)
-                                    .child(detail),
-                            ),
-                    )
-                    .when(chosen, |row| row.child(menu_check(s)))
-                    .on_press(cx, move |this, _, cx| {
-                        this.set_new_chat_approvals(mode, cx);
-                        this.open_menu = None;
-                        cx.notify();
-                    })
-                    .into_any_element(),
+            None => loc.pick("当前连接未提供审批设置。", "This connection has not reported an approval setting."),
+        };
+        panel = panel.child(
+            div()
+                .w_full()
+                .text_size(px(FS_META))
+                .line_height(px(LH_META))
+                .text_color(s.muted)
+                .child(explanation),
+        );
+        if open && let Some(native_mode) = info.and_then(|i| i.settings.acp_mode.as_deref()) {
+            panel = panel.child(
+                div()
+                    .text_size(px(FS_META))
+                    .text_color(s.text)
+                    .child(format!("{} · {native_mode}", loc.pick("智能体模式", "Agent mode"))),
             );
         }
-        self.render_menu(Menu::ComposerApproval, placement, 268., rows, s, cx)
+        let mut rows = vec![panel.into_any_element()];
+        if open {
+            rows.push(menu_divider(s).into_any_element());
+            rows.push(
+                menu_icon_item(
+                    "approval-new-chat-settings",
+                    ProIcon::Sliders,
+                    loc.pick("设置新对话默认值…", "New chat defaults…"),
+                    s,
+                )
+                .on_press(cx, |wb, _, cx| wb.open_settings(SettingsTab::Agents, cx))
+                .into_any_element(),
+            );
+        }
+        self.render_menu(Menu::ComposerApproval, placement, 280., rows, s, cx)
     }
 
     pub(crate) fn render_effort_menu(

@@ -650,13 +650,7 @@ impl KarWorkbench {
         .into_iter()
         .enumerate()
         .map(|(i, (surface, icon, name))| {
-            Tactile::ghost(("choose-surface", i), s)
-                .h(px(34.))
-                .w_full()
-                .px(px(10.))
-                .gap(px(10.))
-                .child(pro_icon(icon, 16., s.muted))
-                .child(name)
+            menu_icon_item(("choose-surface", i), icon, name, s)
                 .on_press(cx, move |this, _, cx| this.open_surface(&surface, cx))
                 .into_any_element()
         })
@@ -685,6 +679,21 @@ impl KarWorkbench {
                 this.close_all_overlays(cx);
                 this.pick_documents(win, cx);
             })
+            .into_any_element(),
+        );
+        rows.push(menu_divider(s).into_any_element());
+        rows.push(
+            menu_icon_item(
+                "surface-chat-commands",
+                ProIcon::Bolt,
+                loc.pick("对话指令…", "Chat commands…"),
+                s,
+            )
+            .disabled(
+                !self.access_mode.is_writable()
+                    && !matches!(self.access_mode, crate::types::ChatAccessMode::NoneSelected),
+            )
+            .on_press(cx, |this, win, cx| this.open_slash_picker(win, cx))
             .into_any_element(),
         );
         rows

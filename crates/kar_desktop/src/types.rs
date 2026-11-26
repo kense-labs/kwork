@@ -857,20 +857,21 @@ pub struct ChatListEntry {
 
 /// Format relative thread age in T3 Code's compact tabular style (`now`, `24m`, `2h`, `1d`).
 pub fn format_relative_age(last_ms: Option<u64>, now_ms: u64) -> String {
-    let Some(ts) = last_ms.filter(|&v| v > 0) else {
-        return "now".into();
-    };
-    let diff_secs = now_ms.saturating_sub(ts) / 1000;
-    if diff_secs < 60 {
-        "now".into()
-    } else if diff_secs < 3600 {
-        format!("{}m", diff_secs / 60)
-    } else if diff_secs < 86_400 {
-        format!("{}h", diff_secs / 3600)
-    } else if diff_secs < 86_400 * 30 {
-        format!("{}d", diff_secs / 86_400)
-    } else {
-        format!("{}w", diff_secs / (86_400 * 7))
+    localized_relative_age(last_ms, now_ms, crate::ui_primitives::UiLocale::En)
+}
+
+pub(crate) fn localized_relative_age(
+    last_ms: Option<u64>,
+    now_ms: u64,
+    loc: crate::ui_primitives::UiLocale,
+) -> String {
+    let secs = now_ms.saturating_sub(last_ms.unwrap_or(now_ms)) / 1000;
+    match secs {
+        _ if last_ms.is_none_or(|t| t == 0) || secs < 60 => loc.pick("刚刚", "now").into(),
+        60..3600 => format!("{}{}", secs / 60, loc.pick("分钟前", "m")),
+        3600..86400 => format!("{}{}", secs / 3600, loc.pick("小时前", "h")),
+        86400..2592000 => format!("{}{}", secs / 86400, loc.pick("天前", "d")),
+        _ => format!("{}{}", secs / (86400 * 7), loc.pick("周前", "w")),
     }
 }
 

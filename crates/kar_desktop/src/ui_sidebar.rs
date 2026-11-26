@@ -14,7 +14,7 @@ use kui::{
 use crate::{
     remote_link::now_epoch_ms,
     types::{
-        ChatAccessMode, ChatListEntry, format_relative_age, runtime_display_name,
+        ChatAccessMode, ChatListEntry, localized_relative_age, runtime_display_name,
     },
     ui_motion::{
         MenuPlacement, MenuSize, Tactile, icon_button, menu_caption, menu_check, menu_divider, menu_hint,
@@ -23,9 +23,9 @@ use crate::{
     ui_primitives::{
         FS_META, FS_TAG, FS_UI, ICON, ICON_SM, R_CTRL, R_PILL, StudioPalette,
         clean_display_doc_name, macos_traffic_pad, render_approval_hand,
-        render_circle_check_icon, render_folder_git_icon,
+        render_circle_check_icon,
         render_folder_icon,
-        sidebar_texture, render_office_chip, render_project_monogram,
+        sidebar_texture, render_office_chip, render_project_mark,
         render_radar_link_icon, render_runtime_mark, render_sample_tag,
         render_schedule_repeat_icon, render_square_pen_icon,
         tnum_features,
@@ -35,6 +35,7 @@ use crate::{
 };
 
 const DELETE_CONFIRM_TTL: Duration = Duration::from_secs(3);
+const THREAD_ROW_H: f32 = 54.;
 
 impl KarWorkbench {
     pub(crate) fn workspace_toolbar(
@@ -385,7 +386,7 @@ impl KarWorkbench {
                             .flex()
                             .items_center()
                             .gap(px(5.))
-                            .child(render_project_monogram(&pname, 14., &s, cx))
+                            .child(render_project_mark(&pname, 14., &s, cx))
                             .child(
                                 div()
                                     .truncate()
@@ -486,8 +487,8 @@ impl KarWorkbench {
                     active_nav_key,
                     nav_sensor.clone(),
                     R_CTRL,
-                    s.sidebar_selected,
-                    Some(s.line_soft),
+                    if in_conv { s.soft_hover } else { s.sidebar_selected },
+                    (!in_conv).then_some(s.line_soft),
                     false,
                 ));
 
@@ -585,6 +586,7 @@ impl KarWorkbench {
                 false,
                 &nav_sensor,
                 &s,
+                window,
                 cx,
             ));
         }
@@ -714,7 +716,7 @@ impl KarWorkbench {
         let settled_count = settled_entries.len();
         let settled_shelf = (settled_count > 0 || !active_entries.is_empty()).then(|| {
             let settled_open = self.settled_shelf_open && settled_count > 0;
-            let shelf_height = (settled_count as f32 * 80. + 4.)
+            let shelf_height = (settled_count as f32 * (THREAD_ROW_H + 2.) + 4.)
                 .min(f32::from(window.viewport_size().height) * 0.4);
             let mut settled_body = div().px(px(8.)).pb(px(6.)).flex().flex_col().gap(px(2.));
             for entry in settled_entries {
@@ -726,6 +728,7 @@ impl KarWorkbench {
                     true,
                     &nav_sensor,
                     &s,
+                    window,
                     cx,
                 ));
             }
@@ -788,14 +791,18 @@ impl KarWorkbench {
         });
 
         let more_open = self.open_menu == Some(Menu::SidebarMore);
+        // Six controls still fit the 192pt minimum rail, with equal hit boxes.
+        let compact_footer = width < 236.;
+        let button_side = if compact_footer { 28. } else { 32. };
         let footer_button = |id, icon, label| {
             Tactile::ghost(id, &s)
-                .size(px(32.))
+                .size(px(button_side))
+                .flex_none()
                 .radius(6.)
                 .justify_center()
                 .aria(label)
                 .when(!more_open, |button| button.tip(label))
-                .child(pro_icon(icon, 16., s.muted))
+                .child(pro_icon(icon, 18., s.text))
         };
         let more_btn = menu_host(
             footer_button(
@@ -815,7 +822,7 @@ impl KarWorkbench {
             .pb(px(8.))
             .flex()
             .items_center()
-            .gap(px(if width < 204. { 3. } else { 4. }))
+            .gap(px(if compact_footer { 1. } else { 4. }))
             .when(in_conv, |row| {
                 row.child(
                     footer_button(
@@ -901,6 +908,18 @@ impl KarWorkbench {
                         }),
                 )
             })
+            .child(
+                footer_button(
+                    "side-toggle-theme",
+                    if s.dark { ProIcon::Sun } else { ProIcon::Moon },
+                    if s.dark {
+                        loc.pick("切换到浅色主题", "Switch to light appearance")
+                    } else {
+                        loc.pick("切换到深色主题", "Switch to dark appearance")
+                    },
+                )
+                .on_press(cx, |this, _, cx| this.select_appearance(this.theme_mode.toggle(), cx)),
+            )
             .child(more_btn);
 
         let body_scroll = div()
@@ -943,8 +962,9 @@ impl KarWorkbench {
         is_settled: bool,
         nav_sensor: &kui::components::pro_chrome::ProSelectionSensor,
         s: &StudioPalette,
+        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> Stateful<Div> {
         let loc = self.ui_locale;
         let chat_id = entry.info.id;
         let selected = active_chat_id == Some(chat_id)
@@ -975,12 +995,15 @@ impl KarWorkbench {
         } else {
             entry.title.clone()
         };
-        let age_txt = format_relative_age(entry.last_activity_ms, now_ms);
+        let age_txt = localized_relative_age(entry.last_activity_ms, now_ms, loc);
         let title_for_rename = entry.title.clone();
         let title_for_del = display_title.clone();
-        let grp = SharedString::from(format!("side-card-grp-{prefix}-{chat_id}"));
+        let row_id = SharedString::from(format!("thread-{prefix}-{chat_id}"));
+        let row_focus = window.use_keyed_state(row_id.clone(), cx, |_, cx| cx.focus_handle());
+        let row_focus = row_focus.read(cx).clone();
+        let keyboard = window.last_input_was_keyboard() && row_focus.contains_focused(window, cx);
+        let keep_actions = !running && (keyboard || confirming_del);
 
-        // Status / Age badge on top-right (fades out on hover to reveal quick actions)
         let status_right: AnyElement = if needs_approval {
             div()
                 .flex()
@@ -1019,60 +1042,57 @@ impl KarWorkbench {
                 .into_any_element()
         };
 
+        let action = |id: &str, label: &'static str, icon: AnyElement| {
+            Tactile::ghost(
+                SharedString::from(format!("chat-{id}-{prefix}-{chat_id}")),
+                s,
+            )
+            .size(px(26.))
+            .radius(5.)
+            .justify_center()
+            .tip(label)
+            .child(icon)
+        };
         let in_conv = self.main_stage_view == MainStageView::Conversation;
-        div()
-            .relative()
-            .w_full()
-            .group(grp.clone())
-            .rounded(px(R_CTRL))
-            .when(in_conv && selected && !is_settled, |d| {
-                d.child(pro_mark_selected(nav_sensor))
-            })
-            .child(
-                Tactile::ghost(
-                    SharedString::from(format!("chat-card-{prefix}-{chat_id}")),
-                    s,
-                )
-                .lit(in_conv && selected && is_settled)
-                .lit_fill(s.sidebar_selected)
-                .fills(transparent_black(), s.sidebar_hover)
+        let location = if entry.info.worktree_id.is_some() {
+            loc.pick("工作树", "Worktree")
+        } else {
+            loc.pick("本机", "Local")
+        };
+        let main = Tactile::ghost(
+            SharedString::from(format!("chat-card-{prefix}-{chat_id}")),
+            s,
+        )
+        .aria(format!("{display_title} · {proj_name} · {location}"))
+        .lit(in_conv && selected && is_settled)
+        .lit_fill(s.soft_hover)
+        .fills(
+            transparent_black(),
+            if in_conv && selected {
+                transparent_black()
+            } else {
+                s.hover
+            },
+        )
+        .w_full()
+        .h(px(THREAD_ROW_H))
+        .px(px(9.))
+        .py(px(5.))
+        .radius(R_CTRL)
+        .flex_col()
+        .items_start()
+        .child(
+            div()
                 .w_full()
-                .h(px(78.))
-                .px(px(10.))
-                .py(px(8.))
-                .radius(R_CTRL)
-                .flex_col()
-                .items_start()
+                .h(px(20.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(6.))
                 .child(
                     div()
-                        .w_full()
-                        .h(px(20.))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .child(render_project_monogram(&proj_name, 16., s, cx))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(FS_META))
-                                .text_color(s.muted)
-                                .child(proj_name),
-                        )
-                        .child(
-                            div()
-                                .flex_none()
-                                .when(!running, |d| d.group_hover(grp.clone(), |h| h.opacity(0.)))
-                                .child(status_right),
-                        ),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .mt(px(4.))
-                        .h(px(20.))
+                        .flex_1()
+                        .min_w_0()
                         .truncate()
                         .text_size(px(FS_UI))
                         .line_height(px(20.))
@@ -1080,129 +1100,110 @@ impl KarWorkbench {
                         .text_color(s.ink)
                         .child(display_title),
                 )
-                .child(
-                    div()
-                        .w_full()
-                        .h(px(16.))
-                        .mt(px(2.))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .child(if entry.info.worktree_id.is_some() {
-                            pro_icon(ProIcon::GitBranch, 14., s.muted)
-                        } else {
-                            crate::ui_primitives::render_machine_icon(14., s.muted)
-                        })
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(FS_META))
-                                .line_height(px(16.))
-                                .text_color(s.muted)
-                                .child(if entry.info.worktree_id.is_some() {
-                                    loc.pick("工作树", "Worktree")
-                                } else {
-                                    loc.pick("本机", "This computer")
-                                }),
-                        )
-                        .child(render_runtime_mark(&entry.info.runtime, 14., s, cx)),
-                )
-                .on_press(cx, move |this, window, cx| {
-                    this.pending_delete_chat = None;
-                    this.open_chat(chat_id, window, cx);
-                }),
+                .child(div().flex_none().child(status_right)),
+        )
+        .when(!keep_actions, |button| {
+            button.child(
+                div()
+                    .flex()
+                    .w_full()
+                    .h(px(24.))
+                    .items_center()
+                    .gap(px(5.))
+                    .when(!running, |meta| {
+                        meta.group_hover(row_id.clone(), |st| st.invisible())
+                    })
+                    .text_size(px(FS_META))
+                    .text_color(s.muted)
+                    .child(render_project_mark(&proj_name, 14., s, cx))
+                    .child(div().min_w_0().truncate().child(proj_name))
+                    .child(div().flex_none().text_color(s.faint).child("·"))
+                    .child(div().flex_none().child(location))
+                    .child(div().flex_1())
+                    .child(render_runtime_mark(&entry.info.runtime, 14., s, cx)),
             )
-            // Hover quick actions on top-right (`✓ Settle`, `📌 Pin`, `✎ Rename`, `× Delete`)
+        })
+        .on_press(cx, move |this, window, cx| {
+            this.pending_delete_chat = None;
+            this.open_chat(chat_id, window, cx);
+        });
+        div()
+            .id(row_id.clone())
+            .group(row_id.clone())
+            .track_focus(&row_focus)
+            .relative()
+            .w_full()
+            .rounded(px(R_CTRL))
+            .when(in_conv && selected && !is_settled, |d| {
+                d.child(pro_mark_selected(nav_sensor))
+            })
+            .child(main)
             .when(!running, |d| {
                 d.child(
                     div()
                         .absolute()
-                        .top(px(8.))
+                        .bottom(px(2.))
                         .right(px(6.))
-                        .px(px(2.))
-                        .rounded(px(5.))
-                        .bg(if selected {
-                            s.stage.blend(s.sidebar_selected)
-                        } else {
-                            s.stage
-                        })
                         .flex()
                         .items_center()
-                        .gap(px(1.))
-                        .when(!confirming_del, |st| {
-                            st.opacity(0.).group_hover(grp, |h| h.opacity(1.))
+                        .gap(px(2.))
+                        .when(!keep_actions, |bar| {
+                            bar.invisible().group_hover(row_id, |st| st.visible())
                         })
-                        .when(!confirming_del, |st| {
-                            st.child(
-                                Tactile::ghost(
-                                    SharedString::from(format!("chat-settle-{prefix}-{chat_id}")),
-                                    s,
-                                )
-                                .size(px(19.))
-                                .radius(4.)
-                                .justify_center()
-                                .tip(if is_settled {
-                                    loc.pick("移回活跃列表", "Unsettle")
-                                } else {
-                                    loc.pick("标记为已结项 (Settle)", "Mark settled")
-                                })
-                                .child(render_circle_check_icon(
-                                    11.5,
-                                    if is_settled { s.pro.green } else { s.muted },
-                                ))
-                                .on_press(
-                                    cx,
-                                    move |this, _, cx| {
-                                        this.toggle_settle_chat(chat_id, cx);
+                        .when(!confirming_del, |bar| {
+                            bar.child(
+                                action(
+                                    "settle",
+                                    if is_settled {
+                                        loc.pick("移回活跃列表", "Unsettle")
+                                    } else {
+                                        loc.pick("标记为已结项", "Mark settled")
                                     },
-                                ),
+                                    render_circle_check_icon(
+                                        16.,
+                                        if is_settled { s.pro.green } else { s.text },
+                                    ),
+                                )
+                                .on_press(cx, move |wb, _, cx| {
+                                    cx.stop_propagation();
+                                    wb.toggle_settle_chat(chat_id, cx);
+                                }),
                             )
                             .child(
-                                Tactile::ghost(
-                                    SharedString::from(format!("chat-pin-{prefix}-{chat_id}")),
-                                    s,
-                                )
-                                .size(px(19.))
-                                .radius(4.)
-                                .justify_center()
-                                .tip(if pinned {
-                                    loc.pick("取消置顶", "Unpin")
-                                } else {
-                                    loc.pick("置顶对话", "Pin")
-                                })
-                                .child(pro_icon(
-                                    ProIcon::Pin,
-                                    10.5,
-                                    if pinned { s.ink } else { s.muted },
-                                ))
-                                .on_press(
-                                    cx,
-                                    move |this, _, cx| {
-                                        this.toggle_pin_chat(chat_id, cx);
+                                action(
+                                    "pin",
+                                    if pinned {
+                                        loc.pick("取消置顶", "Unpin")
+                                    } else {
+                                        loc.pick("置顶对话", "Pin")
                                     },
-                                ),
+                                    pro_icon(
+                                        ProIcon::Pin,
+                                        16.,
+                                        if pinned { s.ink } else { s.text },
+                                    ),
+                                )
+                                .on_press(cx, move |wb, _, cx| {
+                                    cx.stop_propagation();
+                                    wb.toggle_pin_chat(chat_id, cx);
+                                }),
                             )
                             .child(
-                                Tactile::ghost(
-                                    SharedString::from(format!("chat-ren-{prefix}-{chat_id}")),
-                                    s,
+                                action(
+                                    "ren",
+                                    loc.pick("重命名对话", "Rename"),
+                                    render_square_pen_icon(16., s.text),
                                 )
-                                .size(px(19.))
-                                .radius(4.)
-                                .justify_center()
-                                .tip(loc.pick("重命名对话", "Rename"))
-                                .child(pro_icon(ProIcon::Note, 10.5, s.muted))
                                 .on_press(
                                     cx,
-                                    move |this, window, cx| {
-                                        this.open_rename_chat_dialog(
+                                    move |wb, win, cx| {
+                                        cx.stop_propagation();
+                                        wb.open_rename_chat_dialog(
                                             chat_id,
                                             &title_for_rename,
-                                            window,
+                                            win,
                                             cx,
-                                        );
+                                        )
                                     },
                                 ),
                             )
@@ -1213,28 +1214,26 @@ impl KarWorkbench {
                                 s,
                             )
                             .fills(s.pro.red_soft, s.pro.red.opacity(0.18))
-                            .h(px(20.))
-                            .px(px(6.))
+                            .h(px(26.))
+                            .px(px(8.))
                             .radius(5.)
                             .text_size(px(FS_TAG))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(s.pro.red_ink)
                             .child(loc.pick("删除", "Delete"))
                             .on_press(cx, move |this, _, cx| {
+                                cx.stop_propagation();
                                 this.stage_deferred_chat_delete(chat_id, title_for_del.clone(), cx);
                             })
                             .into_any_element()
                         } else {
-                            Tactile::ghost(
-                                SharedString::from(format!("chat-del-{prefix}-{chat_id}")),
-                                s,
+                            action(
+                                "del",
+                                loc.pick("删除对话", "Delete"),
+                                pro_icon(ProIcon::Trash, 16., s.text),
                             )
-                            .size(px(19.))
-                            .radius(4.)
-                            .justify_center()
-                            .tip(loc.pick("删除对话", "Delete"))
-                            .child(pro_icon(ProIcon::Close, 10.5, s.muted))
                             .on_press(cx, move |this, _, cx| {
+                                cx.stop_propagation();
                                 this.pending_delete_chat =
                                     Some((chat_id, std::time::Instant::now()));
                                 cx.notify();
@@ -1245,7 +1244,7 @@ impl KarWorkbench {
             })
     }
 
-    /// Rich 3-line T3 Code showcase cards rendered only in explicit `--demo-chat` mode.
+    /// Example threads shown only in explicit demo mode.
     fn render_demo_showcase_cards(
         &self,
         nav_sensor: Option<&kui::components::pro_chrome::ProSelectionSensor>,
@@ -1408,7 +1407,7 @@ impl KarWorkbench {
             rows.push(
                 menu_item(
                     ("side-flt-proj", ix),
-                    Some(render_project_monogram(crate::studio_hub::project_display_name(&proj.name), 16., s, cx).into_any_element()),
+                    Some(render_project_mark(crate::studio_hub::project_display_name(&proj.name), 16., s, cx).into_any_element()),
                     crate::studio_hub::project_display_name(&proj.name).to_owned(),
                     s,
                 )
@@ -1584,102 +1583,53 @@ fn demo_static_card(
         .id(id)
         .relative()
         .w_full()
-        .px(px(10.))
-        .py(px(8.))
+        .h(px(THREAD_ROW_H))
+        .px(px(9.))
+        .py(px(5.))
         .rounded(px(R_CTRL))
         .when(!selected, |d| d.hover(|h| h.bg(s.sidebar_hover)))
         .when_some(sensor, |d, sn| d.child(pro_mark_selected(sn)))
         .flex()
         .flex_col()
-        .gap(px(3.5))
         .child(
             div()
                 .w_full()
-                .h(px(17.))
+                .h(px(20.))
+                .flex_none()
                 .flex()
                 .items_center()
-                .justify_between()
                 .gap(px(6.))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .child(render_project_monogram(proj, 15.5, s, cx))
-                        .child(
-                            div()
-                                .truncate()
-                                .text_size(px(FS_META))
-                                .text_color(s.muted)
-                                .child(proj.to_owned()),
-                        ),
+                        .truncate()
+                        .text_size(px(FS_UI))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(s.ink)
+                        .child(title.to_owned()),
                 )
                 .child(right_status),
         )
         .child(
             div()
                 .w_full()
-                .truncate()
-                .text_size(px(FS_UI))
-                .line_height(px(18.5))
-                .font_weight(if selected {
-                    FontWeight::MEDIUM
-                } else {
-                    FontWeight::NORMAL
+                .h(px(24.))
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .text_size(px(FS_META))
+                .text_color(s.muted)
+                .child(render_project_mark(proj, 14., s, cx))
+                .child(div().min_w_0().truncate().child(proj.to_owned()))
+                .when_some(branch, |row, branch| {
+                    row.child(pro_icon(ProIcon::GitBranch, 12., s.muted))
+                        .child(div().min_w_0().truncate().child(branch.to_owned()))
                 })
-                .text_color(if selected { s.ink } else { s.text })
-                .child(title.to_owned()),
+                .child(div().flex_1())
+                .child(render_runtime_mark(runtime, 14., s, cx)),
         )
-        .when(branch.is_some(), |d| {
-            let br = branch.unwrap_or_default().to_owned();
-            d.child(
-                div()
-                    .w_full()
-                    .h(px(16.))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.5))
-                            .child(render_folder_git_icon(12., s.faint))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(FS_META))
-                                    .text_color(s.muted)
-                                    .child(br),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .opacity(if selected { 0.88 } else { 0.62 })
-                            .child(render_runtime_mark(runtime, 13.5, s, cx)),
-                    ),
-            )
-        })
-        .when(branch.is_none(), |d| {
-            d.child(
-                div()
-                    .w_full()
-                    .h(px(16.))
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .child(
-                        div()
-                            .opacity(0.62)
-                            .child(render_runtime_mark(runtime, 13.5, s, cx)),
-                    ),
-            )
-        })
 }
 
 fn status_dot(color: Hsla) -> Div {

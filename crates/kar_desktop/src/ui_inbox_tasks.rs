@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     remote_link::now_epoch_ms,
-    types::{format_relative_age, runtime_display_name},
+    types::{localized_relative_age, runtime_display_name},
     ui_motion::Tactile,
     ui_primitives::{FS_META, FS_TITLE, FS_UI, StudioPalette, UiLocale},
     workbench::{InboxScopeFilter as Scope, KarWorkbench, MainStageView},
@@ -123,7 +123,7 @@ impl KarWorkbench {
                 .file_name()
                 .unwrap_or(entry.info.workspace.as_os_str())
                 .to_string_lossy();
-            let age = format_relative_age(entry.last_activity_ms, now_epoch_ms());
+            let age = localized_relative_age(entry.last_activity_ms, now_epoch_ms(), loc);
             rows.push(Activity {
                 key: entry.info.id.to_string(),
                 chat: Some(entry.info.id),
