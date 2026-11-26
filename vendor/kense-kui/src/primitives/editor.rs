@@ -415,6 +415,9 @@ impl Editor {
     pub fn value(&self) -> &str {
         &self.value
     }
+    pub fn set_label(&mut self, label: impl Into<SharedString>) {
+        self.label = label.into();
+    }
     pub fn set_placeholder(&mut self, s: impl Into<SharedString>) {
         self.placeholder = s.into()
     }

@@ -430,7 +430,7 @@ impl KarWorkbench {
                             .text_color(s.pro.green_ink)
                             .tip("已关联在对话输入框上方，点击可更新快照")
                             .child(pro_icon(ProIcon::Check, ICON_XS, s.pro.green_ink))
-                            .child("已引用")
+                            .child(loc.pick("已引用", "Added to chat"))
                             .on_press(cx, |this, window, cx| {
                                 this.bind_active_selection_to_chat(window, cx)
                             })
@@ -444,9 +444,9 @@ impl KarWorkbench {
                             .text_size(px(FS_META))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(s.ink)
-                            .tip("将当前选中的段落、单元格或幻灯片对象放入对话")
+                            .tip(loc.pick("将当前选中的段落、单元格或幻灯片对象放入对话", "Add the selected paragraph, cell, or slide object to the chat draft"))
                             .child(pro_icon(ProIcon::Pin, ICON_XS, s.muted))
-                            .child("引用到对话")
+                            .child(loc.pick("引用到对话", "Add to chat"))
                             .on_press(cx, |this, window, cx| {
                                 this.bind_active_selection_to_chat(window, cx)
                             })

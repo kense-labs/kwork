@@ -1,5 +1,4 @@
-//! KUI `agent_skills.rs` + `integrations.rs` Application Screen:
-//! 2-Column Sculpted Skill & MCP Cards Grid + Live `SKILL.md` (`CodeBlock`) & `inputSchema` (`JsonViewer`) Inspector.
+//! Searchable workspace skills, commands, MCP servers, and tool schemas.
 
 use gpui::{prelude::*, *};
 use kui::{
@@ -21,6 +20,17 @@ use crate::{
     workbench::KarWorkbench,
 };
 
+fn scope_label(scope: &str, locale: crate::ui_primitives::UiLocale) -> String {
+    match scope {
+        "项目技能" => locale.pick("项目技能", "Project"),
+        "用户全局" => locale.pick("用户全局", "User"),
+        "内置技能" => locale.pick("内置技能", "Built-in"),
+        "托管插件" => locale.pick("托管插件", "Managed"),
+        "已发现" => locale.pick("已发现", "Discovered"),
+        other => other,
+    }.to_owned()
+}
+
 fn skill_accent_for(ix: usize, s: &StudioPalette) -> Hsla {
     let tones = [
         s.pro.blue,
@@ -40,7 +50,9 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let inv = self.workspace_inventory.clone();
+        let narrow = f32::from(window.viewport_size().width) < 900.;
+        let loc = self.ui_locale;
+        let inv = &self.workspace_inventory;
         let query = self.skills_filter_query.trim().to_lowercase();
 
         // ── 1. Gliding Category Tab Strip + Search Input ────────────────────
@@ -90,7 +102,16 @@ impl KarWorkbench {
                             .gap(px(4.))
                             .text_size(px(FS_META))
                             .text_color(if selected { s.ink } else { s.muted })
-                            .child(tab.label())
+                            .child(loc.pick(
+                                tab.label(),
+                                match tab {
+                                    InventoryTab::All => "All",
+                                    InventoryTab::Skills => "Skills",
+                                    InventoryTab::McpServers => "MCP",
+                                    InventoryTab::Tools => "Tools",
+                                    InventoryTab::Commands => "Commands",
+                                },
+                            ))
                             .child(
                                 div()
                                     .font_features(tnum_features())
@@ -99,6 +120,7 @@ impl KarWorkbench {
                                     .child(format!("{count}")),
                             )
                             .on_press(cx, move |this, _, cx| {
+                                this.selected_skill_inspector = None;
                                 this.active_inventory_tab = tab;
                                 cx.notify();
                             }),
@@ -117,7 +139,7 @@ impl KarWorkbench {
             .justify_between()
             .gap(px(8.))
             .flex_wrap()
-            .child(tabs_row.flex_none())
+            .child(tabs_row.flex_wrap())
             .child(
                 div()
                     .flex_1()
@@ -189,20 +211,19 @@ impl KarWorkbench {
             Vec::new()
         };
 
-        // Determine active inspector target (`None` defaults to first skill/tool; `"__closed__"` hides inspector)
-        let active_inspector_key: Option<String> = match self.selected_skill_inspector.as_deref() {
-            Some("__closed__") => None,
-            Some(k) => Some(k.to_owned()),
-            None => filtered_skills
-                .first()
-                .map(|sk| format!("skill:{}", sk.name))
-                .or_else(|| {
-                    filtered_tools
-                        .first()
-                        .map(|t| format!("tool:{}:{}", t.server_id, t.name))
-                }),
-        };
-
+        let active_inspector_key = self
+            .selected_skill_inspector
+            .as_ref()
+            .filter(|selected| {
+                filtered_skills
+                    .iter()
+                    .any(|s| **selected == format!("skill:{}", s.name))
+                    || filtered_tools
+                        .iter()
+                        .any(|t| **selected == format!("tool:{}:{}", t.server_id, t.name))
+            })
+            .cloned();
+        let show_list = !narrow || active_inspector_key.is_none();
         let can_inject = self.access_mode.is_writable()
             || matches!(
                 self.access_mode,
@@ -231,7 +252,7 @@ impl KarWorkbench {
                         .text_size(px(FS_META))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(s.muted)
-                        .child("已连接的 MCP 服务"),
+                        .child(loc.pick("已连接的 MCP 服务", "Connected MCP servers")),
                 );
                 for (m_ix, srv) in mcps.into_iter().enumerate() {
                     let accent = skill_accent_for(m_ix + 2, s);
@@ -306,8 +327,15 @@ impl KarWorkbench {
                                                     .text_color(s.muted)
                                                     .truncate()
                                                     .child(format!(
-                                                        "{} · 来源：{}",
-                                                        srv.status, srv.source
+                                                        "{} · {}",
+                                                        if srv.builtin_office {
+                                                            loc.pick("可连接", "Available")
+                                                        } else if srv.status == "已配置" {
+                                                            loc.pick("已配置", "Configured")
+                                                        } else { &srv.status },
+                                                        if srv.builtin_office {
+                                                            loc.pick("Kar 桌面端", "Kar desktop")
+                                                        } else { &srv.source }
                                                     )),
                                             ),
                                     ),
@@ -315,7 +343,7 @@ impl KarWorkbench {
                             .child(
                                 soft_button(
                                     SharedString::from(format!("mcp-view-tools-{}", srv.id)),
-                                    format!("{} 个工具", srv.tool_count),
+                                    format!("{} {}", srv.tool_count, loc.pick("个工具", "tools")),
                                     s,
                                 )
                                 .disabled(!inv.tools.iter().any(|t| t.server_id == srv.id))
@@ -350,17 +378,20 @@ impl KarWorkbench {
                             .text_size(px(FS_META))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(s.muted)
-                            .child("工作区与全局技能包 (Skills)"),
+                            .child(loc.pick("工作区与全局技能", "Workspace and global skills")),
                     )
                     .child(
                         div()
                             .text_size(px(FS_TAG))
                             .text_color(s.faint)
-                            .child("点击卡片在右侧检视 SKILL.md"),
+                            .child(loc.pick("选择技能查看详情", "Select a skill for details")),
                     ),
             );
 
-            for (r_ix, pair) in filtered_skills.chunks(2).enumerate() {
+            for (r_ix, pair) in filtered_skills
+                .chunks(if narrow { 1 } else { 2 })
+                .enumerate()
+            {
                 let mut row = div().w_full().flex().gap(px(10.));
                 for (c_ix, sk) in pair.iter().cloned().enumerate() {
                     let ix = r_ix * 2 + c_ix;
@@ -456,12 +487,16 @@ impl KarWorkbench {
                                             .text_size(px(10.5))
                                             .text_color(s.faint)
                                             .truncate()
-                                            .child(sk.scope_label.clone()),
+                                            .child(scope_label(&sk.scope_label, loc)),
                                     )
                                     .child(
                                         soft_button(
                                             ("skill-use", ix),
-                                            if sk.enabled { "填入草稿" } else { "已停用" },
+                                            if sk.enabled {
+                                                loc.pick("填入草稿", "Add to draft")
+                                            } else {
+                                                loc.pick("已停用", "Disabled")
+                                            },
                                             s,
                                         )
                                         .disabled(!can_use)
@@ -472,7 +507,7 @@ impl KarWorkbench {
                             ),
                     );
                 }
-                if pair.len() == 1 {
+                if !narrow && pair.len() == 1 {
                     row = row.child(div().flex_1().min_w_0());
                 }
                 sec = sec.child(row);
@@ -499,7 +534,7 @@ impl KarWorkbench {
                         .text_size(px(FS_META))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(s.muted)
-                        .child("快捷斜杠指令"),
+                        .child(loc.pick("快捷斜杠指令", "Slash commands")),
                 );
                 for (ix, cmd) in cmds.into_iter().enumerate() {
                     let token = format!("{} ", cmd.name);
@@ -548,7 +583,7 @@ impl KarWorkbench {
                                             .child(cmd.description),
                                     ),
                             )
-                            .child(soft_button(("cmd-inject", ix), "填入", s).on_press(
+                            .child(soft_button(("cmd-inject", ix), loc.pick("填入", "Insert"), s).disabled(!can_inject).on_press(
                                 cx,
                                 move |this, win, cx| {
                                     this.inject_token_into_composer(&token, win, cx);
@@ -568,7 +603,7 @@ impl KarWorkbench {
                     .text_size(px(FS_META))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(s.muted)
-                    .child("MCP 与宿主工具参数定义"),
+                    .child(loc.pick("MCP 与宿主工具参数定义", "Tool schemas")),
             );
             for (ix, t) in filtered_tools.iter().cloned().enumerate() {
                 let tkey = format!("tool:{}:{}", t.server_id, t.name);
@@ -645,11 +680,14 @@ impl KarWorkbench {
 
         if matched == 0 {
             let (title, detail) = if query.is_empty() {
-                ("暂无可用项目", "当前智能体尚未提供这个分类的内容。")
+                (
+                    loc.pick("暂无可用项目", "Nothing available"),
+                    loc.pick("当前智能体尚未提供这个分类的内容。", "This agent has no entries in this category."),
+                )
             } else {
                 (
-                    "没有匹配结果",
-                    "可以缩短关键词，或切换到「全部」搜索其他分类。",
+                    loc.pick("没有匹配结果", "No matches"),
+                    loc.pick("可以缩短关键词，或切换到「全部」搜索其他分类。", "Try a shorter term or search All."),
                 )
             };
             body = body.child(crate::ui_primitives::pane_empty(
@@ -682,7 +720,7 @@ impl KarWorkbench {
                 let can_use = sk.enabled && can_inject;
                 Some(
                     div()
-                        .w(px(258.))
+                        .map(|d| if narrow { d.w_full() } else { d.w(px(258.)) })
                         .h_full()
                         .flex_none()
                         .border_l_1()
@@ -718,12 +756,12 @@ impl KarWorkbench {
                                             icon_button(
                                                 "skill-ins-close",
                                                 ProIcon::Close,
-                                                "收起详情面板",
+                                                loc.pick("收起详情面板", "Close details"),
                                                 s,
                                             )
                                             .on_press(cx, |this, _, cx| {
                                                 this.selected_skill_inspector =
-                                                    Some("__closed__".into());
+                                                    None;
                                                 cx.notify();
                                             }),
                                         ),
@@ -757,7 +795,7 @@ impl KarWorkbench {
                                                         .text_size(px(10.5))
                                                         .text_color(s.muted)
                                                         .truncate()
-                                                        .child(sk.scope_label.clone()),
+                                                        .child(scope_label(&sk.scope_label, loc)),
                                                 ),
                                         ),
                                 )
@@ -785,7 +823,11 @@ impl KarWorkbench {
                                         .truncate()
                                         .text_size(px(FS_META))
                                         .font_weight(FontWeight::MEDIUM)
-                                        .child(format!("引用 ${} 到草稿", sk.name)),
+                                        .child(format!(
+                                            "{} ${}",
+                                            loc.pick("引用", "Insert"),
+                                            sk.name
+                                        )),
                                 )
                                 .on_press(cx, move |wb, win, cx| {
                                     wb.inject_token_into_composer(&sk_token, win, cx);
@@ -812,7 +854,7 @@ impl KarWorkbench {
                 });
                 Some(
                     div()
-                        .w(px(258.))
+                        .map(|d| if narrow { d.w_full() } else { d.w(px(258.)) })
                         .h_full()
                         .flex_none()
                         .border_l_1()
@@ -838,11 +880,11 @@ impl KarWorkbench {
                                     icon_button(
                                         "tool-ins-close",
                                         ProIcon::Close,
-                                        "收起详情面板",
+                                        loc.pick("收起详情面板", "Close details"),
                                         s,
                                     )
                                     .on_press(cx, |this, _, cx| {
-                                        this.selected_skill_inspector = Some("__closed__".into());
+                                        this.selected_skill_inspector = None;
                                         cx.notify();
                                     }),
                                 ),
@@ -881,7 +923,7 @@ impl KarWorkbench {
                     .w_full()
                     .flex()
                     .flex_row()
-                    .child(
+                    .when(show_list, |row| row.child(
                         div()
                             .id("kar-skills-mcp-scroll")
                             .flex_1()
@@ -889,7 +931,7 @@ impl KarWorkbench {
                             .h_full()
                             .overflow_y_scroll()
                             .child(body),
-                    )
+                    ))
                     .when_some(inspector, |d, ins| d.child(ins)),
             )
             .into_any_element()
@@ -901,7 +943,12 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.close_all_overlays(cx);
+        if !self.access_mode.is_writable()
+            && !matches!(self.access_mode, crate::types::ChatAccessMode::NoneSelected)
+        {
+            return;
+        }
+        self.reveal_chat_composer(window, cx);
         let current = self.composer_editor.read(cx).value().to_owned();
         let next = if current.trim().is_empty() {
             prefix_token.to_owned()

@@ -763,6 +763,19 @@ impl KarWorkbench {
         let bid = brief.id.clone();
         let rev_num = snap.revision;
         let already_submitted = brief.submitted_revisions.contains(&rev_num);
+        let active_draft = self
+            .brief_widgets
+            .drafts
+            .get(&bid)
+            .cloned()
+            .unwrap_or_default();
+        let missing_required = active_draft
+            .missing_required(snap)
+            .map(|field| field.label.clone());
+        let other_revision = active_draft
+            .pinned_revision
+            .is_some_and(|rev| rev != rev_num);
+        let locked = already_submitted || other_revision || !self.access_mode.is_writable();
         let stale_pin = self
             .brief_widgets
             .drafts
@@ -830,7 +843,11 @@ impl KarWorkbench {
                     .text_size(px(FS_UI))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(s.ink)
-                    .child(field.label.clone()),
+                    .child(if field.required {
+                        format!("{} · 必填", field.label)
+                    } else {
+                        field.label.clone()
+                    }),
             );
 
             match field.kind {
@@ -841,8 +858,7 @@ impl KarWorkbench {
                         .get(&bid)
                         .and_then(|d| d.single.get(&fid))
                         .cloned()
-                        .or_else(|| field.default_value.clone())
-                        .or_else(|| field.options.first().cloned());
+                        .or_else(|| field.default_value.clone());
                     let mut opts = div().flex().flex_wrap().gap(px(6.));
                     for (o_ix, opt) in field.options.iter().enumerate() {
                         let is_sel = chosen.as_deref() == Some(opt.as_str());
@@ -856,7 +872,7 @@ impl KarWorkbench {
                                 s,
                             )
                             .lit(is_sel)
-                            .disabled(already_submitted)
+                            .disabled(locked)
                             .when(is_sel, |b| {
                                 b.child(pro_icon(ProIcon::Check, ICON_XS, s.ink))
                             })
@@ -877,10 +893,11 @@ impl KarWorkbench {
                         .get(&bid)
                         .and_then(|d| d.multi.get(&fid))
                         .cloned()
-                        .unwrap_or_default();
+                        .unwrap_or_else(|| field.default_value.iter().cloned().collect());
                     let mut opts = div().flex().flex_wrap().gap(px(6.));
                     for (o_ix, opt) in field.options.iter().enumerate() {
                         let checked = selected_set.contains(opt);
+                        let initial_set = selected_set.clone();
                         let bid_c = bid.clone();
                         let fid_c = fid.clone();
                         let opt_c = opt.clone();
@@ -891,7 +908,7 @@ impl KarWorkbench {
                                 s,
                             )
                             .lit(checked)
-                            .disabled(already_submitted)
+                            .disabled(locked)
                             .child(morph_glyph(
                                 SharedString::from(format!("bf-mc-g-{bid}-{f_ix}-{o_ix}")),
                                 [Glyph::Plus, Glyph::Check],
@@ -905,7 +922,10 @@ impl KarWorkbench {
                             .on_press(cx, move |this, _, cx| {
                                 let draft = this.brief_widgets.drafts.entry(bid_c.clone()).or_default();
                                 draft.touch_revision(rev_num);
-                                let set = draft.multi.entry(fid_c.clone()).or_default();
+                                let set = draft
+                                    .multi
+                                    .entry(fid_c.clone())
+                                    .or_insert_with(|| initial_set.clone());
                                 if !set.remove(&opt_c) {
                                     set.insert(opt_c.clone());
                                 }
@@ -916,34 +936,42 @@ impl KarWorkbench {
                     field_col = field_col.child(opts);
                 }
                 BriefFieldKind::Boolean => {
-                    let val = self
-                        .brief_widgets
-                        .drafts
-                        .get(&bid)
-                        .and_then(|d| d.boolean.get(&fid))
+                    let value = active_draft
+                        .boolean
+                        .get(&fid)
                         .copied()
-                        .unwrap_or(false);
-                    let bid_c = bid.clone();
-                    let fid_c = fid.clone();
-                    field_col = field_col.child(
-                        soft_button(
-                            SharedString::from(format!("bf-bool-{bid}-{f_ix}")),
-                            if val { "已勾选：是" } else { "未勾选：否" },
-                            s,
-                        )
-                        .lit(val)
-                        .disabled(already_submitted)
-                        .on_press(cx, move |this, _, cx| {
-                            let draft = this.brief_widgets.drafts.entry(bid_c.clone()).or_default();
-                            draft.touch_revision(rev_num);
-                            let cur = draft.boolean.get(&fid_c).copied().unwrap_or(false);
-                            draft.boolean.insert(fid_c.clone(), !cur);
-                            cx.notify();
-                        }),
-                    );
+                        .or_else(|| field.default_value.as_ref()?.parse().ok());
+                    let mut options = div().flex().gap(px(6.));
+                    for (label, val) in [("是", true), ("否", false)] {
+                        let bid = bid.clone();
+                        let fid = fid.clone();
+                        options = options.child(
+                            soft_button(
+                                SharedString::from(format!("bf-bool-{bid}-{f_ix}-{val}")),
+                                label,
+                                s,
+                            )
+                            .lit(value == Some(val))
+                            .disabled(locked)
+                            .on_press(cx, move |this, _, cx| {
+                                let draft =
+                                    this.brief_widgets.drafts.entry(bid.clone()).or_default();
+                                draft.touch_revision(rev_num);
+                                draft.boolean.insert(fid.clone(), val);
+                                cx.notify();
+                            }),
+                        );
+                    }
+                    field_col = field_col.child(options);
                 }
                 BriefFieldKind::Note => {
-                    let ekey = format!("{bid}#note#{fid}");
+                    let ekey = format!("{bid}#{rev_num}#note#{fid}");
+                    let initial_note = active_draft
+                        .notes
+                        .get(&fid)
+                        .or(field.default_value.as_ref())
+                        .cloned()
+                        .unwrap_or_default();
                     let bid_note = bid.clone();
                     let fid_note = fid.clone();
                     let editor = self
@@ -953,7 +981,8 @@ impl KarWorkbench {
                         .or_insert_with(|| {
                             let ed = cx.new(|cx| {
                                 let mut e = Editor::new("补充说明", InputMode::Single, window, cx);
-                                e.set_placeholder("可选：输入补充意见或约束条件…");
+                                e.set_placeholder("输入补充意见或约束条件…");
+                                e.set_value(initial_note, window, cx);
                                 e.font_size = FS_UI;
                                 e
                             });
@@ -974,6 +1003,7 @@ impl KarWorkbench {
                             ed
                         })
                         .clone();
+                    editor.update(cx, |ed, cx| ed.set_read_only(locked, window, cx));
                     field_col = field_col.child(
                         div()
                             .w_full()
@@ -1027,6 +1057,8 @@ impl KarWorkbench {
                     ))
                     .child(if already_submitted {
                         format!("v{rev_num} 评审结论已送入对话队列")
+                    } else if let Some(label) = &missing_required {
+                        format!("请填写「{label}」")
                     } else {
                         format!("将以普通消息回传至对话（绑定 v{rev_num}）")
                     }),
@@ -1041,7 +1073,7 @@ impl KarWorkbench {
                     },
                     s,
                 )
-                .disabled(already_submitted)
+                .disabled(locked || missing_required.is_some())
                 .child(pro_icon(
                     if already_submitted {
                         ProIcon::Check

@@ -38,7 +38,8 @@ use crate::{
     remote_link::{
         PeerRole, RemoteAction, RemoteCommandEnvelope, RemoteExtendedSnapshot, RemoteHostTelemetry,
         RemoteLinkCore, RemoteOutcome, SharedRemoteLink, client_fetch_remote_state,
-        client_redeem_pair_code, client_send_remote_command, now_epoch_ms, remote_link_router,
+        client_redeem_pair_code, client_send_remote_command, now_epoch_ms,
+        remote_link_router_with_updates,
     },
     schedules::{ScheduledTask, ScheduleRunOutcome},
     studio_hub::{
@@ -106,6 +107,7 @@ pub enum KarCommand {
     WithdrawQueued {
         chat_id: Uuid,
         input_id: Uuid,
+        edit: bool,
     },
     AbortTurn,
     DecidePermission {
@@ -276,6 +278,7 @@ pub enum KarCommand {
     },
     /// Hand off the current conversation to another runtime (`Codex` -> `Claude` / `Cursor` / `Antigravity` / ...).
     HandoffChat {
+        source_chat: Option<Uuid>,
         target_runtime: String,
         target_model: Option<String>,
         user_note: String,
@@ -284,6 +287,7 @@ pub enum KarCommand {
     },
     /// Ask an ephemeral zero-pollution side question (`Runtime::side_question` or context-read summary).
     AskSideQuestion {
+        request_id: Uuid,
         runtime_id: String,
         native_session_id: Option<String>,
         workspace: PathBuf,
@@ -344,6 +348,12 @@ pub enum KarBridgeEvent {
     AccessModeChanged(ChatAccessMode),
     ConnectionStateChanged(FeedConnectionState),
     ChatStateUpdated(ProjectedChatState),
+    QueuedInputRetrieved {
+        chat_id: Uuid,
+        input_id: Uuid,
+        text: String,
+        attachments: Vec<PathBuf>,
+    },
     PromptLifecycle {
         attempt: PendingPromptAttempt,
     },
@@ -368,6 +378,9 @@ pub enum KarBridgeEvent {
     },
     OfficeMcpCall(OfficeMcpCall),
     RemoteTelemetryUpdated(RemoteHostTelemetry),
+    RemotePairFailed {
+        code_rejected: bool,
+    },
     RemoteExtendedStateUpdated(RemoteExtendedSnapshot),
     RemoteBriefFeedbackReceived {
         brief_id: String,
@@ -419,6 +432,7 @@ pub enum KarBridgeEvent {
     },
     UsageAnalyticsUpdated(UsageAnalyticsSnapshot),
     SideQuestionAnswered {
+        request_id: Uuid,
         question: String,
         answer: String,
         via_native_fork: bool,
@@ -758,6 +772,120 @@ impl WorkerState {
         if let Some(cancel) = self.feed_cancel.take() {
             let _ = cancel.send(true);
         }
+    }
+
+    fn send_prompt(
+        &mut self,
+        request_id: Uuid,
+        raw_user_text: String,
+        payload: String,
+        target: Option<SelectionTarget>,
+        attachments: Vec<PathBuf>,
+    ) {
+        if let Some(ref tgt) = target {
+            save_persisted_target(&self.store_dir, request_id, tgt.clone());
+            self.emit(KarBridgeEvent::TurnTargetsLoaded(load_persisted_targets(
+                &self.store_dir,
+            )));
+        }
+        let Some(session) = self.active_controller.clone() else {
+            if self.dispatch_remote_envelope(RemoteCommandEnvelope {
+                request_id,
+                expected_revision: None,
+                action: RemoteAction::SendPrompt {
+                    text: payload,
+                    target,
+                },
+            }) {
+                return;
+            }
+            self.emit(KarBridgeEvent::BannerNotice {
+                title: "消息没有发出".into(),
+                detail: "这个对话目前只能查看。新建一个对话或使用 6 位配对码连接主机后再发送。"
+                    .into(),
+                is_error: true,
+            });
+            return;
+        };
+        let chat_id = session.info().id;
+        let mut attempt = PendingPromptAttempt {
+            chat_id: Some(chat_id),
+            request_id,
+            raw_user_text,
+            sent_payload: payload.clone(),
+            target,
+            attachments: attachments.clone(),
+            attempts: 1,
+            in_flight: true,
+            last_error: None,
+        };
+        self.emit(KarBridgeEvent::PromptLifecycle {
+            attempt: attempt.clone(),
+        });
+
+        let evt_tx = self.evt_tx.clone();
+        let store_opt = self.store.clone();
+        let store_dir = self.store_dir.clone();
+        let caps = Some(session.capabilities());
+        tokio::spawn(async move {
+            let send_res = if attachments.is_empty() {
+                session.send(request_id, payload).await
+            } else if let Some(ref store) = store_opt {
+                match persist_attachment_paths(store, chat_id, &attachments) {
+                    Ok(att_ids) => session.send_attached(request_id, payload, att_ids).await,
+                    Err(err) => Err(err),
+                }
+            } else {
+                session.send(request_id, payload).await
+            };
+
+            attempt.in_flight = false;
+            match send_res {
+                Ok(_turn) => {
+                    attempt.last_error = None;
+                    let _ = evt_tx.send_blocking(KarBridgeEvent::PromptLifecycle { attempt });
+                    if let Ok(h) = session.history() {
+                        let queued = active_queued_inputs(store_opt.as_ref(), chat_id);
+                        let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
+                            state_from_history(h, caps, queued),
+                        ));
+                    }
+                }
+                Err(err) => {
+                    attempt.last_error = Some(err.to_string());
+                    let _ = evt_tx.send_blocking(KarBridgeEvent::PromptLifecycle {
+                        attempt: attempt.clone(),
+                    });
+                    let _ = evt_tx.send_blocking(KarBridgeEvent::BannerNotice {
+                        title: "这条消息没有完成".into(),
+                        detail: format!("{err}。可以在消息下方点「重试」。"),
+                        is_error: true,
+                    });
+                    if let Ok(h) = session.history() {
+                        let queued = active_queued_inputs(store_opt.as_ref(), chat_id);
+                        let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
+                            state_from_history(h, caps, queued),
+                        ));
+                    }
+                }
+            }
+            if let Some(store) = store_opt
+                && let Ok(infos) = store.list()
+            {
+                let custom_titles = load_persisted_titles(&store_dir);
+                let entries = infos
+                    .into_iter()
+                    .map(|info| {
+                        let title_override = custom_titles.get(&info.id).map(String::as_str);
+                        let turns = read_chat_history_resilient(&store, &store_dir, info.id)
+                            .map(|h| h.turns)
+                            .unwrap_or_default();
+                        ChatListEntry::from_info_and_turns_with_title(info, &turns, title_override)
+                    })
+                    .collect();
+                let _ = evt_tx.send_blocking(KarBridgeEvent::ChatsListed(entries));
+            }
+        });
     }
 
     async fn close_controller(&mut self, abort_if_busy: bool) {
@@ -2030,7 +2158,28 @@ async fn worker_loop(
     cmd_rx: async_channel::Receiver<KarCommand>,
     evt_tx: async_channel::Sender<KarBridgeEvent>,
 ) {
-    let mcp_office = start_office_mcp_server(evt_tx.clone()).await.ok();
+    let mcp_office = match start_office_mcp_server(evt_tx.clone()).await {
+        Ok(server) => {
+            emit_diag_log(
+                &evt_tx,
+                DiagLevel::Info,
+                "kar_office",
+                Some("MCP"),
+                "Office MCP ready",
+            );
+            Some(server)
+        }
+        Err(err) => {
+            emit_diag_log(
+                &evt_tx,
+                DiagLevel::Warn,
+                "kar_office",
+                Some("MCP"),
+                format!("Office MCP unavailable: {err}"),
+            );
+            None
+        }
+    };
     let (remote_dispatch_tx, remote_dispatch_rx) =
         async_channel::bounded::<(Uuid, RemoteCommandEnvelope)>(128);
     let forward_cmd_tx = cmd_tx.clone();
@@ -2043,7 +2192,7 @@ async fn worker_loop(
     });
     let host_label = std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
-        .map(|u| format!("{u} 的 Kar 桌面主机"))
+        .map(|u| format!("Kar ({u})"))
         .unwrap_or_else(|_| "Kar 桌面主机".into());
     let remote_link = Arc::new(std::sync::Mutex::new(RemoteLinkCore::new(
         host_label,
@@ -2430,114 +2579,7 @@ async fn worker_loop(
                 target,
                 attachments,
             } => {
-                if let Some(ref tgt) = target {
-                    save_persisted_target(&state.store_dir, request_id, tgt.clone());
-                    state.emit(KarBridgeEvent::TurnTargetsLoaded(load_persisted_targets(
-                        &state.store_dir,
-                    )));
-                }
-                let Some(session) = state.active_controller.clone() else {
-                    if state.dispatch_remote_envelope(RemoteCommandEnvelope {
-                        request_id,
-                        expected_revision: None,
-                        action: RemoteAction::SendPrompt {
-                            text: payload,
-                            target,
-                        },
-                    }) {
-                        continue;
-                    }
-                    state.emit(KarBridgeEvent::BannerNotice {
-                        title: "消息没有发出".into(),
-                        detail: "这个对话目前只能查看。新建一个对话或使用 6 位配对码连接主机后再发送。".into(),
-                        is_error: true,
-                    });
-                    continue;
-                };
-                let chat_id = session.info().id;
-                let mut attempt = PendingPromptAttempt {
-                    chat_id: Some(chat_id),
-                    request_id,
-                    raw_user_text,
-                    sent_payload: payload.clone(),
-                    target,
-                    attachments: attachments.clone(),
-                    attempts: 1,
-                    in_flight: true,
-                    last_error: None,
-                };
-                state.emit(KarBridgeEvent::PromptLifecycle {
-                    attempt: attempt.clone(),
-                });
-
-                let evt_tx = state.evt_tx.clone();
-                let store_opt = state.store.clone();
-                let store_dir = state.store_dir.clone();
-                let caps = Some(session.capabilities());
-                tokio::spawn(async move {
-                    let send_res = if attachments.is_empty() {
-                        session.send(request_id, payload).await
-                    } else if let Some(ref store) = store_opt {
-                        match persist_attachment_paths(store, chat_id, &attachments) {
-                            Ok(att_ids) => session.send_attached(request_id, payload, att_ids).await,
-                            Err(err) => Err(err),
-                        }
-                    } else {
-                        session.send(request_id, payload).await
-                    };
-
-                    attempt.in_flight = false;
-                    match send_res {
-                        Ok(_turn) => {
-                            attempt.last_error = None;
-                            let _ =
-                                evt_tx.send_blocking(KarBridgeEvent::PromptLifecycle { attempt });
-                            if let Ok(h) = session.history() {
-                                let queued = active_queued_inputs(store_opt.as_ref(), chat_id);
-                                let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
-                                    state_from_history(h, caps, queued),
-                                ));
-                            }
-                        }
-                        Err(err) => {
-                            attempt.last_error = Some(err.to_string());
-                            let _ = evt_tx.send_blocking(KarBridgeEvent::PromptLifecycle {
-                                attempt: attempt.clone(),
-                            });
-                            let _ = evt_tx.send_blocking(KarBridgeEvent::BannerNotice {
-                                title: "这条消息没有完成".into(),
-                                detail: format!("{err}。可以在消息下方点「重试」。"),
-                                is_error: true,
-                            });
-                            if let Ok(h) = session.history() {
-                                let queued = active_queued_inputs(store_opt.as_ref(), chat_id);
-                                let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
-                                    state_from_history(h, caps, queued),
-                                ));
-                            }
-                        }
-                    }
-                    if let Some(store) = store_opt
-                        && let Ok(infos) = store.list()
-                    {
-                        let custom_titles = load_persisted_titles(&store_dir);
-                        let entries = infos
-                            .into_iter()
-                            .map(|info| {
-                                let title_override = custom_titles.get(&info.id).map(String::as_str);
-                                let turns = read_chat_history_resilient(&store, &store_dir, info.id)
-                                    .map(|h| h.turns)
-                                    .unwrap_or_default();
-                                ChatListEntry::from_info_and_turns_with_title(
-                                    info,
-                                    &turns,
-                                    title_override,
-                                )
-                            })
-                            .collect();
-                        let _ = evt_tx.send_blocking(KarBridgeEvent::ChatsListed(entries));
-                    }
-                });
+                state.send_prompt(request_id, raw_user_text, payload, target, attachments);
             }
             KarCommand::SteerOrQueuePrompt {
                 request_id,
@@ -2661,7 +2703,11 @@ async fn worker_loop(
                     }
                 });
             }
-            KarCommand::WithdrawQueued { chat_id, input_id } => {
+            KarCommand::WithdrawQueued {
+                chat_id,
+                input_id,
+                edit,
+            } => {
                 if state.active_controller.is_none()
                     && state.dispatch_remote_envelope(RemoteCommandEnvelope {
                         request_id: Uuid::new_v4(),
@@ -2674,8 +2720,45 @@ async fn worker_loop(
                 let Some(store) = state.store.clone() else {
                     continue;
                 };
+                let attachments = if edit {
+                    let queued = store.queued_inputs(chat_id).ok().and_then(|entries| {
+                        entries
+                            .into_iter()
+                            .find(|q| q.id == input_id && q.status == InputStatus::Pending)
+                    });
+                    let Some(queued) = queued else {
+                        state.emit(KarBridgeEvent::ToastMessage {
+                            text: "该消息已离开待发队列，草稿已保留".into(),
+                            warning: true,
+                        });
+                        continue;
+                    };
+                    let paths = queued
+                        .attachments
+                        .iter()
+                        .map(|a| {
+                            state
+                                .store_dir
+                                .join("attachments")
+                                .join(a.id.to_string())
+                                .join("content")
+                                .join(&a.name)
+                        })
+                        .collect::<Vec<_>>();
+                    if queued.attachments.iter().any(|a| Path::new(&a.name).file_name().and_then(|n| n.to_str()) != Some(a.name.as_str()))
+                        || paths.iter().any(|path| !path.is_file()) {
+                        state.emit(KarBridgeEvent::ToastMessage {
+                            text: "无法读取排队消息的附件，消息与草稿已保留".into(),
+                            warning: true,
+                        });
+                        continue;
+                    }
+                    paths
+                } else {
+                    Vec::new()
+                };
                 match store.withdraw(chat_id, input_id) {
-                    Ok(_) => {
+                    Ok(receipt) => {
                         if let Some(ref session) = state.active_controller
                             && session.info().id == chat_id
                             && let Ok(h) = session.history()
@@ -2686,10 +2769,19 @@ async fn worker_loop(
                                 h, caps, queued,
                             )));
                         }
-                        state.emit(KarBridgeEvent::ToastMessage {
-                            text: "已撤回排队消息".into(),
-                            warning: false,
-                        });
+                        if edit {
+                            state.emit(KarBridgeEvent::QueuedInputRetrieved {
+                                chat_id,
+                                input_id,
+                                text: receipt.text,
+                                attachments,
+                            });
+                        } else {
+                            state.emit(KarBridgeEvent::ToastMessage {
+                                text: "已撤回排队消息".into(),
+                                warning: false,
+                            });
+                        }
                     }
                     Err(err) => {
                         state.emit(KarBridgeEvent::ToastMessage {
@@ -3281,13 +3373,9 @@ async fn worker_loop(
                 state.feed_cancel = Some(spawn_http_subscriber(url, state.evt_tx.clone()));
             }
             KarCommand::DisconnectFeed => {
-                state.stop_feed();
-                state.emit(KarBridgeEvent::ConnectionStateChanged(
-                    FeedConnectionState::Disconnected {
-                        last_cursor: None,
-                        reason: "已断开连接。".into(),
-                    },
-                ));
+                if state.feed_cancel.is_some() {
+                    state.leave_chat().await;
+                }
             }
             KarCommand::StartHttpServer {
                 chat_id,
@@ -3321,7 +3409,14 @@ async fn worker_loop(
                                 guard.issue_pairing_ticket(now);
                             }
                         }
-                        let link_router = remote_link_router(state.remote_link.clone());
+                        let events = state.evt_tx.clone();
+                        let link_router = remote_link_router_with_updates(
+                            state.remote_link.clone(),
+                            move |snapshot| {
+                                let _ = events
+                                    .try_send(KarBridgeEvent::RemoteTelemetryUpdated(snapshot));
+                            },
+                        );
                         let router = if let Some(ref store) = state.store
                             && !chat_id.is_nil()
                         {
@@ -3437,28 +3532,18 @@ async fn worker_loop(
                                 chat_id: resp.chat_id,
                             },
                         ));
-                        state.emit(KarBridgeEvent::ToastMessage {
-                            text: format!(
-                                "已成功配对连接至 {}（{}）",
-                                resp.host_name,
-                                resp.role.label()
-                            ),
-                            warning: false,
-                        });
                         state.feed_cancel = Some(spawn_paired_http_subscriber(session, evt_tx));
                     }
                     Ok(Err(err)) => {
-                        state.emit(KarBridgeEvent::ToastMessage {
-                            text: err.to_string(),
-                            warning: true,
-                        });
+                        let code_rejected = matches!(
+                            err.downcast_ref::<ureq::Error>(),
+                            Some(ureq::Error::StatusCode(401 | 410 | 429))
+                        );
+                        state.emit(KarBridgeEvent::RemotePairFailed { code_rejected });
                     }
-                    Err(err) => {
-                        state.emit(KarBridgeEvent::ToastMessage {
-                            text: format!("配对任务失败：{err}"),
-                            warning: true,
-                        });
-                    }
+                    Err(_) => state.emit(KarBridgeEvent::RemotePairFailed {
+                        code_rejected: false,
+                    }),
                 }
             }
             KarCommand::HandleRemoteCommand { peer_id: _, env } => {
@@ -3522,7 +3607,11 @@ async fn worker_loop(
                         if let Some(chat_id) = state.selected_chat_id {
                             let _ = state
                                 .cmd_tx
-                                .send(KarCommand::WithdrawQueued { chat_id, input_id })
+                                .send(KarCommand::WithdrawQueued {
+                                    chat_id,
+                                    input_id,
+                                    edit: false,
+                                })
                                 .await;
                         }
                     }
@@ -3589,10 +3678,23 @@ async fn worker_loop(
                     state.emit(KarBridgeEvent::ScheduleRunFinished { request_id, outcome: ScheduleRunOutcome::Failed });
                     continue;
                 };
-                let _ = std::fs::create_dir_all(&workspace);
+                if !workspace.is_dir()
+                    || task.office_template.as_ref().is_some_and(|p| !p.is_file())
+                {
+                    state.emit(KarBridgeEvent::ScheduleRunFinished {
+                        request_id,
+                        outcome: ScheduleRunOutcome::Failed,
+                    });
+                    state.emit(KarBridgeEvent::ToastMessage {
+                        text: "无法运行定时任务：工作目录或绑定的文档已移走。".into(),
+                        warning: true,
+                    });
+                    continue;
+                }
                 let mut opts = SessionOptions::new(&workspace);
                 opts.approvals = ApprovalMode::Host;
                 opts.model = task.model.clone().filter(|m| !m.trim().is_empty());
+                opts.settings.effort = task.effort.clone();
                 configure_runtime_path(&task.runtime_id, &mut opts);
                 state.attach_office_mcp(&task.runtime_id, &mut opts);
                 match store.create(&task.runtime_id, None, opts).await {
@@ -3611,7 +3713,6 @@ async fn worker_loop(
                         let attachments: Vec<PathBuf> = task
                             .office_template
                             .iter()
-                            .filter(|p| p.is_file())
                             .cloned()
                             .collect();
                         let session = Arc::new(session);
@@ -4341,56 +4442,51 @@ async fn worker_loop(
                 });
             }
             KarCommand::HandoffChat {
+                source_chat,
                 target_runtime,
                 target_model,
                 user_note,
                 budget_bytes,
                 workspace,
             } => {
-                let source_runtime = state
-                    .active_controller
-                    .as_ref()
-                    .map(|s| s.info().runtime.clone())
-                    .unwrap_or_else(|| "codex".into());
-                let mut turn_pairs: Vec<(String, String)> = Vec::new();
-                if let Some(ref session) = state.active_controller
-                    && let Ok(h) = session.history()
+                let history;
+                let (source_runtime, turns) = if state.in_demo && source_chat.is_none() {
+                    ("codex".to_owned(), state.demo_turns.as_slice())
+                } else if let Some(session) = &state.active_controller
+                    && !state.in_demo
+                    && Some(session.info().id) == source_chat
+                    && state.selected_chat_id == source_chat
+                    && let Ok(snapshot) = session.history()
+                    && snapshot
+                        .turns
+                        .last()
+                        .is_some_and(|turn| turn.status != TurnStatus::Running)
                 {
-                    for t in &h.turns {
-                        let mut u_txt = String::new();
-                        let mut a_txt = String::new();
-                        for it in &t.items {
-                            if let Item::Message { role, text, .. } = &it.item {
-                                match role {
-                                    Role::User if u_txt.is_empty() => u_txt = text.clone(),
-                                    Role::Assistant => a_txt = text.clone(),
-                                    _ => {}
-                                }
+                    history = snapshot;
+                    (session.info().runtime.clone(), history.turns.as_slice())
+                } else {
+                    state.emit(KarBridgeEvent::ToastMessage {
+                        text: "原对话已切换或正在执行任务，请重新打开交接。".into(),
+                        warning: true,
+                    });
+                    continue;
+                };
+                let mut turn_pairs = Vec::new();
+                for turn in turns {
+                    let (mut user, mut assistant) = (String::new(), String::new());
+                    for item in &turn.items {
+                        if let Item::Message { role, text, .. } = &item.item {
+                            match role {
+                                Role::User if user.is_empty() => user = text.clone(),
+                                Role::Assistant => assistant = text.clone(),
+                                _ => {}
                             }
-                        }
-                        if !u_txt.is_empty() || !a_txt.is_empty() {
-                            turn_pairs.push((u_txt, a_txt));
                         }
                     }
-                } else if state.in_demo {
-                    for t in &state.demo_turns {
-                        let mut u_txt = String::new();
-                        let mut a_txt = String::new();
-                        for it in &t.items {
-                            if let Item::Message { role, text, .. } = &it.item {
-                                match role {
-                                    Role::User if u_txt.is_empty() => u_txt = text.clone(),
-                                    Role::Assistant => a_txt = text.clone(),
-                                    _ => {}
-                                }
-                            }
-                        }
-                        if !u_txt.is_empty() || !a_txt.is_empty() {
-                            turn_pairs.push((u_txt, a_txt));
-                        }
+                    if !user.is_empty() || !assistant.is_empty() {
+                        turn_pairs.push((user, assistant));
                     }
                 }
-
                 let packed = build_portable_handoff_context(
                     &source_runtime,
                     &target_runtime,
@@ -4399,7 +4495,7 @@ async fn worker_loop(
                     budget_bytes,
                 );
 
-                if state.in_demo || state.store.is_none() {
+                if state.in_demo {
                     emit_diag_log(
                         &state.evt_tx,
                         DiagLevel::Info,
@@ -4436,10 +4532,13 @@ async fn worker_loop(
                 }
 
                 let Some(store) = state.store.clone() else {
+                    state.emit(KarBridgeEvent::ToastMessage {
+                        text: "无法访问本地对话存储。".into(),
+                        warning: true,
+                    });
                     continue;
                 };
-                state.close_controller(false).await;
-                let _ = std::fs::create_dir_all(&workspace);
+
                 let mut opts = SessionOptions::new(&workspace);
                 opts.approvals = ApprovalMode::Host;
                 opts.model = target_model.filter(|m| !m.trim().is_empty());
@@ -4447,6 +4546,8 @@ async fn worker_loop(
                 state.attach_office_mcp(&target_runtime, &mut opts);
                 match store.create(&target_runtime, None, opts).await {
                     Ok(session) => {
+                        state.close_controller(false).await;
+                        state.stop_feed();
                         let new_id = session.info().id;
                         save_persisted_title(
                             &state.store_dir,
@@ -4486,23 +4587,15 @@ async fn worker_loop(
                             target_runtime: target_runtime.clone(),
                             summary_message: packed.clone(),
                         });
-                        let _ = state
-                            .cmd_tx
-                            .send(KarCommand::SendPrompt {
-                                request_id: Uuid::new_v4(),
-                                raw_user_text: if user_note.trim().is_empty() {
-                                    format!(
-                                        "接力自 {}，请继续当前工作",
-                                        runtime_display_name(&source_runtime)
-                                    )
-                                } else {
-                                    user_note
-                                },
-                                payload: packed,
-                                target: None,
-                                attachments: Vec::new(),
-                            })
-                            .await;
+                        let title = if user_note.trim().is_empty() {
+                            format!(
+                                "接力自 {}，请继续当前工作",
+                                runtime_display_name(&source_runtime)
+                            )
+                        } else {
+                            user_note
+                        };
+                        state.send_prompt(Uuid::new_v4(), title, packed, None, Vec::new());
                     }
                     Err(err) => {
                         state.emit(KarBridgeEvent::ToastMessage {
@@ -4516,6 +4609,7 @@ async fn worker_loop(
                 }
             }
             KarCommand::AskSideQuestion {
+                request_id,
                 runtime_id,
                 native_session_id,
                 workspace,
@@ -4540,6 +4634,7 @@ async fn worker_loop(
                             );
                             let _ = evt_tx
                                 .send(KarBridgeEvent::SideQuestionAnswered {
+                                    request_id,
                                     question,
                                     answer,
                                     via_native_fork: true,
@@ -4563,6 +4658,7 @@ async fn worker_loop(
                     };
                     let _ = evt_tx
                         .send(KarBridgeEvent::SideQuestionAnswered {
+                            request_id,
                             question,
                             answer: fallback,
                             via_native_fork: false,

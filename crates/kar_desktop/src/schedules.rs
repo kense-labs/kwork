@@ -4,9 +4,13 @@
 //! pure Rust for Kar Desktop: revision-fenced schedule definitions, idempotent dispatch receipts
 //! (uncertain outcomes are never blindly replayed on restart), and optional Office template binding.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use chrono::{Datelike, Local, TimeZone, Weekday};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -127,6 +131,8 @@ pub struct ScheduledTask {
     pub cadence: ScheduleCadence,
     pub enabled: bool,
     pub runtime_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<PathBuf>,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -155,37 +161,125 @@ pub struct ScheduleRegistry {
     pub tasks: Vec<ScheduledTask>,
 }
 
+/// An OS-held lease distinguishes an active run in another Kar window from an interrupted one.
+pub(crate) struct ScheduleRunLease {
+    _file: File,
+    path: PathBuf,
+}
+impl ScheduleRunLease {
+    fn path(dir: &Path, id: Uuid) -> PathBuf {
+        dir.join(format!(".schedule-run-{id}.lock"))
+    }
+    pub(crate) fn acquire(dir: &Path, id: Uuid) -> Result<Self> {
+        let path = Self::path(dir, id);
+        let file = File::create_new(&path)?;
+        file.lock()?;
+        Ok(Self { _file: file, path })
+    }
+    fn active(dir: &Path, id: Uuid) -> Result<bool> {
+        let path = Self::path(dir, id);
+        let file = match OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        match file.try_lock() {
+            Ok(()) => {
+                let _ = fs::remove_file(path);
+                Ok(false)
+            }
+            Err(std::fs::TryLockError::WouldBlock) => Ok(true),
+            Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+        }
+    }
+}
+impl Drop for ScheduleRunLease {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 impl ScheduleRegistry {
     pub fn load_or_seed(store_dir: &Path, _default_runtime: &str, now_ms: u64) -> Self {
-        let path = store_dir.join("schedules.json");
-        if let Ok(raw) = std::fs::read_to_string(&path)
-            && let Ok(mut reg) = serde_json::from_str::<Self>(&raw)
-        {
-            // Honest restart recovery: any run left in `Admitted` across a process restart becomes
-            // `OutcomeUnknown` rather than silently re-triggering side effects.
-            for task in &mut reg.tasks {
-                if task.enabled && matches!(task.cadence, ScheduleCadence::DailyNineAm | ScheduleCadence::WeeklyMonday)
-                    && task.next_due_ms.is_none_or(|due| task.cadence.next_due_after(due.saturating_sub(1)) != Some(due)) {
-                    task.next_due_ms = task.cadence.next_due_after(now_ms);
-                }
-                for rec in &mut task.history {
-                    if rec.outcome == ScheduleRunOutcome::Admitted {
-                        rec.outcome = ScheduleRunOutcome::OutcomeUnknown;
-                    }
-                }
-            }
-            return reg;
-        }
-        Self::default()
+        Self::read(store_dir, now_ms).unwrap_or_default()
     }
 
-    pub fn save(&self, store_dir: &Path) -> Result<()> {
-        let _ = std::fs::create_dir_all(store_dir);
-        let path = store_dir.join("schedules.json");
-        let tmp = store_dir.join("schedules.json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
-        std::fs::rename(tmp, path)?;
-        Ok(())
+    pub(crate) fn read(dir: &Path, now_ms: u64) -> Result<Self> {
+        let raw = match fs::read(dir.join("schedules.json")) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut reg: Self = serde_json::from_slice(&raw).context("Cannot read schedules.json")?;
+        for task in &mut reg.tasks {
+            if task.enabled
+                && matches!(
+                    task.cadence,
+                    ScheduleCadence::DailyNineAm | ScheduleCadence::WeeklyMonday
+                )
+                && task.next_due_ms.is_none_or(|due| {
+                    task.cadence.next_due_after(due.saturating_sub(1)) != Some(due)
+                })
+            {
+                task.next_due_ms = task.cadence.next_due_after(now_ms);
+            }
+            for rec in &mut task.history {
+                if rec.outcome == ScheduleRunOutcome::Admitted
+                    && !ScheduleRunLease::active(dir, rec.request_id)?
+                {
+                    rec.outcome = ScheduleRunOutcome::OutcomeUnknown;
+                }
+            }
+        }
+        Ok(reg)
+    }
+
+    /// Apply the operation to the latest durable registry under an inter-process lock.
+    /// Return values that trigger side effects are released only after the receipt is saved.
+    pub fn transact<T>(
+        &mut self,
+        dir: &Path,
+        now_ms: u64,
+        f: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        fs::create_dir_all(dir)?;
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(dir.join("schedules.lock"))?;
+        lock.lock()?;
+        let mut latest = Self::read(dir, now_ms)?;
+        let revision = latest.revision;
+        let value = match f(&mut latest) {
+            Ok(v) => v,
+            Err(e) => {
+                *self = Self::read(dir, now_ms)?;
+                return Err(e);
+            }
+        };
+        if latest.revision != revision {
+            latest.save(dir)?;
+        }
+        *self = latest;
+        Ok(value)
+    }
+
+    pub fn save(&self, dir: &Path) -> Result<()> {
+        fs::create_dir_all(dir)?;
+        let tmp = dir.join(format!(".schedules-{}.tmp", Uuid::new_v4()));
+        let result = (|| -> Result<()> {
+            let file = File::create_new(&tmp)?;
+            serde_json::to_writer_pretty(&file, self)?;
+            file.sync_all()?;
+            fs::rename(&tmp, dir.join("schedules.json"))?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        result
     }
 
     pub fn save_task(
@@ -209,7 +303,9 @@ impl ScheduleRegistry {
             }
             draft.revision = cur_rev + 1;
             draft.history = self.tasks[pos].history.clone();
-            if draft.enabled && (draft.next_due_ms.is_none() || draft.cadence != self.tasks[pos].cadence) {
+            if draft.enabled
+                && (draft.next_due_ms.is_none() || draft.cadence != self.tasks[pos].cadence)
+            {
                 draft.next_due_ms = draft.cadence.next_due_after(now_ms);
             }
             self.tasks[pos] = draft;
@@ -261,7 +357,12 @@ impl ScheduleRegistry {
     pub fn claim_due_runs(&mut self, now_ms: u64) -> Vec<(ScheduledTask, Uuid)> {
         let mut due = Vec::new();
         for task in &mut self.tasks {
-            if !task.enabled {
+            if !task.enabled
+                || task
+                    .history
+                    .iter()
+                    .any(|r| r.outcome == ScheduleRunOutcome::Admitted)
+            {
                 continue;
             }
             let Some(due_ms) = task.next_due_ms else {
@@ -270,8 +371,11 @@ impl ScheduleRegistry {
             if now_ms >= due_ms {
                 let req_id = Uuid::new_v4();
                 let next = match task.cadence {
-                    ScheduleCadence::EveryMinutes(_) => task.cadence.next_due_after(due_ms)
-                        .filter(|due| *due > now_ms).or_else(|| task.cadence.next_due_after(now_ms)),
+                    ScheduleCadence::EveryMinutes(_) => task
+                        .cadence
+                        .next_due_after(due_ms)
+                        .filter(|due| *due > now_ms)
+                        .or_else(|| task.cadence.next_due_after(now_ms)),
                     cadence => cadence.next_due_after(now_ms),
                 };
                 task.next_due_ms = next;
@@ -309,6 +413,13 @@ impl ScheduleRegistry {
         if task.history.iter().any(|r| r.request_id == request_id) {
             return Ok(task.clone());
         }
+        if task
+            .history
+            .iter()
+            .any(|r| r.outcome == ScheduleRunOutcome::Admitted)
+        {
+            bail!("任务正在运行");
+        }
         task.history.push(ScheduleRunReceipt {
             request_id,
             chat_id: None,
@@ -331,15 +442,24 @@ impl ScheduleRegistry {
         self.update_run(request_id, Some(chat_id), outcome)
     }
 
-    pub fn update_run(&mut self, request_id: Uuid, chat_id: Option<Uuid>, outcome: ScheduleRunOutcome) -> bool {
+    pub fn update_run(
+        &mut self,
+        request_id: Uuid,
+        chat_id: Option<Uuid>,
+        outcome: ScheduleRunOutcome,
+    ) -> bool {
         for task in &mut self.tasks {
-            if let Some(rec) = task
-                .history
-                .iter_mut()
-                .find(|r| r.request_id == request_id)
-            {
+            if let Some(rec) = task.history.iter_mut().find(|r| r.request_id == request_id) {
                 rec.chat_id = chat_id.or(rec.chat_id);
-                rec.outcome = outcome;
+                // An admission event can arrive after the completion was already recorded.
+                if outcome != ScheduleRunOutcome::Admitted
+                    || !matches!(
+                        rec.outcome,
+                        ScheduleRunOutcome::Completed | ScheduleRunOutcome::Failed
+                    )
+                {
+                    rec.outcome = outcome;
+                }
                 self.revision = self.revision.saturating_add(1);
                 return true;
             }
@@ -377,19 +497,38 @@ mod tests {
 
     fn task_registry() -> ScheduleRegistry {
         let mut reg = ScheduleRegistry::default();
-        reg.save_task(ScheduledTask {
-            id: String::new(), revision: 0, title: "Review".into(), prompt: "Summarize".into(),
-            cadence: ScheduleCadence::EveryMinutes(15), enabled: false, runtime_id: "codex".into(),
-            model: None, effort: None, office_template: None, tone: ScheduleToneChoice::default(),
-            next_due_ms: None, history: vec![],
-        }, None, 10_000).unwrap();
+        reg.save_task(
+            ScheduledTask {
+                id: String::new(),
+                revision: 0,
+                title: "Review".into(),
+                prompt: "Summarize".into(),
+                workspace: None,
+                cadence: ScheduleCadence::EveryMinutes(15),
+                enabled: false,
+                runtime_id: "codex".into(),
+                model: None,
+                effort: None,
+                office_template: None,
+                tone: ScheduleToneChoice::default(),
+                next_due_ms: None,
+                history: vec![],
+            },
+            None,
+            10_000,
+        )
+        .unwrap();
         reg
     }
 
     #[test]
     fn first_launch_has_no_schedules_and_does_not_write_examples() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(ScheduleRegistry::load_or_seed(tmp.path(), "codex", 10_000).tasks.is_empty());
+        assert!(
+            ScheduleRegistry::load_or_seed(tmp.path(), "codex", 10_000)
+                .tasks
+                .is_empty()
+        );
         assert!(!tmp.path().join("schedules.json").exists());
     }
 
@@ -425,5 +564,74 @@ mod tests {
             reloaded.tasks[0].history[0].outcome,
             ScheduleRunOutcome::OutcomeUnknown
         );
+    }
+    #[test]
+    fn separate_windows_claim_once_and_keep_other_windows_changes() {
+        use std::sync::{Arc, Barrier};
+        let store = tempfile::tempdir().unwrap();
+        let mut initial = task_registry();
+        let id = initial.tasks[0].id.clone();
+        initial.set_enabled(&id, true, 0).unwrap();
+        initial.save(store.path()).unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let results = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..2)
+                .map(|_| {
+                    let mut reg = initial.clone();
+                    let gate = Arc::clone(&barrier);
+                    let path = store.path();
+                    scope.spawn(move || {
+                        gate.wait();
+                        reg.transact(path, 900_001, |latest| {
+                            let due = latest.claim_due_runs(900_001);
+                            let mut leases = Vec::new();
+                            for (_, id) in due {
+                                leases.push(ScheduleRunLease::acquire(path, id)?);
+                            }
+                            Ok(leases)
+                        })
+                        .unwrap()
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|t| t.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.len(), 1);
+        let observed = ScheduleRegistry::read(store.path(), 900_002).unwrap();
+        assert_eq!(
+            observed.tasks[0].history[0].outcome,
+            ScheduleRunOutcome::Admitted
+        );
+        let mut stale = initial;
+        let second = Uuid::new_v4();
+        assert!(
+            stale
+                .transact(store.path(), 900_002, |r| r
+                    .record_manual_run(&id, second, 900_002))
+                .is_err()
+        );
+        drop(results);
+        assert_eq!(
+            ScheduleRegistry::read(store.path(), 900_003).unwrap().tasks[0].history[0].outcome,
+            ScheduleRunOutcome::OutcomeUnknown
+        );
+    }
+
+    #[test]
+    fn broken_schedule_file_preserves_the_form_and_previous_bytes() {
+        let store = tempfile::tempdir().unwrap();
+        let path = store.path().join("schedules.json");
+        fs::write(&path, b"{unfinished").unwrap();
+        let mut reg = task_registry();
+        let id = reg.tasks[0].id.clone();
+        assert!(
+            reg.transact(store.path(), 500, |r| r.set_enabled(&id, true, 500))
+                .is_err()
+        );
+        assert!(!reg.tasks[0].enabled);
+        assert_eq!(fs::read(path).unwrap(), b"{unfinished");
     }
 }

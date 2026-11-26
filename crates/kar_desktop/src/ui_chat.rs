@@ -1,5 +1,7 @@
 //! Native conversation timeline, file review, decisions and writing controls.
 
+pub(crate) mod questions;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -7,8 +9,8 @@ use std::time::Duration;
 use gpui::{prelude::*, *};
 use gpui_kit::component::text::TextView;
 use kar::{
-    ApprovalMode, ChangeKind as ToolChangeKind, FieldKind, PendingRequest, PermissionDecision,
-    PolicyOption, QuestionReply, RequestKind, TaskStatus,
+    ApprovalMode, ChangeKind as ToolChangeKind, PendingRequest, PermissionDecision, PolicyOption,
+    RequestKind, TaskStatus,
     chat::{
         AttachmentKind, ChangeKind as CheckpointChangeKind, ChatTurn, Item, Role as KarRole,
         TurnStatus,
@@ -44,7 +46,7 @@ use crate::{
     },
     ui_motion::{
         MenuPlacement, Tactile, disclosure_body, disclosure_line, icon_button, menu_caption,
-        menu_check, menu_divider, menu_hint, menu_host, menu_icon_item, menu_item, primary_button,
+        menu_check, menu_divider, menu_hint, menu_host, menu_icon_item, menu_item,
         pulse_beacon, soft_button, spinner, text_button,
     },
     ui_primitives::{
@@ -214,9 +216,11 @@ impl KarWorkbench {
 
             let scroll_remaining =
                 f32::from(self.chat_scroll.max_offset().y) + f32::from(self.chat_scroll.offset().y);
-            let show_jump_bottom = scroll_remaining > 120. && !self.projected.turns.is_empty();
+            let show_jump_bottom = scroll_remaining > 120.
+                && !self.projected.turns.is_empty()
+                && self.projected.pending_requests.is_empty();
 
-            let dock = self.render_decision_dock(&s, cx);
+            let dock = self.render_decision_dock(&s, window, cx);
             let foot = chat_content_lane(center_w, window)
                 .relative()
                 .pt(px(8.))
@@ -242,7 +246,7 @@ impl KarWorkbench {
                                     .text_size(px(FS_META))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(s.ink)
-                                    .child("跳至最新")
+                                    .child(self.ui_locale.pick("跳至最新", "Jump to latest"))
                                     .child(pro_icon(ProIcon::ChevronDown, ICON_XS, s.muted))
                                     .on_press(cx, |this, _, cx| {
                                         this.chat_scroll.scroll_to_bottom();
@@ -1547,15 +1551,40 @@ impl KarWorkbench {
     // ── Two-Tier Composer (`AssistantHomeScreen` KUI architecture) ───────────
 
     fn render_view_only_bar(&self, s: &StudioPalette, cx: &mut Context<Self>) -> AnyElement {
+        let locale = self.ui_locale;
         let (icon, text) = match &self.access_mode {
             ChatAccessMode::HttpReadOnly { .. } => (
                 ProIcon::Link,
-                "这是共享链接的只读观察视图，内容实时同步".to_owned(),
+                locale
+                    .pick(
+                        "正在通过共享链接实时查看对话",
+                        "Viewing live updates through a shared link",
+                    )
+                    .to_owned(),
             ),
-            ChatAccessMode::ArchivedReadOnly { reason, .. } => (ProIcon::Clock, reason.clone()),
+            ChatAccessMode::RemoteController { .. } => (
+                ProIcon::Eye,
+                locale
+                    .pick(
+                        "已作为观察者与主机配对，可实时查看对话",
+                        "Paired as a viewer. Conversation updates appear live.",
+                    )
+                    .to_owned(),
+            ),
+            ChatAccessMode::ArchivedReadOnly { reason, .. } => (
+                ProIcon::Clock,
+                locale
+                    .pick(reason.as_str(), "Viewing saved conversation history")
+                    .to_owned(),
+            ),
             _ => (
                 ProIcon::Eye,
-                "该对话正在另一个窗口中进行，当前窗口实时同步查看".to_owned(),
+                locale
+                    .pick(
+                        "另一窗口正在控制此对话，此处实时同步",
+                        "Another window controls this conversation. Updates appear live.",
+                    )
+                    .to_owned(),
             ),
         };
         div()
@@ -1586,10 +1615,10 @@ impl KarWorkbench {
             .child(
                 if let ChatAccessMode::ArchivedReadOnly {chat_id,..} = self.access_mode
                     && self.projected.info.as_ref().is_some_and(|info| info.workspace.is_dir()) {
-                    soft_button("view-only-retry", "重新连接", s)
+                    soft_button("view-only-retry", locale.pick("重新连接", "Reconnect"), s)
                         .on_press(cx, move |this, window, cx| this.open_chat(chat_id, window, cx))
                 } else {
-                    soft_button("view-only-new-chat", "开启新对话", s)
+                    soft_button("view-only-new-chat", locale.pick("开启新对话", "New thread"), s)
                         .on_press(cx, |this, window, cx| this.start_new_chat(window, cx))
                 }
             )
@@ -1990,7 +2019,7 @@ impl KarWorkbench {
                             menu_item(("cmp-workspace-mode", index), None, label, s)
                                 .when(worktree == wt, |b| b.child(menu_check(s)))
                                 .on_press(cx, move |this, _, cx| {
-                                    this.new_chat_use_worktree = worktree;
+                                    this.set_new_chat_worktree(worktree, cx);
                                     this.close_menu(cx);
                                 })
                                 .into_any_element()
@@ -2267,7 +2296,13 @@ impl KarWorkbench {
         s: &StudioPalette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut row = div().w_full().pb(px(4.)).flex().flex_wrap().items_center().gap(px(6.));
+        let mut row = div()
+            .w_full()
+            .pb(px(4.))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(6.));
         for (ix, path) in self.pending_attachments.iter().enumerate() {
             let name = path
                 .file_name()
@@ -2311,7 +2346,7 @@ impl KarWorkbench {
                             .size(px(18.))
                             .radius(4.)
                             .justify_center()
-                            .tip("移除附件")
+                            .tip(self.ui_locale.pick("移除附件", "Remove attachment"))
                             .child(pro_icon(ProIcon::Close, 10., s.muted))
                             .on_press(cx, move |this, _, cx| {
                                 if ix < this.pending_attachments.len() {
@@ -2322,7 +2357,13 @@ impl KarWorkbench {
                     ),
             );
         }
-        row.into_any_element()
+        div()
+            .id("pending-attachment-list")
+            .w_full()
+            .max_h(px(68.))
+            .overflow_y_scroll()
+            .child(row)
+            .into_any_element()
     }
 
     fn render_queued_inputs_strip(&self, s: &StudioPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -2338,8 +2379,8 @@ impl KarWorkbench {
             let input_id = item.id;
             let raw_clean = strip_selection_envelope(&item.text).to_owned();
             let text = raw_clean.lines().next().unwrap_or("").to_owned();
-            let raw_for_edit = raw_clean.clone();
-            let raw_for_withdraw = raw_clean;
+            let can_withdraw =
+                self.access_mode.is_writable() && item.status == kar::chat::InputStatus::Pending;
             col = col.child(
                 div()
                     .h(px(30.))
@@ -2405,12 +2446,12 @@ impl KarWorkbench {
                             .items_center()
                             .gap(px(2.))
                             .child(
-                                text_button(("edit-queued", ix), "编辑", s)
+                                text_button(("edit-queued", ix), self.ui_locale.pick("编辑", "Edit"), s)
+                                    .disabled(!can_withdraw)
                                     .tip("取回到输入框继续修改")
                                     .on_press(cx, move |this, window, cx| {
                                         this.withdraw_or_edit_queued_input(
                                             input_id,
-                                            raw_for_edit.clone(),
                                             true,
                                             window,
                                             cx,
@@ -2418,11 +2459,11 @@ impl KarWorkbench {
                                     }),
                             )
                             .child(
-                                text_button(("withdraw-queued", ix), "撤回", s)
+                                text_button(("withdraw-queued", ix), self.ui_locale.pick("撤回", "Withdraw"), s)
+                                    .disabled(!can_withdraw)
                                     .on_press(cx, move |this, window, cx| {
                                         this.withdraw_or_edit_queued_input(
                                             input_id,
-                                            raw_for_withdraw.clone(),
                                             false,
                                             window,
                                             cx,
@@ -2706,7 +2747,7 @@ impl KarWorkbench {
                     )
                     .when(chosen, |row| row.child(menu_check(s)))
                     .on_press(cx, move |this, _, cx| {
-                        this.approval_mode = mode;
+                        this.set_new_chat_approvals(mode, cx);
                         this.open_menu = None;
                         cx.notify();
                     })
@@ -2738,6 +2779,7 @@ impl KarWorkbench {
                     .when(chosen, |d| d.child(menu_check(s)))
                     .on_press(cx, move |this, _, cx| {
                         this.reasoning_effort = value.clone();
+                        this.save_agent_choice(cx);
                         this.open_menu = None;
                         cx.notify();
                     })
@@ -2777,6 +2819,13 @@ impl KarWorkbench {
                         .unwrap_or_default();
                     view.scroll.scroll_to_item(view.cursor);
                     view.focus_on_mount = true;
+                } else if view.editor.read(cx).focus.is_focused(window) {
+                    // Window-level Escape also closes popovers before the focused field sees the event.
+                    self.composer_editor
+                        .read(cx)
+                        .focus
+                        .clone()
+                        .focus(window, cx);
                 }
             });
         }
@@ -3113,6 +3162,7 @@ impl KarWorkbench {
         self.select_runtime_by_id(runtime, cx);
         self.selected_model = model;
         self.reasoning_effort = effort.filter(|level| self.offered_efforts().contains(level));
+        self.save_agent_choice(cx);
         self.close_model_picker(window, cx);
     }
 
@@ -4854,7 +4904,12 @@ impl KarWorkbench {
 
     // ── Decisions (Permissions + Full Structured QuestionForm) ──────────────
 
-    fn render_decision_dock(&self, s: &StudioPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_decision_dock(
+        &mut self,
+        s: &StudioPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let waiting: Vec<PendingRequest> = if self.access_mode.is_writable() {
             self.projected
                 .pending_requests
@@ -4866,10 +4921,11 @@ impl KarWorkbench {
             Vec::new()
         };
         let total = waiting.len();
+        let max_height = (f32::from(window.viewport_size().height) * 0.44).clamp(140., 420.);
         let card = waiting
             .into_iter()
             .next()
-            .map(|request| self.render_decision_card(request, total, s, cx));
+            .map(|request| self.render_decision_card(request, total, max_height, s, window, cx));
         let open = card.is_some();
         pro_fold("kar-decision-dock", open, 184., 0., move || {
             div()
@@ -4884,10 +4940,12 @@ impl KarWorkbench {
     }
 
     fn render_decision_card(
-        &self,
+        &mut self,
         request: PendingRequest,
         total: usize,
+        max_height: f32,
         s: &StudioPalette,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let loc = self.ui_locale;
@@ -4895,6 +4953,7 @@ impl KarWorkbench {
         let mono = mono_font(cx);
 
         let head = div()
+            .flex_none()
             .flex()
             .items_center()
             .justify_between()
@@ -4915,9 +4974,10 @@ impl KarWorkbench {
                 ))
             });
 
-        let mut card = div()
+        let card = div()
+            .max_h(px(max_height))
             .w_full()
-            .p(px(16.))
+            .p(px(if max_height < 190. { 8. } else { 16. }))
             .rounded(px(R_HERO))
             .bg(s.card)
             .border_1()
@@ -4928,7 +4988,20 @@ impl KarWorkbench {
             .child(head);
 
         if request.kind == RequestKind::Question {
-            return self.render_question_decision_body(card, request, s, cx);
+            let content = self.render_question_fields(
+                div().w_full().flex().flex_col().gap(px(8.)),
+                request,
+                s,
+                window,
+                cx,
+            );
+            return card.child(
+                div()
+                    .id("question-scroll")
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(content),
+            );
         }
 
         let controls = request.controls();
@@ -4937,19 +5010,35 @@ impl KarWorkbench {
             .map(str::trim)
             .filter(|r| !r.is_empty())
             .map(str::to_owned);
-        card = card.child(decision_question(
-            reason.unwrap_or_else(|| loc.pick("command", "command").to_owned()),
-            s,
-        ));
+        let mut detail = div().w_full().flex().flex_col().gap(px(6.));
+        if let Some(reason) = reason {
+            detail = detail.child(decision_question(reason, s));
+        }
 
-        let mut facts = request_facts(&request);
+        let mut facts = request_facts(&request, loc);
+        if request.method == "item/permissions/requestApproval"
+            && controls.resources.is_empty()
+            && let Some(permissions) = request.body.get("permissions")
+        {
+            facts.push((loc.pick("权限", "Permissions"), permissions.to_string()));
+        }
         for res in &controls.resources {
-            if let Some(txt) = res.value.as_str().filter(|v| !v.is_empty()) {
-                facts.push(("资源", txt.to_owned()));
-            }
+            let label = match res.id {
+                kar::ResourceId::Read(_) => loc.pick("读取", "Read"),
+                kar::ResourceId::Write(_) => loc.pick("写入", "Write"),
+                kar::ResourceId::Network => loc.pick("网络", "Network"),
+                kar::ResourceId::Entry(_) => loc.pick("文件权限", "File permission"),
+            };
+            facts.push((
+                label,
+                res.value
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| res.value.to_string()),
+            ));
         }
         if !facts.is_empty() {
-            card = card.child(
+            detail = detail.child(
                 div()
                     .w_full()
                     .px(px(10.))
@@ -4959,21 +5048,20 @@ impl KarWorkbench {
                     .flex()
                     .flex_col()
                     .gap(px(3.))
-                    .children(facts.into_iter().map(|(_, value)| {
+                    .children(facts.into_iter().map(|(label, value)| {
                         div()
                             .w_full()
                             .font_family(mono.clone())
                             .text_size(px(12.5))
                             .text_color(s.muted)
-                            .child(value)
+                            .child(format!("{label}  {value}"))
                     })),
             );
         }
 
         let accepted = &controls.decisions;
-        let first_of = |wanted: &[PermissionDecision]| {
-            wanted.iter().copied().find(|d| accepted.contains(d))
-        };
+        let first_of =
+            |wanted: &[PermissionDecision]| wanted.iter().copied().find(|d| accepted.contains(d));
         let refuse = first_of(&[PermissionDecision::Deny, PermissionDecision::Cancel]);
         let allow = first_of(&[
             PermissionDecision::AllowOnce,
@@ -4993,7 +5081,7 @@ impl KarWorkbench {
             }
         };
 
-        // KUI `AgentThreadScreen` crisp `30px` horizontal approval bar
+        let button_padding = if max_height < 190. { 6. } else { 12. };
         let mut actions = div()
             .pt(px(2.))
             .w_full()
@@ -5007,23 +5095,24 @@ impl KarWorkbench {
                 Tactile::soft("decision-refuse", s)
                     .fills(s.pro.red_soft, s.pro.red.opacity(0.22))
                     .h(px(30.))
-                    .px(px(12.))
+                    .px(px(button_padding))
                     .radius(R_CTRL)
                     .justify_center()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(s.pro.red_ink)
-                    .child(loc.pick("拒绝", "Decline"))
+                    .child(permission_label(decision, loc))
                     .on_press(cx, decide(decision)),
             );
         }
-        for (pix, pol) in controls.policies.iter().take(3).enumerate() {
-            let label = policy_option_label(pol, pix);
+        let mut policy_rows = div().w_full().flex().flex_wrap().gap(px(6.));
+        for (pix, pol) in controls.policies.iter().enumerate() {
+            let label = policy_option_label(pol, pix, loc);
             let choice = pol.choice;
             let req = request.clone();
-            actions = actions.child(
+            policy_rows = policy_rows.child(
                 Tactile::soft(("decision-policy", pix), s)
                     .h(px(30.))
-                    .px(px(12.))
+                    .px(px(button_padding))
                     .radius(R_CTRL)
                     .justify_center()
                     .child(label)
@@ -5039,15 +5128,13 @@ impl KarWorkbench {
             actions = actions.child(
                 Tactile::soft("decision-allow-more", s)
                     .h(px(30.))
-                    .px(px(12.))
+                    .px(px(button_padding))
                     .radius(R_CTRL)
                     .justify_center()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(s.ink)
                     .child(match decision {
-                        PermissionDecision::AllowAlways => {
-                            loc.pick("总是允许", "Allow always")
-                        }
+                        PermissionDecision::AllowAlways => loc.pick("总是允许", "Allow always"),
                         _ => loc.pick("本次会话允许", "Allow session"),
                     })
                     .on_press(cx, decide(decision)),
@@ -5058,416 +5145,34 @@ impl KarWorkbench {
                 Tactile::primary("decision-allow", s)
                     .fills(s.primary, s.primary.opacity(0.9))
                     .h(px(30.))
-                    .px(px(14.))
+                    .px(px(button_padding + 2.))
                     .radius(R_CTRL)
                     .justify_center()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(s.on_primary)
-                    .child(loc.pick("允许一次", "Allow once"))
+                    .child(permission_label(decision, loc))
                     .on_press(cx, decide(decision)),
             );
         }
 
-        card.child(actions)
-    }
-
-    fn render_question_decision_body(
-        &self,
-        mut card: Div,
-        request: PendingRequest,
-        s: &StudioPalette,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let form = request.question_form().unwrap_or_default();
-        let heading = form
-            .message
-            .clone()
-            .or_else(|| form.fields.first().map(|f| f.label.clone()))
-            .unwrap_or_else(|| "需要你做出决定".to_owned());
-        card = card.child(decision_question(heading, s));
-
-        if let Some(url) = form.url.clone().filter(|u| !u.trim().is_empty()) {
-            let to_copy = url.clone();
-            card = card.child(
-                div()
-                    .w_full()
-                    .px(px(10.))
-                    .py(px(6.))
-                    .rounded(px(R_CTRL))
-                    .bg(s.soft)
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(8.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(FS_META))
-                            .text_color(s.pro.accent_info)
-                            .child(url),
-                    )
-                    .child(text_button("q-copy-url", "复制链接", s).on_press(
-                        cx,
-                        move |this, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(to_copy.clone()));
-                            this.notify_toast("已复制认证或外部链接", cx);
-                        },
-                    )),
-            );
-        }
-
-        // Multi-field QuestionForm support (`form.fields.len() > 1`)
-        if form.fields.len() > 1 {
-            let mut multi_box = div().w_full().flex().flex_col().gap(px(8.));
-            for (f_ix, field) in form.fields.iter().enumerate() {
-                let fid = field.id.clone();
-                let selected_val = self.question_field_values.get(&fid).cloned();
-                let mut row = div().w_full().flex().flex_col().gap(px(4.)).child(
-                    div()
-                        .text_size(px(FS_UI))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(s.ink)
-                        .child(field.label.clone()),
-                );
-                if !field.options.is_empty() {
-                    let mut opts = div().flex().flex_wrap().gap(px(6.));
-                    for (o_ix, opt) in field.options.iter().enumerate() {
-                        let fid_c = fid.clone();
-                        let val_c = opt.value.clone();
-                        let is_sel = selected_val.as_deref() == Some(val_c.as_str());
-                        opts = opts.child(
-                            soft_button(("q-mf-opt", f_ix * 32 + o_ix), opt.label.clone(), s)
-                                .lit(is_sel)
-                                .on_press(cx, move |this, _, cx| {
-                                    this.question_field_values
-                                        .insert(fid_c.clone(), val_c.clone());
-                                    cx.notify();
-                                }),
-                        );
-                    }
-                    row = row.child(opts);
-                }
-                multi_box = multi_box.child(row);
-            }
-            let req = request.clone();
-            let fields_clone = form.fields.clone();
-            return card
-                .child(multi_box)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .gap(px(8.))
-                        .child(self.render_skip_question_btn(request, s, cx))
-                        .child(
-                            primary_button("decision-mf-submit", "提交全部答复", s).on_press(
-                                cx,
-                                move |this, _, cx| {
-                                    let mut values = serde_json::Map::new();
-                                    for f in &fields_clone {
-                                        if let Some(v) = this.question_field_values.get(&f.id) {
-                                            values.insert(f.id.clone(), v.clone().into());
-                                        } else if let Some(first) = f.options.first() {
-                                            values.insert(f.id.clone(), first.value.clone().into());
-                                        }
-                                    }
-                                    this.question_field_values.clear();
-                                    this.bridge.send(KarCommand::AnswerQuestion {
-                                        request: req.clone(),
-                                        reply: QuestionReply::Submit { values },
-                                    });
-                                    cx.notify();
-                                },
-                            ),
-                        ),
-                );
-        }
-
-        if let Some(field) = form.fields.first().cloned() {
-            if let Some(desc) = field
-                .description
-                .clone()
-                .filter(|_| form.message.is_some() && !field.label.is_empty())
-            {
-                card = card.child(
-                    div()
-                        .text_size(px(FS_META))
-                        .line_height(px(LH_META))
-                        .text_color(s.muted)
-                        .child(desc),
+        for (i, choice) in accepted.iter().copied().enumerate() {
+            if ![refuse, allow, allow_more].contains(&Some(choice)) {
+                policy_rows = policy_rows.child(
+                    Tactile::soft(("decision-alternative", i), s)
+                        .h(px(30.))
+                        .px(px(10.))
+                        .child(permission_label(choice, loc))
+                        .on_press(cx, decide(choice)),
                 );
             }
-
-            match field.kind {
-                FieldKind::Select if !field.options.is_empty() => {
-                    let mut options = div().mx(px(-8.)).flex().flex_col().gap(px(2.));
-                    for (ix, option) in field.options.iter().enumerate() {
-                        let req = request.clone();
-                        let fid = field.id.clone();
-                        let val = option.value.clone();
-                        options = options.child(
-                            Tactile::ghost(("decision-option", ix), s)
-                                .w_full()
-                                .min_h(px(36.))
-                                .px(px(8.))
-                                .py(px(6.))
-                                .gap(px(10.))
-                                .child(
-                                    div()
-                                        .size(px(20.))
-                                        .flex_none()
-                                        .rounded(px(6.))
-                                        .bg(s.soft)
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .text_size(px(FS_META))
-                                        .text_color(s.muted)
-                                        .child((ix + 1).to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_col()
-                                        .child(
-                                            div()
-                                                .text_size(px(FS_UI))
-                                                .line_height(px(LH_UI))
-                                                .text_color(s.ink)
-                                                .child(option.label.clone()),
-                                        )
-                                        .when_some(option.description.clone(), |d, desc| {
-                                            d.child(
-                                                div()
-                                                    .text_size(px(FS_META))
-                                                    .line_height(px(LH_META))
-                                                    .text_color(s.muted)
-                                                    .child(desc),
-                                            )
-                                        }),
-                                )
-                                .on_press(cx, move |this, window, cx| {
-                                    let mut values = serde_json::Map::new();
-                                    values.insert(fid.clone(), val.clone().into());
-                                    this.question_multi_selected.clear();
-                                    this.question_answer_editor
-                                        .update(cx, |ed, cx| ed.set_value("", window, cx));
-                                    this.bridge.send(KarCommand::AnswerQuestion {
-                                        request: req.clone(),
-                                        reply: QuestionReply::Submit { values },
-                                    });
-                                }),
-                        );
-                    }
-                    card = card.child(options);
-                    if field.allow_other {
-                        card = card.child(self.render_question_freeform_row(
-                            request.clone(),
-                            field.id.clone(),
-                            field.kind,
-                            s,
-                            cx,
-                        ));
-                    }
-                }
-                FieldKind::MultiSelect if !field.options.is_empty() => {
-                    let mut options = div().mx(px(-8.)).flex().flex_col().gap(px(2.));
-                    for (ix, option) in field.options.iter().enumerate() {
-                        let val = option.value.clone();
-                        let checked = self.question_multi_selected.contains(&val);
-                        options = options.child(
-                            Tactile::ghost(("decision-multi", ix), s)
-                                .lit(checked)
-                                .w_full()
-                                .min_h(px(34.))
-                                .px(px(8.))
-                                .py(px(5.))
-                                .gap(px(10.))
-                                .child(
-                                    div()
-                                        .size(px(18.))
-                                        .flex_none()
-                                        .rounded(px(5.))
-                                        .bg(if checked { s.primary } else { s.soft })
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .when(checked, |b| {
-                                            b.child(pro_icon(ProIcon::Check, ICON_XS, s.on_primary))
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .text_size(px(FS_UI))
-                                        .text_color(s.ink)
-                                        .child(option.label.clone()),
-                                )
-                                .on_press(cx, move |this, _, cx| {
-                                    if !this.question_multi_selected.remove(&val) {
-                                        this.question_multi_selected.insert(val.clone());
-                                    }
-                                    cx.notify();
-                                }),
-                        );
-                    }
-                    let req = request.clone();
-                    let fid = field.id.clone();
-                    card = card.child(options).child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_end()
-                            .gap(px(8.))
-                            .child(self.render_skip_question_btn(request, s, cx))
-                            .child(primary_button("decision-multi-submit", "提交所选", s).on_press(
-                                cx,
-                                move |this, _, cx| {
-                                    let arr: Vec<serde_json::Value> = this
-                                        .question_multi_selected
-                                        .iter()
-                                        .cloned()
-                                        .map(serde_json::Value::from)
-                                        .collect();
-                                    let mut values = serde_json::Map::new();
-                                    values.insert(fid.clone(), serde_json::Value::Array(arr));
-                                    this.question_multi_selected.clear();
-                                    this.bridge.send(KarCommand::AnswerQuestion {
-                                        request: req.clone(),
-                                        reply: QuestionReply::Submit { values },
-                                    });
-                                    cx.notify();
-                                },
-                            )),
-                    );
-                    return card;
-                }
-                FieldKind::Boolean => {
-                    let req_no = request.clone();
-                    let req_yes = request.clone();
-                    let fid_no = field.id.clone();
-                    let fid_yes = field.id.clone();
-                    return card.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_end()
-                            .gap(px(8.))
-                            .child(self.render_skip_question_btn(request, s, cx))
-                            .child(soft_button("decision-bool-no", "否", s).on_press(
-                                cx,
-                                move |this, _, _| {
-                                    let mut values = serde_json::Map::new();
-                                    values.insert(fid_no.clone(), false.into());
-                                    this.bridge.send(KarCommand::AnswerQuestion {
-                                        request: req_no.clone(),
-                                        reply: QuestionReply::Submit { values },
-                                    });
-                                },
-                            ))
-                            .child(primary_button("decision-bool-yes", "是", s).on_press(
-                                cx,
-                                move |this, _, _| {
-                                    let mut values = serde_json::Map::new();
-                                    values.insert(fid_yes.clone(), true.into());
-                                    this.bridge.send(KarCommand::AnswerQuestion {
-                                        request: req_yes.clone(),
-                                        reply: QuestionReply::Submit { values },
-                                    });
-                                },
-                            )),
-                    );
-                }
-                _ => {
-                    card = card.child(self.render_question_freeform_row(
-                        request.clone(),
-                        field.id.clone(),
-                        field.kind,
-                        s,
-                        cx,
-                    ));
-                }
-            }
         }
-
-        card.child(
-            div()
-                .flex()
-                .justify_end()
-                .child(self.render_skip_question_btn(request, s, cx)),
-        )
-    }
-
-    fn render_question_freeform_row(
-        &self,
-        request: PendingRequest,
-        field_id: String,
-        kind: FieldKind,
-        s: &StudioPalette,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        div()
+        let details = div()
+            .id("permission-details-scroll")
             .w_full()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h(px(32.))
-                    .px(px(10.))
-                    .rounded(px(R_CTRL))
-                    .bg(s.soft)
-                    .flex()
-                    .items_center()
-                    .child(self.question_answer_editor.clone()),
-            )
-            .child(primary_button("decision-text-submit", "提交", s).on_press(
-                cx,
-                move |this, window, cx| {
-                    let raw = this.question_answer_editor.read(cx).value().trim().to_owned();
-                    let json_val = match kind {
-                        FieldKind::Integer => raw
-                            .parse::<i64>()
-                            .map(serde_json::Value::from)
-                            .unwrap_or_else(|_| raw.clone().into()),
-                        FieldKind::Number => raw
-                            .parse::<f64>()
-                            .map(serde_json::Value::from)
-                            .unwrap_or_else(|_| raw.clone().into()),
-                        _ => serde_json::Value::from(raw),
-                    };
-                    let mut values = serde_json::Map::new();
-                    values.insert(field_id.clone(), json_val);
-                    this.question_answer_editor
-                        .update(cx, |ed, cx| ed.set_value("", window, cx));
-                    this.bridge.send(KarCommand::AnswerQuestion {
-                        request: request.clone(),
-                        reply: QuestionReply::Submit { values },
-                    });
-                },
-            ))
-    }
-
-    fn render_skip_question_btn(
-        &self,
-        request: PendingRequest,
-        s: &StudioPalette,
-        cx: &mut Context<Self>,
-    ) -> Tactile {
-        text_button("decision-skip", "跳过", s).on_press(cx, move |this, _, _| {
-            this.bridge.send(KarCommand::AnswerQuestion {
-                request: request.clone(),
-                reply: QuestionReply::Decline,
-            });
-        })
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(detail.child(policy_rows));
+        card.child(details).child(actions.flex_none())
     }
 
     pub(crate) fn handle_dropped_paths(
@@ -5487,14 +5192,26 @@ impl KarWorkbench {
     }
 }
 
-fn policy_option_label(pol: &PolicyOption, idx: usize) -> String {
+fn permission_label(decision: PermissionDecision, loc: UiLocale) -> &'static str {
+    match decision {
+        PermissionDecision::AllowOnce => loc.pick("允许一次", "Allow once"),
+        PermissionDecision::AllowForTurn => loc.pick("本轮允许", "Allow for this turn"),
+        PermissionDecision::AllowForSession => loc.pick("本次会话允许", "Allow for this session"),
+        PermissionDecision::AllowAlways => loc.pick("总是允许", "Always allow"),
+        PermissionDecision::Deny => loc.pick("拒绝", "Decline"),
+        PermissionDecision::DenyAlways => loc.pick("总是拒绝", "Always decline"),
+        PermissionDecision::Cancel => loc.pick("取消", "Cancel"),
+    }
+}
+
+fn policy_option_label(pol: &PolicyOption, idx: usize, loc: UiLocale) -> String {
     pol.details["name"]
         .as_str()
         .or_else(|| pol.details["label"].as_str())
         .or_else(|| pol.details["title"].as_str())
         .filter(|s| !s.trim().is_empty())
         .map(str::to_owned)
-        .unwrap_or_else(|| format!("允许策略 {}", idx + 1))
+        .unwrap_or_else(|| format!("{} {}", loc.pick("策略", "Policy"), idx + 1))
 }
 
 // The reference caps the content itself at 46rem, with the viewport gutters outside it.
@@ -5667,7 +5384,7 @@ fn clip_lines(text: &str, max: usize) -> String {
     clipped
 }
 
-fn request_facts(request: &PendingRequest) -> Vec<(&'static str, String)> {
+fn request_facts(request: &PendingRequest, loc: UiLocale) -> Vec<(&'static str, String)> {
     let body = &request.body;
     let text_at = |paths: &[&[&str]]| -> Option<String> {
         paths.iter().find_map(|path| {
@@ -5694,7 +5411,7 @@ fn request_facts(request: &PendingRequest) -> Vec<(&'static str, String)> {
         &["input", "command"],
         &["toolCall", "rawInput", "command"],
     ]) {
-        facts.push(("命令", unwrap_shell_command(&command)));
+        facts.push((loc.pick("命令", "Command"), unwrap_shell_command(&command)));
     }
     if let Some(file) = text_at(&[
         &["input", "file_path"],
@@ -5702,15 +5419,15 @@ fn request_facts(request: &PendingRequest) -> Vec<(&'static str, String)> {
         &["path"],
         &["toolCall", "rawInput", "path"],
     ]) {
-        facts.push(("文件", file));
+        facts.push((loc.pick("文件", "File"), file));
     }
     if let Some(dir) = text_at(&[&["cwd"], &["input", "cwd"]]) {
-        facts.push(("位置", dir));
+        facts.push((loc.pick("位置", "Directory"), dir));
     }
     if facts.is_empty()
         && let Some(what) = request.display_text()
     {
-        facts.push(("操作", what));
+        facts.push((loc.pick("操作", "Action"), what));
     }
     facts
 }

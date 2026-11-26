@@ -1,7 +1,6 @@
-//! KUI `agent_schedules.rs` Application Screen:
-//! 24-Hour Smooth Activity Curve, Live `NOW` Glowing Cursor, Trigger Stems & Session Run History.
+//! Local scheduled tasks, upcoming runs, and execution history.
 
-use chrono::Timelike;
+use chrono::{TimeZone, Timelike};
 use gpui::{prelude::*, *};
 use kui::primitives::pro_icons::{ProIcon, pro_icon};
 use uuid::Uuid;
@@ -71,7 +70,10 @@ impl KarWorkbench {
                     .border_color(s.line_soft)
                     .text_size(px(FS_UI))
                     .text_color(s.muted)
-                    .child("还没有配置定时自动化任务，点击右上角「新建任务」即可添加。"),
+                    .child(self.ui_locale.pick(
+                        "还没有定时任务。点击「新建任务」添加。",
+                        "Use New task to schedule your first run.",
+                    )),
             );
         } else {
             for task in &tasks {
@@ -85,8 +87,8 @@ impl KarWorkbench {
             .flex()
             .flex_col()
             .gap(px(14.))
-            .child(rhythm_card)
             .when_some(creator_el, |d, form| d.child(form))
+            .child(rhythm_card)
             .child(list)
             .into_any_element()
     }
@@ -100,49 +102,42 @@ impl KarWorkbench {
     ) -> Div {
         let local_now = chrono::Local::now();
         let now_frac =
-            ((local_now.hour() * 60 + local_now.minute()) as f32 / 1440.0).clamp(0.02, 0.98);
+            ((local_now.hour() * 60 + local_now.minute()) as f32 / 1440.0).clamp(0., 1.);
         let now_str = local_now.format("%H:%M").to_string();
-        let enabled_cnt = tasks.iter().filter(|t| t.enabled).count();
-
-        // Collect (x_fraction_0_to_1, color) stems for enabled tasks
-        let mut stems: Vec<(f32, Hsla)> = Vec::new();
-        for (idx, t) in tasks.iter().filter(|t| t.enabled).enumerate() {
-            let col = resolve_tone(t.tone, s);
-            match t.cadence {
-                ScheduleCadence::DailyNineAm | ScheduleCadence::WeeklyMonday => {
-                    let jitter = (idx as f32 * 0.028).min(0.12);
-                    stems.push(((9.0 / 24.0) + jitter, col));
+        let enabled_cnt = tasks
+            .iter()
+            .filter(|task| task.enabled && task.next_due_ms.is_some())
+            .count();
+        let mut stems = Vec::new();
+        for task in tasks.iter().filter(|task| task.enabled) {
+            let Some(next) = task
+                .next_due_ms
+                .and_then(|due| i64::try_from(due).ok())
+                .and_then(|ms| chrono::Local.timestamp_millis_opt(ms).single())
+            else {
+                continue;
+            };
+            if next.date_naive() != local_now.date_naive() {
+                continue;
+            }
+            let mut minutes = next.hour() * 60 + next.minute();
+            loop {
+                stems.push((minutes as f32 / 1440., resolve_tone(task.tone, s)));
+                let ScheduleCadence::EveryMinutes(step) = task.cadence else {
+                    break;
+                };
+                let Some(following) = minutes.checked_add(step.max(1)) else {
+                    break;
+                };
+                if following >= 1440 {
+                    break;
                 }
-                ScheduleCadence::EveryMinutes(m) => {
-                    let step_h = (m.max(30) as f32 / 60.0).clamp(2.0, 6.0);
-                    let mut h = step_h;
-                    while h < 23.5 {
-                        stems.push((h / 24.0, col));
-                        h += step_h * 2.0;
-                    }
-                }
-                ScheduleCadence::ManualOnly => {}
+                minutes = following;
             }
         }
-
-        // Sample 72 smooth points across 24h summing Gaussian pulses around each stem
-        let mut curve_pts: Vec<(f32, f32)> = Vec::with_capacity(73);
-        for i in 0..=72 {
-            let x = i as f32 / 72.0;
-            let mut y = 0.08 + 0.04 * (x * std::f32::consts::TAU * 2.0).sin().abs();
-            for &(sx, _) in &stems {
-                let d = (x - sx) / 0.055;
-                y += 0.62 * (-0.5 * d * d).exp();
-            }
-            let d_now = (x - now_frac) / 0.045;
-            y += 0.22 * (-0.5 * d_now * d_now).exp();
-            curve_pts.push((x, y.clamp(0.06, 0.92)));
-        }
-
         let line_soft = s.line_soft;
         let line_base = s.line;
-        let curve_stroke = s.pro.accent_info;
-        let curve_fill = s.pro.accent_info.opacity(if s.dark { 0.14 } else { 0.10 });
+
         let now_col = s.pro.green;
 
         let plot_canvas = div().w_full().h(px(96.)).child(
@@ -158,13 +153,6 @@ impl KarWorkbench {
                     let pad_bot = 6.0_f32;
                     let usable_h = (bh - pad_top - pad_bot).max(4.);
                     let base_y = bounds.bottom() - px(pad_bot);
-                    let px_pt = |(nx, ny): (f32, f32)| {
-                        point(
-                            bounds.left() + px(nx * bw),
-                            bounds.top() + px(pad_top + (1.0 - ny) * usable_h),
-                        )
-                    };
-
                     // Horizontal guide lines + baseline
                     for frac in [0.35_f32, 0.70] {
                         let gy = bounds.top() + px(pad_top + frac * usable_h);
@@ -180,32 +168,6 @@ impl KarWorkbench {
                     base.line_to(point(bounds.right(), base_y));
                     if let Ok(p) = base.build() {
                         window.paint_path(p, line_base);
-                    }
-
-                    // Area fill + smooth stroke
-                    if curve_pts.len() >= 2 {
-                        let first = px_pt(curve_pts[0]);
-                        let last = px_pt(*curve_pts.last().unwrap_or(&curve_pts[0]));
-                        let mut area = PathBuilder::fill();
-                        area.move_to(point(first.x, base_y));
-                        area.line_to(first);
-                        for &pt in curve_pts.iter().skip(1) {
-                            area.line_to(px_pt(pt));
-                        }
-                        area.line_to(point(last.x, base_y));
-                        area.close();
-                        if let Ok(path) = area.build() {
-                            window.paint_path(path, curve_fill);
-                        }
-
-                        let mut stroke = PathBuilder::stroke(px(1.8));
-                        stroke.move_to(first);
-                        for &pt in curve_pts.iter().skip(1) {
-                            stroke.line_to(px_pt(pt));
-                        }
-                        if let Ok(path) = stroke.build() {
-                            window.paint_path(path, curve_stroke);
-                        }
                     }
 
                     // Scheduled task stems
@@ -267,6 +229,7 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .justify_between()
+                    .flex_wrap()
                     .gap(px(10.))
                     .child(
                         div()
@@ -278,7 +241,7 @@ impl KarWorkbench {
                                     .text_size(px(FS_UI))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(s.ink)
-                                    .child("24 小时自动化排程节律"),
+                                    .child(self.ui_locale.pick("今日待运行", "Upcoming today")),
                             )
                             .child(
                                 div()
@@ -289,7 +252,10 @@ impl KarWorkbench {
                                     .font_features(tnum_features())
                                     .text_size(px(FS_TAG))
                                     .text_color(s.muted)
-                                    .child(format!("{enabled_cnt} 项已启用")),
+                                    .child(format!(
+                                        "{enabled_cnt} {}",
+                                        self.ui_locale.pick("项已启用", "enabled")
+                                    )),
                             ),
                     )
                     .child(
@@ -307,7 +273,7 @@ impl KarWorkbench {
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(s.pro.green_ink)
                             .child(div().size(px(5.5)).rounded_full().bg(s.pro.green))
-                            .child(format!("NOW {now_str}")),
+                            .child(now_str),
                     ),
             )
             .child(plot_canvas)
@@ -324,7 +290,7 @@ impl KarWorkbench {
         for (ix, preset) in ScheduleCadence::PRESETS.into_iter().enumerate() {
             let active = self.schedule_draft_cadence == preset;
             cadence_row = cadence_row.child(
-                soft_button(("sched-cadence-opt", ix), preset.label(), s)
+                soft_button(("sched-cadence-opt", ix), self.ui_locale.pick(&preset.label(), ["Daily at 09:00","Every hour","Mondays at 09:00","Manual only"][ix]).to_owned(), s)
                     .lit(active)
                     .on_press(cx, move |this, _, cx| {
                         this.schedule_draft_cadence = preset;
@@ -353,6 +319,7 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .justify_between()
+                    .flex_wrap()
                     .gap(px(8.))
                     .child(
                         soft_button(
@@ -360,7 +327,10 @@ impl KarWorkbench {
                             match (&bound_doc, self.schedule_bind_active_doc) {
                                 (Some((_, name)), true) => format!("已绑定模板：{name}"),
                                 (Some((_, name)), false) => format!("绑定当前打开文档：{name}"),
-                                (None, _) => "无打开的 Office 模板".into(),
+                                (None, _) => self
+                                    .ui_locale
+                                    .pick("无打开的 Office 模板", "No open template")
+                                    .into(),
                             },
                             s,
                         )
@@ -375,7 +345,7 @@ impl KarWorkbench {
                         }),
                     )
                     .child(
-                        primary_button("sched-create-save", "保存定时任务", s)
+                        primary_button("sched-create-save", self.ui_locale.pick("保存定时任务","Save task"), s)
                             .child(pro_icon(ProIcon::Check, ICON_XS, s.on_primary))
                             .on_press(cx, |this, window, cx| {
                                 this.save_new_schedule_from_form(window, cx);
@@ -440,21 +410,25 @@ impl KarWorkbench {
                             .flex_none()
                             .lit(enabled)
                             .tip(if enabled {
-                                "暂停自动运行"
+                                self.ui_locale.pick("暂停自动运行", "Pause schedule")
                             } else {
-                                "启用自动运行"
+                                self.ui_locale.pick("启用自动运行", "Enable schedule")
                             })
                             .aria(if enabled {
-                                "已启用，点击暂停自动运行"
+                                self.ui_locale.pick("已启用，点击暂停自动运行", "Enabled; click to pause")
                             } else {
-                                "已暂停，点击启用自动运行"
+                                self.ui_locale.pick("已暂停，点击启用自动运行", "Paused; click to enable")
                             })
                             .child(div().size(px(6.)).rounded_full().bg(if enabled {
                                 tone_color
                             } else {
                                 s.faint
                             }))
-                            .child(if enabled { "已启用" } else { "已暂停" })
+                            .child(if enabled {
+                                self.ui_locale.pick("已启用", "Enabled")
+                            } else {
+                                self.ui_locale.pick("已暂停", "Paused")
+                            })
                             .on_press(cx, move |this, _, cx| {
                                 this.toggle_schedule_enabled(&tid_toggle, cx);
                             }),
@@ -488,7 +462,25 @@ impl KarWorkbench {
                                             .bg(s.tray)
                                             .text_size(px(FS_TAG))
                                             .text_color(s.muted)
-                                            .child(task.cadence.label()),
+                                            .child(match task.cadence {
+                                                ScheduleCadence::ManualOnly => self
+                                                    .ui_locale
+                                                    .pick("仅手动触发", "Manual only")
+                                                    .to_owned(),
+                                                ScheduleCadence::EveryMinutes(m) => format!(
+                                                    "{} {m} {}",
+                                                    self.ui_locale.pick("每", "Every"),
+                                                    self.ui_locale.pick("分钟", "minutes")
+                                                ),
+                                                ScheduleCadence::DailyNineAm => self
+                                                    .ui_locale
+                                                    .pick("每日 09:00", "Daily at 09:00")
+                                                    .to_owned(),
+                                                ScheduleCadence::WeeklyMonday => self
+                                                    .ui_locale
+                                                    .pick("每周一 09:00", "Mondays at 09:00")
+                                                    .to_owned(),
+                                            }),
                                     ),
                             )
                             .child(
@@ -510,8 +502,13 @@ impl KarWorkbench {
                     .child(
                         soft_button(
                             SharedString::from(format!("sched-run-now-{tid}")),
-                            "立即运行",
+                            self.ui_locale.pick("立即运行", "Run now"),
                             s,
+                        )
+                        .disabled(
+                            task.history
+                                .iter()
+                                .any(|r| r.outcome == ScheduleRunOutcome::Admitted),
                         )
                         .child(pro_icon(ProIcon::Bolt, ICON_XS, s.ink))
                         .on_press(cx, move |this, window, cx| {
@@ -522,7 +519,7 @@ impl KarWorkbench {
                         Tactile::ghost(SharedString::from(format!("sched-del-{tid}")), s)
                             .size(px(26.))
                             .justify_center()
-                            .tip("移除此定时任务（保留已生成的关联会话）")
+                            .tip(self.ui_locale.pick("移除此定时任务（保留已生成的关联会话）", "Remove schedule and keep its threads"))
                             .child(pro_icon(ProIcon::Trash, ICON_XS, s.muted))
                             .on_press(cx, move |this, _, cx| {
                                 this.remove_schedule_task(&tid_del, cx);
@@ -634,7 +631,7 @@ impl KarWorkbench {
                     div()
                         .text_size(px(FS_META))
                         .text_color(s.muted)
-                        .child("暂无执行记录。点击「立即运行」将自动创建关联对话并投递任务。"),
+                        .child(self.ui_locale.pick("暂无执行记录。点击「立即运行」将自动创建关联对话并投递任务。", "No runs yet. Run now creates a separate thread.")),
                 );
             } else {
                 for (r_ix, rec) in task.history.iter().rev().take(6).enumerate() {
@@ -658,6 +655,7 @@ impl KarWorkbench {
                             .flex()
                             .items_center()
                             .justify_between()
+                            .flex_wrap()
                             .gap(px(8.))
                             .child(
                                 div()
@@ -672,7 +670,17 @@ impl KarWorkbench {
                                             .bg(badge_bg)
                                             .text_size(px(FS_TAG))
                                             .text_color(badge_fg)
-                                            .child(rec.outcome.label()),
+                                            .child(self.ui_locale.pick(
+                                                rec.outcome.label(),
+                                                match rec.outcome {
+                                                    ScheduleRunOutcome::Admitted => "Running",
+                                                    ScheduleRunOutcome::Completed => "Completed",
+                                                    ScheduleRunOutcome::Failed => "Failed",
+                                                    ScheduleRunOutcome::OutcomeUnknown => {
+                                                        "Outcome unknown"
+                                                    }
+                                                },
+                                            )),
                                     )
                                     .child(div().text_size(px(FS_META)).text_color(s.text).child(
                                         if rec.manual {
@@ -686,7 +694,7 @@ impl KarWorkbench {
                                 row.child(
                                     text_button(
                                         SharedString::from(format!("sched-jump-{tid}-{r_ix}")),
-                                        "打开对话",
+                                        self.ui_locale.pick("打开对话", "Open thread"),
                                         s,
                                     )
                                     .child(pro_icon(ProIcon::ExternalArrow, 11., s.muted))

@@ -446,8 +446,8 @@ impl KarWorkbench {
                 format!("{}\n\n{question}", editor.value())
             };
             editor.set_value(draft, window, cx);
-            editor.focus(window, cx);
         });
+        self.reveal_chat_composer(window, cx);
         self.notify_toast(
             self.ui_locale
                 .pick("已将报错添加到对话草稿", "Error added to the chat draft"),

@@ -30,6 +30,7 @@ impl KarWorkbench {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let loc = self.ui_locale;
         let mut agents = self.providers.clone();
         agents.sort_by_key(|a| a.readiness());
 
@@ -112,10 +113,9 @@ impl KarWorkbench {
                             } else {
                                 s.muted
                             })
-                            .child("需确认")
+                            .child(loc.pick("需确认", "Ask first"))
                             .on_press(cx, |this, _, cx| {
-                                this.approval_mode = ApprovalMode::Host;
-                                cx.notify();
+                                this.set_new_chat_approvals(ApprovalMode::Host, cx);
                             }),
                     ),
             )
@@ -137,10 +137,9 @@ impl KarWorkbench {
                             } else {
                                 s.muted
                             })
-                            .child("自动拒绝")
+                            .child(loc.pick("自动拒绝", "Deny"))
                             .on_press(cx, |this, _, cx| {
-                                this.approval_mode = ApprovalMode::Deny;
-                                cx.notify();
+                                this.set_new_chat_approvals(ApprovalMode::Deny, cx);
                             }),
                     ),
             );
@@ -188,10 +187,9 @@ impl KarWorkbench {
                             } else {
                                 s.muted
                             })
-                            .child("当前目录")
+                            .child(loc.pick("当前目录", "Checkout"))
                             .on_press(cx, |this, _, cx| {
-                                this.new_chat_use_worktree = false;
-                                cx.notify();
+                                this.set_new_chat_worktree(false, cx);
                             }),
                     ),
             )
@@ -213,10 +211,9 @@ impl KarWorkbench {
                             } else {
                                 s.muted
                             })
-                            .child("独立工作树")
+                            .child(loc.pick("独立工作树", "Worktree"))
                             .on_press(cx, |this, _, cx| {
-                                this.new_chat_use_worktree = true;
-                                cx.notify();
+                                this.set_new_chat_worktree(true, cx);
                             }),
                     ),
             );
@@ -231,27 +228,27 @@ impl KarWorkbench {
                     .text_size(px(FS_META))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(s.muted)
-                    .child("新对话默认设置"),
+                    .child(loc.pick("新对话默认设置", "Defaults for new threads")),
             )
             .when(!self.offered_efforts().is_empty(), |d| {
                 d.child(routing_setting_row(
-                    "思考深度",
-                    "当前模型提供的推理档位",
+                    loc.pick("思考深度", "Reasoning effort"),
+                    loc.pick("当前模型提供的推理档位", "Levels reported by the selected model"),
                     effort_menu,
                     s,
                 ))
                 .child(div().h(px(1.)).w_full().bg(s.line_soft))
             })
             .child(routing_setting_row(
-                "授权请求",
-                "智能体需要额外权限时如何处理",
+                loc.pick("授权请求", "Tool permissions"),
+                loc.pick("智能体需要额外权限时如何处理", "When an agent requests additional access"),
                 approval_seg,
                 s,
             ))
             .child(div().h(px(1.)).w_full().bg(s.line_soft))
             .child(routing_setting_row(
-                "工作目录",
-                "独立工作树会为新对话创建 Git 分支",
+                loc.pick("工作目录", "Working directory"),
+                loc.pick("独立工作树会为新对话创建 Git 分支", "A worktree creates a separate branch for a new thread"),
                 wt_seg,
                 s,
             ));
@@ -274,7 +271,7 @@ impl KarWorkbench {
                     .line_height(px(LH_UI))
                     .text_color(s.muted)
                     .child(spinner(ICON_SM, s.muted, window, cx))
-                    .child("正在并行检查本机已安装的智能体与可用模型…"),
+                    .child(loc.pick("正在并行检查本机已安装的智能体与可用模型…", "Checking installed agents and models…")),
             );
         }
 
@@ -284,12 +281,12 @@ impl KarWorkbench {
                 .flex()
                 .flex_col()
                 .gap(px(8.))
-                .child(group_label("可用智能体", s));
+                .child(group_label(loc.pick("可用智能体", "Available agents"), s));
 
             for (ix, agent) in usable.iter().enumerate() {
                 let chosen = agent.id == self.selected_runtime;
                 let id = agent.id.clone();
-                let detail = agent.ready_detail_line();
+                let detail = agent.ready_detail_line_in(loc);
 
 
                 let mut card = div()
@@ -362,12 +359,13 @@ impl KarWorkbench {
                                     .text_size(px(FS_META))
                                     .text_color(s.ink)
                                     .child(pro_icon(ProIcon::Check, 12., s.pro.green_ink))
-                                    .child("当前默认")
+                                    .child(loc.pick("当前默认", "Default"))
                                     .into_any_element()
                             } else {
-                                soft_button(("agent-usable", ix), "设为默认", s)
+                                soft_button(("agent-usable", ix), loc.pick("设为默认", "Set default"), s)
                                     .on_press(cx, move |this, _, cx| {
                                         this.select_runtime_by_id(&id, cx);
+                                        this.save_agent_choice(cx);
                                         this.provider_sheet_open = false;
                                         cx.notify();
                                     })
@@ -390,7 +388,7 @@ impl KarWorkbench {
                                 .text_size(px(11.))
                                 .text_color(s.faint)
                                 .mr(px(3.))
-                                .child("首选模型："),
+                                .child(loc.pick("首选模型：", "Preferred model")),
                         )
                         .child(
                             Tactile::ghost(("agent-model-auto", ix), s)
@@ -405,9 +403,10 @@ impl KarWorkbench {
                                     s.line_soft
                                 })
                                 .text_size(px(11.))
-                                .child("自动推荐")
+                                .child(loc.pick("自动推荐", "Agent default"))
                                 .on_press(cx, |this, _, cx| {
                                     this.selected_model = None;
+                                    this.save_agent_choice(cx);
                                     cx.notify();
                                 }),
                         );
@@ -437,6 +436,7 @@ impl KarWorkbench {
                                 .child(label)
                                 .on_press(cx, move |this, _, cx| {
                                     this.selected_model = Some(mid.clone());
+                                    this.save_agent_choice(cx);
                                     cx.notify();
                                 }),
                         );
@@ -455,13 +455,17 @@ impl KarWorkbench {
                 .flex()
                 .flex_col()
                 .gap(px(8.))
-                .child(group_label("需要登录或修复", s));
+                .child(group_label(loc.pick("需要登录或修复", "Sign-in or repair needed"), s));
             for (ix, agent) in fixable.iter().enumerate() {
                 let detail = match &agent.availability {
                     ProviderAvailability::Failed { reason } => {
-                        format!("启动检查未通过：{reason}")
+                        format!(
+                            "{}: {reason}",
+                            loc.pick("启动检查未通过", "Startup check failed")
+                        )
                     }
-                    _ => "已安装 CLI，尚未登录账号".to_owned(),
+                    _ => loc.pick("已安装 CLI，尚未登录账号", "Installed; sign in to use this agent")
+                        .to_owned(),
                 };
                 fix_col = fix_col.child(
                     div()
@@ -545,7 +549,7 @@ impl KarWorkbench {
                         )
                         .when(can_install && install_lines.is_empty(), |row| {
                             row.child(
-                                soft_button(("agent-oneclick-install", ix), "一键安装", s)
+                                soft_button(("agent-oneclick-install", ix), loc.pick("一键安装", "Install"), s)
                                     .on_press(cx, move |this, _, _| {
                                         this.bridge.send(KarCommand::InstallAgent {
                                             runtime_id: id_for_install.clone(),
@@ -562,7 +566,7 @@ impl KarWorkbench {
                                 row = row.child(
                                     soft_button(
                                         ("agent-install-line", ix * 16 + lix),
-                                        format!("安装 {line_val}"),
+                                        format!("{} {line_val}", loc.pick("安装", "Install")),
                                         s,
                                     )
                                     .tip(line_desc)
@@ -589,7 +593,10 @@ impl KarWorkbench {
                         disclosure_line(
                             "agents-toggle-absent",
                             pro_icon(ProIcon::Download, ICON_SM, s.muted),
-                            format!("更多可安装的 CLI 智能体（{absent_count}）"),
+                            format!(
+                                "{} ({absent_count})",
+                                loc.pick("更多可安装的智能体", "More agents to install")
+                            ),
                             show_absent,
                             s,
                         )
@@ -619,6 +626,7 @@ impl KarWorkbench {
         s: &StudioPalette,
         cx: &mut Context<Self>,
     ) -> Tactile {
+        let loc = self.ui_locale;
         let to_copy = command.clone();
         let mono = mono_font(cx);
         Tactile::soft(id, s)
@@ -628,7 +636,7 @@ impl KarWorkbench {
             .pl(px(8.))
             .pr(px(7.))
             .gap(px(6.))
-            .tip("复制终端命令")
+            .tip(loc.pick("复制终端命令", "Copy terminal command"))
             .child(
                 div()
                     .text_size(px(FS_META))
@@ -639,7 +647,7 @@ impl KarWorkbench {
             .child(pro_icon(ProIcon::Copy, ICON_XS, s.muted))
             .on_press(cx, move |this, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(to_copy.clone()));
-                this.notify_toast("已复制终端命令", cx);
+                this.notify_toast(this.ui_locale.pick("已复制终端命令", "Command copied"), cx);
             })
     }
 }

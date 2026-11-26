@@ -102,6 +102,9 @@ impl KarWorkbench {
     pub fn select_settings_tab(&mut self, tab: SettingsTab, cx: &mut Context<Self>) {
         self.active_settings_tab = tab;
         match tab {
+            SettingsTab::Schedules => {
+                self.refresh_schedules(crate::remote_link::now_epoch_ms(), true, cx)
+            }
             SettingsTab::SkillsMcp => {
                 let rt = self.active_or_selected_runtime_id().to_owned();
                 self.bridge.send(KarCommand::ProbeWorkspaceInventory {
@@ -373,9 +376,9 @@ impl KarWorkbench {
                 text_button(
                     "agents-recheck",
                     if self.providers_probing {
-                        "检查中…"
+                        self.ui_locale.pick("检查中…", "Checking…")
                     } else {
-                        "重新检查"
+                        self.ui_locale.pick("重新检查", "Check again")
                     },
                     s,
                 )
@@ -394,9 +397,9 @@ impl KarWorkbench {
                 soft_button(
                     "sched-toggle-creator",
                     if self.schedule_creator_open {
-                        "取消新建"
+                        self.ui_locale.pick("取消新建", "Cancel")
                     } else {
-                        "新建任务"
+                        self.ui_locale.pick("新建任务", "New task")
                     },
                     s,
                 )

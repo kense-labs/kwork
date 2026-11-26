@@ -161,16 +161,24 @@ pub fn discover_git_workspace(workspace: &Path) -> GitWorkspaceSnapshot {
         std::collections::HashMap::new();
     if let Ok(out) = Command::new("git")
         .current_dir(&root)
-        .args(["diff", "--numstat", "HEAD"])
+        .args(["diff", "--no-renames", "--numstat", "-z", "HEAD"])
         .output()
         && out.status.success()
     {
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            let mut cols = line.split('\t');
+        for record in out.stdout.split(|byte| *byte == 0) {
+            let mut cols = record.splitn(3, |byte| *byte == b'\t');
             if let (Some(a), Some(d), Some(p)) = (cols.next(), cols.next(), cols.next()) {
-                let add = a.parse::<usize>().unwrap_or(0);
-                let del = d.parse::<usize>().unwrap_or(0);
-                numstat_map.insert(PathBuf::from(p), (add, del));
+                #[cfg(unix)]
+                let path = {
+                    use std::os::unix::ffi::OsStrExt;
+                    PathBuf::from(std::ffi::OsStr::from_bytes(p))
+                };
+                #[cfg(not(unix))]
+                let Ok(path) = std::str::from_utf8(p).map(PathBuf::from) else {
+                    continue;
+                };
+                let count = |n: &[u8]| std::str::from_utf8(n).ok()?.parse::<usize>().ok();
+                numstat_map.insert(path, (count(a).unwrap_or(0), count(d).unwrap_or(0)));
             }
         }
     }
@@ -1318,7 +1326,8 @@ pub struct UsageAnalyticsSnapshot {
     pub has_cache_write: bool,
     pub has_reasoning: bool,
     pub by_runtime: Vec<RuntimeTokenRow>,
-    /// Last 28 days of turn/token activity `(label, value)` for KUI `DailyActivity`.
+    pub turns_by_day: BTreeMap<chrono::NaiveDate, usize>,
+    /// Last 28 days of turn activity `(label, value)` for KUI `DailyActivity`.
     pub daily_activity: Vec<(String, f64)>,
 }
 
@@ -1332,6 +1341,7 @@ pub fn compute_usage_analytics(
     let mut daily_activity: Vec<_> = (0..28)
         .map(|d| ((first_day + chrono::Duration::days(d)).to_string(), 0.0))
         .collect();
+    let mut turns_by_day = BTreeMap::new();
     let mut has_usage = false;
     let mut has_cache_read = false;
     let mut has_cache_write = false;
@@ -1372,6 +1382,9 @@ pub fn compute_usage_analytics(
                         && let Some(at) = chrono::DateTime::from_timestamp_millis(ms)
                     {
                         let day = at.with_timezone(&chrono::Local).date_naive();
+                        if day <= today {
+                            *turns_by_day.entry(day).or_default() += 1;
+                        }
                         if let Ok(index) = usize::try_from((day - first_day).num_days())
                             && let Some((_, count)) = daily_activity.get_mut(index)
                         {
@@ -1435,7 +1448,9 @@ pub fn compute_usage_analytics(
 
     let mut by_runtime: Vec<RuntimeTokenRow> = rows.into_values().collect();
     by_runtime.sort_by(|a, b| {
-        (b.input_tokens + b.output_tokens).cmp(&(a.input_tokens + a.output_tokens))
+        b.input_tokens
+            .saturating_add(b.output_tokens)
+            .cmp(&a.input_tokens.saturating_add(a.output_tokens))
     });
 
     let cache_hit_ratio = if total_in > 0 {
@@ -1459,6 +1474,7 @@ pub fn compute_usage_analytics(
         has_cache_write,
         has_reasoning,
         daily_activity,
+        turns_by_day,
     }
 }
 
@@ -1481,13 +1497,22 @@ pub fn build_portable_handoff_context(
         runtime_display_name(source_runtime),
         runtime_display_name(target_runtime),
     );
-    let footer = if user_note.trim().is_empty() {
+    let mut footer = if user_note.trim().is_empty() {
         "\n请确认已接手上述上下文，并给出下一步执行建议。".to_owned()
     } else {
         format!("\n[接力后新指令]\n{}", user_note.trim())
     };
 
-    let reserve = header.len() + footer.len() + 64;
+    let remaining = cap.saturating_sub(header.len());
+    if footer.len() > remaining {
+        let mut end = remaining.saturating_sub('…'.len_utf8());
+        while !footer.is_char_boundary(end) {
+            end -= 1;
+        }
+        footer.truncate(end);
+        footer.push('…');
+    }
+    let reserve = header.len() + footer.len();
     let body_budget = cap.saturating_sub(reserve);
     let mut chunks = Vec::new();
     let mut used = 0usize;
@@ -1552,13 +1577,6 @@ impl Default for DiagLogRing {
             "Kar Studio GPUI + KUI 渲染管线与 Tokio 桥接线程初始化完成",
             vec![("unsafe_code".into(), "forbid".into()), ("renderer".into(), "Metal GPUI".into())],
         );
-        ring.push(
-            DiagLevel::Info,
-            "kar_office",
-            Some("MCP"),
-            "内置 Kantor Office + KarBrief 进程内 MCP 服务已就绪（11 个工具）",
-            vec![("fence".into(), "expected_revision enabled".into())],
-        );
         ring
     }
 }
@@ -1584,24 +1602,19 @@ impl DiagLogRing {
         if self.entries.len() >= self.max_entries {
             self.entries.pop_front();
         }
-        let secs_today = (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            + 8 * 3600)
-            % 86_400;
-        let hh = secs_today / 3600;
-        let mm = (secs_today % 3600) / 60;
-        let ss = secs_today % 60;
         self.entries.push_back(DiagLogRecord {
             id: format!("log-{}", self.seq),
-            timestamp: format!("{hh:02}:{mm:02}:{ss:02}"),
+            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
             level,
             source: source.into(),
             tag: tag.map(str::to_owned),
             message: message.into(),
             fields,
         });
+    }
+
+    pub(crate) fn revision(&self) -> u64 {
+        self.seq
     }
 
     pub fn records(&self) -> Vec<DiagLogRecord> {
@@ -1929,7 +1942,7 @@ index 111..222 100644
             .args(["config", "user.name", "Kar Test"])
             .status()
             .unwrap();
-        std::fs::write(repo_dir.join("README.md"), "# Sample\n").unwrap();
+        std::fs::write(repo_dir.join("项目 README.md"), "# Sample\n").unwrap();
         std::fs::create_dir_all(repo_dir.join(".github")).unwrap();
         std::fs::create_dir_all(repo_dir.join("src")).unwrap();
         std::fs::write(repo_dir.join("src/main.rs"), "fn main() {}\n").unwrap();
@@ -1942,17 +1955,24 @@ index 111..222 100644
         assert!(hidden_tree.iter().any(|t| t.name == ".github"));
 
         let repo = Repository::open(&repo_dir).unwrap();
-        repo.stage(&[PathBuf::from("README.md"), PathBuf::from("src/main.rs")])
+        repo.stage(&[PathBuf::from("项目 README.md"), PathBuf::from("src/main.rs")])
             .unwrap();
         repo.commit("chore: init").unwrap();
 
         // Stage + Unstage roundtrip
-        std::fs::write(repo_dir.join("README.md"), "# Updated\n").unwrap();
-        repo.stage(&[PathBuf::from("README.md")]).unwrap();
-        assert!(discover_git_workspace(&repo_dir).staged_count() == 1);
-        unstage_git_paths(&repo_dir, &[PathBuf::from("README.md")]).unwrap();
+        std::fs::write(repo_dir.join("项目 README.md"), "# Updated\n").unwrap();
+        repo.stage(&[PathBuf::from("项目 README.md")]).unwrap();
+        let staged = discover_git_workspace(&repo_dir);
+        assert_eq!(staged.staged_count(), 1);
+        let readme = staged
+            .files
+            .iter()
+            .find(|file| file.path == Path::new("项目 README.md"))
+            .unwrap();
+        assert_eq!((readme.added_lines, readme.deleted_lines), (1, 1));
+        unstage_git_paths(&repo_dir, &[PathBuf::from("项目 README.md")]).unwrap();
         assert_eq!(discover_git_workspace(&repo_dir).staged_count(), 0);
-        repo.stage(&[PathBuf::from("README.md")]).unwrap();
+        repo.stage(&[PathBuf::from("项目 README.md")]).unwrap();
         repo.commit("docs: update").unwrap();
 
         // Create isolated worktree and map back to parent StudioProject
@@ -1972,5 +1992,24 @@ index 111..222 100644
             .project_for_chat(&wt_meta.worktree_path, chat_id)
             .expect("worktree maps to parent project");
         assert_eq!(matched.name, "sample-project");
+    }
+}
+
+#[cfg(test)]
+mod context_pack_limits {
+    use super::*;
+    #[test]
+    fn long_multibyte_handoff_note_stays_within_the_byte_limit() {
+        for size in [1024, 4096, 16 * 1024] {
+            let packed = build_portable_handoff_context(
+                "codex",
+                "claude",
+                &[],
+                &"继续🙂".repeat(20_000),
+                size,
+            );
+            assert!(packed.len() <= size);
+            assert!(packed.ends_with('…'));
+        }
     }
 }

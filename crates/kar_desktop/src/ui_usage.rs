@@ -1,6 +1,4 @@
-//! KUI `agent_usage.rs` Application Screen:
-//! `28px` Hero Cumulative Spend Card, Smooth GPUI `canvas` Trend Curve, 4-Cell KPI Footer,
-//! and `"消耗去向拆解"` (`Models` vs `Projects`) Breakdown with `pro_pill_indicator` & `pro_spring_bar`.
+//! Recorded token totals and turn activity by date, agent, or project.
 
 use gpui::{prelude::*, *};
 use kui::components::pro_chrome::{
@@ -12,8 +10,8 @@ use crate::{
     types::{ChatAccessMode, format_tokens_compact},
     ui_motion::Tactile,
     ui_primitives::{
-        FS_META, FS_TAG, FS_UI, R_CARD, R_CTRL, R_PILL, StudioPalette,
-        render_provider_color_tile, render_tray_folder_artwork, tnum_features,
+        FS_META, FS_TAG, FS_UI, R_CARD, R_CTRL, R_PILL, StudioPalette, render_provider_color_tile,
+        render_tray_folder_artwork, tnum_features,
     },
     workbench::KarWorkbench,
 };
@@ -52,6 +50,7 @@ fn catmull_rom_smooth(pts: &[(f32, f32)], steps_per_seg: usize) -> Vec<(f32, f32
 }
 
 fn demo_usage_snapshot() -> UsageAnalyticsSnapshot {
+    let today = chrono::Local::now().date_naive();
     UsageAnalyticsSnapshot {
         has_usage: true,
         total_chats: 14,
@@ -100,6 +99,11 @@ fn demo_usage_snapshot() -> UsageAnalyticsSnapshot {
                 quota_summary: None,
             },
         ],
+        turns_by_day: [2, 4, 3, 6, 5, 8, 4, 7, 9, 6, 11, 8, 12, 10]
+            .into_iter()
+            .enumerate()
+            .map(|(i, n)| (today - chrono::Duration::days(13 - i as i64), n))
+            .collect(),
         daily_activity: vec![
             ("D-13".into(), 2.),
             ("D-12".into(), 4.),
@@ -120,7 +124,12 @@ fn demo_usage_snapshot() -> UsageAnalyticsSnapshot {
 }
 
 impl KarWorkbench {
-    pub(crate) fn render_usage_panel(&self, s: &StudioPalette, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_usage_panel(
+        &self,
+        s: &StudioPalette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let loc = self.ui_locale;
         let is_demo_fallback = !self.usage_analytics.has_usage
             && matches!(self.access_mode, ChatAccessMode::DemoShowcase);
         let fallback_snap;
@@ -154,9 +163,13 @@ impl KarWorkbench {
                 false,
             ));
 
-        for (ix, (days, label)) in [(7u32, "近 7 天"), (30, "近 30 天"), (365, "全部记录")]
-            .into_iter()
-            .enumerate()
+        for (ix, (days, label)) in [
+            (7u32, loc.pick("7 天", "7 days")),
+            (30, loc.pick("30 天", "30 days")),
+            (0, loc.pick("全部", "All time")),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let active = self.usage_period_days == days;
             period_bar = period_bar.child(
@@ -181,34 +194,29 @@ impl KarWorkbench {
         }
 
         // ── 2. KUI `agent_usage.rs` Hero Cumulative Card + Smooth Canvas Curve ─
-        let total_combined = (snap.total_input_tokens + snap.total_output_tokens) as i64;
-        let window_len = match self.usage_period_days {
-            7 => 7usize,
-            30 => 14,
-            _ => snap.daily_activity.len().max(10),
-        };
-        let slice_start = snap.daily_activity.len().saturating_sub(window_len);
-        let raw_series: Vec<f32> = if snap.daily_activity.is_empty() {
-            vec![0.; 10]
-        } else {
-            snap.daily_activity[slice_start..]
-                .iter()
-                .map(|(_, v)| *v as f32)
-                .collect()
-        };
-        let max_y = raw_series
-            .iter()
-            .copied()
-            .fold(0.0_f32, f32::max)
-            .max(1.0);
+        let tokens = |count: u64| format_tokens_compact(count.min(i64::MAX as u64) as i64);
+        let total_combined = snap
+            .total_input_tokens
+            .saturating_add(snap.total_output_tokens);
+        let raw_series = activity_series(
+            &snap.turns_by_day,
+            chrono::Local::now().date_naive(),
+            self.usage_period_days,
+        );
+        let range_turns: usize = raw_series.iter().sum();
+        let raw_series: Vec<f32> = raw_series.into_iter().map(|n| n as f32).collect();
+        let max_y = raw_series.iter().copied().fold(0.0_f32, f32::max).max(1.0);
         let norm_pts: Vec<(f32, f32)> = if raw_series.len() <= 1 {
-            vec![(0.0, 0.15), (1.0, 0.15)]
+            vec![
+                (0.0, raw_series.first().copied().unwrap_or(0.) / max_y),
+                (1.0, raw_series.first().copied().unwrap_or(0.) / max_y),
+            ]
         } else {
             let denom = (raw_series.len() - 1) as f32;
             raw_series
                 .iter()
                 .enumerate()
-                .map(|(i, v)| (i as f32 / denom, (*v / max_y).clamp(0.04, 0.92)))
+                .map(|(i, v)| (i as f32 / denom, (*v / max_y).clamp(0., 1.)))
                 .collect()
         };
         let smooth_pts = catmull_rom_smooth(&norm_pts, 6);
@@ -284,86 +292,87 @@ impl KarWorkbench {
             .flex()
             .flex_col()
             .child(
-                div()
-                    .p(px(16.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(10.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_start()
-                            .justify_between()
-                            .gap(px(12.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(6.))
-                                            .child(
+                div().p(px(16.)).flex().flex_col().gap(px(10.)).child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .text_size(px(FS_META))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(s.muted)
+                                                .child(loc.pick(
+                                                    "累计词元总吞吐 (Input + Output)",
+                                                    "All-time tokens (input + output)",
+                                                )),
+                                        )
+                                        .when(is_demo_fallback, |r| {
+                                            r.child(
                                                 div()
-                                                    .text_size(px(FS_META))
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .text_color(s.muted)
-                                                    .child("累计词元总吞吐 (Input + Output)"),
+                                                    .px(px(6.))
+                                                    .py(px(1.))
+                                                    .rounded(px(R_PILL))
+                                                    .bg(s.pro.amber_soft)
+                                                    .text_size(px(10.))
+                                                    .text_color(s.pro.amber_ink)
+                                                    .child(loc.pick("演示数据", "Demo data")),
                                             )
-                                            .when(is_demo_fallback, |r| {
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_baseline()
+                                        .gap(px(10.))
+                                        .child(
+                                            div()
+                                                .font_features(tnum_features())
+                                                .text_size(px(28.))
+                                                .line_height(px(32.))
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(s.ink)
+                                                .child(if snap.has_usage {
+                                                    tokens(total_combined)
+                                                } else {
+                                                    "—".into()
+                                                }),
+                                        )
+                                        .when(
+                                            snap.has_cache_read && snap.total_input_tokens > 0,
+                                            |r| {
                                                 r.child(
                                                     div()
-                                                        .px(px(6.))
-                                                        .py(px(1.))
+                                                        .px(px(7.))
+                                                        .py(px(2.))
                                                         .rounded(px(R_PILL))
-                                                        .bg(s.pro.amber_soft)
-                                                        .text_size(px(10.))
-                                                        .text_color(s.pro.amber_ink)
-                                                        .child("演示数据"),
+                                                        .bg(s.pro.green_soft)
+                                                        .font_features(tnum_features())
+                                                        .text_size(px(FS_TAG))
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .text_color(s.pro.green_ink)
+                                                        .child(format!(
+                                                            "{} {:.1}%",
+                                                            loc.pick("缓存命中", "Cache hit"),
+                                                            snap.cache_hit_ratio
+                                                        )),
                                                 )
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_baseline()
-                                            .gap(px(10.))
-                                            .child(
-                                                div()
-                                                    .font_features(tnum_features())
-                                                    .text_size(px(28.))
-                                                    .line_height(px(32.))
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .text_color(s.ink)
-                                                    .child(format_tokens_compact(total_combined)),
-                                            )
-                                            .when(
-                                                snap.has_cache_read && snap.total_input_tokens > 0,
-                                                |r| {
-                                                    r.child(
-                                                        div()
-                                                            .px(px(7.))
-                                                            .py(px(2.))
-                                                            .rounded(px(R_PILL))
-                                                            .bg(s.pro.green_soft)
-                                                            .font_features(tnum_features())
-                                                            .text_size(px(FS_TAG))
-                                                            .font_weight(FontWeight::MEDIUM)
-                                                            .text_color(s.pro.green_ink)
-                                                            .child(format!(
-                                                                "缓存命中 {:.1}%",
-                                                                snap.cache_hit_ratio
-                                                            )),
-                                                    )
-                                                },
-                                            ),
-                                    ),
-                            )
-                            .child(period_bar),
-                    )
-                    .child(trend_canvas),
+                                            },
+                                        ),
+                                ),
+                        ),
+                ),
             )
             .child(
                 div()
@@ -376,22 +385,31 @@ impl KarWorkbench {
                     .items_center()
                     .justify_between()
                     .gap(px(10.))
+                    .flex_wrap()
                     .child(usage_footer_cell(
-                        "输入词元",
-                        format_tokens_compact(snap.total_input_tokens as i64),
+                        loc.pick("输入词元", "Input tokens"),
+                        if snap.has_usage {
+                            tokens(snap.total_input_tokens)
+                        } else {
+                            "—".into()
+                        },
                         s.pro.blue,
                         s,
                     ))
                     .child(usage_footer_cell(
-                        "输出与推理",
-                        format_tokens_compact(snap.total_output_tokens as i64),
+                        loc.pick("输出与推理", "Output tokens"),
+                        if snap.has_usage {
+                            tokens(snap.total_output_tokens)
+                        } else {
+                            "—".into()
+                        },
                         s.pro.teal,
                         s,
                     ))
                     .child(usage_footer_cell(
-                        "Prompt 缓存读取",
+                        loc.pick("Prompt 缓存读取", "Cached input"),
                         if snap.has_cache_read {
-                            format_tokens_compact(snap.total_cached_tokens as i64)
+                            tokens(snap.total_cached_tokens)
                         } else {
                             "—".into()
                         },
@@ -399,14 +417,20 @@ impl KarWorkbench {
                         s,
                     ))
                     .child(usage_footer_cell(
-                        "覆盖会话与轮次",
-                        format!("{} 会话 · {} 轮", snap.total_chats, snap.total_turns),
+                        loc.pick("覆盖会话与轮次", "Conversations"),
+                        format!(
+                            "{} {} · {} {}",
+                            snap.total_chats,
+                            loc.pick("会话", "chats"),
+                            snap.total_turns,
+                            loc.pick("轮", "turns")
+                        ),
                         s.pro.purple,
                         s,
                     )),
             );
 
-        // ── 3. KUI `"消耗去向拆解"` (`Where it went`: Models vs Projects) ────
+        // ── 3. KUI `loc.pick("消耗去向拆解","Usage breakdown")` (`Where it went`: Models vs Projects) ────
         let split_sensor = pro_selection_sensor();
         let split_key: SharedString = if self.usage_by_project {
             "ub-proj".into()
@@ -450,7 +474,7 @@ impl KarWorkbench {
                             } else {
                                 s.muted
                             })
-                            .child("按智能体模型")
+                            .child(loc.pick("按智能体模型", "By agent"))
                             .on_press(cx, |this, _, cx| {
                                 this.usage_by_project = false;
                                 cx.notify();
@@ -475,7 +499,7 @@ impl KarWorkbench {
                             } else {
                                 s.muted
                             })
-                            .child("按工作区项目")
+                            .child(loc.pick("按工作区项目", "By project"))
                             .on_press(cx, |this, _, cx| {
                                 this.usage_by_project = true;
                                 cx.notify();
@@ -498,12 +522,14 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .justify_between()
+                    .flex_wrap()
+                    .gap(px(8.))
                     .child(
                         div()
                             .text_size(px(FS_UI))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(s.ink)
-                            .child("消耗去向拆解"),
+                            .child(loc.pick("消耗去向拆解", "Usage breakdown")),
                     )
                     .child(split_toggle),
             );
@@ -523,18 +549,21 @@ impl KarWorkbench {
                         .py(px(14.))
                         .text_size(px(FS_META))
                         .text_color(s.muted)
-                        .child("发起对话后，各 CLI 智能体的词元吞吐与缓存占比将自动汇总于此。"),
+                        .child(loc.pick(
+                            "发起对话后，各 CLI 智能体的词元吞吐与缓存占比将自动汇总于此。",
+                            "Usage appears here when an agent reports it.",
+                        )),
                 );
             } else {
                 let max_tok = snap
                     .by_runtime
                     .iter()
-                    .map(|r| r.input_tokens + r.output_tokens)
+                    .map(|r| r.input_tokens.saturating_add(r.output_tokens))
                     .max()
                     .unwrap_or(1)
                     .max(1);
                 for (ix, row) in snap.by_runtime.iter().enumerate() {
-                    let sum = row.input_tokens + row.output_tokens;
+                    let sum = row.input_tokens.saturating_add(row.output_tokens);
                     let ratio = (sum as f32 / max_tok as f32).clamp(0.04, 1.);
                     let bar_color = tones[ix % tones.len()];
                     breakdown_card = breakdown_card.child(
@@ -573,8 +602,11 @@ impl KarWorkbench {
                                                     .text_size(px(FS_TAG))
                                                     .text_color(s.muted)
                                                     .child(format!(
-                                                        "{} 会话 · {} 轮",
-                                                        row.chat_count, row.turn_count
+                                                        "{} {} · {} {}",
+                                                        row.chat_count,
+                                                        loc.pick("会话", "chats"),
+                                                        row.turn_count,
+                                                        loc.pick("轮", "turns")
                                                     )),
                                             )
                                             .when_some(row.quota_summary.clone(), |r, q| {
@@ -597,9 +629,10 @@ impl KarWorkbench {
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(s.ink)
                                             .child(format!(
-                                                "{}（缓存 {}）",
-                                                format_tokens_compact(sum as i64),
-                                                format_tokens_compact(row.cached_tokens as i64)
+                                                "{} ({} {})",
+                                                tokens(sum),
+                                                loc.pick("缓存", "cached"),
+                                                tokens(row.cached_tokens)
                                             )),
                                     ),
                             )
@@ -625,7 +658,7 @@ impl KarWorkbench {
                     for c in &self.chat_list {
                         if c.info.workspace == p.root_path {
                             chats += 1;
-                            turns += c.turn_count.max(1);
+                            turns += c.turn_count;
                         }
                     }
                     (p.name.clone(), chats, turns)
@@ -634,7 +667,7 @@ impl KarWorkbench {
 
             if is_demo_fallback && proj_rows.iter().all(|(_, c, _)| *c == 0) {
                 proj_rows = vec![
-                    ("KWrok".into(), 8, 38),
+                    ("workspace".into(), 8, 38),
                     ("kar-frontend".into(), 4, 17),
                     ("kantor-docs".into(), 2, 7),
                 ];
@@ -648,9 +681,9 @@ impl KarWorkbench {
 
             for (ix, (pname, chats, turns)) in proj_rows.into_iter().enumerate() {
                 let ratio = if turns == 0 {
-                    0.06
+                    0.0
                 } else {
-                    (turns as f32 / max_turns as f32).clamp(0.08, 1.0)
+                    turns as f32 / max_turns as f32
                 };
                 let bar_color = tones[ix % tones.len()];
                 breakdown_card = breakdown_card.child(
@@ -685,7 +718,11 @@ impl KarWorkbench {
                                         .font_features(tnum_features())
                                         .text_size(px(FS_META))
                                         .text_color(s.muted)
-                                        .child(format!("{chats} 会话 · {turns} 轮交互")),
+                                        .child(format!(
+                                            "{chats} {} · {turns} {}",
+                                            loc.pick("会话", "chats"),
+                                            loc.pick("轮", "turns")
+                                        )),
                                 ),
                         )
                         .child(pro_spring_bar(
@@ -700,12 +737,37 @@ impl KarWorkbench {
             }
         }
 
+        let activity = div()
+            .w_full()
+            .rounded(px(R_CARD))
+            .bg(s.surface)
+            .border_1()
+            .border_color(s.line_soft)
+            .p(px(16.))
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(6.))
+                    .child(sheet_label(
+                        format!("{range_turns} {}", loc.pick("轮对话", "turns")),
+                        s,
+                    ))
+                    .child(period_bar),
+            )
+            .child(trend_canvas);
         let mut body = div()
             .p(px(20.))
             .flex()
             .flex_col()
             .gap(px(16.))
             .child(hero_card)
+            .child(activity)
             .child(breakdown_card);
 
         if !is_demo_fallback
@@ -731,15 +793,10 @@ impl KarWorkbench {
     }
 }
 
-fn usage_footer_cell(
-    label: &'static str,
-    value: String,
-    dot_col: Hsla,
-    s: &StudioPalette,
-) -> Div {
+fn usage_footer_cell(label: &'static str, value: String, dot_col: Hsla, s: &StudioPalette) -> Div {
     div()
         .flex_1()
-        .min_w_0()
+        .min_w(px(110.))
         .flex()
         .flex_col()
         .gap(px(3.))
@@ -766,4 +823,51 @@ fn usage_footer_cell(
                 .truncate()
                 .child(value),
         )
+}
+
+fn sheet_label(label: String, s: &StudioPalette) -> Div {
+    div()
+        .text_size(px(FS_UI))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(s.ink)
+        .child(label)
+}
+
+fn activity_series(
+    counts: &std::collections::BTreeMap<chrono::NaiveDate, usize>,
+    today: chrono::NaiveDate,
+    days: u32,
+) -> Vec<usize> {
+    let first = if days == 0 {
+        counts.keys().next().copied().unwrap_or(today).min(today)
+    } else {
+        today - chrono::Duration::days(i64::from(days - 1))
+    };
+    let span = (today - first).num_days() as usize + 1;
+    let mut buckets = vec![0usize; span.min(60)];
+    let n = buckets.len();
+    for (date, count) in counts.range(first..=today) {
+        let ix = ((*date - first).num_days() as usize) * n / span;
+        buckets[ix] = buckets[ix].saturating_add(*count);
+    }
+    buckets
+}
+
+#[cfg(test)]
+mod tests {
+    use super::activity_series;
+    #[test]
+    fn activity_ranges_count_days_instead_of_truncating_samples() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 26).unwrap();
+        let days = [(0, 1), (6, 4), (7, 3), (29, 7), (30, 11), (500, 9)];
+        let counts = days
+            .map(|(d, c)| (today - chrono::Duration::days(d), c))
+            .into_iter()
+            .collect();
+        for (range, total, len) in [(7, 5, 7), (30, 15, 30), (0, 35, 60)] {
+            let series = activity_series(&counts, today, range);
+            assert_eq!(series.iter().sum::<usize>(), total);
+            assert_eq!(series.len(), len);
+        }
+    }
 }

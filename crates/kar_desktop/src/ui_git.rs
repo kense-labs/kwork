@@ -26,7 +26,8 @@ use crate::{
     },
     ui_primitives::{
         CTRL_H, FS_META, FS_TAG, FS_TITLE, FS_UI, ICON_SM, ICON_XS, LH_META, R_CARD, R_PILL,
-        StudioPalette, mono_font, render_git_branch_icon, render_sample_tag, tnum_features,
+        StudioPalette, UiLocale, mono_font, render_git_branch_icon, render_sample_tag,
+        tnum_features,
     },
     workbench::{GitSubMode, KarWorkbench, Menu},
 };
@@ -308,8 +309,9 @@ impl KarWorkbench {
             })
             .into_any_element(),
             menu_divider(s).into_any_element(),
-            menu_icon_item("git-pull-btn", ProIcon::Download, "拉取上游更改", s)
+            menu_icon_item("git-pull-btn", ProIcon::Download, loc.pick("拉取上游更改", "Pull from upstream"), s)
                 .disabled(snap.is_demo || snap.upstream.is_none())
+                .when(snap.upstream.is_none(), |item| item.tip(loc.pick("当前分支未设置上游", "This branch has no upstream")))
                 .on_press(cx, move |this, _, cx| {
                     this.open_menu = None;
                     this.bridge.send(KarCommand::GitPull {
@@ -318,8 +320,9 @@ impl KarWorkbench {
                     cx.notify();
                 })
                 .into_any_element(),
-            menu_icon_item("git-push-btn", ProIcon::Upload, "推送当前分支", s)
+            menu_icon_item("git-push-btn", ProIcon::Upload, loc.pick("推送当前分支", "Push current branch"), s)
                 .disabled(snap.is_demo || !snap.has_origin || snap.current_branch.is_none())
+                .when(!snap.has_origin, |item| item.tip(loc.pick("尚未配置 origin 远端", "No origin remote configured")))
                 .on_press(cx, move |this, _, cx| {
                     this.open_menu = None;
                     this.bridge.send(KarCommand::GitPush {
@@ -431,7 +434,7 @@ impl KarWorkbench {
                             loc.pick("起草审查请求", "Draft review"),
                             s,
                         )
-                        .tip("将当前分支和改动文件填入输入框，确认发送后由智能体审查")
+                        .tip(loc.pick("将当前分支和改动文件填入输入框，确认发送后由智能体审查", "Add the current branch and changed files to a review draft you can edit and send"))
                         .disabled(
                             dirty_count == 0
                                 || snap.is_demo
@@ -561,6 +564,7 @@ impl KarWorkbench {
         s: &StudioPalette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let loc = self.ui_locale;
         let ws_commit = ws.to_path_buf();
         let committing = self.committing_workspaces.contains(ws);
         let stage_paths: Vec<_> = snap
@@ -570,13 +574,16 @@ impl KarWorkbench {
             .map(|f| f.path.clone())
             .collect();
         let commit_label = if committing {
-            "正在提交…".into()
+            loc.pick("正在提交…", "Committing…").to_owned()
         } else if staged_count > 0 {
-            format!("提交暂存 ({staged_count})")
+            format!("{} ({staged_count})", loc.pick("提交暂存", "Commit staged"))
         } else if dirty_count > 0 {
-            format!("全部暂存并提交 ({dirty_count})")
+            format!(
+                "{} ({dirty_count})",
+                loc.pick("全部暂存并提交", "Stage all and commit")
+            )
         } else {
-            "提交".to_owned()
+            loc.pick("提交", "Commit").to_owned()
         };
 
         // ── 1. Top Commit Composer Box (zero scrolling required) ────────────
@@ -1116,19 +1123,22 @@ impl KarWorkbench {
                     .text_size(px(FS_META))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(s.ink)
-                    .child("最近提交记录"),
+                    .child(self.ui_locale.pick("最近提交记录", "Recent commits")),
             );
 
         if snap.commits.is_empty() {
             return crate::ui_primitives::pane_empty(
                 render_git_branch_icon(20., s.muted),
-                "还没有提交",
-                "提交暂存的更改后，可以在这里查看历史记录。",
+                self.ui_locale.pick("还没有提交", "No commits yet"),
+                self.ui_locale.pick(
+                    "提交暂存的更改后，可以在这里查看历史记录。",
+                    "Commit your staged changes to start the history.",
+                ),
                 s,
             )
             .into_any_element();
         }
-        for c in snap.commits.iter().take(10) {
+        for c in &snap.commits {
             commits_card = commits_card.child(
                 div()
                     .py(px(5.))
@@ -1339,7 +1349,7 @@ impl KarWorkbench {
                     .text_size(px(FS_META))
                     .text_color(s.ink)
                     .child(pro_icon(ProIcon::Pin, ICON_SM, s.muted))
-                    .child("引用到对话")
+                    .child(self.ui_locale.pick("引用到对话", "Add to chat"))
                     .on_press(cx, move |this, win, cx| {
                         this.pin_code_file_to_composer(&preview_for_pin, win, cx);
                     }),
@@ -1385,35 +1395,45 @@ impl KarWorkbench {
     pub fn pin_git_changes_to_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let snap = &self.git_snapshot;
         let branch = snap.current_branch.as_deref().unwrap_or("HEAD");
-        let mut files_desc = if snap.files.is_empty() {
-            "当前工作树干净，请审查最新一次提交。".to_owned()
-        } else {
-            snap.files
-                .iter()
-                .take(10)
-                .map(|f| format!("{} {}", f.badge_char(), f.path.display()))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
+        let mut files = snap
+            .files
+            .iter()
+            .take(10)
+            .map(|f| format!("{} {}", f.badge_char(), f.path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
         if snap.files.len() > 10 {
-            files_desc.push_str(&format!("，另有 {} 个改动文件", snap.files.len() - 10));
+            let remaining = snap.files.len() - 10;
+            files.push_str(
+                match self.ui_locale {
+                    UiLocale::Zh => format!("，另有 {remaining} 个改动文件"),
+                    UiLocale::En => format!(", and {remaining} more changed files"),
+                }
+                .as_str(),
+            );
         }
-        let prompt = format!(
-            "请审查当前分支 `{branch}` 的 Git 变更（{files_desc}），检查潜在边界缺陷并给出一段清晰的提交说明。"
+        let prompt = match (self.ui_locale, files.is_empty()) {
+            (UiLocale::Zh, true) => {
+                format!("当前工作树干净，请审查分支 `{branch}` 的最新一次提交。")
+            }
+            (UiLocale::En, true) => {
+                format!("The working tree is clean. Review the latest commit on `{branch}`.")
+            }
+            (UiLocale::Zh, false) => format!(
+                "请审查当前分支 `{branch}` 的 Git 变更（{files}），检查潜在边界缺陷并给出一段清晰的提交说明。"
+            ),
+            (UiLocale::En, false) => format!(
+                "Review the Git changes on `{branch}` ({files}). Check for edge cases and suggest a commit message."
+            ),
+        };
+        self.fill_starter_prompt(&prompt, window, cx);
+        self.notify_toast(
+            self.ui_locale.pick(
+                "审查请求已填入输入框，可编辑后发送",
+                "Review draft added. Edit it before sending.",
+            ),
+            cx,
         );
-        self.composer_editor.update(cx, |ed, cx| {
-            let current = ed.value();
-            let text = if current.is_empty() {
-                prompt
-            } else {
-                format!("{current}\n\n{prompt}")
-            };
-            ed.set_value(text, window, cx);
-        });
-        let focus = self.composer_editor.read(cx).focus_handle(cx);
-        window.focus(&focus, cx);
-        self.notify_toast("审查请求已填入输入框，可编辑后发送", cx);
-        cx.notify();
     }
 
     /// Bug #9 Fix: Pins source code using `SelectionLocator::CodeLines` (`[CODE]` badge & accurate
@@ -1446,8 +1466,7 @@ impl KarWorkbench {
             },
             excerpt,
         });
-        let focus = self.composer_editor.read(cx).focus_handle(cx);
-        window.focus(&focus, cx);
+        self.reveal_chat_composer(window, cx);
         self.notify_toast(
             format!("已引用源码「{}」到对话", preview.rel_path.display()),
             cx,

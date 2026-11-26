@@ -914,6 +914,7 @@ fn towork_inspired_fence_briefs_schedules_and_budgets_e2e() {
                 revision: 1,
                 title: "每日早报".into(),
                 prompt: "汇总进度".into(),
+                workspace: None,
                 cadence: ScheduleCadence::EveryMinutes(15),
                 enabled: true,
                 runtime_id: "codex".into(),

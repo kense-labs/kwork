@@ -81,6 +81,52 @@ impl KarWorkbench {
             .when_some(action, |row, button| row.child(button))
     }
 
+    pub(crate) fn render_delete_undo(&self, s: &StudioPalette, cx: &mut Context<Self>) -> Option<Div> {
+        let loc = self.ui_locale;
+        self
+            .deferred_delete_chat
+            .as_ref()
+            .map(|(_, del_title, started)| {
+                let elapsed = started.elapsed().as_secs_f32();
+                let remain = (1.0 - elapsed / 5.0).clamp(0.0, 1.0);
+                div().px(px(10.)).pb(px(6.)).flex_none().child(
+                    div()
+                        .px(px(9.))
+                        .py(px(6.))
+                        .rounded(px(R_CTRL))
+                        .bg(s.card)
+                        .border_1()
+                        .border_color(s.line)
+                        .flex()
+                        .items_center()
+                        .gap(px(7.))
+                        .child(pro_progress_ring(
+                            remain,
+                            14.,
+                            2.,
+                            s.pro.amber,
+                            s.line_strong,
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(FS_META))
+                                .text_color(s.ink)
+                                .child(format!(
+                                    "{} \"{del_title}\"",
+                                    loc.pick("即将删除", "Deleting")
+                                )),
+                        )
+                        .child(
+                            soft_button("undo-pending-thread-deletion", loc.pick("撤销", "Undo"), s)
+                                .on_press(cx, |this, _, cx| this.undo_deferred_chat_delete(cx)),
+                        ),
+                )
+            })
+    }
+
     pub(crate) fn render_sidebar(
         &mut self,
         width: f32,
@@ -323,49 +369,7 @@ impl KarWorkbench {
             )
         });
 
-        // ── 3. Reversible 5s Undo Deletion Banner (`pro_progress_ring`) ──────
-        let undo_banner = self
-            .deferred_delete_chat
-            .as_ref()
-            .map(|(_, del_title, started)| {
-                let elapsed = started.elapsed().as_secs_f32();
-                let remain = (1.0 - elapsed / 5.0).clamp(0.0, 1.0);
-                div().px(px(10.)).pb(px(6.)).flex_none().child(
-                    div()
-                        .px(px(9.))
-                        .py(px(6.))
-                        .rounded(px(R_CTRL))
-                        .bg(s.card)
-                        .border_1()
-                        .border_color(s.line)
-                        .flex()
-                        .items_center()
-                        .gap(px(7.))
-                        .child(pro_progress_ring(
-                            remain,
-                            14.,
-                            2.,
-                            s.pro.amber,
-                            s.line_strong,
-                        ))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(FS_META))
-                                .text_color(s.ink)
-                                .child(format!(
-                                    "{} \"{del_title}\"",
-                                    loc.pick("即将删除", "Deleting")
-                                )),
-                        )
-                        .child(
-                            soft_button("side-undo-delete", loc.pick("撤销", "Undo"), &s)
-                                .on_press(cx, |this, _, cx| this.undo_deferred_chat_delete(cx)),
-                        ),
-                )
-            });
+        let undo_banner = self.sidebar_open.then(|| self.render_delete_undo(&s, cx)).flatten();
 
         // ── 4. Filter Active & Settled Threads ──────────────────────────────
         let deferred_del_id = self.deferred_delete_chat.as_ref().map(|(id, _, _)| *id);

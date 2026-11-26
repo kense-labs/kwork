@@ -486,12 +486,14 @@ fn extract_bearer(headers: &HeaderMap) -> Option<String> {
 async fn handle_pair(
     State(link): State<SharedRemoteLink>,
     Json(req): Json<PairRequest>,
+    notify: impl FnOnce(RemoteHostTelemetry),
 ) -> Response {
     let now = now_epoch_ms();
-    let res = {
+    let (res, snapshot) = {
         let mut guard = link.lock().unwrap_or_else(|e| e.into_inner());
-        guard.redeem_pairing_ticket(req, now)
+        (guard.redeem_pairing_ticket(req, now), guard.telemetry(now))
     };
+    notify(snapshot);
     match res {
         Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
         Err((code, msg)) => (code, Json(serde_json::json!({ "error": msg }))).into_response(),
@@ -547,8 +549,18 @@ async fn handle_v1_command(
 
 /// Build the `/v1/*` bidirectional pairing & control router to merge onto Kar's `HttpChatFeed` router.
 pub fn remote_link_router(link: SharedRemoteLink) -> Router {
+    remote_link_router_with_updates(link, |_| {})
+}
+
+pub(crate) fn remote_link_router_with_updates(
+    link: SharedRemoteLink,
+    notify: impl Fn(RemoteHostTelemetry) + Clone + Send + Sync + 'static,
+) -> Router {
     Router::new()
-        .route("/v1/pair", post(handle_pair))
+        .route(
+            "/v1/pair",
+            post(move |state, req| handle_pair(state, req, notify.clone())),
+        )
         .route("/v1/state", get(handle_v1_state))
         .route("/v1/command", post(handle_v1_command))
         .with_state(link)
@@ -570,8 +582,7 @@ pub fn client_redeem_pair_code(
     let payload = serde_json::to_string(&body)?;
     let mut resp = ureq::post(&url)
         .header("content-type", "application/json")
-        .send(payload.as_bytes())
-        .map_err(|e| anyhow::anyhow!("配对连接失败：{e}"))?;
+        .send(payload.as_bytes())?;
     let raw = resp
         .body_mut()
         .read_to_string()

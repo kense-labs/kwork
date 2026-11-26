@@ -114,6 +114,8 @@ pub enum BriefFieldKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BriefFormField {
     pub id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
     pub label: String,
     #[serde(default)]
     pub kind: BriefFieldKind,
@@ -281,6 +283,62 @@ impl BriefFormDraft {
         self.pinned_revision = Some(latest_rev);
     }
 
+    pub fn missing_required<'a>(
+        &self,
+        revision: &'a KarBriefRevision,
+    ) -> Option<&'a BriefFormField> {
+        revision
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                BriefBlock::ReviewForm { fields, .. } => Some(fields.iter()),
+                _ => None,
+            })
+            .flatten()
+            .find(|field| field.required && self.answer(field).is_none())
+    }
+
+    pub fn answer(&self, field: &BriefFormField) -> Option<String> {
+        match field.kind {
+            BriefFieldKind::SingleChoice => self
+                .single
+                .get(&field.id)
+                .or(field.default_value.as_ref())
+                .filter(|value| field.options.contains(value))
+                .cloned(),
+            BriefFieldKind::MultiChoice => {
+                let picked = match self.multi.get(&field.id) {
+                    Some(values) => field
+                        .options
+                        .iter()
+                        .filter(|o| values.contains(*o))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    None => field
+                        .default_value
+                        .iter()
+                        .filter(|value| field.options.contains(value))
+                        .cloned()
+                        .collect(),
+                };
+                (!picked.is_empty()).then(|| picked.join("、"))
+            }
+            BriefFieldKind::Boolean => self
+                .boolean
+                .get(&field.id)
+                .copied()
+                .or_else(|| field.default_value.as_ref()?.parse::<bool>().ok())
+                .map(|val| if val { "是".into() } else { "否".into() }),
+            BriefFieldKind::Note => self
+                .notes
+                .get(&field.id)
+                .or(field.default_value.as_ref())
+                .map(|note| note.trim())
+                .filter(|note| !note.is_empty())
+                .map(str::to_owned),
+        }
+    }
+
     pub fn format_reply_message(&self, brief: &KarBrief) -> String {
         let rev_num = self.pinned_revision.unwrap_or(brief.latest_revision);
         let snap = brief.at_revision(Some(rev_num)).unwrap_or_else(|| brief.current());
@@ -291,36 +349,10 @@ impl BriefFormDraft {
         for block in &snap.blocks {
             if let BriefBlock::ReviewForm { fields, .. } = block {
                 for field in fields {
-                    let answer = match field.kind {
-                        BriefFieldKind::SingleChoice => self
-                            .single
-                            .get(&field.id)
-                            .cloned()
-                            .or_else(|| field.default_value.clone())
-                            .or_else(|| field.options.first().cloned())
-                            .unwrap_or_else(|| "未选择".into()),
-                        BriefFieldKind::MultiChoice => {
-                            let set = self.multi.get(&field.id);
-                            let picked: Vec<String> = set
-                                .map(|s| s.iter().cloned().collect())
-                                .unwrap_or_default();
-                            if picked.is_empty() {
-                                "未选择".into()
-                            } else {
-                                picked.join("、")
-                            }
-                        }
-                        BriefFieldKind::Boolean => {
-                            let val = self.boolean.get(&field.id).copied().unwrap_or(false);
-                            if val { "是".into() } else { "否".into() }
-                        }
-                        BriefFieldKind::Note => self
-                            .notes
-                            .get(&field.id)
-                            .map(|s| s.trim().to_owned())
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or_else(|| "（无补充说明）".into()),
-                    };
+                    let answer = self.answer(field).unwrap_or_else(|| match field.kind {
+                        BriefFieldKind::Note => "（无补充说明）".into(),
+                        _ => "未选择".into(),
+                    });
                     lines.push(format!("- {}：{}", field.label, answer));
                 }
             }
@@ -696,6 +728,7 @@ pub fn build_showcase_kui_brief(turn_id: Option<Uuid>) -> KarBrief {
                         fields: vec![
                             BriefFormField {
                                 id: "rollout".into(),
+                                required: true,
                                 label: "发布节奏选择".into(),
                                 kind: BriefFieldKind::SingleChoice,
                                 options: vec![
@@ -707,6 +740,7 @@ pub fn build_showcase_kui_brief(turn_id: Option<Uuid>) -> KarBrief {
                             },
                             BriefFormField {
                                 id: "targets".into(),
+                                required: false,
                                 label: "需同步更新的右侧文档".into(),
                                 kind: BriefFieldKind::MultiChoice,
                                 options: vec![
@@ -718,6 +752,7 @@ pub fn build_showcase_kui_brief(turn_id: Option<Uuid>) -> KarBrief {
                             },
                             BriefFormField {
                                 id: "note".into(),
+                                required: false,
                                 label: "补充批注".into(),
                                 kind: BriefFieldKind::Note,
                                 options: Vec::new(),
@@ -805,6 +840,26 @@ mod tests {
         assert_eq!(b2.latest_revision, 2);
         assert_eq!(b2.at_revision(Some(1)).unwrap().title, "方案 v1");
         assert_eq!(b2.at_revision(Some(2)).unwrap().title, "方案 v2");
+    }
+
+    #[test]
+    fn required_brief_fields_use_explicit_or_declared_answers() {
+        let mut revision = build_showcase_kui_brief(None).current().clone();
+        let fields = serde_json::from_value(serde_json::json!([
+            {"id":"pick","label":"Pick","kind":"single_choice","options":["A","B"],"required":true},
+            {"id":"confirm","label":"Confirm","kind":"boolean","required":true},
+            {"id":"note","label":"Note","kind":"note","required":true}
+        ])).unwrap();
+        revision.blocks = vec![BriefBlock::ReviewForm { fields, submit_label: "Send".into() }];
+        let mut draft = BriefFormDraft::default();
+        assert_eq!(draft.missing_required(&revision).unwrap().id, "pick");
+        draft.single.insert("pick".into(), "B".into());
+        assert_eq!(draft.missing_required(&revision).unwrap().id, "confirm");
+        draft.boolean.insert("confirm".into(), false);
+        draft.notes.insert("note".into(), "  ".into());
+        assert_eq!(draft.missing_required(&revision).unwrap().id, "note");
+        draft.notes.insert("note".into(), "ready".into());
+        assert!(draft.missing_required(&revision).is_none());
     }
 
     #[test]

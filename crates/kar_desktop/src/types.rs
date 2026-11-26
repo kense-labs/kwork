@@ -780,6 +780,10 @@ impl ProviderStatusInfo {
 
     /// Human-readable capability & account line for the Agents sheet.
     pub fn ready_detail_line(&self) -> String {
+        self.ready_detail_line_in(crate::ui_primitives::UiLocale::Zh)
+    }
+
+    pub(crate) fn ready_detail_line_in(&self, loc: crate::ui_primitives::UiLocale) -> String {
         let mut parts: Vec<String> = Vec::new();
         if let Some(v) = self.version_label() {
             parts.push(format!("v{v}"));
@@ -787,16 +791,29 @@ impl ProviderStatusInfo {
         if let Some(acc) = self.account_label() {
             parts.push(acc);
         } else if self.readiness() == ProviderReadiness::AccountUnverified {
-            parts.push("已安装，登录状态由程序自行管理".into());
+            parts.push(
+                loc.pick(
+                    "已安装，登录状态由程序自行管理",
+                    "Installed; sign-in managed by the agent",
+                )
+                .into(),
+            );
         }
         if let Some(ref quota) = self.quota_summary {
             parts.push(quota.clone());
         }
         if !self.models.is_empty() {
-            parts.push(format!("{} 个模型", self.models.len()));
+            parts.push(format!(
+                "{} {}",
+                self.models.len(),
+                loc.pick("个模型", "models")
+            ));
         }
         if self.mcp_office_supported {
-            parts.push("支持 Office 直连".into());
+            parts.push(
+                loc.pick("支持 Office 直连", "Office tools available")
+                    .into(),
+            );
         }
         parts.join(" · ")
     }

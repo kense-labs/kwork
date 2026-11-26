@@ -75,6 +75,16 @@ impl FileDropzone {
         self.description = desc.into();
         self
     }
+    pub fn set_labels(
+        &mut self,
+        label: impl Into<SharedString>,
+        description: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.label = label.into();
+        self.description = description.into();
+        cx.notify();
+    }
     pub fn with_extensions(mut self, ext: &[&str]) -> Self {
         self.accept = ext
             .iter()

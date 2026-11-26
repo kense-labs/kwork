@@ -148,6 +148,21 @@ impl<S: FieldStyle> Field<S> {
     pub fn set_value(&mut self, value: impl Into<String>, w: &Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |s, cx| s.set_value(value, w, cx))
     }
+    /// Change a field's language without replacing its editor or editing state.
+    pub fn set_label_and_hint(
+        &mut self,
+        label: impl Into<SharedString>,
+        hint: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.label = label.into();
+        self.editor.update(cx, |editor, cx| {
+            editor.set_label(self.label.clone());
+            editor.set_placeholder(hint);
+            cx.notify();
+        });
+        cx.notify();
+    }
     pub fn set_description(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
         let text = text.into();
         if self.description != text {
