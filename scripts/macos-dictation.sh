@@ -40,7 +40,7 @@ for arch in $(lipo -archs "$app/Contents/MacOS/Kwrok"); do
         helper="$target_dir/$triple/release/kwrok-dictation"
     fi
     cargo build "${args[@]}"
-    lipo -verify_arch "$arch" "$helper"
+    lipo "$helper" -verify_arch "$arch"
     cp "$helper" "$tmp/helper-$arch"
     slices+=("$tmp/helper-$arch")
 done
