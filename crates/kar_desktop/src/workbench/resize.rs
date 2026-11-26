@@ -10,6 +10,37 @@ pub(super) enum Divider {
     Document,
 }
 
+/// A single rounded stroke. The shallow bend points into the window and opens up on hover.
+fn folded_grip(divider: Divider, strength: f32, color: Hsla) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let center = bounds.center();
+            let inward = if divider == Divider::Sidebar { 1. } else { -1. };
+            let bend = px(inward * (1. + 5. * strength));
+            let half_height = px(8.5 - 1.5 * strength);
+            let end_x = center.x - bend * 0.5;
+            let top = point(end_x, center.y - half_height);
+            let tip = point(end_x + bend, center.y);
+            let bottom = point(end_x, center.y + half_height);
+            let radius = px(1.25);
+            let mut stroke = PathBuilder::stroke(radius * 2.);
+            stroke.move_to(top);
+            stroke.line_to(tip);
+            stroke.line_to(bottom);
+            if let Ok(path) = stroke.build() {
+                window.paint_path(path, color);
+                for end in [top, bottom] {
+                    let cap = Bounds::centered_at(end, size(radius * 2., radius * 2.));
+                    window.paint_quad(fill(cap, color).corner_radii(radius));
+                }
+            }
+        },
+    )
+    .w(px(14.))
+    .h(px(24.))
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct Span {
     pub value: f32,
@@ -226,27 +257,36 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (id, label, focus, arrow) = match divider {
+        let loc = self.ui_locale;
+        let (id, resize_label, expand_label, focus) = match divider {
             Divider::Sidebar => (
                 "sidebar-width-drag",
-                self.ui_locale.pick("调整侧栏宽度", "Resize sidebar"),
+                loc.pick("调整侧栏宽度", "Resize sidebar"),
+                loc.pick("展开侧栏", "Expand sidebar"),
                 self.sidebar_divider_focus.clone(),
-                ProIcon::ChevronRight,
             ),
             Divider::Document => (
                 "kar-split-divider",
-                self.ui_locale
-                    .pick("调整文档面板宽度", "Resize document pane"),
+                loc.pick("调整文档面板宽度", "Resize document pane"),
+                loc.pick("展开右侧面板", "Expand right panel"),
                 self.doc_divider_focus.clone(),
-                ProIcon::ChevronLeft,
             ),
         };
-        let active =
-            focus.is_focused(window) || self.pane_drag.is_some_and(|d| d.divider == divider);
-        let hint = self.ui_locale.pick("拖动或用左右键调整，Shift 加速，Enter 折叠或还原，双击复位",
-            "Drag or use arrow keys to resize. Shift moves faster. Enter toggles the pane. Double-click to reset.");
+        let focused = focus.is_focused(window);
+        let keyboard_focus = focused && window.last_input_was_keyboard();
+        let active = if collapsed {
+            keyboard_focus
+        } else {
+            focused || self.pane_drag.is_some_and(|d| d.divider == divider)
+        };
+        let hint = if collapsed {
+            expand_label
+        } else {
+            loc.pick("拖动或用左右键调整，Shift 加速，Enter 折叠，双击复位",
+                "Drag or use arrow keys to resize. Shift moves faster. Enter collapses the pane. Double-click to reset.")
+        };
         let width = f32::from(window.viewport_size().width);
-        let hit = if collapsed { 18. } else { 13. };
+        let hit = if collapsed { 28. } else { 13. };
         let left = (boundary - hit / 2.).clamp(0., (width - hit).max(0.));
         let ink = if active { s.primary } else { s.muted };
         let motion = window.use_keyed_state((id, 0usize), cx, |_, _| Slide::new(0.));
@@ -269,26 +309,38 @@ impl KarWorkbench {
         let key_focus = focus.clone();
         let mut control = div()
             .id(id)
-            .role(Role::Splitter)
-            .aria_label(label)
-            .aria_min_numeric_value(0.)
-            .aria_max_numeric_value(100.)
-            .aria_numeric_value(f64::from(if collapsed {
-                0.
-            } else {
-                (if divider == Divider::Sidebar {
-                    span.value
+            .map(|control| {
+                if collapsed {
+                    control
+                        .role(Role::Button)
+                        .aria_label(expand_label)
+                        .aria_expanded(false)
                 } else {
-                    span.extent - span.value
-                }) / span.extent
-                    * 100.
-            }))
+                    let pane = if divider == Divider::Sidebar {
+                        span.value
+                    } else {
+                        span.extent - span.value
+                    };
+                    control
+                        .role(Role::Splitter)
+                        .aria_label(resize_label)
+                        .aria_min_numeric_value(0.)
+                        .aria_max_numeric_value(100.)
+                        .aria_numeric_value(f64::from(pane / span.extent * 100.))
+                }
+            })
             .track_focus(&focus)
             .tab_stop(true)
             .absolute()
             .left(px(left))
             .w(px(hit))
-            .cursor_col_resize()
+            .map(|d| {
+                if collapsed {
+                    d.cursor_pointer()
+                } else {
+                    d.cursor_col_resize()
+                }
+            })
             .flex()
             .items_center()
             .justify_center()
@@ -297,42 +349,54 @@ impl KarWorkbench {
             })
             .on_hover(cx.listener(move |_, hover: &bool, _, cx| {
                 motion.update(cx, |m, cx| {
-                    m.duration(if *hover { 1. } else { 0. }, 0.16, cx)
+                    let target = if *hover { 1. } else { 0. };
+                    if cx.reduce_motion() {
+                        m.reset(target);
+                    } else {
+                        m.duration(target, 0.16, cx);
+                    }
                 });
                 cx.notify();
             }))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |wb, ev: &MouseDownEvent, win, cx| {
-                    key_focus.focus(win, cx);
-                    win.prevent_default();
+            .when(collapsed, |d| {
+                d.on_click(cx.listener(move |wb, _, win, cx| {
+                    wb.toggle_divider(divider, cx);
+                    focus.focus(win, cx);
                     cx.stop_propagation();
-                    if collapsed {
-                        wb.toggle_divider(divider, cx);
-                    } else if ev.click_count >= 2 {
-                        let default = if divider == Divider::Sidebar {
-                            SIDEBAR_W
+                }))
+            })
+            .when(!collapsed, |d| {
+                d.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |wb, ev: &MouseDownEvent, win, cx| {
+                        key_focus.focus(win, cx);
+                        win.prevent_default();
+                        cx.stop_propagation();
+                        if ev.click_count >= 2 {
+                            let default = if divider == Divider::Sidebar {
+                                SIDEBAR_W
+                            } else {
+                                span.extent * SPLIT_DEFAULT
+                            };
+                            wb.size_divider(divider, span, default, document_width, true, cx);
+                            wb.store_pane_sizes();
                         } else {
-                            span.extent * SPLIT_DEFAULT
-                        };
-                        wb.size_divider(divider, span, default, document_width, true, cx);
-                        wb.store_pane_sizes();
-                    } else {
-                        wb.pane_drag = Some(PaneDrag {
-                            divider,
-                            start_x: f32::from(ev.position.x),
-                            raw: span.value,
-                            moved: false,
-                            span,
-                            original_sidebar: wb.sidebar_width,
-                            original_ratio: wb.split_ratio,
-                            original_mode: wb.layout_mode,
-                            document_width,
-                        });
-                        cx.notify();
-                    }
-                }),
-            )
+                            wb.pane_drag = Some(PaneDrag {
+                                divider,
+                                start_x: f32::from(ev.position.x),
+                                raw: span.value,
+                                moved: false,
+                                span,
+                                original_sidebar: wb.sidebar_width,
+                                original_ratio: wb.split_ratio,
+                                original_mode: wb.layout_mode,
+                                document_width,
+                            });
+                            cx.notify();
+                        }
+                    }),
+                )
+            })
             .on_key_down(cx.listener(move |wb, ev: &KeyDownEvent, win, cx| {
                 let step = if ev.keystroke.modifiers.shift {
                     64.
@@ -352,7 +416,8 @@ impl KarWorkbench {
                         wb.finish_divider(true, cx);
                         None
                     }
-                    "enter" => {
+                    "space" if !collapsed => return,
+                    "enter" | "space" => {
                         wb.toggle_divider(divider, cx);
                         None
                     }
@@ -382,14 +447,17 @@ impl KarWorkbench {
                 cx.stop_propagation();
             }));
         if collapsed {
+            let grip_ink = if keyboard_focus {
+                s.primary
+            } else {
+                s.surface
+                    .blend(s.muted.opacity(0.86))
+                    .blend(s.ink.opacity(0.52 * strength))
+            };
             control = control
-                .top(px((f32::from(window.viewport_size().height) - 40.) * 0.5))
-                .h(px(40.))
-                .border_1()
-                .border_color(s.line)
-                .bg(s.surface)
-                .rounded(px(5.))
-                .child(pro_icon(arrow, 12., ink));
+                .top(px((f32::from(window.viewport_size().height) - 48.) * 0.5))
+                .h(px(48.))
+                .child(folded_grip(divider, strength, grip_ink));
         } else {
             control = control.top_0().bottom_0().child(
                 div()
