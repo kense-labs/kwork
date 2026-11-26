@@ -369,6 +369,55 @@ impl StreamOutputBudget {
         self.evict_completed_if_needed(&id);
     }
 
+    /// A feed projection contains complete tool outputs, including previously rendered tools.
+    pub(crate) fn sync_tool_snapshots(
+        &mut self,
+        chat: Uuid,
+        previous: &[kar::chat::ChatTurn],
+        turns: &[kar::chat::ChatTurn],
+    ) {
+        use kar::chat::Item;
+        for (turn_index, turn) in turns.iter().enumerate() {
+            let old = previous.get(turn_index).filter(|old| old.id == turn.id);
+            for (index, row) in turn.items.iter().enumerate() {
+                let Item::Tool { id, activity } = &row.item else {
+                    continue;
+                };
+                let parts = activity
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.content.as_ref());
+                let old_tool =
+                    old.and_then(|turn| turn.items.get(index))
+                        .and_then(|row| match &row.item {
+                            Item::Tool {
+                                id: old_id,
+                                activity,
+                            } if old_id == id => Some(activity),
+                            _ => None,
+                        });
+                let old_parts = old_tool.and_then(|tool| tool.result.as_ref()?.content.as_ref());
+                if old_parts == parts
+                    && (parts.is_none()
+                        || old_tool.is_some_and(|tool| tool.finished == activity.finished))
+                {
+                    continue;
+                }
+                let key = format!("{chat}/{}/{index}", turn.id);
+                if let Some(old) = self.streams.remove(&key) {
+                    self.used_bytes -= old.retained_bytes();
+                }
+                if let Some(parts) = parts {
+                    for part in parts {
+                        if let kar::OutputPart::Text { text } = part {
+                            self.append(&key, text.as_bytes(), activity.finished);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub fn mark_completed(&mut self, stream_id: &str) {
         if let Some(buf) = self.streams.get_mut(stream_id) {
             buf.completed = true;

@@ -5,6 +5,7 @@ mod context_usage;
 mod activity;
 mod composer_activity;
 mod message_time;
+mod reply_stream;
 mod turn_outline;
 mod turn_rail;
 pub(crate) mod turn_navigation;
@@ -16,7 +17,7 @@ use std::time::Duration;
 
 
 use gpui::{prelude::*, *};
-use gpui_kit::component::{text::{TextView, TextViewStyle}, tooltip::Tooltip};
+use gpui_kit::component::tooltip::Tooltip;
 use kar::{
     ApprovalMode, ChangeKind as ToolChangeKind, PendingRequest, PermissionDecision, PolicyOption,
     RequestKind, TaskStatus,
@@ -328,6 +329,7 @@ impl KarWorkbench {
                                     .child(pro_icon(ProIcon::ChevronDown, ICON_XS, s.muted))
                                     .on_press(cx, |this, _, cx| {
                                         this.turn_navigation.cancel_jump();
+                                        this.chat_follow_paused = false;
                                         this.chat_scroll.scroll_to_bottom();
                                         cx.notify();
                                     }),
@@ -358,6 +360,17 @@ impl KarWorkbench {
             let rail_inset = if self.sidebar_open { 2. } else { 30. };
             let rail = self.render_turn_navigation(center_w, rail_inset, &s, window, cx);
             let show_rail = rail.is_some();
+            // Markdown can gain a line after the final feed event has been delivered.
+            // Read the previous layout immediately before the scroll view measures its new height.
+            let tail = self.projected.turns.last().map(|turn| turn.id);
+            let live_tail = window.use_keyed_state("recent-live-tail", cx, |_, _| None);
+            let follow_layout = live_tail.update(cx, |recent, _| {
+                if is_working {
+                    *recent = tail.map(|id| (id, std::time::Instant::now()));
+                }
+                recent.is_some_and(|(id, at)| Some(id) == tail && at.elapsed() < Duration::from_secs(2))
+            }) && pending_count == 0 && !self.chat_search_open && !self.chat_follow_paused;
+            let handle = self.chat_scroll.clone();
             let count = rows.len();
             let scroll = div()
                 .id("kar-timeline-scroll")
@@ -366,7 +379,23 @@ impl KarWorkbench {
                 .flex()
                 .flex_col()
                 .overflow_y_scroll()
-                .on_scroll(cx.listener(|this, _, _, _| this.turn_navigation.cancel_jump()))
+                .on_scroll(cx.listener(|this, event: &ScrollEvent, window, cx| {
+                    this.turn_navigation.cancel_jump();
+                    let dy = event.delta.pixel_delta(window.line_height()).y;
+                    if dy > px(0.) && this.chat_scroll.max_offset().y > px(1.) {
+                        this.chat_follow_paused = true;
+                    } else if dy < px(0.) && this.chat_follow_paused {
+                        let view = cx.entity().downgrade();
+                        window.on_next_frame(move |_, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                if this.chat_scroll.max_offset().y + this.chat_scroll.offset().y <= px(1.) {
+                                    this.chat_follow_paused = false;
+                                    cx.notify();
+                                }
+                            });
+                        });
+                    }
+                }))
                 .children(rows.into_iter().enumerate().map(|(index, row)| {
                     chat_content_lane(center_w, thread_w, window)
                         .flex_none()
@@ -391,6 +420,14 @@ impl KarWorkbench {
                         .flex_1()
                         .min_h_0()
                         .overflow_hidden()
+                        .when(follow_layout, |d| d.child(canvas(
+                            move |_, _, _| {
+                                if handle.max_offset().y + handle.offset().y <= px(1.) {
+                                    handle.scroll_to_bottom();
+                                }
+                            },
+                            |_, _, _, _| {},
+                        ).absolute().size_0()))
                         .child(scroll)
                         .children(rail),
                 )
@@ -3855,19 +3892,37 @@ impl KarWorkbench {
             Activity::Working => (MascotStatus::Thinking, loc.pick("正在处理", "Working").into()),
             Activity::Replying => (MascotStatus::Writing, loc.pick("正在回复", "Replying").into()),
         };
-        let mascot = window.use_keyed_state("composer-assistant-mascot", cx, |_, _| {
-            AiMascot::new(loc.pick("助手", "Assistant"))
-                .with_size(24.)
-                .with_status(pose)
-                .follow_pointer(false)
-        });
+        // Keep the animated views as children so their frame notifications stay local.
+        let mascot = window
+            .use_keyed_state("composer-assistant-mascot", cx, |_, cx| {
+                cx.new(|_| {
+                    AiMascot::new(loc.pick("助手", "Assistant"))
+                        .with_size(24.)
+                        .with_status(pose)
+                        .follow_pointer(false)
+                })
+            })
+            .read(cx)
+            .clone();
         if mascot.read(cx).status() != pose {
             mascot.update(cx, |view, cx| view.set_status(pose, cx));
         }
+        // Each status starts on the same baseline, without a rising/fading label transition.
+        let label_key = SharedString::from(format!("composer-activity-{label}"));
+        let shimmer = window
+            .use_keyed_state(label_key, cx, |_, cx| {
+                cx.new(|cx| {
+                    kui::components::text_shimmer::TextShimmer::new(label.clone(), cx)
+                        .with_font_size(FS_CONTROL)
+                        .with_highlight_strength(0.6)
+                })
+            })
+            .read(cx)
+            .clone();
         div()
             .id("composer-activity")
             .role(Role::Status)
-            .aria_label(label.clone())
+            .aria_label(label)
             .h(px(24.))
             .pl(px(6.))
             .mb(px(6.))
@@ -3877,7 +3932,7 @@ impl KarWorkbench {
             .text_size(px(FS_CONTROL))
             .text_color(s.muted)
             .child(mascot)
-            .child(label)
+            .child(shimmer)
             .into_any_element()
     }
 
@@ -4818,63 +4873,20 @@ impl KarWorkbench {
         s: &StudioPalette,
         _cx: &mut Context<Self>,
     ) -> Div {
-        let copy_label = self.ui_locale.pick("复制代码", "Copy code");
-        let muted = s.muted;
-        let mut table = StyleRefinement::default()
-            .border(px(0.))
-            .bg(transparent_black())
-            .rounded(px(0.));
-        table.overflow.x = Some(Overflow::Scroll);
-        let style = TextViewStyle::default()
-            .code_block(StyleRefinement::default().pt(px(38.)))
-            .table(table)
-            .table_head(
-                StyleRefinement::default()
-                    .bg(transparent_black())
-                    .font_weight(FontWeight::SEMIBOLD),
-            )
-            .table_cell(
-                StyleRefinement::default()
-                    .py(px(8.))
-                    .px(px(8.))
-                    .border_color(transparent_black()),
-            );
         div()
             .w_full()
             .min_w_0()
             .text_size(px(FS_UI))
             .line_height(px(LH_READ))
             .text_color(s.ink)
-            .child(
-                TextView::markdown(
-                    ElementId::Name(format!("reply-{turn_id}-{item_ix}").into()),
-                    text.to_owned(),
-                )
-                .style(style)
-                .code_block_actions(move |code, window, cx| {
-                    let key = format!(
-                        "code-{turn_id}-{item_ix}-{}",
-                        code.span.map_or(0, |span| span.start)
-                    );
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(5.))
-                        .when_some(code.lang().filter(|lang| !lang.is_empty()), |row, lang| {
-                            row.child(
-                                div()
-                                    .max_w(px(90.))
-                                    .truncate()
-                                    .text_size(px(FS_META))
-                                    .text_color(muted)
-                                    .child(lang),
-                            )
-                        })
-                        .child(copy_text_button(key, copy_label, code.code(), window, cx))
-                })
-                .selectable(true)
-                .stream_fade(streaming),
-            )
+            .child(reply_stream::ReplyMarkdown {
+                turn_id,
+                item_ix,
+                source: text.to_owned().into(),
+                streaming,
+                muted: s.muted,
+                copy_label: self.ui_locale.pick("复制代码", "Copy code"),
+            })
     }
 
     fn part_is_open(&self, key: (Uuid, usize), default_open: bool) -> bool {

@@ -10,6 +10,8 @@ mod sidebar;
 mod hosted;
 #[cfg(all(test,unix))]
 mod side_question_test;
+#[cfg(test)]
+mod streaming_test;
 pub use sidebar::{SidebarAction, SidebarMetadata};
 pub use planner::PlanQuestion;
 mod chat_goal;
@@ -1041,7 +1043,6 @@ impl WorkerState {
         let evt_tx = self.evt_tx.clone();
         let store_opt = self.store.clone();
         let store_dir = self.store_dir.clone();
-        let caps = Some(session.capabilities());
         tokio::spawn(async move {
             let send_res = if attachments.is_empty() {
                 session.send(request_id, payload).await
@@ -1054,17 +1055,13 @@ impl WorkerState {
                 session.send(request_id, payload).await
             };
 
+            // The ordered follower owns the transcript. A second final snapshot here can
+            // overtake its buffered text and make a finished reply jump back to a partial one.
             attempt.in_flight = false;
             match send_res {
                 Ok(_turn) => {
                     attempt.last_error = None;
                     let _ = evt_tx.send_blocking(KarBridgeEvent::PromptLifecycle { attempt });
-                    if let Ok(h) = session.history() {
-                        let queued = active_queued_inputs(store_opt.as_ref(), chat_id);
-                        let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
-                            state_from_history(h, caps, queued),
-                        ));
-                    }
                 }
                 Err(err) => {
                     attempt.last_error = Some(err.to_string());
@@ -1076,12 +1073,6 @@ impl WorkerState {
                         detail: format!("{err}。可以在消息下方点「重试」。"),
                         is_error: true,
                     });
-                    if let Ok(h) = session.history() {
-                        let queued = active_queued_inputs(store_opt.as_ref(), chat_id);
-                        let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
-                            state_from_history(h, caps, queued),
-                        ));
-                    }
                 }
             }
             if let Some(store) = store_opt
@@ -1666,17 +1657,46 @@ async fn probe_all_providers(workspace: PathBuf) -> Vec<ProviderStatusInfo> {
         .collect()
 }
 
+/// Only unfinished text can share a visual frame. Every event still advances the Kar replica.
+fn is_text_delta(event: &ChatEvent) -> bool {
+    matches!(&event.update, kar::chat::ChatUpdate::Frame { frame, .. }
+        if !frame.edits.is_empty() && frame.edits.iter().all(|edit| matches!(edit,
+            kar::chat::ChatEdit::Text { role: Role::Assistant | Role::Reasoning, final_text: false, .. }
+        )))
+}
+
+struct TextFrameClock {
+    next: tokio::time::Instant,
+    pending: bool,
+}
+
+impl TextFrameClock {
+    fn new() -> Self {
+        Self { next: tokio::time::Instant::now(), pending: false }
+    }
+
+    fn should_defer(&mut self, text_only: bool) -> bool {
+        self.pending = text_only && tokio::time::Instant::now() < self.next;
+        self.pending
+    }
+
+    fn published(&mut self, text_only: bool) {
+        self.pending = false;
+        self.next = tokio::time::Instant::now();
+        if text_only {
+            self.next += Duration::from_millis(16);
+        }
+    }
+}
+
 fn state_from_replica(
-    info: Option<ChatInfo>,
     replica: &ChatReplica,
     caps: Option<Capabilities>,
     queued_inputs: Vec<QueuedInput>,
 ) -> ProjectedChatState {
-    let info = info.map(|_| replica.chat().clone());
-    let chat_id = info.as_ref().map(|i| i.id);
     ProjectedChatState {
-        chat_id,
-        info,
+        chat_id: Some(replica.chat().id),
+        info: Some(replica.chat().clone()),
         turns: replica.turns().to_vec(),
         pending_requests: replica.pending_requests().to_vec(),
         queued_inputs,
@@ -1867,7 +1887,6 @@ fn spawn_local_follower(
         };
 
         probe_side_question(&snap.history.chat,&evt_tx);
-        let info = Some(snap.history.chat.clone());
         let mut replica = ChatReplica::from_snapshot(snap);
         let send_receipt = |replica: &ChatReplica| {
             let _ = evt_tx.send_blocking(KarBridgeEvent::HandoffReceipt {
@@ -1878,20 +1897,30 @@ fn spawn_local_follower(
         let mut duplicates_ignored = 0u64;
         let mut gaps_recovered = 0u64;
 
-        let queued = active_queued_inputs(Some(&store), chat_id);
-        let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(state_from_replica(
-            info.clone(),
-            &replica,
-            caps,
-            queued,
-        )));
-        let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
-            FeedConnectionState::Connected {
-                cursor: Some(replica.cursor().to_string()),
-                duplicates_ignored,
-                gaps_recovered,
-            },
-        ));
+        let inbox = store_dir.join(format!("{chat_id}.inputs"));
+        let mut queue_stamp = None;
+        let mut queued = Vec::new();
+        let mut publish = |replica: &ChatReplica, text_only: bool, duplicates_ignored, gaps_recovered| {
+            // SDK queue receipts reread the whole journal. Text deltas cannot change receipts,
+            // but another client can still atomically publish a new inbox while we stream.
+            let stamp = std::fs::metadata(&inbox).and_then(|m| Ok((m.len(), m.modified()?))).ok();
+            if !text_only || queue_stamp != stamp {
+                queued = active_queued_inputs(Some(&store), chat_id);
+                queue_stamp = stamp;
+            }
+            let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
+                state_from_replica(replica, caps, queued.clone()),
+            ));
+            let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
+                FeedConnectionState::Connected {
+                    cursor: Some(replica.cursor().to_string()),
+                    duplicates_ignored,
+                    gaps_recovered,
+                },
+            ));
+        };
+        publish(&replica, false, duplicates_ignored, gaps_recovered);
+        let mut clock = TextFrameClock::new();
 
         let mut feed = match tokio::task::spawn_blocking({
             let store = store.clone();
@@ -1914,67 +1943,73 @@ fn spawn_local_follower(
         };
 
         loop {
-            tokio::select! {
+            let item = tokio::select! {
+                biased;
                 _ = cancel_rx.changed() => break,
-                item = feed.recv() => {
-                    match item {
-                        Ok(ev) => {
-                            use kar::chat::ChatUpdate;
-                            let receipt_changed = matches!(&ev.update, ChatUpdate::HandoffPrepared{..} | ChatUpdate::HandoffReady{..} | ChatUpdate::HandoffFailed{..} | ChatUpdate::WorkspaceHandoff{..} | ChatUpdate::ContextRewound{..});
-                            match replica.apply(ev) {
-                                Ok(true) => {
-                                    if receipt_changed { send_receipt(&replica); probe_side_question(replica.chat(),&evt_tx); }
-                                    let queued = active_queued_inputs(Some(&store), chat_id);
-                                    let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
-                                        state_from_replica(info.clone(), &replica, caps, queued),
-                                    ));
-                                    let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
-                                        FeedConnectionState::Connected {
-                                            cursor: Some(replica.cursor().to_string()),
-                                            duplicates_ignored,
-                                            gaps_recovered,
-                                        },
-                                    ));
-                                }
-                                Ok(false) => {
-                                    duplicates_ignored += 1;
-                                }
-                                Err(KarError::InvalidCursor) => {
-                                    gaps_recovered += 1;
-                                    if let Ok(Ok(fresh)) = tokio::task::spawn_blocking({
-                                        let store = store.clone();
-                                        move || store.feed_snapshot(chat_id)
-                                    }).await {
-                                        replica = ChatReplica::from_snapshot(fresh);
-                                        send_receipt(&replica);
-                                        let queued = active_queued_inputs(Some(&store), chat_id);
-                                        let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
-                                            state_from_replica(info.clone(), &replica, caps, queued),
-                                        ));
-                                    }
-                                }
-                                Err(err) => {
-                                    let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
-                                        FeedConnectionState::Disconnected {
-                                            last_cursor: Some(replica.cursor().to_string()),
-                                            reason: err.to_string(),
-                                        },
-                                    ));
-                                    break;
-                                }
-                            }
+                _ = tokio::time::sleep_until(clock.next), if clock.pending => {
+                    publish(&replica, true, duplicates_ignored, gaps_recovered);
+                    clock.published(true);
+                    continue;
+                }
+                item = feed.recv() => item,
+            };
+            let mut text_only = false;
+            let mut receipt_changed = false;
+            let change = item.and_then(|event| {
+                use kar::chat::ChatUpdate;
+                text_only = is_text_delta(&event);
+                receipt_changed = matches!(&event.update, ChatUpdate::HandoffPrepared{..} | ChatUpdate::HandoffReady{..} | ChatUpdate::HandoffFailed{..} | ChatUpdate::WorkspaceHandoff{..} | ChatUpdate::ContextRewound{..});
+                replica.apply(event)
+            });
+            let change = match change {
+                Err(KarError::InvalidCursor) => {
+                    gaps_recovered += 1;
+                    text_only = false;
+                    receipt_changed = true;
+                    let store = store.clone();
+                    let recovered = tokio::task::spawn_blocking(move || {
+                        let snapshot = store.feed_snapshot(chat_id)?;
+                        let feed = store.follow(chat_id, Some(snapshot.cursor))?;
+                        kar::Result::Ok((snapshot, feed))
+                    }).await;
+                    match recovered {
+                        Ok(Ok((fresh, resumed_feed))) => {
+                            replica = ChatReplica::from_snapshot(fresh);
+                            feed = resumed_feed;
+                            Ok(true)
                         }
-                        Err(err) => {
-                            let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
-                                FeedConnectionState::Disconnected {
-                                    last_cursor: Some(replica.cursor().to_string()),
-                                    reason: err.to_string(),
-                                },
-                            ));
-                            break;
-                        }
+                        Ok(Err(err)) => Err(err.to_string()),
+                        Err(err) => Err(err.to_string()),
                     }
                 }
+                other => other.map_err(|err| err.to_string()),
+            };
+            match change {
+                Ok(true) => {
+                    if receipt_changed {
+                        send_receipt(&replica);
+                        probe_side_question(replica.chat(), &evt_tx);
+                    }
+                }
+                Ok(false) => {
+                    duplicates_ignored += 1;
+                    continue;
+                }
+                Err(reason) => {
+                    if clock.pending {
+                        publish(&replica, true, duplicates_ignored, gaps_recovered);
+                    }
+                    let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
+                        FeedConnectionState::Disconnected {
+                            last_cursor: Some(replica.cursor().to_string()), reason,
+                        },
+                    ));
+                    break;
+                }
+            }
+            if !clock.should_defer(text_only) {
+                publish(&replica, text_only, duplicates_ignored, gaps_recovered);
+                clock.published(text_only);
             }
         }
     });
@@ -2161,31 +2196,66 @@ async fn run_http_subscriber_loop(
         },
     };
     let _ = evt_tx.send_blocking(KarBridgeEvent::AccessModeChanged(access_mode));
-    let mut initial_proj = state_from_replica(info.clone(), &replica, None, Vec::new());
-    if let Some(ref rem) = paired {
-        initial_proj.can_steer = rem.role.can_mutate();
-    }
-    let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(initial_proj));
-    let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
-        FeedConnectionState::Connected {
-            cursor: Some(replica.cursor().to_string()),
-            duplicates_ignored,
-            gaps_recovered,
-        },
-    ));
+    let publish = |replica: &ChatReplica, duplicates_ignored, gaps_recovered| {
+        let mut projection = state_from_replica(replica, None, Vec::new());
+        projection.can_steer = paired.as_ref().is_some_and(|remote| remote.role.can_mutate());
+        let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(projection));
+        let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
+            FeedConnectionState::Connected {
+                cursor: Some(replica.cursor().to_string()), duplicates_ignored, gaps_recovered,
+            },
+        ));
+    };
+    publish(&replica, duplicates_ignored, gaps_recovered);
+    let mut clock = TextFrameClock::new();
 
     // Phase 2: Stream `GET /events` via `HttpChatFeed::recv(committed_cursor)` while
     // monitoring TCP liveness + `/v1/state` sync when paired.
     let mut health_tick = tokio::time::interval(Duration::from_millis(450));
     health_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut state_sync_counter = 0u32;
+    // Keep the same in-flight health probe while consuming SSE. A slow paired host
+    // may take seconds to answer its separate command and state requests.
+    use futures::StreamExt as _;
+    let endpoint = url.as_str();
+    let peer = paired.as_ref();
+    let mut health = Box::pin(futures::stream::unfold(
+        (health_tick, 0u32),
+        |(mut tick, mut count)| async move {
+            tick.tick().await;
+            let reachable = check_http_reachable(endpoint).await;
+            let mut extended = None;
+            if reachable.is_ok() {
+                count = count.wrapping_add(1);
+                if let Some(remote) = peer.filter(|_| count.is_multiple_of(3)) {
+                    let url = endpoint.to_owned();
+                    let token = remote.token.clone();
+                    extended = tokio::task::spawn_blocking(move || {
+                        let ping = RemoteCommandEnvelope {
+                            expected_chat_id: None,
+                            request_id: Uuid::new_v4(),
+                            expected_revision: None,
+                            action: RemoteAction::Ping { sent_ms: now_epoch_ms() },
+                        };
+                        let _ = client_send_remote_command(&url, &token, &ping);
+                        client_fetch_remote_state(&url, &token)
+                    }).await.ok();
+                }
+            }
+            Some(((reachable, extended), (tick, count)))
+        },
+    ));
 
     loop {
         let committed_cursor = replica.cursor();
         tokio::select! {
+            biased;
             _ = cancel_rx.changed() => break,
-            _ = health_tick.tick() => {
-                match check_http_reachable(&url).await {
+            _ = tokio::time::sleep_until(clock.next), if clock.pending => {
+                publish(&replica, duplicates_ignored, gaps_recovered);
+                clock.published(true);
+            }
+            Some((reachable, extended)) = health.next() => {
+                match reachable {
                     Ok(()) => {
                         if is_currently_offline {
                             is_currently_offline = false;
@@ -2198,24 +2268,14 @@ async fn run_http_subscriber_loop(
                                 },
                             ));
                         }
-                        state_sync_counter = state_sync_counter.wrapping_add(1);
-                        if let Some(ref rem) = paired && state_sync_counter.is_multiple_of(3) {
-                            let u = url.clone();
-                            let tok = rem.token.clone();
-                            match tokio::task::spawn_blocking(move || {
-                                let ping = RemoteCommandEnvelope {
-                                    expected_chat_id: None,
-                                    request_id: Uuid::new_v4(),
-                                    expected_revision: None,
-                                    action: RemoteAction::Ping { sent_ms: now_epoch_ms() },
-                                };
-                                let _ = client_send_remote_command(&u, &tok, &ping);
-                                client_fetch_remote_state(&u, &tok)
-                            }).await {
-                                Ok(Ok(ext)) => {
-                                    let _ = evt_tx.send_blocking(KarBridgeEvent::RemoteExtendedStateUpdated { url: url.clone(), peer_id: rem.peer_id, snapshot: ext });
+                        if let (Some(remote), Some(result)) = (peer, extended) {
+                            match result {
+                                Ok(snapshot) => {
+                                    let _ = evt_tx.send_blocking(KarBridgeEvent::RemoteExtendedStateUpdated {
+                                        url: url.clone(), peer_id: remote.peer_id, snapshot,
+                                    });
                                 }
-                                Ok(Err(err)) if err.to_string().contains("403") => {
+                                Err(err) if err.to_string().contains("403") => {
                                     let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
                                         FeedConnectionState::Disconnected {
                                             last_cursor: Some(replica.cursor().to_string()),
@@ -2242,6 +2302,8 @@ async fn run_http_subscriber_loop(
                 }
             }
             ev_res = feed.recv(committed_cursor) => {
+                let was_text_delta = ev_res.as_ref().is_ok_and(is_text_delta);
+                let previous_gaps = gaps_recovered;
                 match apply_http_event_with_gap_recovery(
                     &feed,
                     &mut replica,
@@ -2255,20 +2317,23 @@ async fn run_http_subscriber_loop(
                     Ok(changed) => {
                         is_currently_offline = false;
                         offline_attempt = 0;
-                        if changed {
-                            let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
-                                state_from_replica(info.clone(), &replica, None, Vec::new()),
+                        let text_only = was_text_delta && previous_gaps == gaps_recovered;
+                        if changed && !clock.should_defer(text_only) {
+                            publish(&replica, duplicates_ignored, gaps_recovered);
+                            clock.published(text_only);
+                        } else if !changed {
+                            let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
+                                FeedConnectionState::Connected {
+                                    cursor: Some(replica.cursor().to_string()), duplicates_ignored, gaps_recovered,
+                                },
                             ));
                         }
-                        let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
-                            FeedConnectionState::Connected {
-                                cursor: Some(replica.cursor().to_string()),
-                                duplicates_ignored,
-                                gaps_recovered,
-                            },
-                        ));
                     }
                     Err(err) => {
+                        if clock.pending {
+                            publish(&replica, duplicates_ignored, gaps_recovered);
+                            clock.published(true);
+                        }
                         is_currently_offline = true;
                         offline_attempt += 1;
                         let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(

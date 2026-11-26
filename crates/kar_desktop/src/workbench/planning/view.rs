@@ -304,7 +304,7 @@ impl KarWorkbench {
                     .max_h(px(height))
                     .overflow_y_scroll()
                     .px(px(5.))
-                    .child(self.render_assistant_markdown_blocks(id, 0, text, false, s, cx)),
+                    .child(self.render_assistant_markdown_blocks(id, 0, text, phase == Phase::Working, s, cx)),
             );
         } else if phase == Phase::Interrupted
             && let (Some(p), Some(chat)) = (record, chat)

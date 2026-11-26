@@ -6025,6 +6025,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower",
+ "unicode-segmentation",
  "ureq",
  "url",
  "uuid",

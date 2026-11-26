@@ -1,0 +1,259 @@
+//! A single selectable Markdown document per reply, including while it is arriving.
+use super::*;
+use gpui_kit::{
+    base::Easing,
+    component::text::{TextView, TextViewMotion, TextViewState, TextViewStyle},
+};
+use kui::primitives::family::disabled_motion;
+use std::{collections::VecDeque, time::Instant};
+use unicode_segmentation::UnicodeSegmentation;
+
+// Enough time for a burst to unfold over several frames, even on a 60 Hz display.
+const REVEAL: Duration = Duration::from_millis(100);
+const TICK: Duration = Duration::from_millis(20);
+
+#[derive(Default)]
+struct Reveal {
+    settled: usize,
+    arrivals: VecDeque<(Instant, usize)>,
+}
+
+impl Reveal {
+    fn reset(&mut self, len: usize) {
+        self.arrivals.clear();
+        self.settled = len;
+    }
+
+    fn position(&mut self, now: Instant) -> usize {
+        while let Some(&(at, end)) = self.arrivals.front() {
+            if now.saturating_duration_since(at) < REVEAL {
+                break;
+            }
+            self.settled = end;
+            self.arrivals.pop_front();
+        }
+        let mut previous = self.settled;
+        let mut position = self.settled as f64;
+        for &(at, end) in &self.arrivals {
+            let fraction = now.saturating_duration_since(at).as_secs_f64() / REVEAL.as_secs_f64();
+            position += (end - previous) as f64 * fraction;
+            previous = end;
+        }
+        position.floor() as usize
+    }
+}
+
+fn next_boundary(source: &str, painted: usize, desired: usize) -> usize {
+    if desired <= painted || desired >= source.len() {
+        return desired.clamp(painted, source.len());
+    }
+    let suffix = &source[painted..];
+    painted
+        + suffix
+            .grapheme_indices(true)
+            .map(|(offset, g)| offset + g.len())
+            .find(|&end| painted + end >= desired)
+            .unwrap_or(suffix.len())
+}
+
+struct ReplyStream {
+    document: Entity<TextViewState>,
+    source: SharedString,
+    painted: usize,
+    reveal: Reveal,
+    timer: Option<Task<()>>,
+    animated: bool,
+}
+
+impl ReplyStream {
+    fn new(source: &SharedString, cx: &mut Context<Self>) -> Self {
+        // Opening an existing turn immediately presents everything already received.
+        let document = cx.new(|cx| TextViewState::markdown(source, cx));
+        Self {
+            document,
+            source: source.clone(),
+            painted: source.len(),
+            reveal: Reveal {
+                settled: source.len(),
+                ..Default::default()
+            },
+            timer: None,
+            animated: false,
+        }
+    }
+
+    fn receive(&mut self, source: SharedString, animate: bool, cx: &mut Context<Self>) {
+        if animate != self.animated {
+            self.animated = animate;
+            let motion = if animate {
+                TextViewMotion::default()
+                    .with_stream_fade(Duration::from_millis(145))
+                    .with_stream_fade_stagger(Duration::from_millis(4))
+                    .with_stream_fade_easing(Easing::EaseOut)
+            } else {
+                TextViewMotion::default()
+            };
+            self.document.update(cx, |doc, _| doc.set_motion(motion));
+        }
+
+        if source == self.source && (animate || self.painted == source.len()) {
+            return;
+        }
+        if !animate || !source.starts_with(self.source.as_ref()) {
+            // Replacements, completion and interruptions always reconcile to Kar's full text.
+            self.timer = None;
+            self.reveal.reset(source.len());
+            self.painted = source.len();
+            self.document
+                .update(cx, |doc, cx| doc.set_text(&source, cx));
+            self.source = source;
+            return;
+        }
+
+        self.reveal
+            .arrivals
+            .push_back((Instant::now(), source.len()));
+        self.source = source;
+        if self.timer.is_none() {
+            self.timer = Some(cx.spawn(async |weak, cx| {
+                loop {
+                    cx.background_executor().timer(TICK).await;
+                    if !weak
+                        .update(cx, |stream, cx| stream.advance(cx))
+                        .unwrap_or(false)
+                    {
+                        break;
+                    }
+                }
+            }));
+        }
+    }
+
+    fn advance(&mut self, cx: &mut Context<Self>) -> bool {
+        let desired = self.reveal.position(Instant::now());
+        let end = next_boundary(&self.source, self.painted, desired);
+        if end > self.painted {
+            let delta = &self.source[self.painted..end];
+            self.document.update(cx, |doc, cx| doc.push_str(delta, cx));
+            self.painted = end;
+        }
+        if self.painted == self.source.len() {
+            self.reveal.reset(self.painted);
+            self.timer = None;
+            return false;
+        }
+        true
+    }
+}
+
+#[derive(IntoElement)]
+pub(super) struct ReplyMarkdown {
+    pub turn_id: Uuid,
+    pub item_ix: usize,
+    pub source: SharedString,
+    pub streaming: bool,
+    pub muted: Hsla,
+    pub copy_label: &'static str,
+}
+
+impl RenderOnce for ReplyMarkdown {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let Self {
+            turn_id,
+            item_ix,
+            source,
+            streaming,
+            muted,
+            copy_label,
+        } = self;
+        let state = window.use_keyed_state(
+            ElementId::Name(format!("reply-{turn_id}-{item_ix}").into()),
+            cx,
+            |_, cx| ReplyStream::new(&source, cx),
+        );
+        let animate = streaming && window.is_visible() && !disabled_motion(cx);
+        let document = state.update(cx, |stream, cx| {
+            stream.receive(source, animate, cx);
+            stream.document.clone()
+        });
+
+        let mut table = StyleRefinement::default()
+            .border(px(0.))
+            .bg(transparent_black())
+            .rounded(px(0.));
+        table.overflow.x = Some(Overflow::Scroll);
+        let style = TextViewStyle::default()
+            .code_block(StyleRefinement::default().pt(px(38.)))
+            .table(table)
+            .table_head(
+                StyleRefinement::default()
+                    .bg(transparent_black())
+                    .font_weight(FontWeight::SEMIBOLD),
+            )
+            .table_cell(
+                StyleRefinement::default()
+                    .py(px(8.))
+                    .px(px(8.))
+                    .border_color(transparent_black()),
+            );
+
+        TextView::new(&document)
+            .style(style)
+            .selectable(true)
+            .code_block_actions(move |code, window, cx| {
+                let key = format!(
+                    "code-{turn_id}-{item_ix}-{}",
+                    code.span.map_or(0, |span| span.start)
+                );
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .when_some(code.lang().filter(|lang| !lang.is_empty()), |row, lang| {
+                        row.child(
+                            div()
+                                .max_w(px(90.))
+                                .truncate()
+                                .text_size(px(FS_META))
+                                .text_color(muted)
+                                .child(lang),
+                        )
+                    })
+                    .child(copy_text_button(key, copy_label, code.code(), window, cx))
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{REVEAL, Reveal, next_boundary};
+    use std::time::Instant;
+    use unicode_segmentation::UnicodeSegmentation;
+
+    #[test]
+    fn overlapping_bursts_grow_monotonically_and_finish_on_deadline() {
+        let start = Instant::now();
+        let mut reveal = Reveal {
+            settled: 12,
+            ..Default::default()
+        };
+        reveal.arrivals.push_back((start, 52));
+        assert_eq!(reveal.position(start + REVEAL / 2), 32);
+        reveal.arrivals.push_back((start + REVEAL / 2, 72));
+        assert_eq!(reveal.position(start + REVEAL), 62);
+        assert_eq!(reveal.position(start + REVEAL + REVEAL / 2), 72);
+        assert!(reveal.arrivals.is_empty());
+    }
+
+    #[test]
+    fn frames_never_split_a_received_grapheme() {
+        let source = "好e\u{301}👩🏽‍💻🇨🇳。";
+        let mut painted = 0;
+        for expected in source.graphemes(true) {
+            let end = next_boundary(source, painted, painted + 1);
+            assert_eq!(&source[painted..end], expected);
+            painted = end;
+        }
+        assert_eq!(painted, source.len());
+    }
+}

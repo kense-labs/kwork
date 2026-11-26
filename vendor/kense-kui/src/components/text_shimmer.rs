@@ -65,6 +65,7 @@ fn glide_duration(duration: f32, t: f32) -> f32 {
 
 pub struct TextShimmer {
     font_size: f32,
+    highlight_strength: f32,
     text: SharedString,
     previous: SharedString,
     exit_at: Option<Instant>,
@@ -90,6 +91,7 @@ impl TextShimmer {
     pub fn new(text: impl Into<SharedString>, cx: &App) -> Self {
         Self {
             font_size: FONT,
+            highlight_strength: 1.,
             text: text.into(),
             previous: "".into(),
             exit_at: None,
@@ -120,6 +122,13 @@ impl TextShimmer {
     pub fn with_font_size(mut self, size: f32) -> Self {
         if size.is_finite() && size > 0. {
             self.font_size = size;
+        }
+        self
+    }
+    /// Limit the sweep's peak contrast while keeping the resting text readable.
+    pub fn with_highlight_strength(mut self, strength: f32) -> Self {
+        if strength.is_finite() {
+            self.highlight_strength = strength.clamp(0., 1.);
         }
         self
     }
@@ -303,7 +312,7 @@ impl Render for TextShimmer {
             let left: f32 = shaped.x_for_index(start).into();
             let right: f32 = shaped.x_for_index(end).into();
             let offset = ((left + right) * 0.5 - peak) / band;
-            let strength = falloff(offset);
+            let strength = self.highlight_strength * falloff(offset);
             (
                 start..end,
                 HighlightStyle {

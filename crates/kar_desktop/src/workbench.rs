@@ -576,6 +576,7 @@ pub struct KarWorkbench {
     /// The one tool call whose input and output are showing.
     pub(crate) tool_detail: Option<(Uuid, usize)>,
     pub chat_scroll: ScrollHandle,
+    pub(crate) chat_follow_paused: bool,
     pub(crate) turn_navigation: crate::ui_chat::turn_navigation::TurnNavigation,
 
     // ── Documents ───────────────────────────────────────────────────────────
@@ -1550,6 +1551,7 @@ impl KarWorkbench {
             turn_review: None,
             tool_detail: None,
             chat_scroll: ScrollHandle::new(),
+            chat_follow_paused: false,
             turn_navigation: Default::default(),
             office_tabs: Vec::new(),
             active_office_tab: None,
@@ -2736,9 +2738,12 @@ impl KarWorkbench {
                     proj.chat_id == self.projected.chat_id && proj.is_demo == self.projected.is_demo;
                 let max_y = f32::from(self.chat_scroll.max_offset().y);
                 let cur_y = f32::from(self.chat_scroll.offset().y);
-                let at_end = max_y <= 2. || (max_y + cur_y) < 56.;
+                let at_end = max_y + cur_y <= 1.;
                 let new_turn_appended = same_chat && proj.turns.len() > self.projected.turns.len();
                 let switched_chat = !same_chat;
+                if switched_chat {
+                    self.chat_follow_paused = false;
+                }
 
                 let was_running = same_chat && self.turn_in_progress();
                 let had_pending = same_chat && !self.projected.pending_requests.is_empty();
@@ -2812,7 +2817,8 @@ impl KarWorkbench {
                 if self.pending_decisions().next().is_none() {
                     if switched_chat && self.projected.turns.len() <= 1 && !self.turn_in_progress() {
                         self.chat_scroll.set_offset(point(px(0.), px(0.)));
-                    } else if switched_chat || at_end || new_turn_appended {
+                    } else if switched_chat || (!self.chat_follow_paused
+                        && (new_turn_appended || (at_end && !was_running && !now_running))) {
                         self.chat_scroll.scroll_to_bottom();
                     }
                 }
@@ -3948,6 +3954,7 @@ impl KarWorkbench {
                 let attachments = std::mem::take(&mut self.pending_attachments);
                 self.composer_editor
                     .update(cx, |ed, cx| ed.set_value("", window, cx));
+                self.chat_follow_paused = false;
                 self.chat_scroll.scroll_to_bottom();
                 if self.prefs.follow_up_mode == crate::prefs::FollowUpMode::Queue {
                     self.queued_prompt = Some(QueuedPrompt {
@@ -4022,6 +4029,7 @@ impl KarWorkbench {
             self.turn_targets.insert(request_id, tgt.clone());
         }
         self.record_immutable_turn_capture(request_id, target.as_ref(), &attachments);
+        self.chat_follow_paused = false;
         self.chat_scroll.scroll_to_bottom();
         if matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
             self.bridge.send(KarCommand::SendDemoPrompt {
@@ -5777,23 +5785,14 @@ impl KarWorkbench {
     ) {
         self.client_reducer.sync_background_commands(&proj.turns);
 
-        // Enforce 4 MiB head+tail stream budget on large tool outputs
-        for turn in &proj.turns {
-            for ti in &turn.items {
-                if let Item::Tool { id, activity } = &ti.item
-                    && let Some(ref res) = activity.result
-                    && let Some(ref parts) = res.content
-                {
-                    for part in parts {
-                        if let kar::OutputPart::Text { text } = part {
-                            self.client_reducer
-                                .stream_budget
-                                .append(id.clone(), text.as_bytes(), activity.finished);
-                        }
-                    }
-                }
-            }
-        }
+        let previous = if self.projected.chat_id == proj.chat_id {
+            self.projected.turns.as_slice()
+        } else {
+            &[]
+        };
+        self.client_reducer.stream_budget.sync_tool_snapshots(
+            proj.chat_id.unwrap_or_default(), previous, &proj.turns,
+        );
 
         // Keep pending-approval tool details protected in the 64 MiB LRU cache
         let has_pending = !proj.pending_requests.is_empty();
