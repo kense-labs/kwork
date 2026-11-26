@@ -740,7 +740,7 @@ impl KarWorkbench {
                 .child(self.render_agents_panel(s, window, cx))
                 .into_any_element(),
             SettingsTab::SkillsMcp => self.render_skills_mcp_panel(s, window, cx),
-            SettingsTab::Usage => self.render_usage_panel(s, cx),
+            SettingsTab::Usage => self.render_usage_panel(s, window, cx),
             SettingsTab::Schedules => div()
                 .id("kar-settings-schedules-scroll")
                 .size_full()

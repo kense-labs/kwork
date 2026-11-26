@@ -19,7 +19,6 @@ use kar::{
 use kui::{
     ThemeMode,
     components::{
-        activity_heatmap::DailyActivity,
         ai_spark::{AiSpark, SparkStatus, SparkTone},
         branch_graph::BranchGraph,
         code_block::CodeBlock,
@@ -630,7 +629,6 @@ pub struct KarWorkbench {
     pub expanded_tool_schema: Option<String>,
     pub usage_sheet_open: bool,
     pub usage_analytics: UsageAnalyticsSnapshot,
-    pub(crate) usage_heatmap: Option<Entity<DailyActivity>>,
     pub handoff_sheet_open: bool,
     pub handoff_target_runtime: String,
     pub handoff_budget_kb: usize,
@@ -1527,7 +1525,6 @@ impl KarWorkbench {
             expanded_tool_schema: None,
             usage_sheet_open: config.open_usage_sheet,
             usage_analytics: UsageAnalyticsSnapshot::default(),
-            usage_heatmap: None,
             handoff_sheet_open: config.open_handoff_sheet,
             handoff_target_runtime: "claude".into(),
             handoff_budget_kb: 64,
@@ -1557,7 +1554,7 @@ impl KarWorkbench {
             },
             inbox_scope: InboxScopeFilter::All,
             usage_by_project: false,
-            usage_period_days: 30,
+            usage_period_days: 28,
             selected_skill_inspector: None,
         };
 
@@ -1857,7 +1854,6 @@ impl KarWorkbench {
         }
         self.log_stream_revision = None;
         self.log_stream_widget = None;
-        self.usage_heatmap = None;
         if self.settings_open && self.active_settings_tab == SettingsTab::Usage {
             self.bridge.send(KarCommand::RefreshUsageAnalytics { providers: self.providers.clone() });
         }
@@ -2899,21 +2895,6 @@ impl KarWorkbench {
                 }
             }
             KarBridgeEvent::UsageAnalyticsUpdated(analytics) => {
-                let samples = analytics.daily_activity.iter()
-                    .map(|(day, turns)| kui::primitives::plot::Sample::new(day.clone(), *turns as f32))
-                    .collect();
-                if let Some(heatmap) = &self.usage_heatmap {
-                    heatmap.update(cx, |heatmap, cx| heatmap.set_samples(samples, cx));
-                } else {
-                    let title = self.ui_locale.pick("近 28 天对话轮数", "Turns in the last 28 days");
-                    self.usage_heatmap = Some(cx.new(|_| DailyActivity::new(title, samples)));
-                }
-                if let Some((label, _)) = analytics.daily_activity.first()
-                    && let Ok(day) = chrono::NaiveDate::parse_from_str(label, "%Y-%m-%d")
-                    && let Some(heatmap) = &self.usage_heatmap {
-                    use chrono::Datelike;
-                    heatmap.update(cx, |h, cx| h.set_first_weekday(day.weekday().num_days_from_sunday() as usize, cx));
-                }
                 self.usage_analytics = analytics;
             }
             KarBridgeEvent::SideQuestionAnswered {

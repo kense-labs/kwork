@@ -1304,6 +1304,8 @@ pub struct RuntimeTokenRow {
     pub display_name: String,
     pub chat_count: usize,
     pub turn_count: usize,
+    pub has_usage: bool,
+    pub has_cache_read: bool,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cached_tokens: u64,
@@ -1326,9 +1328,94 @@ pub struct UsageAnalyticsSnapshot {
     pub has_cache_write: bool,
     pub has_reasoning: bool,
     pub by_runtime: Vec<RuntimeTokenRow>,
+    /// Each inherited turn is credited to a single retained chat.
+    pub turns_by_chat: BTreeMap<Uuid, usize>,
     pub turns_by_day: BTreeMap<chrono::NaiveDate, usize>,
-    /// Last 28 days of turn activity `(label, value)` for KUI `DailyActivity`.
+    /// The last 28 local calendar dates, oldest first and including today.
     pub daily_activity: Vec<(String, f64)>,
+}
+
+/// Forks persist entire turn prefixes. Scope the caller's idempotency key to its
+/// lineage and original execution so unrelated chats or sibling calls stay distinct.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct UsageTurnId {
+    lineage: Uuid,
+    input: Uuid,
+    started_ms: u64,
+    native_session: Option<String>,
+}
+
+#[derive(Clone)]
+struct UsageTurnOwner {
+    chat: Uuid,
+    runtime: Option<String>,
+    inherited: bool,
+}
+
+impl UsageTurnOwner {
+    fn priority(&self) -> (bool, bool, Uuid) {
+        // The original wins independently of journal order and clock skew.
+        // Retain one deterministic attribution if only archived copies survive.
+        (self.inherited, self.runtime.is_none(), self.chat)
+    }
+}
+
+fn record_usage_turns(
+    history: &kar::chat::ChatHistory,
+    turns: &mut BTreeMap<UsageTurnId, UsageTurnOwner>,
+) {
+    let info = &history.chat;
+    let fork = info.forked_from.as_ref();
+    let lineage = fork.map_or(info.id, |origin| origin.checkpoint_store);
+    let cut = fork.and_then(|origin| history.turns.iter().position(|t| t.id == origin.turn));
+    let handoffs = history
+        .handoffs
+        .iter()
+        .filter(|h| h.status == kar::chat::HandoffStatus::Ready);
+    let initial_runtime = handoffs
+        .clone()
+        .next()
+        .map_or(&info.runtime, |h| &h.from.runtime);
+    for (index, turn) in history.turns.iter().enumerate() {
+        let route = handoffs.clone().find(|h| index < h.through_turn);
+        let (runtime, native_id) = route.map_or((&info.runtime, &info.native_id), |h| {
+            (&h.from.runtime, &h.from.native_id)
+        });
+        let source = turn
+            .items
+            .iter()
+            .find(|item| item.source.path.is_empty())
+            .and_then(|item| item.source.session_id.as_deref());
+        let witnessed = source.is_some_and(|s| s == native_id);
+        // A rewind can remove the fork cut, leaving only its native session witness.
+        let inherited = fork.is_some() && cut.map_or(!witnessed, |end| index <= end);
+        let runtime = if !inherited || witnessed {
+            Some(runtime.clone())
+        } else if fork.is_some_and(|origin| source == Some(origin.native_source.as_str())) {
+            Some(initial_runtime.clone())
+        } else {
+            None
+        };
+        let key = UsageTurnId {
+            lineage,
+            input: turn.id,
+            started_ms: turn.started_ms,
+            native_session: source.map(str::to_owned),
+        };
+        let owner = UsageTurnOwner {
+            chat: info.id,
+            inherited,
+            runtime,
+        };
+        turns
+            .entry(key)
+            .and_modify(|current| {
+                if owner.priority() < current.priority() {
+                    *current = owner.clone();
+                }
+            })
+            .or_insert(owner);
+    }
 }
 
 pub fn compute_usage_analytics(
@@ -1337,11 +1424,7 @@ pub fn compute_usage_analytics(
     providers: &[ProviderStatusInfo],
 ) -> UsageAnalyticsSnapshot {
     let today = chrono::Local::now().date_naive();
-    let first_day = today - chrono::Duration::days(27);
-    let mut daily_activity: Vec<_> = (0..28)
-        .map(|d| ((first_day + chrono::Duration::days(d)).to_string(), 0.0))
-        .collect();
-    let mut turns_by_day = BTreeMap::new();
+    let mut turn_owners = BTreeMap::new();
     let mut has_usage = false;
     let mut has_cache_read = false;
     let mut has_cache_write = false;
@@ -1359,7 +1442,6 @@ pub fn compute_usage_analytics(
     let mut total_cache_write = 0u64;
     let mut total_reasoning = 0u64;
     let mut total_chats = 0usize;
-    let mut total_turns = 0usize;
 
     if let Some(chat_store) = store
         && let Ok(infos) = chat_store.list()
@@ -1375,26 +1457,12 @@ pub fn compute_usage_analytics(
                 });
             entry.chat_count += 1;
             if let Ok(h) = chat_store.history(info.id) {
-                entry.turn_count += h.turns.len();
-                total_turns += h.turns.len();
-                for turn in &h.turns {
-                    if let Ok(ms) = i64::try_from(turn.started_ms)
-                        && let Some(at) = chrono::DateTime::from_timestamp_millis(ms)
-                    {
-                        let day = at.with_timezone(&chrono::Local).date_naive();
-                        if day <= today {
-                            *turns_by_day.entry(day).or_default() += 1;
-                        }
-                        if let Ok(index) = usize::try_from((day - first_day).num_days())
-                            && let Some((_, count)) = daily_activity.get_mut(index)
-                        {
-                            *count += 1.;
-                        }
-                    }
-                }
+                record_usage_turns(&h, &mut turn_owners);
                 for u in &h.usage {
                     if let Some(tot) = u.usage.with_children.or(u.usage.total) {
                         observe_fields(&tot);
+                        entry.has_usage = true;
+                        entry.has_cache_read |= tot.cache_read.is_some();
                         let inp = tot.input.max(0) as u64;
                         let out = tot.output.max(0) as u64;
                         let cr = tot.cache_read.unwrap_or(0).max(0) as u64;
@@ -1415,8 +1483,42 @@ pub fn compute_usage_analytics(
         }
     }
 
+    let total_turns = turn_owners.len();
+    let mut turns_by_chat = BTreeMap::new();
+    let mut turns_by_day = BTreeMap::new();
+    for (turn, owner) in turn_owners {
+        *turns_by_chat.entry(owner.chat).or_default() += 1;
+        if let Some(runtime_id) = owner.runtime {
+            rows.entry(runtime_id.clone())
+                .or_insert_with(|| RuntimeTokenRow {
+                    display_name: runtime_display_name(&runtime_id),
+                    runtime_id,
+                    ..Default::default()
+                })
+                .turn_count += 1;
+        }
+        if let Ok(ms) = i64::try_from(turn.started_ms)
+            && let Some(at) = chrono::DateTime::from_timestamp_millis(ms)
+        {
+            let day = at.with_timezone(&chrono::Local).date_naive();
+            if day <= today {
+                *turns_by_day.entry(day).or_default() += 1;
+            }
+        }
+    }
+    let first_day = today - chrono::Duration::days(27);
+    let daily_activity = (0..28)
+        .map(|offset| {
+            let day = first_day + chrono::Duration::days(offset);
+            (
+                day.to_string(),
+                turns_by_day.get(&day).copied().unwrap_or(0) as f64,
+            )
+        })
+        .collect();
+
     // Fold active live usage if no saved history yet (e.g. Demo mode)
-    if total_in == 0 && total_out == 0 {
+    if !rows.values().any(|row| row.has_usage) {
         for u in active_usage {
             if let Some(tot) = u.usage.with_children.or(u.usage.total) {
                 observe_fields(&tot);
@@ -1474,6 +1576,7 @@ pub fn compute_usage_analytics(
         has_cache_write,
         has_reasoning,
         daily_activity,
+        turns_by_chat,
         turns_by_day,
     }
 }
@@ -1845,6 +1948,158 @@ pub fn truncate_chars(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_usage_journal(
+        directory: &Path,
+        id: Uuid,
+        runtime: &str,
+        fork: Option<Value>,
+        created_ms: i64,
+        updates: Vec<Value>,
+    ) {
+        use serde_json::json;
+        let header = json!({"format": "kar-chat/1", "chat": {
+            "id": id, "workspace": directory, "runtime": runtime, "protocol": "codex",
+            "native_id": id.to_string(), "program": "codex", "created_ms": created_ms,
+            "approvals": "host", "forked_from": fork
+        }});
+        let journal = std::iter::once(header)
+            .chain(updates)
+            .map(|row| format!("{row}\n"))
+            .collect::<String>();
+        std::fs::write(directory.join(format!("{id}.karchat")), journal).unwrap();
+    }
+
+    #[test]
+    fn forked_archives_count_local_activity_once_even_when_the_original_is_missing() {
+        use chrono::{Days, Local, TimeZone};
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChatStore::open(dir.path()).unwrap();
+        let today = Local::now().date_naive();
+        let first_day = today - Days::new(27);
+        let just_after_midnight = |day: chrono::NaiveDate| {
+            Local
+                .from_local_datetime(&day.and_hms_opt(0, 2, 0).unwrap())
+                .earliest()
+                .unwrap()
+                .timestamp_millis()
+        };
+        let cut = Uuid::new_v4();
+        let ids = [Uuid::from_u128(3), Uuid::from_u128(2), Uuid::from_u128(1)];
+        let sample_usage = |stream: Uuid, seq: u64, input: i64| {
+            json!({
+                "kind":"usage_changed", "reading": {
+                    "cursor":{"stream_id":stream, "after_seq":seq},
+                    "usage":{"total":{"input":input, "output":1}}
+                }
+            })
+        };
+        let mut original = vec![
+            json!({"kind":"opened", "stream":ids[0]}),
+            sample_usage(ids[0], 1, 12),
+            sample_usage(ids[0], 2, 14),
+        ];
+        for (id, date) in [
+            (Uuid::new_v4(), first_day - Days::new(1)),
+            (Uuid::new_v4(), first_day),
+            (cut, today - Days::new(1)),
+        ] {
+            original.push(
+                json!({"kind":"begin", "id":id, "at":just_after_midnight(date), "text":"Prompt"}),
+            );
+            original.push(json!({"kind":"end", "id":id, "status":"completed"}));
+        }
+        write_usage_journal(dir.path(), ids[0], "codex", None, 2000, original);
+        let inherited = store.history(ids[0]).unwrap().turns;
+        for child in &ids[1..] {
+            let fork = json!({"chat":ids[0], "turn":cut, "native_source":ids[0].to_string(),
+                "checkpoint_store":ids[0]});
+            let turn = Uuid::new_v4();
+            write_usage_journal(
+                dir.path(),
+                *child,
+                "codex",
+                Some(fork),
+                1000,
+                vec![
+                    json!({"kind":"inherited", "turns":inherited}),
+                    json!({"kind":"opened", "stream":child}),
+                    sample_usage(*child, 1, 3),
+                    json!({"kind":"begin", "id":turn, "at":just_after_midnight(today), "text":"Follow-up"}),
+                    json!({"kind":"end", "id":turn, "status":"completed"}),
+                ],
+            );
+        }
+        for parent_present in [true, false] {
+            if !parent_present {
+                std::fs::remove_file(dir.path().join(format!("{}.karchat", ids[0]))).unwrap();
+            }
+            let usage = compute_usage_analytics(Some(&store), &[], &[]);
+            assert_eq!(usage.total_turns, 5);
+            assert_eq!(
+                usage.total_input_tokens,
+                if parent_present { 20 } else { 6 }
+            );
+            assert_eq!(usage.turns_by_chat.values().sum::<usize>(), 5);
+            assert_eq!(usage.turns_by_day.get(&today), Some(&2));
+            assert_eq!(usage.by_runtime[0].turn_count, 5);
+            assert_eq!(
+                usage.daily_activity.first(),
+                Some(&(first_day.to_string(), 1.))
+            );
+            assert_eq!(usage.daily_activity.last(), Some(&(today.to_string(), 2.)));
+            assert_eq!(usage.daily_activity.iter().map(|(_, n)| n).sum::<f64>(), 4.);
+            if parent_present {
+                assert_eq!(usage.turns_by_chat[&ids[0]], 3);
+                assert_eq!(usage.turns_by_chat[&ids[2]], 1);
+            } else {
+                assert_eq!(usage.turns_by_chat[&ids[2]], 4);
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_rows_distinguish_missing_usage_from_measured_zero() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChatStore::open(dir.path()).unwrap();
+        for (runtime, totals) in [
+            ("codex", None),
+            ("claude", Some(json!({"input":0, "output":0}))),
+            (
+                "gemini",
+                Some(json!({"input":0, "output":0, "cache_read":0})),
+            ),
+        ] {
+            let id = Uuid::new_v4();
+            let mut updates = vec![json!({"kind":"opened", "stream":id})];
+            if let Some(total) = totals {
+                updates.push(json!({"kind":"usage_changed", "reading":{
+                    "cursor":{"stream_id":id, "after_seq":1}, "usage":{"total":total}
+                }}));
+            }
+            write_usage_journal(dir.path(), id, runtime, None, 1000, updates);
+        }
+        let active_only = serde_json::from_value(json!({
+            "cursor":{"stream_id":Uuid::new_v4(), "after_seq":1},
+            "usage":{"total":{"input":900, "output":0}}
+        }))
+        .unwrap();
+        let snap = compute_usage_analytics(Some(&store), &[active_only], &[]);
+        assert_eq!(snap.total_input_tokens, 0);
+        assert!(snap.has_usage && snap.has_cache_read);
+        let row = |id| {
+            snap.by_runtime
+                .iter()
+                .find(|row| row.runtime_id == id)
+                .unwrap()
+        };
+        assert!(!row("codex").has_usage && !row("codex").has_cache_read);
+        assert!(row("claude").has_usage && !row("claude").has_cache_read);
+        assert!(row("gemini").has_usage && row("gemini").has_cache_read);
+        assert_eq!(row("gemini").cached_tokens, 0);
+    }
 
     #[test]
     fn partial_stage_reads_index_and_working_tree_independently() {

@@ -1,6 +1,11 @@
 //! Recorded token totals and turn activity by date, agent, or project.
 
-use crate::ui_motion::selection::{Group, SelectionStrip};
+mod plot;
+
+use std::collections::BTreeMap;
+
+use crate::ui_motion::selection::{Group, Item, SelectionStrip};
+use chrono::{Duration, NaiveDate};
 use gpui::{prelude::*, *};
 use kui::components::pro_chrome::pro_spring_bar;
 
@@ -8,51 +13,23 @@ use crate::{
     studio_hub::{RuntimeTokenRow, UsageAnalyticsSnapshot},
     types::{ChatAccessMode, format_tokens_compact},
     ui_primitives::{
-        FS_META, FS_TAG, FS_UI, R_CARD, R_PILL, StudioPalette, render_provider_color_tile,
-        render_tray_folder_artwork, tnum_features,
+        FS_HERO, FS_META, FS_TAG, FS_UI, LH_META, R_CARD, R_PILL, StudioPalette, UiLocale,
+        render_provider_color_tile, render_tray_folder_artwork, tnum_features,
     },
     workbench::KarWorkbench,
 };
 
-fn catmull_rom_smooth(pts: &[(f32, f32)], steps_per_seg: usize) -> Vec<(f32, f32)> {
-    if pts.len() < 2 {
-        return pts.to_vec();
-    }
-    let mut out = Vec::with_capacity(pts.len() * steps_per_seg + 1);
-    for i in 0..pts.len() - 1 {
-        let p0 = pts[i.saturating_sub(1)];
-        let p1 = pts[i];
-        let p2 = pts[i + 1];
-        let p3 = pts[(i + 2).min(pts.len() - 1)];
-        for step in 0..steps_per_seg {
-            let t = step as f32 / steps_per_seg as f32;
-            let t2 = t * t;
-            let t3 = t2 * t;
-            let x = 0.5
-                * ((2.0 * p1.0)
-                    + (-p0.0 + p2.0) * t
-                    + (2.0 * p0.0 - 5.0 * p1.0 + 4.0 * p2.0 - p3.0) * t2
-                    + (-p0.0 + 3.0 * p1.0 - 3.0 * p2.0 + p3.0) * t3);
-            let y = 0.5
-                * ((2.0 * p1.1)
-                    + (-p0.1 + p2.1) * t
-                    + (2.0 * p0.1 - 5.0 * p1.1 + 4.0 * p2.1 - p3.1) * t2
-                    + (-p0.1 + 3.0 * p1.1 - 3.0 * p2.1 + p3.1) * t3);
-            out.push((x, y.clamp(0.0, 1.0)));
-        }
-    }
-    if let Some(&last) = pts.last() {
-        out.push((last.0, last.1.clamp(0.0, 1.0)));
-    }
-    out
-}
-
 fn demo_usage_snapshot() -> UsageAnalyticsSnapshot {
     let today = chrono::Local::now().date_naive();
+    let turns_by_day: BTreeMap<_, _> = [2, 4, 1, 6, 3, 5, 2, 7, 4, 3, 8, 1, 9, 7]
+        .into_iter()
+        .enumerate()
+        .map(|(i, n)| (today - Duration::days(13 - i as i64), n))
+        .collect();
     UsageAnalyticsSnapshot {
         has_usage: true,
         total_chats: 14,
-        total_turns: 62,
+        total_turns: turns_by_day.values().sum(),
         total_input_tokens: 1_842_000,
         total_output_tokens: 268_400,
         has_cache_read: true,
@@ -70,6 +47,8 @@ fn demo_usage_snapshot() -> UsageAnalyticsSnapshot {
                 turn_count: 34,
                 input_tokens: 1_060_000,
                 output_tokens: 148_000,
+                has_usage: true,
+                has_cache_read: true,
                 cached_tokens: 860_000,
                 reasoning_tokens: 62_000,
                 quota_summary: Some("Plus · 充足".into()),
@@ -81,6 +60,8 @@ fn demo_usage_snapshot() -> UsageAnalyticsSnapshot {
                 turn_count: 20,
                 input_tokens: 582_000,
                 output_tokens: 89_400,
+                has_usage: true,
+                has_cache_read: true,
                 cached_tokens: 430_000,
                 reasoning_tokens: 24_200,
                 quota_summary: Some("Max 5x".into()),
@@ -92,32 +73,15 @@ fn demo_usage_snapshot() -> UsageAnalyticsSnapshot {
                 turn_count: 8,
                 input_tokens: 200_000,
                 output_tokens: 31_000,
+                has_usage: true,
+                has_cache_read: true,
                 cached_tokens: 120_000,
                 reasoning_tokens: 8_000,
                 quota_summary: None,
             },
         ],
-        turns_by_day: [2, 4, 3, 6, 5, 8, 4, 7, 9, 6, 11, 8, 12, 10]
-            .into_iter()
-            .enumerate()
-            .map(|(i, n)| (today - chrono::Duration::days(13 - i as i64), n))
-            .collect(),
-        daily_activity: vec![
-            ("D-13".into(), 2.),
-            ("D-12".into(), 4.),
-            ("D-11".into(), 3.),
-            ("D-10".into(), 6.),
-            ("D-9".into(), 5.),
-            ("D-8".into(), 8.),
-            ("D-7".into(), 4.),
-            ("D-6".into(), 7.),
-            ("D-5".into(), 9.),
-            ("D-4".into(), 6.),
-            ("D-3".into(), 11.),
-            ("D-2".into(), 8.),
-            ("D-1".into(), 12.),
-            ("Today".into(), 10.),
-        ],
+        turns_by_day,
+        ..Default::default()
     }
 }
 
@@ -125,10 +89,12 @@ impl KarWorkbench {
     pub(crate) fn render_usage_panel(
         &self,
         s: &StudioPalette,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let loc = self.ui_locale;
-        let is_demo_fallback = !self.usage_analytics.has_usage
+        let is_demo_fallback = self.usage_analytics.total_chats == 0
+            && !self.usage_analytics.has_usage
             && matches!(self.access_mode, ChatAccessMode::DemoShowcase);
         let fallback_snap;
         let snap = if is_demo_fallback {
@@ -138,114 +104,10 @@ impl KarWorkbench {
             &self.usage_analytics
         };
 
-        // ── 1. Period Selector Capsules (`近 7 天 / 近 30 天 / 全部`) ─────────
-        let period_bar = SelectionStrip::options(
-            "usage-period",
-            loc.pick("统计周期", "Usage period"),
-            Group::Choices,
-            [
-                (7, loc.pick("7 天", "7 days")),
-                (30, loc.pick("30 天", "30 days")),
-                (0, loc.pick("全部", "All time")),
-            ],
-            self.usage_period_days,
-            s,
-            cx,
-            |wb, days, _, cx| {
-                wb.usage_period_days = days;
-                cx.notify();
-            },
-        );
-
-        // ── 2. KUI `agent_usage.rs` Hero Cumulative Card + Smooth Canvas Curve ─
         let tokens = |count: u64| format_tokens_compact(count.min(i64::MAX as u64) as i64);
         let total_combined = snap
             .total_input_tokens
             .saturating_add(snap.total_output_tokens);
-        let raw_series = activity_series(
-            &snap.turns_by_day,
-            chrono::Local::now().date_naive(),
-            self.usage_period_days,
-        );
-        let range_turns: usize = raw_series.iter().sum();
-        let raw_series: Vec<f32> = raw_series.into_iter().map(|n| n as f32).collect();
-        let max_y = raw_series.iter().copied().fold(0.0_f32, f32::max).max(1.0);
-        let norm_pts: Vec<(f32, f32)> = if raw_series.len() <= 1 {
-            vec![
-                (0.0, raw_series.first().copied().unwrap_or(0.) / max_y),
-                (1.0, raw_series.first().copied().unwrap_or(0.) / max_y),
-            ]
-        } else {
-            let denom = (raw_series.len() - 1) as f32;
-            raw_series
-                .iter()
-                .enumerate()
-                .map(|(i, v)| (i as f32 / denom, (*v / max_y).clamp(0., 1.)))
-                .collect()
-        };
-        let smooth_pts = catmull_rom_smooth(&norm_pts, 6);
-        let stroke_col = s.pro.accent_info;
-        let fill_col = s.pro.accent_info.opacity(if s.dark { 0.14 } else { 0.10 });
-        let grid_col = s.line_soft;
-
-        let trend_canvas = div().w_full().h(px(92.)).py(px(4.)).child(
-            canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _| {
-                    let bw = f32::from(bounds.size.width);
-                    let bh = f32::from(bounds.size.height);
-                    if bw <= 12. || bh <= 12. || smooth_pts.len() < 2 {
-                        return;
-                    }
-                    let pad_top = 8.0_f32;
-                    let pad_bot = 6.0_f32;
-                    let usable_h = (bh - pad_top - pad_bot).max(4.);
-                    let px_pt = |(nx, ny): (f32, f32)| {
-                        point(
-                            bounds.left() + px(nx * bw),
-                            bounds.top() + px(pad_top + (1.0 - ny) * usable_h),
-                        )
-                    };
-                    let base_y = bounds.bottom() - px(pad_bot);
-
-                    for frac in [0.35_f32, 0.75] {
-                        let gy = bounds.top() + px(pad_top + frac * usable_h);
-                        let mut gl = PathBuilder::stroke(px(1.));
-                        gl.move_to(point(bounds.left(), gy));
-                        gl.line_to(point(bounds.right(), gy));
-                        if let Ok(p) = gl.build() {
-                            window.paint_path(p, grid_col);
-                        }
-                    }
-
-                    let first = px_pt(smooth_pts[0]);
-                    let last = px_pt(*smooth_pts.last().unwrap_or(&smooth_pts[0]));
-
-                    let mut area = PathBuilder::fill();
-                    area.move_to(point(first.x, base_y));
-                    area.line_to(first);
-                    for &pt in smooth_pts.iter().skip(1) {
-                        area.line_to(px_pt(pt));
-                    }
-                    area.line_to(point(last.x, base_y));
-                    area.close();
-                    if let Ok(path) = area.build() {
-                        window.paint_path(path, fill_col);
-                    }
-
-                    let mut line = PathBuilder::stroke(px(2.));
-                    line.move_to(first);
-                    for &pt in smooth_pts.iter().skip(1) {
-                        line.line_to(px_pt(pt));
-                    }
-                    if let Ok(path) = line.build() {
-                        window.paint_path(path, stroke_col);
-                    }
-                },
-            )
-            .size_full(),
-        );
-
         let hero_card = div()
             .w_full()
             .rounded(px(R_CARD))
@@ -278,7 +140,7 @@ impl KarWorkbench {
                                                 .font_weight(FontWeight::MEDIUM)
                                                 .text_color(s.muted)
                                                 .child(loc.pick(
-                                                    "累计词元总吞吐 (Input + Output)",
+                                                    "累计词元",
                                                     "All-time tokens (input + output)",
                                                 )),
                                         )
@@ -361,7 +223,7 @@ impl KarWorkbench {
                         s,
                     ))
                     .child(usage_footer_cell(
-                        loc.pick("输出与推理", "Output tokens"),
+                        loc.pick("输出词元", "Output tokens"),
                         if snap.has_usage {
                             tokens(snap.total_output_tokens)
                         } else {
@@ -371,7 +233,7 @@ impl KarWorkbench {
                         s,
                     ))
                     .child(usage_footer_cell(
-                        loc.pick("Prompt 缓存读取", "Cached input"),
+                        loc.pick("缓存读取", "Cached input"),
                         if snap.has_cache_read {
                             tokens(snap.total_cached_tokens)
                         } else {
@@ -381,7 +243,7 @@ impl KarWorkbench {
                         s,
                     ))
                     .child(usage_footer_cell(
-                        loc.pick("覆盖会话与轮次", "Conversations"),
+                        loc.pick("对话记录", "Conversations"),
                         format!(
                             "{} {} · {} {}",
                             snap.total_chats,
@@ -394,14 +256,13 @@ impl KarWorkbench {
                     )),
             );
 
-        // ── 3. KUI `loc.pick("消耗去向拆解","Usage breakdown")` (`Where it went`: Models vs Projects) ────
         let split_toggle = SelectionStrip::options(
             "usage-breakdown",
             loc.pick("消耗去向", "Usage breakdown"),
             Group::Tabs,
             [
-                (false, loc.pick("按智能体模型", "By agent")),
-                (true, loc.pick("按工作区项目", "By project")),
+                (false, loc.pick("按智能体", "By agent")),
+                (true, loc.pick("按项目", "By project")),
             ],
             self.usage_by_project,
             s,
@@ -434,7 +295,7 @@ impl KarWorkbench {
                             .text_size(px(FS_UI))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(s.ink)
-                            .child(loc.pick("消耗去向拆解", "Usage breakdown")),
+                            .child(loc.pick("用量分布", "Usage breakdown")),
                     )
                     .child(split_toggle),
             );
@@ -455,7 +316,7 @@ impl KarWorkbench {
                         .text_size(px(FS_META))
                         .text_color(s.muted)
                         .child(loc.pick(
-                            "发起对话后，各 CLI 智能体的词元吞吐与缓存占比将自动汇总于此。",
+                            "智能体上报词元后，可在这里查看用量。",
                             "Usage appears here when an agent reports it.",
                         )),
                 );
@@ -469,7 +330,19 @@ impl KarWorkbench {
                     .max(1);
                 for (ix, row) in snap.by_runtime.iter().enumerate() {
                     let sum = row.input_tokens.saturating_add(row.output_tokens);
-                    let ratio = (sum as f32 / max_tok as f32).clamp(0.04, 1.);
+                    let ratio = sum as f32 / max_tok as f32;
+                    let token_summary = if !row.has_usage {
+                        loc.pick("词元未上报", "Tokens not reported").to_string()
+                    } else if row.has_cache_read {
+                        format!(
+                            "{} · {} {}",
+                            tokens(sum),
+                            loc.pick("缓存", "cached"),
+                            tokens(row.cached_tokens)
+                        )
+                    } else {
+                        tokens(sum)
+                    };
                     let bar_color = tones[ix % tones.len()];
                     breakdown_card = breakdown_card.child(
                         div()
@@ -483,10 +356,13 @@ impl KarWorkbench {
                                     .flex()
                                     .items_center()
                                     .justify_between()
+                                    .flex_wrap()
                                     .gap(px(8.))
                                     .child(
                                         div()
+                                            .min_w_0()
                                             .flex()
+                                            .flex_wrap()
                                             .items_center()
                                             .gap(px(8.))
                                             .child(render_provider_color_tile(
@@ -532,23 +408,20 @@ impl KarWorkbench {
                                             .font_features(tnum_features())
                                             .text_size(px(FS_META))
                                             .font_weight(FontWeight::MEDIUM)
-                                            .text_color(s.ink)
-                                            .child(format!(
-                                                "{} ({} {})",
-                                                tokens(sum),
-                                                loc.pick("缓存", "cached"),
-                                                tokens(row.cached_tokens)
-                                            )),
+                                            .text_color(if row.has_usage { s.ink } else { s.muted })
+                                            .child(token_summary),
                                     ),
                             )
-                            .child(pro_spring_bar(
-                                SharedString::from(format!("usage-rt-bar-{}", row.runtime_id)),
-                                ratio,
-                                6.,
-                                99.,
-                                s.tray,
-                                bar_color,
-                            )),
+                            .when(row.has_usage, |col| {
+                                col.child(pro_spring_bar(
+                                    SharedString::from(format!("usage-rt-bar-{}", row.runtime_id)),
+                                    ratio,
+                                    6.,
+                                    99.,
+                                    s.tray,
+                                    bar_color,
+                                ))
+                            }),
                     );
                 }
             }
@@ -563,10 +436,14 @@ impl KarWorkbench {
                     for c in &self.chat_list {
                         if c.info.workspace == p.root_path {
                             chats += 1;
-                            turns += c.turn_count;
+                            turns += snap.turns_by_chat.get(&c.info.id).copied().unwrap_or(0);
                         }
                     }
-                    (crate::studio_hub::project_display_name(&p.name).to_owned(), chats, turns)
+                    (
+                        crate::studio_hub::project_display_name(&p.name).to_owned(),
+                        chats,
+                        turns,
+                    )
                 })
                 .collect();
 
@@ -642,45 +519,15 @@ impl KarWorkbench {
             }
         }
 
-        let activity = div()
-            .w_full()
-            .rounded(px(R_CARD))
-            .bg(s.surface)
-            .border_1()
-            .border_color(s.line_soft)
-            .p(px(16.))
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(6.))
-                    .child(sheet_label(
-                        format!("{range_turns} {}", loc.pick("轮对话", "turns")),
-                        s,
-                    ))
-                    .child(period_bar),
-            )
-            .child(trend_canvas);
-        let mut body = div()
+        let activity = self.conversation_activity(snap, is_demo_fallback, s, window, cx);
+        let body = div()
             .p(px(20.))
             .flex()
             .flex_col()
             .gap(px(16.))
-            .child(hero_card)
             .child(activity)
+            .child(hero_card)
             .child(breakdown_card);
-
-        if !is_demo_fallback
-            && snap.daily_activity.iter().any(|(_, n)| *n > 0.)
-            && let Some(hm) = &self.usage_heatmap
-        {
-            body = body.child(hm.clone());
-        }
 
         div()
             .size_full()
@@ -695,6 +542,151 @@ impl KarWorkbench {
                     .child(body),
             )
             .into_any_element()
+    }
+
+    fn conversation_activity(
+        &self,
+        snap: &UsageAnalyticsSnapshot,
+        demo: bool,
+        s: &StudioPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let loc = self.ui_locale;
+        let days = self.usage_period_days;
+        let today = chrono::Local::now().date_naive();
+        let compact_labels = loc == UiLocale::En && window.viewport_size().width < px(640.);
+        let options = [
+            (7, loc.pick("7 天", "7 days"), "7d"),
+            (28, loc.pick("28 天", "28 days"), "28d"),
+            (30, loc.pick("30 天", "30 days"), "30d"),
+            (0, loc.pick("全部", "All time"), "All time"),
+        ]
+        .into_iter()
+        .map(|(period, label, short)| {
+            let item = Item::new(
+                period.to_string(),
+                label,
+                period == days,
+                cx,
+                move |wb, _, cx| {
+                    wb.usage_period_days = period;
+                    cx.notify();
+                },
+            );
+            if compact_labels {
+                item.content(short)
+            } else {
+                item
+            }
+        })
+        .collect();
+        let periods = SelectionStrip::new(
+            "usage-period",
+            loc.pick("活动周期", "Activity period"),
+            Group::Choices,
+            options,
+            s,
+        );
+        let card = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(16.))
+            .p(px(16.))
+            .bg(s.card)
+            .border_1()
+            .border_color(s.line_soft)
+            .rounded(px(R_CARD))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(px(FS_UI))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(s.ink)
+                            .child(loc.pick("对话活动", "Conversation activity"))
+                            .when(demo, |row| {
+                                row.child(
+                                    div()
+                                        .text_size(px(FS_META))
+                                        .font_weight(FontWeight::NORMAL)
+                                        .text_color(s.muted)
+                                        .child(loc.pick("演示", "Demo")),
+                                )
+                            }),
+                    )
+                    .child(periods),
+            );
+        if !demo && snap.daily_activity.is_empty() && snap.turns_by_day.is_empty() {
+            return card.child(activity_notice(
+                loc.pick("正在读取对话记录…", "Reading conversations…"),
+                s,
+            ));
+        }
+        let series = ActivitySeries::new(&snap.turns_by_day, today, days);
+        if series.active_days == 0 {
+            return card.child(activity_notice(
+                loc.pick("这段时间没有对话记录", "No conversations in this period"),
+                s,
+            ));
+        }
+        let active_days = match (loc, series.active_days) {
+            (UiLocale::Zh, n) => format!("活跃 {n} 天"),
+            (UiLocale::En, 1) => "1 active day".to_string(),
+            (UiLocale::En, n) => format!("{n} active days"),
+        };
+        let metric =
+            div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap(px(5.))
+                        .child(
+                            div()
+                                .text_size(px(FS_HERO))
+                                .line_height(px(35.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .font_features(tnum_features())
+                                .text_color(s.ink)
+                                .child(series.total.to_string()),
+                        )
+                        .child(div().text_size(px(FS_META)).text_color(s.muted).child(
+                            loc.pick("轮", if series.total == 1 { "turn" } else { "turns" }),
+                        )),
+                )
+                .child(
+                    div()
+                        .text_size(px(FS_META))
+                        .line_height(px(LH_META))
+                        .text_color(s.muted)
+                        .child(active_days),
+                );
+        let chart = plot::activity_plot(&series.buckets, today, days, loc, s, window, cx);
+        card.child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_x(px(28.))
+                .gap_y(px(8.))
+                .child(metric)
+                .child(div().flex_1().flex_basis(px(210.)).min_w_0().child(chart)),
+        )
     }
 }
 
@@ -730,49 +722,111 @@ fn usage_footer_cell(label: &'static str, value: String, dot_col: Hsla, s: &Stud
         )
 }
 
-fn sheet_label(label: String, s: &StudioPalette) -> Div {
+fn activity_notice(label: &'static str, s: &StudioPalette) -> Div {
     div()
+        .py(px(12.))
         .text_size(px(FS_UI))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(s.ink)
+        .text_color(s.muted)
         .child(label)
 }
 
-fn activity_series(
-    counts: &std::collections::BTreeMap<chrono::NaiveDate, usize>,
-    today: chrono::NaiveDate,
-    days: u32,
-) -> Vec<usize> {
-    let first = if days == 0 {
-        counts.keys().next().copied().unwrap_or(today).min(today)
-    } else {
-        today - chrono::Duration::days(i64::from(days - 1))
-    };
-    let span = (today - first).num_days() as usize + 1;
-    let mut buckets = vec![0usize; span.min(60)];
-    let n = buckets.len();
-    for (date, count) in counts.range(first..=today) {
-        let ix = ((*date - first).num_days() as usize) * n / span;
-        buckets[ix] = buckets[ix].saturating_add(*count);
+struct ActivityBucket {
+    first: NaiveDate,
+    last: NaiveDate,
+    turns: usize,
+}
+
+struct ActivitySeries {
+    buckets: Vec<ActivityBucket>,
+    active_days: usize,
+    total: usize,
+}
+
+impl ActivitySeries {
+    fn new(counts: &BTreeMap<NaiveDate, usize>, today: NaiveDate, days: u32) -> Self {
+        let first = if days == 0 {
+            counts.keys().next().copied().unwrap_or(today).min(today)
+        } else {
+            today - Duration::days(i64::from(days - 1))
+        };
+        let span = (today - first).num_days() + 1;
+        let n = span.min(60);
+        let mut total: usize = 0;
+        let mut active_days = 0;
+        let buckets = (0..n)
+            .map(|i| {
+                let start = first + Duration::days(i * span / n);
+                let end = first + Duration::days((i + 1) * span / n - 1);
+                let mut turns: usize = 0;
+                for (_, &count) in counts.range(start..=end) {
+                    turns = turns.saturating_add(count);
+                    active_days += usize::from(count > 0);
+                }
+                total = total.saturating_add(turns);
+                ActivityBucket {
+                    first: start,
+                    last: end,
+                    turns,
+                }
+            })
+            .collect();
+        Self {
+            buckets,
+            active_days,
+            total,
+        }
     }
-    buckets
 }
 
 #[cfg(test)]
 mod tests {
-    use super::activity_series;
+    use super::{ActivitySeries, BTreeMap, Duration, NaiveDate};
+
     #[test]
-    fn activity_ranges_count_days_instead_of_truncating_samples() {
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 26).unwrap();
-        let days = [(0, 1), (6, 4), (7, 3), (29, 7), (30, 11), (500, 9)];
-        let counts = days
-            .map(|(d, c)| (today - chrono::Duration::days(d), c))
-            .into_iter()
-            .collect();
-        for (range, total, len) in [(7, 5, 7), (30, 15, 30), (0, 35, 60)] {
-            let series = activity_series(&counts, today, range);
-            assert_eq!(series.iter().sum::<usize>(), total);
-            assert_eq!(series.len(), len);
+    fn activity_ranges_cover_each_calendar_day_once() {
+        let today = NaiveDate::from_ymd_opt(2026, 11, 26).unwrap();
+        let counts = [
+            (0, 1),
+            (6, 4),
+            (7, 3),
+            (27, 2),
+            (29, 7),
+            (30, 11),
+            (500, 9),
+            (-1, 99),
+        ]
+        .map(|(d, c)| (today - Duration::days(d), c))
+        .into_iter()
+        .collect();
+        for (range, total, active_days, len) in [
+            (7, 5, 2, 7),
+            (28, 10, 4, 28),
+            (30, 17, 5, 30),
+            (0, 37, 7, 60),
+        ] {
+            let series = ActivitySeries::new(&counts, today, range);
+            assert_eq!(
+                (series.total, series.active_days, series.buckets.len()),
+                (total, active_days, len)
+            );
+            assert_eq!(series.buckets.last().unwrap().last, today);
+            for pair in series.buckets.windows(2) {
+                assert_eq!(pair[0].last.succ_opt(), Some(pair[1].first));
+            }
+            for bucket in series.buckets {
+                assert_eq!(
+                    bucket.turns,
+                    counts
+                        .range(bucket.first..=bucket.last)
+                        .map(|(_, n)| *n)
+                        .sum::<usize>()
+                );
+            }
         }
+        let empty = ActivitySeries::new(&BTreeMap::new(), today, 0);
+        assert_eq!(
+            (empty.total, empty.active_days, empty.buckets.len()),
+            (0, 0, 1)
+        );
     }
 }
