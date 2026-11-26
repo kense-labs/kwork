@@ -288,7 +288,7 @@ impl KarWorkbench {
         let width = f32::from(window.viewport_size().width);
         let hit = if collapsed { 28. } else { 13. };
         let left = (boundary - hit / 2.).clamp(0., (width - hit).max(0.));
-        let ink = if active { s.primary } else { s.muted };
+        let highlight = if s.dark { white() } else { s.ink };
         let motion = window.use_keyed_state((id, 0usize), cx, |_, _| Slide::new(0.));
         let strength = if active {
             1.
@@ -447,13 +447,10 @@ impl KarWorkbench {
                 cx.stop_propagation();
             }));
         if collapsed {
-            let grip_ink = if keyboard_focus {
-                s.primary
-            } else {
-                s.surface
-                    .blend(s.muted.opacity(0.86))
-                    .blend(s.ink.opacity(0.52 * strength))
-            };
+            let grip_ink = s
+                .surface
+                .blend(s.muted.opacity(0.86))
+                .blend(highlight.opacity(strength));
             control = control
                 .top(px((f32::from(window.viewport_size().height) - 48.) * 0.5))
                 .h(px(48.))
@@ -466,7 +463,10 @@ impl KarWorkbench {
                     .w(px(3.))
                     .h(px(19. + strength * 13.))
                     .rounded_full()
-                    .bg(ink.opacity(0.38 + strength * 0.60)),
+                    .bg(s
+                        .muted
+                        .blend(highlight.opacity(strength))
+                        .opacity(0.38 + strength * 0.62)),
             );
         }
         control.into_any_element()
