@@ -78,6 +78,19 @@ use crate::{
     ui_settings::SettingsTab,
 };
 
+const PALETTE_KEY_CONTEXT: &str = "KarCommandPalette";
+actions!(kar_palette, [NextPaletteOption, PreviousPaletteOption]);
+
+pub(crate) fn init_palette_keys(cx: &mut App) {
+    let context = Some(PALETTE_KEY_CONTEXT);
+    cx.bind_keys([
+        KeyBinding::new("tab", NextPaletteOption, context),
+        KeyBinding::new("down", NextPaletteOption, context),
+        KeyBinding::new("shift-tab", PreviousPaletteOption, context),
+        KeyBinding::new("up", PreviousPaletteOption, context),
+    ]);
+}
+
 /// Share of the work area the conversation keeps when a document sits beside it.
 const SPLIT_DEFAULT: f32 = 0.43;
 /// The conversation's share when the document is given most of the room.
@@ -4705,39 +4718,10 @@ impl KarWorkbench {
             return;
         }
 
-        if self.command_palette_open && !cmd {
-            let items = self.filtered_palette_items();
-            let searching = !self.cmd_query.trim().is_empty();
-            let has_ask = searching && self.can_prompt_from_palette();
-            let hit_count = if searching {
-                self.global_search_hits.len().min(12)
-            } else {
-                0
-            };
-            let total = items.len() + hit_count + usize::from(has_ask);
-            match key {
-                "up" | "down" | "tab" => {
-                    if total > 0 {
-                        let backward = key == "up" || (key == "tab" && shift);
-                        self.cmd_selected_ix = if backward {
-                            self.cmd_selected_ix.checked_sub(1).unwrap_or(total - 1)
-                        } else {
-                            (self.cmd_selected_ix + 1) % total
-                        };
-                        self.reveal_cmd_selection = true;
-                        cx.notify();
-                    }
-                    window.prevent_default();
-                    cx.stop_propagation();
-                    return;
-                }
-                "escape" => {
-                    self.close_command_palette(window, cx);
-                    cx.stop_propagation();
-                    return;
-                }
-                _ => {}
-            }
+        if self.command_palette_open && !cmd && key == "escape" {
+            self.close_command_palette(window, cx);
+            cx.stop_propagation();
+            return;
         }
 
         if cmd {
@@ -4900,6 +4884,19 @@ impl KarWorkbench {
                 )
                 .into_any_element()
         })
+    }
+
+    fn move_palette_selection(&mut self, forward: bool, count: usize, cx: &mut Context<Self>) {
+        if count > 0 {
+            self.cmd_selected_ix = if forward {
+                (self.cmd_selected_ix + 1) % count
+            } else {
+                self.cmd_selected_ix.checked_sub(1).unwrap_or(count - 1).min(count - 1)
+            };
+            self.reveal_cmd_selection = true;
+            cx.notify();
+        }
+        cx.stop_propagation();
     }
 
     fn palette_option(
@@ -5190,6 +5187,13 @@ impl KarWorkbench {
         }
 
         let card = crate::ui_primitives::frosted_panel(&s)
+            .key_context(PALETTE_KEY_CONTEXT)
+            .on_action(cx.listener(move |this, _: &NextPaletteOption, _, cx| {
+                this.move_palette_selection(true, total, cx);
+            }))
+            .on_action(cx.listener(move |this, _: &PreviousPaletteOption, _, cx| {
+                this.move_palette_selection(false, total, cx);
+            }))
             .w(px((f32::from(viewport.width) - 24.).min(576.)))
             .h(px((f32::from(viewport.height) * 0.85).min(420.)))
             .max_w_full()

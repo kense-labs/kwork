@@ -74,6 +74,7 @@ pub fn init_runtime_ui(cx: &mut App) {
     kui::init(cx);
     ui_primitives::material::init_window_glass(cx);
     ui_chat::init_project_picker_keys(cx);
+    workbench::init_palette_keys(cx);
     #[cfg(target_os = "macos")]
     cx.set_reduce_motion(
         objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion(),
