@@ -416,7 +416,6 @@ fn parse_cli() -> CliOptions {
 }
 
 fn main() {
-    #[cfg(target_os = "macos")]
     kar_desktop::hardware::use_bundled_speech_engine();
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("warn,kar_desktop=info"),

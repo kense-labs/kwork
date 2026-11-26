@@ -8,7 +8,17 @@ if [[ $# != 2 || ! -x "$1" ]]; then
 fi
 
 binary="$1"
-app="$2/Kwrok.app"
+mkdir -p "$2"
+destination="$(cd "$2" && pwd)/Kwrok.app"
+stage="$(mktemp -d "$(dirname "$destination")/.kwrok-package.XXXXXXXX")"
+app="$stage/Kwrok.app"
+cleanup() {
+    if [[ -e "$stage/previous.app" && ! -e "$destination" ]]; then
+        mv "$stage/previous.app" "$destination" || return 1
+    fi
+    rm -rf "$stage"
+}
+trap cleanup EXIT
 root="$(cd "$(dirname "$0")/.." && pwd)"
 version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' "$root/Cargo.toml" | head -1)"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/Licenses"
@@ -16,6 +26,7 @@ install -m755 "$binary" "$app/Contents/MacOS/Kwrok"
 install -m644 "$root/assets/icons/Kwork.icns" "$app/Contents/Resources/Kwork.icns"
 install -m644 "$root/LICENSE-MIT" "$root/LICENSE" "$root/NOTICE" "$app/Contents/Resources/Licenses/"
 "$root/scripts/macos-dictation.sh" "$app"
+python3 "$root/scripts/third-party-licenses.py" "$app/Contents/Resources/Licenses/THIRD_PARTY_LICENSES.txt" kar_desktop kwrok_dictation
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -37,4 +48,9 @@ cat > "$app/Contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 codesign --force --sign - "$app"
-echo "$app"
+codesign --verify --deep --strict "$app"
+if [[ -e "$destination" ]]; then
+    mv "$destination" "$stage/previous.app"
+fi
+mv "$app" "$destination"
+echo "$destination"

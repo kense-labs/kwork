@@ -2,6 +2,8 @@
 
 Kwork is a native Rust and GPUI desktop for Kar coding sessions. The same workspace holds your conversation, terminal, file changes, and Office editors. New chats start with Aster. Existing conversations keep their original runtime. [简体中文](README.zh.md)
 
+Download the Apple Silicon DMG, open it, and drag Kwrok to Applications. The app includes a Rust speech engine and the multilingual Whisper Base model for offline dictation. Click the microphone in the composer to record and click again to insert the transcript into your draft. [macOS downloads](https://github.com/kense-labs/kwork/releases)
+
 ## Run
 
 Install a stable Rust toolchain and the platform build tools. On macOS, install Xcode and its command-line tools. From a checkout of this repository, run:
@@ -19,6 +21,8 @@ open target/Kwrok.app
 ```
 
 Kar is pinned to a Git revision in the workspace manifest. Cargo fetches the engine on the first build. Select an installed provider or install Aster ACP in the Agents panel, then configure its model provider in Aster.
+
+For local dictation from a source checkout, run `cargo install --locked --path crates/kwrok_dictation`, then select and download Whisper Base in Voice settings. The macOS packaging script builds the helper in release mode and bundles the model.
 
 Type `/` in the composer to see the actions supported by the selected session. With Codex, `/goal` manages a persistent native objective, and `/plan` drafts a plan in a read-only planning thread. Review the proposal and select **Implement plan** to start work in the original conversation. Aster uses its own ACP session modes and advertised commands. After a runtime handoff, the original chat retains its history and Kar owns the new controller. The command picker then offers the actions that Kar exposes for that controller.
 

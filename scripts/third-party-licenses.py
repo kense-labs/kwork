@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Write THIRD_PARTY_LICENSES.txt: the licence texts of every crate linked into
-the `kantor` binary on this platform (normal and build dependencies), which their
+the selected binaries on this platform (normal and build dependencies), which their
 licences (MIT, Apache-2.0, BSD, ...) require to ship with the binaries.
 
-    python3 scripts/third-party-licenses.py [OUT]     # default: THIRD_PARTY_LICENSES.txt
+    python3 scripts/third-party-licenses.py [OUT [PACKAGE ...]]  # defaults: THIRD_PARTY_LICENSES.txt, kantor
 
 Needs the crates' sources locally (run after `cargo build` / `cargo fetch`).
 Identical licence files are printed once, with every crate that uses them.
@@ -28,12 +28,13 @@ def run(*args):
 
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "THIRD_PARTY_LICENSES.txt")
+    packages = sys.argv[2:] or ["kantor"]
+    product = "Kwrok" if "kar_desktop" in packages else "Kantor"
     meta = json.loads(run("cargo", "metadata", "--format-version", "1", "--locked"))
-    by_id = {p["id"]: p for p in meta["packages"]}
     members = set(meta["workspace_members"])
 
-    # The packages in `kantor`'s normal + build graph for this host.
-    tree = run("cargo", "tree", "--locked", "-p", "kantor", "-e", "normal,build",
+    selected = [arg for name in packages for arg in ("-p", name)]
+    tree = run("cargo", "tree", "--locked", *selected, "-e", "normal,build",
                "--prefix", "none", "--format", "{p}")
     wanted = set()
     for line in tree.splitlines():
@@ -74,8 +75,8 @@ def main():
             missing.append(p)
 
     with open(out, "w", encoding="utf-8") as w:
-        w.write("Third-party software in Kantor\n==============================\n\n")
-        w.write("Kantor is licensed under AGPL-3.0-or-later (see LICENSE). It includes the\n")
+        w.write(f"Third-party software in {product}\n==============================\n\n")
+        w.write(f"{product} is distributed under AGPL-3.0-or-later (see LICENSE). It includes the\n")
         w.write("following open-source software, under the licences below. NOTICE lists code\n")
         w.write("adapted into Kantor's own crates (e.g. from GridCraft).\n\n")
         w.write("Crates and their licences\n-------------------------\n\n")

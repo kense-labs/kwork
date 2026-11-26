@@ -14,6 +14,8 @@ use uuid::Uuid;
 
 const RATE: usize = 16_000;
 const MAX_FRAMES: usize = RATE * 300;
+const BUNDLED_MODEL: &str = "handy-computer/whisper-base-gguf";
+const KAR_INITIAL_MODEL: &str = "handy-computer/parakeet-unified-en-0.6b-gguf";
 
 #[cfg(target_os = "macos")]
 fn bundle_contents() -> Option<PathBuf> {
@@ -25,30 +27,57 @@ fn bundle_contents() -> Option<PathBuf> {
 
 /// Kar discovers its host-provided speech executable from the process environment.
 /// Relaunch before GPUI or Tokio starts, preserving Finder's arguments and the app's identity.
-#[cfg(target_os = "macos")]
 pub fn use_bundled_speech_engine() {
-    use std::os::unix::process::CommandExt;
     if std::env::var_os("KAR_VOICE_ENGINE").is_some() {
         return;
     }
-    let Some(contents) = bundle_contents() else {
+    let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let arch = if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else {
-        "x86_64"
-    };
-    let program = contents.join("Helpers").join(format!("transcribe-{arch}"));
-    if program.is_file()
-        && let Ok(exe) = std::env::current_exe()
+    let name = format!("kwrok-dictation{}", std::env::consts::EXE_SUFFIX);
+    let program = exe.with_file_name(&name);
+    #[cfg(target_os = "macos")]
+    let program =
+        bundle_contents().map_or(program, |contents| contents.join("Helpers").join(&name));
+    let mut command = std::process::Command::new(exe);
+    command.args(std::env::args_os().skip(1)).env(
+        "KAR_VOICE_ENGINE",
+        if program.is_file() {
+            program
+        } else {
+            PathBuf::from(name)
+        },
+    );
+    #[cfg(unix)]
     {
-        let error = std::process::Command::new(exe)
-            .args(std::env::args_os().skip(1))
-            .env("KAR_VOICE_ENGINE", program)
-            .exec();
-        eprintln!("Could not initialize bundled dictation: {error}");
+        use std::os::unix::process::CommandExt;
+        eprintln!("Could not initialize local dictation: {}", command.exec());
     }
+    #[cfg(windows)]
+    match command.status() {
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Err(error) => eprintln!("Could not initialize local dictation: {error}"),
+    }
+}
+
+fn uses_rust_dictation() -> bool {
+    std::env::var_os("KAR_VOICE_ENGINE").is_some_and(|p| {
+        std::path::Path::new(&p)
+            .file_stem()
+            .is_some_and(|name| name == "kwrok-dictation")
+    })
+}
+
+fn supported_speech_model(id: &str) -> bool {
+    matches!(
+        id,
+        BUNDLED_MODEL
+            | "handy-computer/whisper-tiny-gguf"
+            | "handy-computer/whisper-tiny.en-gguf"
+            | "handy-computer/whisper-base.en-gguf"
+            | "handy-computer/whisper-small-gguf"
+            | "handy-computer/whisper-small.en-gguf"
+    )
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -56,6 +85,7 @@ pub enum LocalVoiceIssue {
     Engine,
     Device,
     Model,
+    IncompatibleModel,
 }
 
 impl LocalVoiceIssue {
@@ -72,7 +102,11 @@ impl LocalVoiceIssue {
                 },
             );
         }
-        (status["state"] == "missing-model").then_some(Self::Model)
+        match status["state"].as_str() {
+            Some("missing-model") => Some(Self::Model),
+            Some("incompatible-model") => Some(Self::IncompatibleModel),
+            _ => None,
+        }
     }
 
     pub(crate) fn message(self, loc: crate::ui_primitives::UiLocale) -> &'static str {
@@ -89,44 +123,91 @@ impl LocalVoiceIssue {
                 "请在语音设置中下载并选择一个本地模型。",
                 "Download and select a local model in Voice settings.",
             ),
+            Self::IncompatibleModel => loc.pick(
+                "原先选择的模型与 Rust 听写引擎不兼容。请在语音设置中选择 Whisper 模型。",
+                "Your selected model is incompatible with Rust dictation. Choose a Whisper model in Voice settings.",
+            ),
         }
     }
 }
 
-async fn local_voice_status(engine: &Engine) -> Result<Value> {
-    let status = engine
+#[cfg(target_os = "macos")]
+fn bundled_model() -> Option<PathBuf> {
+    let model = bundle_contents()?.join("Resources/Dictation/whisper-base-Q8_0.gguf");
+    model.is_file().then_some(model)
+}
+
+#[cfg(target_os = "macos")]
+async fn link_starter_model(engine: &Engine, status: Value, rust_engine: bool) -> Result<Value> {
+    let needs_starter = |state: &Value| {
+        state["state"] == "missing-model"
+            && (!rust_engine
+                || matches!(
+                    state["modelId"].as_str(),
+                    Some(BUNDLED_MODEL | KAR_INITIAL_MODEL)
+                ))
+    };
+    if !needs_starter(&status) {
+        return Ok(status);
+    }
+    let Some(model) = bundled_model() else {
+        return Ok(status);
+    };
+    // Concurrent settings and dictation requests may both see a fresh store.
+    static LINK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _link = LINK.lock().await;
+    let current = engine
         .request(Method::GET, "/api/voice/status", None)
         .await?;
-    #[cfg(target_os = "macos")]
-    if status["state"] == "missing-model"
-        && let Some(contents) = bundle_contents()
+    if !needs_starter(&current) {
+        return Ok(current);
+    }
+    if let Err(error) = engine
+        .request(
+            Method::POST,
+            "/api/voice/models/link",
+            Some(json!({"path": model})),
+        )
+        .await
     {
-        let model = contents.join("Resources/Dictation/whisper-base-Q8_0.gguf");
-        if model.is_file() {
-            // Concurrent settings and dictation requests may both see a fresh store.
-            static LINK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-            let _link = LINK.lock().await;
-            let status = engine
-                .request(Method::GET, "/api/voice/status", None)
-                .await?;
-            if status["state"] != "missing-model" {
-                return Ok(status);
-            }
-            // Kar verifies the pinned model. If the bundle is damaged the catalog
-            // must still open so the user can download a working local model.
-            if let Err(error) = engine
-                .request(
-                    Method::POST,
-                    "/api/voice/models/link",
-                    Some(json!({"path": model})),
-                )
-                .await
-            {
-                log::warn!("Could not link bundled speech model: {error}");
-                return Ok(status);
-            }
-            return engine.request(Method::GET, "/api/voice/status", None).await;
-        }
+        // A damaged bundle must not prevent using the model catalog to download a verified copy.
+        log::warn!("Could not link bundled speech model: {error}");
+        return Ok(current);
+    }
+    engine.request(Method::GET, "/api/voice/status", None).await
+}
+
+async fn local_voice_status(engine: &Engine) -> Result<Value> {
+    let mut status = engine
+        .request(Method::GET, "/api/voice/status", None)
+        .await?;
+    let rust_engine = uses_rust_dictation();
+    if rust_engine
+        && status["acceleration"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("gpu:"))
+    {
+        // A GPU index saved by the previous engine is invalid for the Rust CPU backend.
+        status = engine
+            .request(
+                Method::POST,
+                "/api/voice/acceleration",
+                Some(json!({"acceleration":"auto"})),
+            )
+            .await?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        status = link_starter_model(engine, status, rust_engine).await?;
+    }
+    if rust_engine
+        && status["supported"] == true
+        && status["modelId"]
+            .as_str()
+            .is_some_and(|id| !supported_speech_model(id))
+        && !(status["modelId"] == KAR_INITIAL_MODEL && status["state"] == "missing-model")
+    {
+        status["state"] = json!("incompatible-model");
     }
     Ok(status)
 }
@@ -425,6 +506,29 @@ pub(crate) async fn run(engine: Engine, cmd: Command) -> Result<Outcome> {
                 matches!(action.as_str(), "select" | "download"),
                 "无效的模型操作"
             );
+            anyhow::ensure!(
+                !uses_rust_dictation() || supported_speech_model(&model),
+                "此模型不适用于 Rust 听写引擎"
+            );
+            #[cfg(target_os = "macos")]
+            if action == "download"
+                && model == BUNDLED_MODEL
+                && let Some(path) = bundled_model()
+            {
+                // Existing users may already have another model installed. Offer the bundled
+                // model offline even when Kar has never linked this application before.
+                if engine
+                    .request(
+                        Method::POST,
+                        "/api/voice/models/link",
+                        Some(json!({"path":path})),
+                    )
+                    .await
+                    .is_ok()
+                {
+                    return voice(&engine, false).await;
+                }
+            }
             engine
                 .request(
                     Method::POST,
@@ -537,6 +641,9 @@ async fn voice(engine: &Engine, cloud: bool) -> Result<Outcome> {
         .as_array()
         .context("无法读取语音模型目录")?
         .clone();
+    if uses_rust_dictation() {
+        models.retain(|row| row["id"].as_str().is_some_and(supported_speech_model));
+    }
     models.sort_by_key(|m| (m["state"] != "installed", m["active"] != true));
     let (cloud_models, cloud_model_error) = if cloud {
         match engine
@@ -671,6 +778,34 @@ mod tests {
                 Some(json!({"path": PathBuf::from(model)})),
             )
             .await?;
+        }
+        if uses_rust_dictation() {
+            // Existing installations can have a GPU index selected by the previous engine.
+            host.request(
+                Method::POST,
+                "/api/voice/acceleration",
+                Some(json!({"acceleration":"gpu:0"})),
+            )
+            .await?;
+            let Outcome::Voice(state) = voice(&host, false).await? else {
+                unreachable!()
+            };
+            assert_eq!(state.status["acceleration"], "auto");
+            assert_eq!(state.status["state"], "ready");
+            assert!(
+                state
+                    .models
+                    .iter()
+                    .any(|row| row["id"] == BUNDLED_MODEL && row["active"] == true)
+            );
+            assert!(
+                state
+                    .models
+                    .iter()
+                    .all(|row| row["id"].as_str().is_some_and(supported_speech_model))
+            );
+            host.request(Method::POST, "/api/voice/models/prepare", None)
+                .await?;
         }
         let mut cases = vec![(std::env::var("KWORK_TEST_UTTERANCE")?, "en", "country")];
         if let Ok(path) = std::env::var("KWORK_TEST_ZH_UTTERANCE") {
