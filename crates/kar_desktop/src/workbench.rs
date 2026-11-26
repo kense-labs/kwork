@@ -3357,9 +3357,10 @@ impl KarWorkbench {
         self.config.open_latest_chat = false;
         self.main_stage_view = MainStageView::Conversation;
         self.coedit_panel_open = false;
+        // A failed resume leaves the archive selected. Selecting it again must retry
+        // the connection, even though its chat ID is already on screen.
         if matches!(&self.access_mode, ChatAccessMode::WriteController { chat_id: active }
-            | ChatAccessMode::LocalReadOnlySubscriber { chat_id: active, .. }
-            | ChatAccessMode::ArchivedReadOnly { chat_id: active, .. } if *active == chat_id)
+            | ChatAccessMode::LocalReadOnlySubscriber { chat_id: active, .. } if *active == chat_id)
         {
             self.record_location(WorkspaceLocation::Thread(chat_id));
             self.close_all_overlays(cx);
