@@ -107,14 +107,8 @@ impl KarWorkbench {
 
     fn toggle_divider(&mut self, divider: Divider, cx: &mut Context<Self>) {
         match divider {
-            Divider::Sidebar => {
-                self.collapsed_sidebar_grip = self.sidebar_open;
-                self.set_sidebar_open(!self.sidebar_open, cx);
-            }
-            Divider::Document => {
-                self.collapsed_doc_grip = self.layout_mode != WorkspaceLayoutMode::ChatFocus;
-                self.toggle_document_pane(cx);
-            }
+            Divider::Sidebar => self.toggle_sidebar(cx),
+            Divider::Document => self.toggle_document_pane(cx),
         }
     }
 
@@ -356,7 +350,11 @@ impl KarWorkbench {
             .when(collapsed, |d| {
                 d.on_click(cx.listener(move |wb, _, win, cx| {
                     wb.toggle_divider(divider, cx);
-                    focus.focus(win, cx);
+                    if f32::from(win.viewport_size().width) < COMPACT_WORKSPACE_WIDTH {
+                        wb.focus_handle.focus(win, cx);
+                    } else {
+                        focus.focus(win, cx);
+                    }
                     cx.stop_propagation();
                 }))
             })
@@ -414,6 +412,9 @@ impl KarWorkbench {
                     "space" if !collapsed => return,
                     "enter" | "space" => {
                         wb.toggle_divider(divider, cx);
+                        if collapsed && f32::from(win.viewport_size().width) < COMPACT_WORKSPACE_WIDTH {
+                            wb.focus_handle.focus(win, cx);
+                        }
                         None
                     }
                     "left" | "right" | "home" | "end" if !collapsed => {
@@ -447,6 +448,10 @@ impl KarWorkbench {
                 .blend(s.muted.opacity(0.86))
                 .blend(highlight.opacity(strength));
             control = control
+                .when(width < COMPACT_WORKSPACE_WIDTH, |control| match divider {
+                    Divider::Sidebar => control.justify_start(),
+                    Divider::Document => control.justify_end(),
+                })
                 .top(px((f32::from(window.viewport_size().height) - 48.) * 0.5))
                 .h(px(48.))
                 .child(folded_grip(divider, strength, grip_ink));

@@ -4,6 +4,11 @@ mod context_usage;
 
 mod activity;
 mod composer_activity;
+mod message_time;
+mod turn_outline;
+mod turn_rail;
+pub(crate) mod turn_navigation;
+pub(crate) mod turn_steps;
 pub(crate) mod questions;
 
 use std::path::PathBuf;
@@ -87,7 +92,7 @@ impl KarWorkbench {
         pane_w: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> (AnyElement, bool) {
         let s = StudioPalette::get(cx);
 
         let view_only = !self.access_mode.is_writable()
@@ -156,44 +161,39 @@ impl KarWorkbench {
             self.render_start_stage(center_w, &s, window, cx)
                 .into_any_element()
         } else {
-            let thread = if self.projected.turns.is_empty()
+            let mut rows = Vec::new();
+            if self.projected.turns.is_empty()
                 && self.active_briefs.is_empty()
                 && self.queued_prompt.is_none()
                 && decision.is_none()
                 && activity.is_none()
             {
-                self.render_waiting_for_content(&s)
+                rows.push(self.render_waiting_for_content(&s));
             } else {
                 let turns = self.projected.turns.clone();
-                let mut column = chat_content_lane(center_w, window)
-                    .pt(px(24.))
-                    .pb(px(32.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(32.));
                 for (turn_idx, turn) in turns.iter().enumerate() {
-                    column = column.child(arrive(
-                        self.render_turn(turn_idx, turn, !show_review_rail, &s, window, cx),
-                        ElementId::Name(format!("turn-in-{}", turn.id).into()),
-                        0,
-                        6.,
-                        cx,
-                    ));
+                    rows.push(
+                        arrive(
+                            self.render_turn(turn_idx, turn, !show_review_rail, &s, window, cx),
+                            ElementId::Name(format!("turn-in-{}", turn.id).into()),
+                            0,
+                            6.,
+                            cx,
+                        )
+                        .into_any_element(),
+                    );
                 }
                 if let Some(briefs_el) = self.render_brief_cards_for_chat(&s, window, cx) {
-                    column = column.child(briefs_el);
+                    rows.push(briefs_el.into_any_element());
                 }
                 if let Some(queued) = self.queued_prompt.clone() {
-                    column = column.child(arrive(
-                        self.render_queued_turn(&queued, &s, cx),
-                        "turn-in-queued",
-                        0,
-                        6.,
-                        cx,
-                    ));
+                    rows.push(
+                        arrive(self.render_queued_turn(&queued, &s, window, cx), "turn-in-queued", 0, 6., cx)
+                            .into_any_element(),
+                    );
                 }
                 if let Some(tasks_el) = self.render_active_tasks(&s, window, cx) {
-                    column = column.child(tasks_el);
+                    rows.push(tasks_el.into_any_element());
                 }
 
                 let show_followups = !is_working
@@ -239,11 +239,9 @@ impl KarWorkbench {
                                 }),
                         );
                     }
-                    column = column.child(strip);
+                    rows.push(strip.into_any_element());
                 }
-
-                column.into_any_element()
-            };
+            }
 
             let scroll_remaining =
                 f32::from(self.chat_scroll.max_offset().y) + f32::from(self.chat_scroll.offset().y);
@@ -260,7 +258,7 @@ impl KarWorkbench {
                     .child(card)
             });
             if reveal_decision {
-                self.chat_scroll.scroll_to_item(1);
+                self.chat_scroll.scroll_to_item(rows.len());
             }
             let activity_row = activity.map(|phase| {
                 self.render_composer_activity(phase, &s, window, cx)
@@ -293,6 +291,7 @@ impl KarWorkbench {
                                     .child(self.ui_locale.pick("跳至最新", "Jump to latest"))
                                     .child(pro_icon(ProIcon::ChevronDown, ICON_XS, s.muted))
                                     .on_press(cx, |this, _, cx| {
+                                        this.turn_navigation.cancel_jump();
                                         this.chat_scroll.scroll_to_bottom();
                                         cx.notify();
                                     }),
@@ -309,6 +308,32 @@ impl KarWorkbench {
                         .into_any_element()
                 });
 
+            // Each turn is a direct scroll child so its anchor follows live Markdown layout,
+            // expanded tool details, window resizing and variable-height attachments.
+            // The collapsed sidebar handle owns the first 28 pt at mid-height.
+            let rail_inset = if self.sidebar_open { 2. } else { 30. };
+            let rail = self.render_turn_navigation(center_w, rail_inset, &s, window, cx);
+            let show_rail = rail.is_some();
+            let count = rows.len();
+            let scroll = div()
+                .id("kar-timeline-scroll")
+                .track_scroll(&self.chat_scroll)
+                .size_full()
+                .flex()
+                .flex_col()
+                .overflow_y_scroll()
+                .on_scroll(cx.listener(|this, _, _, _| this.turn_navigation.cancel_jump()))
+                .children(rows.into_iter().enumerate().map(|(index, row)| {
+                    chat_content_lane(center_w, window)
+                        .flex_none()
+                        .pt(px(if index == 0 { 24. } else { 32. }))
+                        .when(index + 1 == count, |d| d.pb(px(32.)))
+                        .when(show_rail, |d| {
+                            d.pl(px(chat_lane_gutter(center_w, window).max(rail_inset + 25.)))
+                        })
+                        .child(row)
+                }))
+                .children(card);
             let center_lane = div()
                 .flex_1()
                 .min_w_0()
@@ -318,15 +343,12 @@ impl KarWorkbench {
                 .overflow_hidden()
                 .child(
                     div()
-                        .id("kar-timeline-scroll")
-                        .track_scroll(&self.chat_scroll)
+                        .relative()
                         .flex_1()
                         .min_h_0()
-                        .flex()
-                        .flex_col()
-                        .overflow_y_scroll()
-                        .child(div().flex_none().child(thread))
-                        .when_some(card, |timeline, card| timeline.child(card)),
+                        .overflow_hidden()
+                        .child(scroll)
+                        .children(rail),
                 )
                 .child(foot);
 
@@ -367,7 +389,7 @@ impl KarWorkbench {
             stage
         };
 
-        div()
+        let pane = div()
             .id("kar-chat-drop-zone")
             .size_full()
             .bg(s.surface)
@@ -392,7 +414,8 @@ impl KarWorkbench {
                         stage,
                     )),
             )
-            .into_any_element()
+            .into_any_element();
+        (pane, show_review_rail || show_details_rail)
     }
 
     fn render_chat_header(
@@ -3402,13 +3425,14 @@ impl KarWorkbench {
         &self,
         queued: &QueuedPrompt,
         s: &StudioPalette,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let mut asked = div().w_full().flex().flex_col().items_end().gap(px(8.));
         if let Some(target) = queued.target.clone() {
             asked = asked.child(self.render_target_reference("queued", target, s, cx));
         }
-        asked.child(user_bubble(queued.text.clone(), s))
+        asked.child(user_bubble("queued", &queued.text, None, self.ui_locale, s, window, cx))
     }
 
     fn render_composer_activity(
@@ -3638,34 +3662,63 @@ impl KarWorkbench {
         }
 
         let mut first_ask = String::new();
-        for item in &turn.items {
-            if let Item::Message {
-                role: KarRole::User,
-                text,
-                ..
-            } = &item.item
-            {
-                let own = strip_selection_envelope(text);
-                // Strip internal "Attached files (JSON):" footer if Kar appended it.
-                let clean = own
-                    .split("\n\nAttached files (JSON):\n")
-                    .next()
-                    .unwrap_or(own)
-                    .trim()
-                    .to_owned();
-                if !clean.is_empty() {
-                    if first_ask.is_empty() {
-                        first_ask.clone_from(&clean);
-                    }
-                    asked = asked.child(user_bubble(clean, s));
-                }
+        let chat_id = self.projected.chat_id;
+        for input in user_inputs(turn) {
+            let capture =
+                input.id.and_then(|id| self.client_reducer.turn_captures.get(&id)).filter(|c| {
+                    chat_id.is_some() && c.chat_id == chat_id && Some(c.turn_id) == input.id
+                });
+            let clean = input
+                .id
+                .and_then(|id| self.prompt_attempts.get(&id))
+                .filter(|attempt| chat_id.is_some() && attempt.chat_id == chat_id)
+                .map(|attempt| attempt.raw_user_text.as_str())
+                .unwrap_or_else(|| {
+                    let target = capture
+                        .and_then(|c| c.target_selection.as_ref())
+                        .or_else(|| input.id.and_then(|id| self.turn_targets.get(&id)));
+                    let attachments = if input.primary {
+                        turn.attachments.as_slice()
+                    } else {
+                        input
+                            .id
+                            .and_then(|id| turn.steered_attachments.get(&id))
+                            .map(Vec::as_slice)
+                            .unwrap_or_default()
+                    };
+                    original_user_text(input.text, target, attachments)
+                });
+            if clean.trim().is_empty() {
+                continue;
             }
+            if first_ask.is_empty() {
+                first_ask = clean.to_owned();
+            }
+            let sent_at = if input.primary {
+                Some(turn.pi_input_timestamp_ms.filter(|ms| *ms != 0).unwrap_or(turn.started_ms))
+            } else {
+                capture.map(|c| c.captured_at_ms)
+            };
+            asked = asked.child(user_bubble(
+                &format!("{turn_id}-{}", input.index),
+                clean,
+                sent_at,
+                self.ui_locale,
+                s,
+                window,
+                cx,
+            ));
         }
 
         // ── What the agent did (`Worked for Xs >` + Prose/Tables + Copy + Changed Files) ─
         let loc = self.ui_locale;
-        let duration = turn.finished_ms.and_then(|end| end.checked_sub(turn.started_ms));
+        let ended = turn.finished_ms.filter(|&end| !running && end >= turn.started_ms);
+        let finish_time = ended.and_then(message_time::local);
+        let duration = ended.filter(|_| turn.started_ms > 0).map(|end| {
+            worked_duration(end - turn.started_ms, loc)
+        });
         let mut parts = div()
+            .group(action_group.clone())
             .w_full()
             .min_w_0()
             .pl(px(4.))
@@ -3676,169 +3729,78 @@ impl KarWorkbench {
         let mut has_parts = false;
         let mut touched: Vec<(String, &'static str)> = Vec::new();
 
-        // Collect file changes from tools and check whether any tool failed or is still running
-        let mut work_items_count = 0usize;
-        let mut any_work_failed = false;
-        for ti in &turn.items {
-            match &ti.item {
-                Item::Message {
-                    role: KarRole::Reasoning,
-                    text,
-                    ..
-                } if !text.trim().is_empty() => {
-                    work_items_count += 1;
-                }
-                Item::Tool { activity, .. } => {
-                    work_items_count += 1;
-                    if matches!(activity::phase(activity, running), activity::Phase::Failed | activity::Phase::Cancelled | activity::Phase::Unfinished) {
-                        any_work_failed = true;
-                    }
-                    if let Some(result) = &activity.result {
-                        for change in &result.file_changes {
-                            touched.push((
-                                change.path.clone(),
-                                match change.kind {
-                                    ToolChangeKind::Added => "新增",
-                                    ToolChangeKind::Deleted => "删除",
-                                    ToolChangeKind::Modified | ToolChangeKind::Unknown => "修改",
-                                },
-                            ));
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // T3 Code `Worked for 2m 14s >` collapsible work-group header for finished turns
-        let collapse_work_group = !running && !any_work_failed && work_items_count > 1;
-        let work_grp_key = (turn_id, 900_000);
-        let work_grp_open = self.part_is_open(work_grp_key, false);
-
-        if collapse_work_group {
-            has_parts = true;
-            let worked_label = format_worked_header(duration, work_items_count, loc);
-            let mut wg_body = div()
-                .w_full()
-                .pl(px(12.))
-                .mt(px(4.))
-                .border_l_1()
-                .border_color(s.line)
-                .flex()
-                .flex_col()
-                .gap(px(6.));
-            if work_grp_open {
-                let mut wix = 0;
-                while wix < turn.items.len() {
-                    let sub = !turn.items[wix].source.path.is_empty();
-                    match &turn.items[wix].item {
-                        Item::Message {
-                            role: KarRole::Reasoning,
-                            text,
-                            ..
-                        } if !text.trim().is_empty() => {
-                            wg_body = wg_body.child(self.render_reasoning(
-                                (turn_id, wix), text, sub, s, cx,
-                            ));
-                        }
-                        Item::Tool { .. } => {
-                            let source = &turn.items[wix].source;
-                            let mut calls: Vec<(usize, &Tool)> = Vec::new();
-                            while let Some(Item::Tool { activity, .. }) =
-                                turn.items.get(wix).filter(|i| &i.source == source).map(|i| &i.item)
-                            {
-                                calls.push((wix, activity));
-                                wix += 1;
-                            }
-                            wg_body = wg_body.child(self.render_tool_run(
-                                turn_id, &calls, running, sub, s, window, cx,
-                            ));
-                            continue;
-                        }
-                        _ => {}
-                    }
-                    wix += 1;
-                }
-            }
-            parts = parts.child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .items_start()
-                    .child(
-                        Tactile::ghost(
-                            SharedString::from(format!("worked-grp-{turn_id}")),
-                            s,
-                        )
-                        .h(px(26.))
-                        .px(px(6.))
-                        .ml(px(-6.))
-                        .gap(px(5.))
-                        .font_features(tnum_features())
-                        .text_size(px(FS_CONTROL))
-                        .ink(s.muted, s.ink)
-                        .aria(worked_label.clone())
-                        .expanded(work_grp_open)
-                        .child(worked_label)
-                        .child(pro_icon(
-                            if work_grp_open {
-                                ProIcon::ChevronDown
-                            } else {
-                                ProIcon::ChevronRight
+        let root = self.projected.info.as_ref().map(|info| info.native_id.as_str());
+        let turn_steps = turn_steps::TurnSteps::new(turn, root);
+        let mut work_failed = false;
+        for entry in &turn.items {
+            if let Item::Tool { activity, .. } = &entry.item {
+                work_failed |= matches!(
+                    activity::phase(activity, running),
+                    activity::Phase::Failed
+                        | activity::Phase::Cancelled
+                        | activity::Phase::Unfinished
+                );
+                if let Some(result) = &activity.result {
+                    for change in &result.file_changes {
+                        touched.push((
+                            change.path.clone(),
+                            match change.kind {
+                                ToolChangeKind::Added => "新增",
+                                ToolChangeKind::Deleted => "删除",
+                                ToolChangeKind::Modified | ToolChangeKind::Unknown => "修改",
                             },
-                            11.5,
-                            s.muted,
-                        ))
-                        .on_press(cx, move |this, _, cx| {
-                            this.part_open.insert(work_grp_key, !work_grp_open);
-                            cx.notify();
-                        }),
-                    )
-                    .child(pro_fold(
-                        SharedString::from(format!("worked-grp-fold-{turn_id}")),
-                        work_grp_open,
-                        (work_items_count as f32 * 44. + 48.).clamp(72., 280.),
-                        0.,
-                        move || wg_body.into_any_element(),
-                    )),
-            );
-        }
-
-        let has_multiple_replies = turn
-            .items
-            .iter()
-            .filter(|i| {
-                matches!(&i.item,
-                    Item::Message { role: KarRole::Assistant, text, .. } if !text.trim().is_empty()
-                )
-            })
-            .take(2)
-            .count()
-            == 2;
-        let mut ix = 0;
-        while ix < turn.items.len() {
-            let is_subagent = !turn.items[ix].source.path.is_empty();
-            match &turn.items[ix].item {
-                Item::Message {
-                    role: KarRole::User,
-                    ..
-                } => {}
-                Item::Message {
-                    role: KarRole::Reasoning,
-                    text,
-                    ..
-                } => {
-                    if !collapse_work_group && !text.trim().is_empty() {
-                        has_parts = true;
-                        parts = parts.child(self.render_reasoning(
-                            (turn_id, ix),
-                            text.trim(),
-                            is_subagent,
-                            s,
-                            cx,
                         ));
                     }
+                }
+            }
+            work_failed |= matches!(entry.item, Item::RequestError { .. });
+        }
+        let work_grp_key = (turn_id, 900_000);
+        let work_grp_open = self.part_is_open(
+            work_grp_key,
+            work_failed || turn.status != TurnStatus::Completed || !turn_steps.has_answer(),
+        );
+        let mut work_items_count = 0;
+        let mut work_rows = Vec::new();
+        let mut reply_rows = Vec::new();
+
+        let multiple_answer_parts = turn_steps.has_multiple_answers();
+        let mut ix = 0;
+        while ix < turn.items.len() {
+            let item = &turn.items[ix].item;
+            let source = &turn.items[ix].source;
+            let delegated = !source.path.is_empty()
+                || source.session_id.as_ref()
+                    .is_some_and(|id| turn.child_sessions.contains_key(id));
+            if (matches!(item, Item::Message { role: KarRole::User, .. }) && !delegated)
+                || matches!(item, Item::Message { text, .. } if text.trim().is_empty())
+            {
+                ix += 1;
+                continue;
+            }
+            let is_step = !running && !turn_steps.is_answer(ix);
+            if is_step {
+                work_items_count += 1;
+                if !work_grp_open {
+                    ix += 1;
+                    continue;
+                }
+            }
+            let rows = if is_step {
+                &mut work_rows
+            } else {
+                &mut reply_rows
+            };
+            let is_subagent = turn_steps.is_child(turn, ix);
+            match item {
+                Item::Message { role: role @ (KarRole::User | KarRole::Reasoning), text, .. } => {
+                    let (icon, label) = match (role, is_subagent) {
+                        (KarRole::User, _) => (ProIcon::Users, loc.pick("子任务指令", "Delegated task")),
+                        (_, true) => (ProIcon::Sparkles, loc.pick("子智能体思考过程", "Subagent reasoning")),
+                        _ => (ProIcon::Sparkles, loc.pick("思考过程", "Reasoning")),
+                    };
+                    rows.push(self.render_step_text((turn_id, ix), text.trim(), icon, label, s, cx)
+                        .into_any_element());
                 }
                 Item::Message {
                     role: KarRole::Assistant,
@@ -3846,116 +3808,112 @@ impl KarWorkbench {
                     complete,
                     ..
                 } => {
-                    if !text.trim().is_empty() {
-                        has_parts = true;
-                        let msg_group: SharedString =
-                            format!("reply-actions-{turn_id}-{ix}").into();
-                        let mut show_message_copy = *complete && has_multiple_replies;
-                        if show_message_copy && might_start_with_code(text) {
-                            let shape = window.use_keyed_state(
-                                SharedString::from(format!("reply-shape-{turn_id}-{ix}")),
-                                cx,
-                                |_, _| (text.clone(), is_single_code_message(text)),
-                            );
-                            if &shape.read(cx).0 != text {
-                                shape.update(cx, |shape, _| {
-                                    *shape = (text.clone(), is_single_code_message(text))
-                                });
-                            }
-                            show_message_copy = !shape.read(cx).1;
+                    let msg_group: SharedString = format!("reply-actions-{turn_id}-{ix}").into();
+                    let mut show_message_copy =
+                        *complete && (is_step || running || multiple_answer_parts);
+                    if show_message_copy && might_start_with_code(text) {
+                        let shape = window.use_keyed_state(
+                            SharedString::from(format!("reply-shape-{turn_id}-{ix}")),
+                            cx,
+                            |_, _| (text.clone(), is_single_code_message(text)),
+                        );
+                        if &shape.read(cx).0 != text {
+                            shape.update(cx, |shape, _| {
+                                *shape = (text.clone(), is_single_code_message(text))
+                            });
                         }
-                        let message = div()
-                            .flex_1()
+                        show_message_copy = !shape.read(cx).1;
+                    }
+                    let message = div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .when(is_subagent, |d| {
+                            d.child(
+                                div()
+                                    .text_size(px(FS_TAG))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(s.muted)
+                                    .child(loc.pick("子智能体回复", "Subagent")),
+                            )
+                        })
+                        .child(self.render_assistant_markdown_blocks(
+                            turn_id,
+                            ix,
+                            text,
+                            !*complete && running,
+                            s,
+                            cx,
+                        ));
+                    rows.push(
+                        div()
+                            .w_full()
                             .min_w_0()
                             .flex()
-                            .flex_col()
-                            .gap(px(6.))
-                            .when(is_subagent, |d| {
-                                d.child(
+                            .items_start()
+                            .group(msg_group.clone())
+                            .child(message)
+                            .when(show_message_copy, |row| {
+                                row.child(
                                     div()
-                                        .text_size(px(FS_TAG))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(s.muted)
-                                        .child(loc.pick("子智能体回复", "Subagent")),
+                                        .flex_none()
+                                        .ml(px(4.))
+                                        .when(
+                                            !window.last_input_was_keyboard()
+                                                && !window.last_input_was_touch(),
+                                            |d| {
+                                                d.opacity(0.).group_hover(msg_group, |hover| {
+                                                    hover.opacity(1.)
+                                                })
+                                            },
+                                        )
+                                        .child(copy_text_button(
+                                            format!("message-copy-{turn_id}-{ix}"),
+                                            loc.pick("复制这条消息", "Copy this message"),
+                                            text.clone().into(),
+                                            window,
+                                            cx,
+                                        )),
                                 )
                             })
-                            .child(self.render_assistant_markdown_blocks(
-                                turn_id,
-                                ix,
-                                text,
-                                !*complete && running,
-                                s,
-                                cx,
-                            ));
-                        parts = parts.child(
-                            div()
-                                .w_full()
-                                .min_w_0()
-                                .flex()
-                                .items_start()
-                                .group(msg_group.clone())
-                                .child(message)
-                                .when(show_message_copy, |row| {
-                                    row.child(
-                                        div()
-                                            .flex_none()
-                                            .ml(px(4.))
-                                            .when(
-                                                !window.last_input_was_keyboard()
-                                                    && !window.last_input_was_touch(),
-                                                |d| {
-                                                    d.opacity(0.).group_hover(msg_group, |hover| {
-                                                        hover.opacity(1.)
-                                                    })
-                                                },
-                                            )
-                                            .child(copy_text_button(
-                                                format!("message-copy-{turn_id}-{ix}"),
-                                                loc.pick("复制这条消息", "Copy this message"),
-                                                text.clone().into(),
-                                                window,
-                                                cx,
-                                            )),
-                                    )
-                                }),
-                        );
-                    }
+                            .into_any_element(),
+                    );
                 }
                 Item::Tool { .. } => {
                     let source = &turn.items[ix].source;
                     let mut calls: Vec<(usize, &Tool)> = Vec::new();
-                    while let Some(Item::Tool { activity, .. }) =
-                        turn.items.get(ix).filter(|item| &item.source == source).map(|item| &item.item)
+                    while let Some(Item::Tool { activity, .. }) = turn
+                        .items
+                        .get(ix)
+                        .filter(|item| &item.source == source)
+                        .map(|item| &item.item)
                     {
                         calls.push((ix, activity));
                         ix += 1;
+                        if !running {
+                            break;
+                        }
                     }
-                    if !collapse_work_group {
-                        has_parts = true;
-                        parts = parts.child(self.render_tool_run(
-                            turn_id,
-                            &calls,
-                            running,
-                            is_subagent,
-                            s,
-                            window,
-                            cx,
-                        ));
-                    }
+                    rows.push(
+                        self.render_tool_run(turn_id, &calls, running, is_subagent, s, window, cx)
+                            .into_any_element(),
+                    );
                     continue;
                 }
                 Item::Retry { status } => {
-                    has_parts = true;
+                    let label = loc.pick("自动重试", "Automatic retry");
                     let note = match (status.attempt, status.max_attempts) {
-                        (Some(a), Some(m)) => format!("正在自动重试（第 {a}/{m} 次）"),
-                        (Some(a), None) => format!("正在自动重试（第 {a} 次）"),
-                        _ => "连接波动，正在自动重试".to_owned(),
+                        (Some(a), Some(m)) => format!("{label} {a}/{m}"),
+                        (Some(a), None) => format!("{label} {a}"),
+                        _ => label.to_owned(),
                     };
                     let full = match status.reason.as_deref().filter(|r| !r.trim().is_empty()) {
-                        Some(r) => format!("{note}：{r}"),
+                        Some(r) => format!("{note} · {r}"),
                         None => note,
                     };
-                    parts = parts.child(
+                    rows.push(
                         div()
                             .w_full()
                             .flex()
@@ -3964,36 +3922,40 @@ impl KarWorkbench {
                             .text_size(px(FS_META))
                             .text_color(s.muted)
                             .child(pro_icon(ProIcon::Refresh, ICON_XS, s.muted))
-                            .child(div().min_w_0().truncate().child(full)),
+                            .child(div().min_w_0().truncate().child(full))
+                            .into_any_element(),
                     );
                 }
-                Item::Compaction { .. } => {
-                    has_parts = true;
-                    parts = parts.child(
+                Item::Compaction { report } => {
+                    let label = match report.state.as_str() {
+                        "started" => loc.pick("开始压缩上下文", "Started context compaction"),
+                        "completed" => loc.pick("上下文已压缩", "Context compacted"),
+                        "failed" => loc.pick("上下文压缩失败", "Context compaction failed"),
+                        "aborted" => loc.pick("上下文压缩已停止", "Context compaction stopped"),
+                        _ => loc.pick("上下文压缩", "Context compaction"),
+                    };
+                    rows.push(
                         div()
                             .w_full()
-                            .py(px(4.))
+                            .min_h(px(26.))
                             .flex()
                             .items_center()
-                            .gap(px(12.))
-                            .child(div().flex_1().h(px(1.)).bg(s.line))
-                            .child(
-                                div()
-                                    .text_size(px(FS_META))
-                                    .text_color(s.muted)
-                                    .child("更早的对话已整理为摘要"),
-                            )
-                            .child(div().flex_1().h(px(1.)).bg(s.line)),
+                            .gap(px(8.))
+                            .text_size(px(FS_CONTROL))
+                            .text_color(s.muted)
+                            .child(pro_icon(ProIcon::Note, ICON_SM, s.muted))
+                            .child(label)
+                            .into_any_element(),
                     );
                 }
                 Item::Diff { diff, .. } => {
-                    has_parts = true;
-                    parts = parts.child(self.render_diff((turn_id, ix), diff, s, cx));
+                    rows.push(
+                        self.render_diff((turn_id, ix), diff, s, cx)
+                            .into_any_element(),
+                    );
                 }
                 Item::RequestError { error } => {
-                    has_parts = true;
-                    let is_unconfirmed =
-                        error.status == kar::RequestDeliveryStatus::Unconfirmed;
+                    let is_unconfirmed = error.status == kar::RequestDeliveryStatus::Unconfirmed;
                     let badge = if is_unconfirmed {
                         "送达结果未确认 · 未自动重放"
                     } else {
@@ -4004,7 +3966,7 @@ impl KarWorkbench {
                     } else {
                         (s.pro.red_soft, s.pro.red)
                     };
-                    parts = parts.child(
+                    rows.push(
                         div()
                             .w_full()
                             .px(px(12.))
@@ -4041,12 +4003,84 @@ impl KarWorkbench {
                                                 .child(error.reason.trim().to_owned()),
                                         )
                                     }),
-                            ),
+                            )
+                            .into_any_element(),
                     );
                 }
             }
             ix += 1;
         }
+
+        if work_items_count > 0 {
+            has_parts = true;
+            let worked_label = duration.unwrap_or_else(|| match loc {
+                UiLocale::Zh => format!("已执行 {work_items_count} 步"),
+                UiLocale::En if work_items_count == 1 => "1 step".to_owned(),
+                UiLocale::En => format!("{work_items_count} steps"),
+            });
+            let work_body = div()
+                .w_full()
+                .min_w_0()
+                .pt(px(8.))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .children(work_rows);
+            parts = parts.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .child(
+                        Tactile::ghost(SharedString::from(format!("worked-grp-{turn_id}")), s)
+                            .h(px(26.))
+                            .px(px(6.))
+                            .ml(px(-6.))
+                            .gap(px(5.))
+                            .font_features(tnum_features())
+                            .text_size(px(FS_CONTROL))
+                            .ink(s.muted, s.ink)
+                            .aria(worked_label.clone())
+                            .expanded(work_grp_open)
+                            .child(worked_label)
+                            .child(pro_icon(
+                                if work_grp_open {
+                                    ProIcon::ChevronDown
+                                } else {
+                                    ProIcon::ChevronRight
+                                },
+                                11.5,
+                                s.muted,
+                            ))
+                            .on_press(cx, move |this, _, cx| {
+                                this.part_open.insert(work_grp_key, !work_grp_open);
+                                cx.notify();
+                            }),
+                    )
+                    .child(pro_fold(
+                        SharedString::from(format!("worked-grp-fold-{turn_id}")),
+                        work_grp_open,
+                        (work_items_count as f32 * 44. + 48.).clamp(72., 280.),
+                        0.,
+                        move || work_body.into_any_element(),
+                    )),
+            );
+        } else if let Some(label) = duration {
+            has_parts = true;
+            parts = parts.child(
+                div()
+                    .min_h(px(26.))
+                    .flex()
+                    .items_center()
+                    .font_features(tnum_features())
+                    .text_size(px(FS_CONTROL))
+                    .text_color(s.muted)
+                    .child(label),
+            );
+        }
+        has_parts |= !reply_rows.is_empty();
+        parts = parts.children(reply_rows);
 
         // ── Gather turn changed files ───────────────────────────────────────
         let checkpoint = turn.checkpoint.as_ref();
@@ -4192,7 +4226,7 @@ impl KarWorkbench {
                 .child(hold)
         });
 
-        if copy_button.is_some() || stopped.is_some() || can_retry || can_fork || show_hold_rollback
+        if finish_time.is_some() || copy_button.is_some() || stopped.is_some() || can_retry || can_fork || show_hold_rollback
         {
             has_parts = true;
             parts = parts.child(
@@ -4276,6 +4310,26 @@ impl KarWorkbench {
                             }),
                         )
                     })
+                    .when_some(finish_time, |row, time| {
+                        let agent = self.client_reducer.turn_captures.get(&turn_id)
+                            .filter(|cap| cap.chat_id.is_some() && cap.chat_id == self.projected.chat_id)
+                            .map(|cap| {
+                                let name = runtime_display_name(&cap.runtime_id);
+                                match cap.model.as_deref().filter(|model| !model.is_empty()) {
+                                    Some(model) => format!("{name} · {model}"),
+                                    None => name,
+                                }
+                            });
+                        row.child(
+                            message_time::label(
+                                SharedString::from(format!("reply-time-{turn_id}")),
+                                time,
+                                s,
+                                agent,
+                            )
+                            .mx(px(4.)),
+                        )
+                    })
                     .when_some(rollback_hold, |row, hold| row.child(hold)),
             );
         }
@@ -4294,11 +4348,10 @@ impl KarWorkbench {
         }
 
         div()
-            .group(action_group)
             .w_full()
             .flex()
             .flex_col()
-            .gap(px(46.5))
+            .gap(px(14.))
             .child(asked)
             .when(has_parts, |d| d.child(parts))
     }
@@ -4377,22 +4430,17 @@ impl KarWorkbench {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn render_reasoning(
+    fn render_step_text(
         &self,
         key: (Uuid, usize),
         text: &str,
-        is_subagent: bool,
+        icon: ProIcon,
+        label: &'static str,
         s: &StudioPalette,
         cx: &mut Context<Self>,
     ) -> Div {
         let open = self.part_is_open(key, false);
-        let loc = self.ui_locale;
-        let lead = pro_icon(ProIcon::Sparkles, ICON_SM, s.muted);
-        let label = if is_subagent {
-            loc.pick("子智能体思考过程", "Subagent reasoning")
-        } else {
-            loc.pick("思考过程", "Reasoning")
-        };
+        let lead = pro_icon(icon, ICON_SM, s.muted);
         let body = div()
             .text_size(px(FS_UI))
             .line_height(px(LH_UI))
@@ -5186,45 +5234,152 @@ fn chat_content_lane(width: f32, window: &Window) -> Div {
         .px(px(gutter))
 }
 
-fn user_bubble(text: String, s: &StudioPalette) -> Div {
-    div()
-        .max_w(relative(0.80))
-        .min_w_0()
-        .overflow_hidden()
-        .px(px(11.))
-        .pt(px(13.))
-        .pb(px(11.))
-        .rounded(px(16.))
-        .bg(s.message_surface)
-        .text_size(px(FS_UI))
-        .line_height(px(23.))
-        .text_color(s.ink)
-        .child(text)
+struct UserInput<'a> {
+    index: usize,
+    text: &'a str,
+    id: Option<Uuid>,
+    primary: bool,
 }
 
-fn format_worked_header(
-    duration_ms: Option<u64>,
-    step_count: usize,
-    loc: crate::ui_primitives::UiLocale,
-) -> String {
-    if let Some(ms) = duration_ms.filter(|&m| m > 0) {
-        let secs = ms / 1000;
-        let human = if secs >= 60 {
-            format!("{}m {}s", secs / 60, secs % 60)
-        } else if ms >= 1000 {
-            format!("{:.1}s", ms as f64 / 1000.0)
-        } else {
-            format!("{ms}ms")
+fn user_inputs(turn: &ChatTurn) -> impl Iterator<Item = UserInput<'_>> {
+    let mut needs_primary = !turn.native_continuation;
+    turn.items.iter().enumerate().filter_map(move |(index, entry)| {
+        let Item::Message { role: KarRole::User, text, provider_id, .. } = &entry.item else {
+            return None;
         };
-        match loc {
-            crate::ui_primitives::UiLocale::En => format!("Worked for {human}"),
-            crate::ui_primitives::UiLocale::Zh => format!("已执行 {human}"),
+        // Older imports can lack a source ID or carry the session ID from before a resume.
+        // An actual child path or registered ACP child identifies a delegated prompt.
+        if !entry.source.path.is_empty()
+            || entry
+                .source
+                .session_id
+                .as_ref()
+                .is_some_and(|id| turn.child_sessions.contains_key(id))
+        {
+            return None;
         }
-    } else {
-        match loc {
-            crate::ui_primitives::UiLocale::En => format!("Worked ({step_count} steps)"),
-            crate::ui_primitives::UiLocale::Zh => format!("已执行 {step_count} 步操作"),
+        let native_id = provider_id.as_deref().and_then(|id| Uuid::parse_str(id).ok());
+        let steered = native_id.is_some_and(|id| {
+            turn.steered_inputs.contains_key(&id) || turn.steered_attachments.contains_key(&id)
+        });
+        let primary = needs_primary && !steered;
+        if primary {
+            needs_primary = false;
         }
+        let id = if primary { Some(turn.id) } else { native_id };
+        Some(UserInput { index, text, id, primary })
+    })
+}
+
+fn original_user_text<'a>(
+    text: &'a str,
+    target: Option<&SelectionTarget>,
+    attachments: &[kar::chat::Attachment],
+) -> &'a str {
+    let mut text = text;
+    if !attachments.is_empty()
+        && let Some((body, footer)) = text.rsplit_once("\n\nAttached files (JSON):\n")
+        && let Ok(references) = serde_json::from_str::<Vec<serde_json::Value>>(footer)
+    {
+        let files = attachments.iter().filter(|a| a.kind == AttachmentKind::File);
+        let matches = !references.is_empty()
+            && files.clone().count() == references.len()
+            && files.zip(&references).all(|(file, reference)| {
+                let suffix =
+                    std::path::PathBuf::from(file.id.to_string()).join("content").join(&file.name);
+                reference["name"].as_str() == Some(&file.name)
+                    && reference["mime"].as_str() == Some(&file.mime)
+                    && reference["path"]
+                        .as_str()
+                        .is_some_and(|path| std::path::Path::new(path).ends_with(suffix))
+            });
+        if matches {
+            text = body;
+        }
+    }
+    target
+        .and_then(|target| text.strip_prefix(&target.compose_prompt("")))
+        .unwrap_or_else(|| strip_selection_envelope(text))
+}
+
+fn user_bubble(
+    key: &str,
+    text: &str,
+    sent_at: Option<u64>,
+    loc: UiLocale,
+    s: &StudioPalette,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
+    let group = SharedString::from(format!("user-message-{key}"));
+    let focus =
+        window.use_keyed_state(SharedString::from(format!("{group}-focus")), cx, |_, cx| {
+            cx.focus_handle()
+        });
+    let focus = focus.read(cx).clone();
+    let keyboard_focus = window.last_input_was_keyboard() && focus.contains_focused(window, cx);
+    let text = SharedString::from(text.to_owned());
+    let bubble = div()
+        .min_w_0()
+        .max_w_full()
+        .px(px(14.))
+        .py(px(7.))
+        .rounded(px(12.))
+        .bg(s.message_surface)
+        .text_size(px(FS_UI))
+        .line_height(px(LH_UI))
+        .text_color(s.ink)
+        .child(text.clone());
+    let actions = div()
+        .id(SharedString::from(format!("user-message-actions-{key}")))
+        .track_focus(&focus)
+        .h(px(28.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .when(!keyboard_focus && !window.last_input_was_touch(), |d| {
+            d.opacity(0.).group_hover(group.clone(), |d| d.opacity(1.))
+        })
+        .when_some(sent_at.and_then(message_time::local), |row, time| {
+            row.child(message_time::label(
+                SharedString::from(format!("user-time-{key}")),
+                time,
+                s,
+                None,
+            ))
+        })
+        .child(copy_text_button(
+            format!("user-copy-{key}"),
+            loc.pick("复制我的消息", "Copy my message"),
+            text,
+            window,
+            cx,
+        ));
+    div()
+        .min_w_0()
+        .max_w(relative(0.85))
+        .group(group)
+        .flex()
+        .flex_col()
+        .items_end()
+        .child(bubble)
+        .child(actions)
+}
+
+fn worked_duration(ms: u64, loc: UiLocale) -> String {
+    let seconds = ms / 1000;
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+    match (loc, seconds) {
+        (UiLocale::Zh, 0) => "用时不到 1秒".to_owned(),
+        (UiLocale::En, 0) => "Under 1s".to_owned(),
+        (UiLocale::Zh, 1..60) => format!("用时 {seconds}秒"),
+        (UiLocale::En, 1..60) => format!("Took {seconds}s"),
+        (UiLocale::Zh, 60..3600) => format!("用时 {minutes}分钟 {}秒", seconds % 60),
+        (UiLocale::En, 60..3600) => format!("Took {minutes}m {}s", seconds % 60),
+        (UiLocale::Zh, _) => format!("用时 {hours}小时 {}分钟 {}秒", minutes % 60, seconds % 60),
+        (UiLocale::En, _) => format!("Took {hours}h {}m {}s", minutes % 60, seconds % 60),
     }
 }
 
@@ -5244,8 +5399,65 @@ fn is_single_code_message(text: &str) -> bool {
 }
 
 #[cfg(test)]
-mod reply_copy_tests {
-    use super::{is_single_code_message, might_start_with_code};
+mod turn_display_tests {
+    use super::{UiLocale, is_single_code_message, might_start_with_code, worked_duration};
+
+    #[test]
+    fn user_occurrences_keep_separate_identities_after_runtime_events() {
+        use serde_json::json;
+        let primary = uuid::Uuid::new_v4();
+        let followup = uuid::Uuid::new_v4();
+        let message = |session, role, id: Option<uuid::Uuid>| {
+            json!({
+                "source":{"session_id":session,"path":[]}, "kind":"message",
+                "role":role, "text":"好", "provider_id":id, "complete":true
+            })
+        };
+        let turn = serde_json::from_value(json!({
+            "id":primary, "started_ms":10, "status":"completed",
+            "child_sessions":{"worker":"root"}, "steered_inputs":{(followup.to_string()):"accepted"},
+            "items":[message("root","reasoning",None), message("worker","user",None),
+                     message("legacy-root","user",None), message("root","user",Some(followup))]
+        })).unwrap();
+        let inputs: Vec<_> = super::user_inputs(&turn)
+            .map(|input| (input.index, input.id, input.text, input.primary))
+            .collect();
+        assert_eq!(inputs, [(2, Some(primary), "好", true), (3, Some(followup), "好", false)]);
+    }
+
+    #[test]
+    fn only_the_recorded_attachment_footer_is_removed_from_user_text() {
+        use serde_json::json;
+        let id = uuid::Uuid::new_v4();
+        let file = serde_json::from_value(json!({
+            "id":id, "name":"a.txt", "mime":"text/plain", "bytes":1, "kind":"file", "sha256":"x"
+        }))
+        .unwrap();
+        let original = "    preserve spaces\n\nAttached files (JSON):\n[]\n";
+        let references = json!([{"name":"a.txt","mime":"text/plain","path":format!("/store/{id}/content/a.txt")}]);
+        let with_files = format!("{original}\n\nAttached files (JSON):\n{references}");
+        assert_eq!(super::original_user_text(&with_files, None, &[]), with_files);
+        assert_eq!(super::original_user_text(&with_files, None, &[file]), original);
+    }
+
+    #[test]
+    fn message_time_preserves_the_instant_and_skips_unknown_times() {
+        let stamp = 1_763_963_000_000;
+        let time = super::message_time::local(stamp).unwrap();
+        let parsed = chrono::DateTime::parse_from_str(&time.full, "%Y-%m-%d %H:%M:%S %:z").unwrap();
+        assert_eq!(parsed.timestamp_millis() as u64, stamp);
+        assert_eq!(time.short, parsed.format("%H:%M").to_string());
+        assert!(super::message_time::local(0).is_none());
+        assert!(super::message_time::local(u64::MAX).is_none());
+    }
+
+    #[test]
+    fn elapsed_time_uses_local_units_and_keeps_seconds() {
+        assert_eq!(worked_duration(600, UiLocale::Zh), "用时不到 1秒");
+        assert_eq!(worked_duration(853_900, UiLocale::Zh), "用时 14分钟 13秒");
+        assert_eq!(worked_duration(3_602_000, UiLocale::En), "Took 1h 0m 2s");
+    }
+
     #[test]
     fn single_code_messages_use_the_block_action_even_with_table_syntax() {
         for message in [

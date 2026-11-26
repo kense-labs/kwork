@@ -291,7 +291,10 @@ impl KarWorkbench {
                     })
                     .child(
                         icon_button("office-hide", ProIcon::Close, "隐藏右侧工作台  ⌘J", &s)
-                            .on_press(cx, |this, _, cx| this.toggle_document_pane(cx)),
+                            .on_press(cx, |this, window, cx| {
+                                this.focus_handle.focus(window, cx);
+                                this.toggle_document_pane(cx);
+                            }),
                     ),
             );
 

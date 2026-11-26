@@ -786,12 +786,15 @@ impl KarWorkbench {
         });
 
         let more_open = self.open_menu == Some(Menu::SidebarMore);
-        // Six controls still fit the 192pt minimum rail, with equal hit boxes.
-        let compact_footer = width < 236.;
-        let button_side = if compact_footer { 28. } else { 32. };
+        const FOOTER_BUTTON_W: f32 = 28.;
+        const FOOTER_INSET: f32 = 8.;
+        // Six buttons and the flexible spacer share the rail inside its border.
+        let footer_gap = ((width - 1. - 2. * FOOTER_INSET - 6. * FOOTER_BUTTON_W) / 6.)
+            .clamp(0., 8.);
         let footer_button = |id, icon, label| {
             Tactile::ghost(id, &s)
-                .size(px(button_side))
+                .w(px(FOOTER_BUTTON_W))
+                .h(px(32.))
                 .flex_none()
                 .radius(6.)
                 .justify_center()
@@ -812,12 +815,12 @@ impl KarWorkbench {
         let footer = div()
             .w_full()
             .flex_none()
-            .px(px(8.))
+            .px(px(FOOTER_INSET))
             .pt(px(4.))
             .pb(px(8.))
             .flex()
             .items_center()
-            .gap(px(if compact_footer { 1. } else { 4. }))
+            .gap(px(footer_gap))
             .when(in_conv, |row| {
                 row.child(
                     footer_button(
@@ -1478,17 +1481,6 @@ impl KarWorkbench {
             ]);
         }
         rows.extend([
-            menu_icon_item(
-                "side-more-language",
-                ProIcon::Globe,
-                loc.pick("Switch to English", "切换为中文"),
-                s,
-            )
-            .on_press(cx, |this, win, cx| {
-                this.open_menu = None;
-                this.toggle_ui_locale(win, cx);
-            })
-            .into_any_element(),
             menu_icon_item(
                 "side-more-palette",
                 ProIcon::Search,

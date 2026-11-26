@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use gpui::{prelude::*, *};
 use kar::{
     ApprovalMode,
-    chat::{ChatTurn, Item, Role as ChatRole, TurnStatus},
+    chat::{Item, TurnStatus},
 };
 use kui::{
     ThemeMode,
@@ -454,8 +454,6 @@ pub struct KarWorkbench {
     pub(crate) sidebar_focus: FocusHandle,
     sidebar_divider_focus: FocusHandle,
     doc_divider_focus: FocusHandle,
-    collapsed_sidebar_grip: bool,
-    collapsed_doc_grip: bool,
     /// Rail width in px, sprung so collapsing and expanding glide.
     pub(crate) sidebar_anim: Slide,
     sidebar_width: f32,
@@ -547,6 +545,7 @@ pub struct KarWorkbench {
     /// The one tool call whose input and output are showing.
     pub(crate) tool_detail: Option<(Uuid, usize)>,
     pub chat_scroll: ScrollHandle,
+    pub(crate) turn_navigation: crate::ui_chat::turn_navigation::TurnNavigation,
 
     // ── Documents ───────────────────────────────────────────────────────────
     pub office_tabs: Vec<OfficeTab>,
@@ -1378,8 +1377,6 @@ impl KarWorkbench {
             sidebar_focus: cx.focus_handle(),
             sidebar_divider_focus: cx.focus_handle().tab_stop(true),
             doc_divider_focus: cx.focus_handle().tab_stop(true),
-            collapsed_sidebar_grip: false,
-            collapsed_doc_grip: false,
             sidebar_anim: Slide::new(if initial_sidebar_open { sidebar_width } else { 0. }),
             sidebar_width,
             split_anim: Slide::new(if initial_layout == WorkspaceLayoutMode::ChatFocus {
@@ -1449,6 +1446,7 @@ impl KarWorkbench {
             turn_review: None,
             tool_detail: None,
             chat_scroll: ScrollHandle::new(),
+            turn_navigation: Default::default(),
             office_tabs: Vec::new(),
             active_office_tab: None,
             next_tab_id: 1,
@@ -2330,6 +2328,7 @@ impl KarWorkbench {
             }
             KarBridgeEvent::TurnTargetsLoaded(map) => {
                 self.turn_targets = map;
+                self.turn_navigation.invalidate();
             }
             KarBridgeEvent::TurnDiffLoaded { key, result } => {
                 if let Some(review) = &mut self.turn_review && review.key == key {
@@ -2507,7 +2506,8 @@ impl KarWorkbench {
                 let new_turn_appended = same_chat && proj.turns.len() > self.projected.turns.len();
                 let switched_chat = !same_chat;
 
-                self.sync_timeline_entities(&proj.turns, cx);
+                self.turn_navigation.update_turns(&self.projected, &proj);
+                self.sync_timeline_entities(&proj, cx);
                 self.sync_client_projection(&proj);
                 let workspace_changed = self.projected.info.as_ref().map(|i| &i.workspace)
                     != proj.info.as_ref().map(|i| &i.workspace);
@@ -2973,14 +2973,17 @@ impl KarWorkbench {
         cx.notify();
     }
 
-    fn sync_timeline_entities(&mut self, turns: &[ChatTurn], cx: &mut Context<Self>) {
+    fn sync_timeline_entities(&mut self, projected: &ProjectedChatState, cx: &mut Context<Self>) {
+        let turns = &projected.turns;
+        let root = projected.info.as_ref().map(|info| info.native_id.as_str());
         for turn in turns {
-            let reply = reply_markdown(turn.items.iter().filter_map(|item| match &item.item {
-                Item::Message {
-                    role: ChatRole::Assistant,
-                    text,
-                    ..
-                } => Some(text.as_str()),
+            if turn.status == TurnStatus::Running {
+                self.copy_buttons.remove(&turn.id);
+                continue;
+            }
+            let steps = crate::ui_chat::turn_steps::TurnSteps::new(turn, root);
+            let reply = reply_markdown(turn.items.iter().enumerate().filter_map(|(index, item)| match &item.item {
+                Item::Message { text, .. } if steps.is_answer(index) => Some(text.as_str()),
                 _ => None,
             }));
 
@@ -2994,12 +2997,14 @@ impl KarWorkbench {
                     });
                     self.copy_buttons.insert(turn.id, button);
                 }
+            } else {
+                self.copy_buttons.remove(&turn.id);
             }
         }
 
         let on_screen: BTreeSet<Uuid> = turns.iter().map(|t| t.id).collect();
         self.copy_buttons.retain(|id, _| on_screen.contains(id));
-        let chat = self.projected.chat_id;
+        let chat = projected.chat_id;
         self.rollback_hold_buttons.retain(|(owner, turn, _), _| Some(*owner) == chat && on_screen.contains(turn));
         self.part_open.retain(|(id, _), _| on_screen.contains(id));
         if self.tool_detail.is_some_and(|(id, _)| !on_screen.contains(&id)) {
@@ -6338,15 +6343,16 @@ impl Render for KarWorkbench {
         } else {
             usable
         };
-        let (stage_key, inner_stage): (&'static str, AnyElement) = match self.main_stage_view {
+        let (stage_key, inner_stage, has_chat_rail) = match self.main_stage_view {
             MainStageView::Conversation => {
-                ("stage-conversation", self.render_chat_pane(pane_w, window, cx))
+                let (chat, has_rail) = self.render_chat_pane(pane_w, window, cx);
+                ("stage-conversation", chat, has_rail)
             }
             MainStageView::TasksInbox => {
-                ("stage-tasks-inbox", self.render_tasks_inbox_screen(usable, window, cx))
+                ("stage-tasks-inbox", self.render_tasks_inbox_screen(usable, window, cx), false)
             }
             MainStageView::OfficeGallery => {
-                ("stage-office-gallery", self.render_office_gallery_screen(usable, window, cx))
+                ("stage-office-gallery", self.render_office_gallery_screen(usable, window, cx), false)
             }
         };
         let chat_view = pro_view_transition_fill("kar-main-stage-vtx", stage_key, inner_stage);
@@ -6356,7 +6362,7 @@ impl Render for KarWorkbench {
         let doc_view = show_doc.then(|| self.render_office_pane(dock_w, window, cx));
         let sidebar_view = (sidebar_w > 0.5).then(|| self.render_sidebar(rail_width, window, cx));
 
-        let left_handle = (!compact && (self.sidebar_open || self.collapsed_sidebar_grip)).then(|| {
+        let left_handle = (!compact || !self.sidebar_open).then(|| {
             let span = Span {
                 value: rail_width,
                 min: resize::SIDEBAR_MIN,
@@ -6365,12 +6371,14 @@ impl Render for KarWorkbench {
             };
             let document_width = (show_doc && self.layout_mode != WorkspaceLayoutMode::ChatFocus)
                 .then_some(usable - chat_w);
+            let x = if self.sidebar_open { sidebar_w } else { 0. };
             self.workspace_divider(
-                Divider::Sidebar, sidebar_w, span, !self.sidebar_open, document_width, &s, window, cx,
+                Divider::Sidebar, x, span, !self.sidebar_open, document_width, &s, window, cx,
             )
         });
         let dock_closed = self.layout_mode == WorkspaceLayoutMode::ChatFocus;
-        let show_right_handle = !compact && in_conversation_stage && (!dock_closed || self.collapsed_doc_grip);
+        let show_right_handle = in_conversation_stage && !has_chat_rail && !drawer_active
+            && (!compact || dock_closed);
         let right_handle = show_right_handle.then(|| {
             let x = if dock_closed {
                 window_w
@@ -6443,7 +6451,8 @@ impl Render for KarWorkbench {
                                         )
                                         .on_press(
                                             cx,
-                                            |this, _, cx| {
+                                            |this, window, cx| {
+                                                this.focus_handle.focus(window, cx);
                                                 this.set_layout_mode(
                                                     WorkspaceLayoutMode::ChatFocus,
                                                     cx,
@@ -6475,9 +6484,11 @@ impl Render for KarWorkbench {
                 .overflow_hidden()
                 .child(
                     div()
+                        .absolute()
+                        .right_0()
+                        .top_0()
                         .w(px(rail_width))
                         .h_full()
-                        .opacity(self.sidebar_reveal)
                         .child(sidebar),
                 )
         });
