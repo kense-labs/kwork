@@ -1,5 +1,6 @@
 //! Local scheduled tasks, upcoming runs, and execution history.
 
+use crate::ui_motion::selection::{Group, SelectionStrip};
 use chrono::{TimeZone, Timelike};
 use gpui::{prelude::*, *};
 use kui::primitives::pro_icons::{ProIcon, pro_icon};
@@ -208,7 +209,7 @@ impl KarWorkbench {
             .justify_between()
             .font_family(mono_font(cx))
             .font_features(tnum_features())
-            .text_size(px(10.))
+            .text_size(px(FS_TAG))
             .text_color(s.faint);
         for lbl in ["00:00", "06:00", "12:00", "18:00", "24:00"] {
             ticks_row = ticks_row.child(div().child(lbl));
@@ -269,7 +270,7 @@ impl KarWorkbench {
                             .gap(px(5.))
                             .font_family(mono_font(cx))
                             .font_features(tnum_features())
-                            .text_size(px(10.5))
+                            .text_size(px(FS_META))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(s.pro.green_ink)
                             .child(div().size(px(5.5)).rounded_full().bg(s.pro.green))
@@ -286,18 +287,31 @@ impl KarWorkbench {
             .and_then(|i| self.office_tabs.get(i))
             .map(|t| (t.kind, clean_display_doc_name(&t.doc_name(cx))));
 
-        let mut cadence_row = div().flex().flex_wrap().items_center().gap(px(6.));
-        for (ix, preset) in ScheduleCadence::PRESETS.into_iter().enumerate() {
-            let active = self.schedule_draft_cadence == preset;
-            cadence_row = cadence_row.child(
-                soft_button(("sched-cadence-opt", ix), self.ui_locale.pick(&preset.label(), ["Daily at 09:00","Every hour","Mondays at 09:00","Manual only"][ix]).to_owned(), s)
-                    .lit(active)
-                    .on_press(cx, move |this, _, cx| {
-                        this.schedule_draft_cadence = preset;
-                        cx.notify();
-                    }),
-            );
-        }
+        let cadences = ScheduleCadence::PRESETS
+            .into_iter()
+            .zip([
+                "Daily at 09:00",
+                "Every hour",
+                "Mondays at 09:00",
+                "Manual only",
+            ])
+            .map(|(preset, english)| {
+                let label = self.ui_locale.pick(&preset.label(), english).to_owned();
+                (preset, label)
+            });
+        let cadence_row = SelectionStrip::options(
+            "schedule-cadence",
+            self.ui_locale.pick("执行频率", "Schedule frequency"),
+            Group::Choices,
+            cadences,
+            self.schedule_draft_cadence,
+            s,
+            cx,
+            |wb, preset, _, cx| {
+                wb.schedule_draft_cadence = preset;
+                cx.notify();
+            },
+        );
 
         div()
             .w_full()

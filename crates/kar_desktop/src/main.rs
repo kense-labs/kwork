@@ -23,7 +23,7 @@ USAGE:
   kar-desktop [OPTIONS] [FILE...]
 
 OPTIONS:
-  --chat-dir <DIR>             Isolated KAR_CHAT_DIR for ChatStore (default: $KAR_CHAT_DIR or ./.kar-desktop-chats)
+  --chat-dir <DIR>             Override chat storage ($KAR_CHAT_DIR, otherwise app data or ./.kar-desktop-chats)
   --workspace <DIR>            Default workspace directory for new conversations
   --docs-dir <DIR>             Working copies directory for Office sample documents
   --open <FILE>                Open a .docx, .xlsx, or .pptx copy in the Office pane (repeatable)

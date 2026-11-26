@@ -8,7 +8,7 @@ use std::{
 use gpui::{prelude::*, *};
 use kui::{
     components::pro_chrome::ProPalette,
-    primitives::pro_icons::{pro_app_artwork, pro_svg},
+    primitives::pro_icons::{ProIcon, pro_app_artwork, pro_icon, pro_svg},
 };
 
 use crate::types::{OfficeKind, runtime_brand_svg, runtime_display_name};
@@ -70,12 +70,14 @@ pub fn macos_traffic_pad(window: &Window) -> f32 {
 
 pub const FS_TAG: f32 = 11.0;
 pub const FS_META: f32 = 12.0;
+pub const FS_CONTROL: f32 = 13.0;
 pub const FS_UI: f32 = 14.0;
 pub const FS_READ: f32 = 15.0;
 pub const FS_TITLE: f32 = 18.0;
 pub const FS_HERO: f32 = 30.0;
 
 pub const LH_META: f32 = 16.0;
+pub const LH_CONTROL: f32 = 18.0;
 pub const LH_UI: f32 = 20.0;
 pub const LH_READ: f32 = 22.5;
 
@@ -113,21 +115,9 @@ const ART_SHEET_SVG: &str = r#"<path d="M3.3 1h3.9L10 3.8v6.4c0 .72-.58 1.3-1.3 
 
 const ART_SLIDE_SVG: &str = r#"<rect x="1.5" y="1.8" width="9" height="6.8" rx="1.3" fill="currentColor" opacity="0.45"></rect><path d="M4.2 6.2V4.7M6 6.2V3.5M7.8 6.2V5.1" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"></path><path d="M6 8.6v2M4.2 10.6L6 8.8l1.8 1.8" stroke="currentColor" stroke-width="1.05" stroke-linecap="round" stroke-linejoin="round"></path>"#;
 
-const SVG_TRAY_FOLDER: &str = r#"<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"></path>"#;
-
-const SVG_FOLDER_PLUS: &str = r#"<path d="M12 10v6m-3-3h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"></path>"#;
-
 const SVG_FOLDER_GIT2: &str = r#"<path d="M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"></path><circle cx="13" cy="12" r="2" stroke="currentColor" stroke-width="1.75"></circle><path d="M18 19c-2.8 0-5-2.2-5-5v8" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"></path><circle cx="20" cy="19" r="2" stroke="currentColor" stroke-width="1.75"></circle>"#;
 
-const SVG_SQUARE_PEN: &str = r#"<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>"#;
-
 const SVG_LIST_FILTER: &str = r#"<path d="M3 6h18M7 12h10m-7 6h4" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"></path>"#;
-
-const SVG_PAPERCLIP: &str = r#"<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>"#;
-
-const SVG_PANEL_BOTTOM: &str = r#"<rect width="18" height="18" x="3" y="3" rx="2" stroke="currentColor" stroke-width="1.8"></rect><path d="M3 15h18" stroke="currentColor" stroke-width="1.8"></path>"#;
-
-const SVG_PANEL_RIGHT: &str = r#"<rect width="18" height="18" x="3" y="3" rx="2" stroke="currentColor" stroke-width="1.8"></rect><path d="M15 3v18" stroke="currentColor" stroke-width="1.8"></path>"#;
 
 const SVG_SQUARE_MENU: &str = r#"<rect width="18" height="18" x="3" y="3" rx="2" stroke="currentColor" stroke-width="1.8"></rect><path d="M7 8h10M7 12h10M7 16h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>"#;
 
@@ -136,8 +126,6 @@ const SVG_FILE_DIFF: &str = r#"<rect width="18" height="18" x="3" y="3" rx="2" s
 const SVG_WORKFLOWS_FORK: &str = r#"<circle cx="6" cy="6" r="2.2" stroke="currentColor" stroke-width="1.8"></circle><circle cx="18" cy="6" r="2.2" stroke="currentColor" stroke-width="1.8"></circle><circle cx="6" cy="18" r="2.2" stroke="currentColor" stroke-width="1.8"></circle><path d="M6 8.2v7.6M18 8.2c0 4.5-12 3.1-12 7.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>"#;
 
 const SVG_CHART_COLUMNS: &str = r#"<path d="M5 20v-6m7 6V4m7 16v-9" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>"#;
-
-const SVG_ARROW_UP: &str = r#"<path d="M12 19V5m-6 6 6-6 6 6" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"></path>"#;
 
 const SVG_CIRCLE_CHECK: &str = r#"<circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"></circle><path d="m8.5 12.2 2.3 2.3 4.8-4.8" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"></path>"#;
 
@@ -160,8 +148,6 @@ const SVG_BRIEF_CARDS: &str = r#"<rect x="3" y="3.5" width="18" height="17" rx="
 const SVG_STEER_MERGE: &str = r#"<path d="M6 19V5M6 5L3 8M6 5L9 8" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.9"></path><path d="M18 19C18 14.5 15 12 10.5 12H6" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.9"></path><circle cx="18" cy="19" r="2" stroke="currentColor" stroke-width="1.9"></circle>"#;
 
 const SVG_BG_LAYERS: &str = r#"<path d="M12 3L21 7.8L12 12.6L3 7.8L12 3Z" stroke="currentColor" stroke-linejoin="round" stroke-width="1.85"></path><path d="M3 12.5L12 17.3L21 12.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.85"></path><path d="M3 16.8L12 21.6L21 16.8" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.85"></path>"#;
-
-const SVG_GIT_BRANCH: &str = r#"<line x1="6" x2="6" y1="3" y2="15" stroke="currentColor" stroke-width="1.85" stroke-linecap="round"></line><circle cx="18" cy="6" r="3" stroke="currentColor" stroke-width="1.85"></circle><circle cx="6" cy="18" r="3" stroke="currentColor" stroke-width="1.85"></circle><path d="M18 9a9 9 0 0 1-9 9" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"></path>"#;
 
 const SVG_SKILLS_PUZZLE: &str = r#"<path d="M12 3L14.2 7.6L19.2 8.3L15.6 11.8L16.5 16.8L12 14.4L7.5 16.8L8.4 11.8L4.8 8.3L9.8 7.6L12 3Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.85"></path><path d="M5 20.5H19" stroke="currentColor" stroke-linecap="round" stroke-width="1.85"></path>"#;
 
@@ -493,11 +479,11 @@ impl StarterChipIcon {
 }
 
 pub fn render_folder_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_TRAY_FOLDER, side, color)
+    pro_icon(ProIcon::Folder, side, color)
 }
 
 pub fn render_folder_plus_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_FOLDER_PLUS, side, color)
+    pro_icon(ProIcon::FolderPlus, side, color)
 }
 
 pub fn render_folder_git_icon(side: f32, color: Hsla) -> AnyElement {
@@ -505,7 +491,7 @@ pub fn render_folder_git_icon(side: f32, color: Hsla) -> AnyElement {
 }
 
 pub fn render_square_pen_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_SQUARE_PEN, side, color)
+    pro_icon(ProIcon::NewChat, side, color)
 }
 
 pub fn render_list_filter_icon(side: f32, color: Hsla) -> AnyElement {
@@ -513,15 +499,15 @@ pub fn render_list_filter_icon(side: f32, color: Hsla) -> AnyElement {
 }
 
 pub fn render_paperclip_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_PAPERCLIP, side, color)
+    pro_icon(ProIcon::Paperclip, side, color)
 }
 
 pub fn render_panel_bottom_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_PANEL_BOTTOM, side, color)
+    pro_icon(ProIcon::PanelBottom, side, color)
 }
 
 pub fn render_panel_right_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_PANEL_RIGHT, side, color)
+    pro_icon(ProIcon::SidebarRight, side, color)
 }
 
 pub fn render_square_menu_icon(side: f32, color: Hsla) -> AnyElement {
@@ -541,7 +527,7 @@ pub fn render_chart_columns_icon(side: f32, color: Hsla) -> AnyElement {
 }
 
 pub fn render_arrow_up_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_ARROW_UP, side, color)
+    pro_icon(ProIcon::ArrowUp, side, color)
 }
 
 pub fn render_circle_check_icon(side: f32, color: Hsla) -> AnyElement {
@@ -577,7 +563,7 @@ pub fn render_bg_layers_icon(side: f32, color: Hsla) -> AnyElement {
 }
 
 pub fn render_git_branch_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_GIT_BRANCH, side, color)
+    pro_icon(ProIcon::GitBranch, side, color)
 }
 
 pub fn render_skills_puzzle_icon(side: f32, color: Hsla) -> AnyElement {
@@ -632,16 +618,16 @@ pub(crate) fn sidebar_texture(s: &StudioPalette, width: f32, running: bool, wind
     } else {
         [0xffb967, 0xfe875a, 0xdc5b62]
     };
-    let background = if s.dark { 0x040404 } else { 0xf8f8f8 };
-    let height = 78.;
-    // Keep the atlas sampling fringe outside the visible strip on Retina displays.
+    // Bleed the luminous top and sides past the bounds to avoid texture atlas
+    // fringe. The far edge is intrinsically transparent over the same paper grain.
     let bleed = 4.;
     let crest = GradientFloor::new("sidebar-brand-floor")
         .top_anchored()
-        .with_height(px(height + 2. * bleed))
+        .over_backdrop()
+        .with_height(px(96.))
         .with_radius(px(0.))
         .with_speed(5.4)
-        .with_background(rgb(background).into())
+        .with_background(rgb(if s.dark { 0x040404 } else { 0xf8f8f8 }).into())
         .with_colors(stops.map(|color| rgb(color).into()))
         .paused(!running);
     // One clipped image keeps Metal's atlas filtering away from visible tile edges.
@@ -661,20 +647,11 @@ pub(crate) fn sidebar_texture(s: &StudioPalette, width: f32, running: bool, wind
         .child(
             div()
                 .absolute()
-                .top_0()
-                .left_0()
-                .right_0()
-                .h(px(height))
-                .overflow_hidden()
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(-bleed))
-                        .left(px(-bleed))
-                        .right(px(-bleed))
-                        .when(s.dark, |d| d.opacity(0.43))
-                        .child(crest),
-                ),
+                .top(px(-bleed))
+                .left(px(-bleed))
+                .right(px(-bleed))
+                .when(s.dark, |d| d.opacity(0.43))
+                .child(crest),
         )
 }
 
@@ -691,7 +668,7 @@ pub(crate) fn kar_brand_on(ink: Hsla, cx: &App) -> Div {
         .when_some(pro_app_artwork("kense", 14., cx), |d, mark| d.child(mark))
         .child(
             div()
-                .text_size(px(14.))
+                .text_size(px(FS_UI))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(ink)
                 .child(crate::APP_NAME),
@@ -813,7 +790,7 @@ pub fn render_kbd(text: impl Into<SharedString>, s: &StudioPalette) -> Div {
         .items_center()
         .justify_center()
         .font_features(tnum_features())
-        .text_size(px(10.5))
+        .text_size(px(FS_TAG))
         .text_color(s.muted)
         .whitespace_nowrap()
         .child(text.into())
@@ -852,7 +829,7 @@ pub fn render_sample_tag(s: &StudioPalette) -> Div {
         .bg(s.soft)
         .flex()
         .items_center()
-        .text_size(px(10.5))
+        .text_size(px(FS_TAG))
         .text_color(s.muted)
         .whitespace_nowrap()
         .child("Demo")
@@ -926,10 +903,6 @@ pub fn clean_display_doc_name(raw_name: &str) -> String {
 
 // ── KUI Application Screen Vector Artwork (`files.rs`, `agent_skills.rs`, `settings_models.rs`) ─
 
-const SVG_VIEW_GRID: &str = r##"<path d="M3.89 9.66C4.39 10 5.1 10 6.5 10C7.9 10 8.61 10 9.11 9.66C9.52 9.33 10 8.61 10 6.5C10 4.39 9.52 3.67 9.11 3.34C8.61 3 7.9 3 6.5 3C5.1 3 4.39 3 3.89 3.34C3.48 3.67 3 4.39 3 6.5C3 8.61 3.48 9.33 3.89 9.66Z" stroke="currentColor" stroke-linejoin="round" stroke-width="1.9"></path><path d="M14.89 9.66C15.39 10 16.1 10 17.5 10C18.9 10 19.61 10 20.11 9.66C20.52 9.33 21 8.61 21 6.5C21 4.39 20.52 3.67 20.11 3.34C19.61 3 18.9 3 17.5 3C16.1 3 15.39 3 14.89 3.34C14.48 3.67 14 4.39 14 6.5C14 8.61 14.48 9.33 14.89 9.66Z" stroke="currentColor" stroke-linejoin="round" stroke-width="1.9"></path><path d="M3.89 20.66C4.39 21 5.1 21 6.5 21C7.9 21 8.61 21 9.11 20.66C9.52 20.33 10 19.61 10 17.5C10 15.39 9.52 14.67 9.11 14.34C8.61 14 7.9 14 6.5 14C5.1 14 4.39 14 3.89 14.34C3.48 14.67 3 15.39 3 17.5C3 19.61 3.48 20.33 3.89 20.66Z" stroke="currentColor" stroke-linejoin="round" stroke-width="1.9"></path><path d="M14.89 20.66C15.39 21 16.1 21 17.5 21C18.9 21 19.61 21 20.11 20.66C20.52 20.33 21 19.61 21 17.5C21 15.39 20.52 14.67 20.11 14.34C19.61 14 18.9 14 17.5 14C16.1 14 15.39 14 14.89 14.34C14.48 14.67 14 15.39 14 17.5C14 19.61 14.48 20.33 14.89 20.66Z" stroke="currentColor" stroke-linejoin="round" stroke-width="1.9"></path>"##;
-
-const SVG_VIEW_LIST: &str = r##"<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>"##;
-
 const SVG_SKILL_FEATHER: &str = r#"<path d="M5.07579 17C4.08939 4.54502 12.9123 1.0121 19.9734 2.22417C20.2585 6.35185 18.2389 7.89748 14.3926 8.61125C15.1353 9.38731 16.4477 10.3639 16.3061 11.5847C16.2054 12.4534 15.6154 12.8797 14.4355 13.7322C11.8497 15.6004 8.85421 16.7785 5.07579 17Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.9"></path><path d="M4 22C4 15.5 7.84848 12.1818 10.5 10" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.9"></path>"#;
 
 const SVG_SKILL_REPORT: &str = r#"<path d="M10.5 8H18.5M10.5 12H13M18.5 12H16M10.5 16H13M18.5 16H16" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.9"></path><path d="M7 7.5H6C4.11 7.5 3.17 7.5 2.59 8.09C2 8.67 2 9.61 2 11.5V18C2 19.38 3.12 20.5 4.5 20.5C5.88 20.5 7 19.38 7 18V7.5Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.9"></path><path d="M16 3.5H11C8.8 3.5 7 4.7 7 7.5V18C7 19.38 5.88 20.5 4.5 20.5H16C18.83 20.5 20.24 20.5 21.12 19.62C22 18.74 22 17.33 22 14.5V9.5C22 6.67 22 5.26 21.12 4.38C20.24 3.5 18.83 3.5 16 3.5Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.9"></path>"#;
@@ -940,18 +913,16 @@ const SVG_SKILL_PR: &str = r#"<path d="M6 8V16" stroke="currentColor" stroke-lin
 
 const SVG_SKILL_CHART: &str = r#"<path d="M4 15V19M12 9V19M20 13V19M22 22H2" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.9"></path><circle cx="4" cy="10" r="2" stroke="currentColor" stroke-width="1.9"></circle><circle cx="12" cy="4" r="2" stroke="currentColor" stroke-width="1.9"></circle><circle cx="20" cy="8" r="2" stroke="currentColor" stroke-width="1.9"></circle><path d="M5.6 8.8L10.4 5.2M13.8 4.9L18.2 7.1" stroke="currentColor" stroke-width="1.8"></path>"#;
 
-const SVG_INBOX_TRAY: &str = r#"<path d="M3 13h4.2a1.5 1.5 0 0 1 1.3.75l.9 1.5a1.5 1.5 0 0 0 1.3.75h2.6a1.5 1.5 0 0 0 1.3-.75l.9-1.5A1.5 1.5 0 0 1 16.8 13H21" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"></path><path d="M5.4 4.8 3.2 12.2A4 4 0 0 0 3 13.4V17a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3v-3.6a4 4 0 0 0-.2-1.2L18.6 4.8A2.5 2.5 0 0 0 16.2 3H7.8a2.5 2.5 0 0 0-2.4 1.8Z" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"></path>"#;
-
 pub fn render_grid_view_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_VIEW_GRID, side, color)
+    pro_icon(ProIcon::Grid, side, color)
 }
 
 pub fn render_list_view_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_VIEW_LIST, side, color)
+    pro_icon(ProIcon::List, side, color)
 }
 
 pub fn render_inbox_tray_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_svg("0 0 24 24", SVG_INBOX_TRAY, side, color)
+    pro_icon(ProIcon::Inbox, side, color)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

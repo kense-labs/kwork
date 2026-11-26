@@ -276,7 +276,7 @@ impl Slide {
     }
 }
 pub fn disabled_motion(cx: &App) -> bool {
-    cx.try_global::<Theme>().is_some_and(|t| t.reduced_motion)
+    cx.reduce_motion() || cx.try_global::<Theme>().is_some_and(|t| t.reduced_motion)
 }
 /// A finite paint clock; never schedules frames once its last phase has finished.
 #[derive(Clone, Copy, Default, Debug)]

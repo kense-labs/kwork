@@ -1,7 +1,8 @@
 //! Single-select tree with visible-order keyboard navigation.
 use crate::primitives::{
     family::{Paint, Slide, disabled_motion},
-    glyph::{Glyph, icon, transformed},
+    glyph::{Glyph, transformed},
+    pro_icons::{ProIcon, pro_icon},
     nav::*,
 };
 use gpui::{prelude::*, *};
@@ -10,6 +11,7 @@ pub struct TreeNode {
     pub id: SharedString,
     pub name: SharedString,
     pub children: Vec<TreeNode>,
+    icon: ProIcon,
 }
 impl TreeNode {
     pub fn new(
@@ -17,11 +19,18 @@ impl TreeNode {
         name: impl Into<SharedString>,
         children: Vec<Self>,
     ) -> Self {
+        let icon = if children.is_empty() { ProIcon::PageDoc } else { ProIcon::Folder };
         Self {
             id: id.into(),
             name: name.into(),
             children,
+            icon,
         }
+    }
+
+    pub fn with_icon(mut self, icon: ProIcon) -> Self {
+        self.icon = icon;
+        self
     }
 }
 pub struct TreeSelected(pub SharedString);
@@ -48,6 +57,7 @@ pub struct TreeView {
 struct Entry {
     id: SharedString,
     name: SharedString,
+    icon: ProIcon,
     depth: usize,
     branch: bool,
     parent: Option<SharedString>,
@@ -97,6 +107,7 @@ impl TreeView {
                 out.push(Entry {
                     id: node.id.clone(),
                     name: node.name.clone(),
+                    icon: node.icon,
                     depth,
                     branch: !node.children.is_empty(),
                     parent: parent.cloned(),
@@ -279,15 +290,7 @@ impl Render for TreeView {
                                 ))
                             })
                             .when(!branch, |b| b.child(div().w(px(12.))))
-                            .child(icon(
-                                if branch {
-                                    Glyph::Folder
-                                } else {
-                                    Glyph::FileText
-                                },
-                                16.,
-                                p.secondary,
-                            ))
+                            .child(pro_icon(entry.icon, 16., p.secondary))
                             .child(entry.name)
                             .on_click(cx.listener(move |s, _, w, cx| {
                                 if !live {

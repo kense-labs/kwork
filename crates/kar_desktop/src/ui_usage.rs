@@ -1,16 +1,14 @@
 //! Recorded token totals and turn activity by date, agent, or project.
 
+use crate::ui_motion::selection::{Group, SelectionStrip};
 use gpui::{prelude::*, *};
-use kui::components::pro_chrome::{
-    pro_mark_selected, pro_pill_indicator, pro_selection_sensor, pro_spring_bar,
-};
+use kui::components::pro_chrome::pro_spring_bar;
 
 use crate::{
     studio_hub::{RuntimeTokenRow, UsageAnalyticsSnapshot},
     types::{ChatAccessMode, format_tokens_compact},
-    ui_motion::Tactile,
     ui_primitives::{
-        FS_META, FS_TAG, FS_UI, R_CARD, R_CTRL, R_PILL, StudioPalette, render_provider_color_tile,
+        FS_META, FS_TAG, FS_UI, R_CARD, R_PILL, StudioPalette, render_provider_color_tile,
         render_tray_folder_artwork, tnum_features,
     },
     workbench::KarWorkbench,
@@ -141,57 +139,23 @@ impl KarWorkbench {
         };
 
         // ── 1. Period Selector Capsules (`近 7 天 / 近 30 天 / 全部`) ─────────
-        let period_sensor = pro_selection_sensor();
-        let period_key = SharedString::from(format!("usage-p-{}", self.usage_period_days));
-        let mut period_bar = div()
-            .relative()
-            .p(px(2.5))
-            .rounded(px(R_CTRL + 2.))
-            .bg(s.tray)
-            .border_1()
-            .border_color(s.line_soft)
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .child(pro_pill_indicator(
-                "kar-usage-period-pill",
-                period_key,
-                period_sensor.clone(),
-                R_CTRL,
-                s.card,
-                Some(s.line),
-                false,
-            ));
-
-        for (ix, (days, label)) in [
-            (7u32, loc.pick("7 天", "7 days")),
-            (30, loc.pick("30 天", "30 days")),
-            (0, loc.pick("全部", "All time")),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let active = self.usage_period_days == days;
-            period_bar = period_bar.child(
-                div()
-                    .relative()
-                    .rounded(px(R_CTRL))
-                    .when(active, |d| d.child(pro_mark_selected(&period_sensor)))
-                    .child(
-                        Tactile::ghost(("usage-period-opt", ix), s)
-                            .fills(transparent_black(), s.hover)
-                            .h(px(25.))
-                            .px(px(10.))
-                            .text_size(px(FS_META))
-                            .text_color(if active { s.ink } else { s.muted })
-                            .child(label)
-                            .on_press(cx, move |this, _, cx| {
-                                this.usage_period_days = days;
-                                cx.notify();
-                            }),
-                    ),
-            );
-        }
+        let period_bar = SelectionStrip::options(
+            "usage-period",
+            loc.pick("统计周期", "Usage period"),
+            Group::Choices,
+            [
+                (7, loc.pick("7 天", "7 days")),
+                (30, loc.pick("30 天", "30 days")),
+                (0, loc.pick("全部", "All time")),
+            ],
+            self.usage_period_days,
+            s,
+            cx,
+            |wb, days, _, cx| {
+                wb.usage_period_days = days;
+                cx.notify();
+            },
+        );
 
         // ── 2. KUI `agent_usage.rs` Hero Cumulative Card + Smooth Canvas Curve ─
         let tokens = |count: u64| format_tokens_compact(count.min(i64::MAX as u64) as i64);
@@ -325,7 +289,7 @@ impl KarWorkbench {
                                                     .py(px(1.))
                                                     .rounded(px(R_PILL))
                                                     .bg(s.pro.amber_soft)
-                                                    .text_size(px(10.))
+                                                    .text_size(px(FS_TAG))
                                                     .text_color(s.pro.amber_ink)
                                                     .child(loc.pick("演示数据", "Demo data")),
                                             )
@@ -431,81 +395,22 @@ impl KarWorkbench {
             );
 
         // ── 3. KUI `loc.pick("消耗去向拆解","Usage breakdown")` (`Where it went`: Models vs Projects) ────
-        let split_sensor = pro_selection_sensor();
-        let split_key: SharedString = if self.usage_by_project {
-            "ub-proj".into()
-        } else {
-            "ub-model".into()
-        };
-        let split_toggle = div()
-            .relative()
-            .p(px(2.5))
-            .rounded(px(R_CTRL + 2.))
-            .bg(s.tray)
-            .border_1()
-            .border_color(s.line_soft)
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .child(pro_pill_indicator(
-                "kar-usage-where-pill",
-                split_key,
-                split_sensor.clone(),
-                R_CTRL,
-                s.card,
-                Some(s.line),
-                false,
-            ))
-            .child(
-                div()
-                    .relative()
-                    .rounded(px(R_CTRL))
-                    .when(!self.usage_by_project, |d| {
-                        d.child(pro_mark_selected(&split_sensor))
-                    })
-                    .child(
-                        Tactile::ghost("usage-tab-models", s)
-                            .fills(transparent_black(), s.hover)
-                            .h(px(24.))
-                            .px(px(9.))
-                            .text_size(px(FS_META))
-                            .text_color(if !self.usage_by_project {
-                                s.ink
-                            } else {
-                                s.muted
-                            })
-                            .child(loc.pick("按智能体模型", "By agent"))
-                            .on_press(cx, |this, _, cx| {
-                                this.usage_by_project = false;
-                                cx.notify();
-                            }),
-                    ),
-            )
-            .child(
-                div()
-                    .relative()
-                    .rounded(px(R_CTRL))
-                    .when(self.usage_by_project, |d| {
-                        d.child(pro_mark_selected(&split_sensor))
-                    })
-                    .child(
-                        Tactile::ghost("usage-tab-projects", s)
-                            .fills(transparent_black(), s.hover)
-                            .h(px(24.))
-                            .px(px(9.))
-                            .text_size(px(FS_META))
-                            .text_color(if self.usage_by_project {
-                                s.ink
-                            } else {
-                                s.muted
-                            })
-                            .child(loc.pick("按工作区项目", "By project"))
-                            .on_press(cx, |this, _, cx| {
-                                this.usage_by_project = true;
-                                cx.notify();
-                            }),
-                    ),
-            );
+        let split_toggle = SelectionStrip::options(
+            "usage-breakdown",
+            loc.pick("消耗去向", "Usage breakdown"),
+            Group::Tabs,
+            [
+                (false, loc.pick("按智能体模型", "By agent")),
+                (true, loc.pick("按工作区项目", "By project")),
+            ],
+            self.usage_by_project,
+            s,
+            cx,
+            |wb, value, _, cx| {
+                wb.usage_by_project = value;
+                cx.notify();
+            },
+        );
 
         let mut breakdown_card = div()
             .w_full()
@@ -808,7 +713,7 @@ fn usage_footer_cell(label: &'static str, value: String, dot_col: Hsla, s: &Stud
                 .child(div().size(px(6.)).rounded_full().bg(dot_col))
                 .child(
                     div()
-                        .text_size(px(10.5))
+                        .text_size(px(FS_META))
                         .text_color(s.muted)
                         .truncate()
                         .child(label),
@@ -817,7 +722,7 @@ fn usage_footer_cell(label: &'static str, value: String, dot_col: Hsla, s: &Stud
         .child(
             div()
                 .font_features(tnum_features())
-                .text_size(px(14.))
+                .text_size(px(FS_UI))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(s.ink)
                 .truncate()

@@ -3,12 +3,11 @@
 //!
 //! Powered by `kar::orientation::orient` (`Depth::Models`) and `kar::brands::runtime_brands()`.
 
+use crate::ui_motion::selection::{Group, SelectionStrip};
 use gpui::{prelude::*, *};
 use kar::ApprovalMode;
 use kui::{
-    components::pro_chrome::{
-        pro_fold, pro_mark_selected, pro_pill_indicator, pro_selection_sensor,
-    },
+    components::pro_chrome::pro_fold,
     primitives::pro_icons::{ProIcon, pro_icon},
 };
 
@@ -17,7 +16,7 @@ use crate::{
     types::{ProviderAvailability, ProviderReadiness},
     ui_motion::{Tactile, disclosure_line, soft_button, spinner},
     ui_primitives::{
-        FS_META, FS_UI, ICON_SM, ICON_XS, LH_META, LH_UI, R_CARD, R_CTRL, R_PILL,
+        FS_META, FS_UI, ICON_SM, ICON_XS, LH_META, LH_UI, R_CARD, R_CTRL,
         StudioPalette, mono_font, render_provider_color_tile,
     },
     workbench::KarWorkbench,
@@ -71,152 +70,32 @@ impl KarWorkbench {
                 cx,
             ),
         );
-        let approval_sensor = pro_selection_sensor();
-        let approval_key: SharedString = match self.approval_mode {
-            ApprovalMode::Host => "rt-app-host".into(),
-            ApprovalMode::Deny => "rt-app-deny".into(),
-        };
-        let approval_seg = div()
-            .relative()
-            .p(px(2.5))
-            .rounded(px(R_CTRL + 2.))
-            .bg(s.tray)
-            .border_1()
-            .border_color(s.line_soft)
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .child(pro_pill_indicator(
-                "kar-settings-approval-pill",
-                approval_key,
-                approval_sensor.clone(),
-                R_CTRL,
-                s.card,
-                Some(s.line),
-                false,
-            ))
-            .child(
-                div()
-                    .relative()
-                    .rounded(px(R_CTRL))
-                    .when(self.approval_mode == ApprovalMode::Host, |d| {
-                        d.child(pro_mark_selected(&approval_sensor))
-                    })
-                    .child(
-                        Tactile::ghost("routing-app-host", s)
-                            .fills(transparent_black(), s.hover)
-                            .h(px(24.))
-                            .px(px(9.))
-                            .text_size(px(FS_META))
-                            .text_color(if self.approval_mode == ApprovalMode::Host {
-                                s.ink
-                            } else {
-                                s.muted
-                            })
-                            .child(loc.pick("需确认", "Ask first"))
-                            .on_press(cx, |this, _, cx| {
-                                this.set_new_chat_approvals(ApprovalMode::Host, cx);
-                            }),
-                    ),
-            )
-            .child(
-                div()
-                    .relative()
-                    .rounded(px(R_CTRL))
-                    .when(self.approval_mode == ApprovalMode::Deny, |d| {
-                        d.child(pro_mark_selected(&approval_sensor))
-                    })
-                    .child(
-                        Tactile::ghost("routing-app-skip", s)
-                            .fills(transparent_black(), s.hover)
-                            .h(px(24.))
-                            .px(px(9.))
-                            .text_size(px(FS_META))
-                            .text_color(if self.approval_mode == ApprovalMode::Deny {
-                                s.ink
-                            } else {
-                                s.muted
-                            })
-                            .child(loc.pick("自动拒绝", "Deny"))
-                            .on_press(cx, |this, _, cx| {
-                                this.set_new_chat_approvals(ApprovalMode::Deny, cx);
-                            }),
-                    ),
-            );
-
-        let wt_sensor = pro_selection_sensor();
-        let wt_key: SharedString = if self.new_chat_use_worktree {
-            "rt-wt-on".into()
-        } else {
-            "rt-wt-off".into()
-        };
-        let wt_seg = div()
-            .relative()
-            .p(px(2.5))
-            .rounded(px(R_CTRL + 2.))
-            .bg(s.tray)
-            .border_1()
-            .border_color(s.line_soft)
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .child(pro_pill_indicator(
-                "kar-settings-worktree-pill",
-                wt_key,
-                wt_sensor.clone(),
-                R_CTRL,
-                s.card,
-                Some(s.line),
-                false,
-            ))
-            .child(
-                div()
-                    .relative()
-                    .rounded(px(R_CTRL))
-                    .when(!self.new_chat_use_worktree, |d| {
-                        d.child(pro_mark_selected(&wt_sensor))
-                    })
-                    .child(
-                        Tactile::ghost("routing-wt-local", s)
-                            .fills(transparent_black(), s.hover)
-                            .h(px(24.))
-                            .px(px(9.))
-                            .text_size(px(FS_META))
-                            .text_color(if !self.new_chat_use_worktree {
-                                s.ink
-                            } else {
-                                s.muted
-                            })
-                            .child(loc.pick("当前目录", "Checkout"))
-                            .on_press(cx, |this, _, cx| {
-                                this.set_new_chat_worktree(false, cx);
-                            }),
-                    ),
-            )
-            .child(
-                div()
-                    .relative()
-                    .rounded(px(R_CTRL))
-                    .when(self.new_chat_use_worktree, |d| {
-                        d.child(pro_mark_selected(&wt_sensor))
-                    })
-                    .child(
-                        Tactile::ghost("routing-wt-branch", s)
-                            .fills(transparent_black(), s.hover)
-                            .h(px(24.))
-                            .px(px(9.))
-                            .text_size(px(FS_META))
-                            .text_color(if self.new_chat_use_worktree {
-                                s.ink
-                            } else {
-                                s.muted
-                            })
-                            .child(loc.pick("独立工作树", "Worktree"))
-                            .on_press(cx, |this, _, cx| {
-                                this.set_new_chat_worktree(true, cx);
-                            }),
-                    ),
-            );
+        let approval_seg = SelectionStrip::options(
+            "settings-approval",
+            loc.pick("授权请求", "Tool permissions"),
+            Group::Choices,
+            [
+                (ApprovalMode::Host, loc.pick("需确认", "Ask first")),
+                (ApprovalMode::Deny, loc.pick("自动拒绝", "Deny")),
+            ],
+            self.approval_mode,
+            s,
+            cx,
+            |wb, mode, _, cx| wb.set_new_chat_approvals(mode, cx),
+        );
+        let wt_seg = SelectionStrip::options(
+            "settings-worktree",
+            loc.pick("工作目录", "Working directory"),
+            Group::Choices,
+            [
+                (false, loc.pick("当前目录", "Checkout")),
+                (true, loc.pick("独立工作树", "Worktree")),
+            ],
+            self.new_chat_use_worktree,
+            s,
+            cx,
+            |wb, enabled, _, cx| wb.set_new_chat_worktree(enabled, cx),
+        );
 
         let routing_card = div()
             .w_full()
@@ -373,75 +252,50 @@ impl KarWorkbench {
                             }),
                     );
 
-                // Inline Model Capsules for the active default provider!
                 if chosen && !agent.models.is_empty() {
-                    let mut models_row = div()
-                        .pt(px(6.))
-                        .border_t_1()
-                        .border_color(s.line_soft)
-                        .flex()
-                        .items_center()
-                        .flex_wrap()
-                        .gap(px(5.))
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(s.faint)
-                                .mr(px(3.))
-                                .child(loc.pick("首选模型：", "Preferred model")),
-                        )
-                        .child(
-                            Tactile::ghost(("agent-model-auto", ix), s)
-                                .lit(self.selected_model.is_none())
-                                .h(px(23.))
-                                .px(px(8.))
-                                .radius(R_PILL)
-                                .border_1()
-                                .border_color(if self.selected_model.is_none() {
-                                    s.ink.opacity(0.32)
-                                } else {
-                                    s.line_soft
-                                })
-                                .text_size(px(11.))
-                                .child(loc.pick("自动推荐", "Agent default"))
-                                .on_press(cx, |this, _, cx| {
-                                    this.selected_model = None;
-                                    this.save_agent_choice(cx);
-                                    cx.notify();
-                                }),
-                        );
-
-                    for (m_ix, m) in agent.models.iter().take(6).enumerate() {
-                        let mid = m.id.clone();
-                        let m_active = self.selected_model.as_deref() == Some(m.id.as_str());
-                        let label = if m.label.trim().is_empty() {
-                            m.id.clone()
-                        } else {
-                            m.label.clone()
-                        };
-                        models_row = models_row.child(
-                            Tactile::ghost(("agent-model-pill", ix * 16 + m_ix), s)
-                                .lit(m_active)
-                                .h(px(23.))
-                                .px(px(8.))
-                                .radius(R_PILL)
-                                .border_1()
-                                .border_color(if m_active {
-                                    s.ink.opacity(0.32)
-                                } else {
-                                    s.line_soft
-                                })
-                                .font_family(mono_font(cx))
-                                .text_size(px(11.))
-                                .child(label)
-                                .on_press(cx, move |this, _, cx| {
-                                    this.selected_model = Some(mid.clone());
-                                    this.save_agent_choice(cx);
-                                    cx.notify();
-                                }),
-                        );
+                    let selected = self.selected_model.clone();
+                    let mut models = vec![(None, loc.pick("自动推荐", "Agent default").to_owned())];
+                    for (index, model) in agent.models.iter().enumerate() {
+                        if index < 6 || selected.as_ref() == Some(&model.id) {
+                            let label = if model.label.trim().is_empty() {
+                                &model.id
+                            } else {
+                                &model.label
+                            };
+                            models.push((Some(model.id.clone()), label.clone()));
+                        }
                     }
-                    card = card.child(models_row);
+                    let title = loc.pick("首选模型", "Preferred model");
+                    card = card.child(
+                        div()
+                            .pt(px(8.))
+                            .border_t_1()
+                            .border_color(s.line_soft)
+                            .flex()
+                            .flex_col()
+                            .items_start()
+                            .gap(px(5.))
+                            .child(
+                                div()
+                                    .text_size(px(FS_META))
+                                    .text_color(s.muted)
+                                    .child(title),
+                            )
+                            .child(SelectionStrip::options(
+                                SharedString::from(format!("preferred-model-{}", agent.id)),
+                                title,
+                                Group::Choices,
+                                models,
+                                selected,
+                                s,
+                                cx,
+                                |wb, model, _, cx| {
+                                    wb.selected_model = model;
+                                    wb.save_agent_choice(cx);
+                                    cx.notify();
+                                },
+                            )),
+                    );
                 }
 
                 ready_col = ready_col.child(card);
@@ -655,7 +509,7 @@ impl KarWorkbench {
 fn routing_setting_row(
     title: &'static str,
     subtitle: &'static str,
-    control: Div,
+    control: impl IntoElement,
     s: &StudioPalette,
 ) -> Div {
     div()
@@ -685,7 +539,7 @@ fn routing_setting_row(
                         .child(subtitle),
                 ),
         )
-        .child(control.flex_none())
+        .child(div().flex_none().child(control))
 }
 
 fn group_label(text: &'static str, s: &StudioPalette) -> Div {

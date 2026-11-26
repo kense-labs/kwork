@@ -18,11 +18,20 @@ pub(super) fn launch(root: PathBuf, phase: String) -> Result<()> {
         fs::create_dir_all(&workspace)?;
         fs::write(workspace.join(FILE), "draft\n")?;
         fs::write(workspace.join(OTHER), "extra\n")?;
-        fs::write(
-            &marker_path,
-            format!("ready-{}", &Uuid::new_v4().simple().to_string()[..8]),
-        )?;
-        let marker = fs::read_to_string(&marker_path)?;
+        // Vision reads this value back from the diff. Spell it with words so a
+        // visually ambiguous hex digit (e.g. zero) cannot spoil a correct run.
+        let words = [
+            "amber", "beech", "cedar", "dawn", "fern", "frost", "haze", "jade",
+            "maple", "mint", "moss", "pine", "rain", "sage", "sand", "wave",
+        ];
+        let nonce = Uuid::new_v4();
+        let [a, b, ..] = *nonce.as_bytes();
+        let marker = format!(
+            "ready-{}-{}",
+            words[a as usize % words.len()],
+            words[b as usize % words.len()]
+        );
+        fs::write(&marker_path, &marker)?;
         fs::write(
             workspace.join("update-fixture.sh"),
             format!(

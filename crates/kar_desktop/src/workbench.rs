@@ -73,7 +73,7 @@ use crate::{
     ui_brief::BriefWidgetCache,
     ui_motion::{DismissFn, MenuPlacement, Tactile, ToastState, menu_popup, render_toast},
     ui_primitives::{
-        DOC_MIN_W, FS_META, FS_READ, FS_UI, ICON_SM, LH_META, LH_UI,
+        DOC_MIN_W, FS_META, FS_READ, FS_TAG, FS_UI, ICON_SM, LH_META, LH_UI,
         SHEET_GUTTER, SIDEBAR_W, StudioPalette, TERMINAL_DEFAULT_H, TERMINAL_MIN_H,
         UiLocale, clean_display_doc_name, render_kbd, ui_font,
     },
@@ -369,14 +369,26 @@ pub struct WorkbenchConfig {
 impl Default for WorkbenchConfig {
     fn default() -> Self {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        // Finder launches an app bundle with "/" as its working directory.
+        let bundled = cfg!(target_os = "macos")
+            && std::env::current_exe().is_ok_and(|exe| exe.ends_with("Contents/MacOS/Kwrok"));
+        let bundle_data = bundled
+            .then(std::env::home_dir)
+            .flatten()
+            .map(|home| home.join("Library/Application Support/Kwrok"));
+        let state_dir = bundle_data.as_ref().unwrap_or(&cwd);
         let chat_dir = std::env::var_os("KAR_CHAT_DIR")
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| cwd.join(".kar-desktop-chats"));
+            .unwrap_or_else(|| state_dir.join(".kar-desktop-chats"));
         Self {
             chat_dir,
-            workspace_dir: cwd.clone(),
-            docs_dir: cwd.join(".kar-desktop-docs"),
+            workspace_dir: if cwd == std::path::Path::new("/") && bundle_data.is_some() {
+                state_dir.join("Workspace")
+            } else {
+                cwd.clone()
+            },
+            docs_dir: state_dir.join(".kar-desktop-docs"),
             open_files: Vec::new(),
             subscribe_http: None,
             start_demo_chat: false,
@@ -4031,6 +4043,14 @@ impl KarWorkbench {
             Some(active) if active == idx => Some(idx.min(self.office_tabs.len() - 1)),
             other => other,
         };
+        if self.right_surface == RightPaneSurface::Office && self.office_tabs.is_empty() {
+            self.right_surface = self
+                .code_tab_order
+                .first()
+                .cloned()
+                .map(RightPaneSurface::CodeFile)
+                .unwrap_or_else(|| self.remaining_dock_surface());
+        }
         if !self.office_tabs.iter().any(|t| t.is_demo) {
             self.coedit_panel_open = false;
         }
@@ -4922,7 +4942,7 @@ impl KarWorkbench {
                         .flex_none()
                         .pt(px(if ix == 0 { 2. } else { 10. }))
                         .pb(px(4.))
-                        .text_size(px(11.))
+                        .text_size(px(FS_META))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(s.muted)
                         .child(match item.section {
@@ -4980,7 +5000,7 @@ impl KarWorkbench {
                     .px(px(10.))
                     .pt(px(if items.is_empty() { 2. } else { 10. }))
                     .pb(px(4.))
-                    .text_size(px(11.))
+                    .text_size(px(FS_META))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(s.muted)
                     .child(loc.pick("工作区文件与历史对话命中", "Files and threads")),
@@ -5010,7 +5030,7 @@ impl KarWorkbench {
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(10.))
+                                        .text_size(px(FS_TAG))
                                         .text_color(s.muted)
                                         .child(loc.pick("打开文件", "Open file")),
                                 )
@@ -5101,7 +5121,7 @@ impl KarWorkbench {
                         .px(px(10.))
                         .pt(px(if items.is_empty() { 2. } else { 10. }))
                         .pb(px(4.))
-                        .text_size(px(11.))
+                        .text_size(px(FS_META))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(s.muted)
                         .child(loc.pick("立即提问", "Ask in thread")),
@@ -5953,19 +5973,23 @@ impl KarWorkbench {
             _ => return,
         }
         if self.right_surface == *surface {
-            self.right_surface = if self.git_tab_open {
-                RightPaneSurface::GitWorkbench
-            } else if self.files_tab_open {
-                RightPaneSurface::Files
-            } else if self.terminal_tab_open {
-                RightPaneSurface::Terminal
-            } else if let Some(path) = self.code_tab_order.last() {
-                RightPaneSurface::CodeFile(path.clone())
-            } else {
-                RightPaneSurface::Office
-            };
+            self.right_surface = self.remaining_dock_surface();
         }
         cx.notify();
+    }
+
+    fn remaining_dock_surface(&self) -> RightPaneSurface {
+        if self.git_tab_open {
+            RightPaneSurface::GitWorkbench
+        } else if self.files_tab_open {
+            RightPaneSurface::Files
+        } else if self.terminal_tab_open {
+            RightPaneSurface::Terminal
+        } else if let Some(path) = self.code_tab_order.last() {
+            RightPaneSurface::CodeFile(path.clone())
+        } else {
+            RightPaneSurface::Office
+        }
     }
 
     pub fn open_git_workbench_tab(&mut self, cx: &mut Context<Self>) {
@@ -6061,7 +6085,7 @@ impl KarWorkbench {
             } else if !self.office_tabs.is_empty() {
                 self.right_surface = RightPaneSurface::Office;
             } else {
-                self.right_surface = RightPaneSurface::GitWorkbench;
+                self.right_surface = self.remaining_dock_surface();
             }
         }
         cx.notify();
@@ -6147,6 +6171,7 @@ impl KarWorkbench {
                 item.name.clone(),
                 item.children.iter().map(to_kui_node).collect(),
             )
+            .with_icon(if item.is_dir { ProIcon::Folder } else { ProIcon::PageDoc })
         }
         let nodes: Vec<TreeNode> = self.workspace_tree.iter().map(to_kui_node).collect();
         let first_expanded: Vec<SharedString> = self
@@ -6323,7 +6348,8 @@ impl Render for KarWorkbench {
         let chat_view = pro_view_transition_fill("kar-main-stage-vtx", stage_key, inner_stage);
         let term_drawer =
             (term_drawer_h > 0.5).then(|| self.render_bottom_terminal_drawer(&s, window, cx));
-        let doc_view = show_doc.then(|| self.render_office_pane(window, cx));
+        let dock_w = if single_dock { usable } else { usable - chat_w };
+        let doc_view = show_doc.then(|| self.render_office_pane(dock_w, window, cx));
         let sidebar_view = (sidebar_w > 0.5).then(|| self.render_sidebar(rail_width, window, cx));
 
         let left_handle = (!compact && (self.sidebar_open || self.collapsed_sidebar_grip)).then(|| {
@@ -6601,7 +6627,7 @@ const PALETTE_ITEMS: &[PaletteItem] = &[
         label_en: "New thread",
         section: "对话",
         shortcut: "⌘N",
-        icon: ProIcon::Plus,
+        icon: ProIcon::NewChat,
         keywords: "new chat 新建对话",
     },
     PaletteItem {

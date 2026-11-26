@@ -1,5 +1,6 @@
 //! Git changes, index and working tree diffs, branch selection and commit history.
 
+use crate::ui_motion::selection::{Group, SelectionStrip};
 use std::path::{Path, PathBuf};
 
 use gpui::{prelude::*, *};
@@ -11,7 +12,6 @@ use kui::{
         },
         code_block::CodeBlock,
         code_suggestion::{Decision, Hunk, PatchReview},
-        pro_chrome::{pro_mark_selected, pro_pill_indicator, pro_selection_sensor},
     },
     primitives::pro_icons::{ProIcon, pro_icon},
 };
@@ -25,7 +25,7 @@ use crate::{
         menu_item, primary_button, soft_button, text_button,
     },
     ui_primitives::{
-        CTRL_H, FS_META, FS_TAG, FS_TITLE, FS_UI, ICON_SM, ICON_XS, LH_META, R_CARD, R_PILL,
+        CTRL_H, FS_CONTROL, FS_META, FS_TAG, FS_TITLE, FS_UI, ICON_SM, LH_CONTROL, LH_META, R_CARD, R_PILL,
         StudioPalette, UiLocale, mono_font, render_git_branch_icon, render_sample_tag,
         tnum_features,
     },
@@ -134,6 +134,7 @@ impl KarWorkbench {
 
     pub(crate) fn render_git_workbench_body(
         &mut self,
+        pane_w: f32,
         s: &StudioPalette,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -173,87 +174,52 @@ impl KarWorkbench {
         let commit_open = window.use_keyed_state("git-show-commit-form", cx, |_, _| false);
         let show_commit = *commit_open.read(cx);
 
-        // ── Sub-mode Segmented Switcher (`改动` | `拓扑`) ───────────────────
-        let mode_sensor = pro_selection_sensor();
-        let mode_key: SharedString = match self.git_sub_mode {
-            GitSubMode::Changes => "git-sub-changes".into(),
-            GitSubMode::Graph => "git-sub-graph".into(),
-        };
         let is_changes = self.git_sub_mode == GitSubMode::Changes;
-        let sub_mode_pill = div()
-            .relative()
-            .h(px(26.))
-            .p(px(2.))
-            .rounded(px(6.))
-            .flex()
-            .items_center()
-            .child(pro_pill_indicator(
-                "kar-git-submode-pill",
-                mode_key,
-                mode_sensor.clone(),
-                5.,
-                s.sidebar_selected,
-                None,
-                false,
-            ))
-            .child(
-                Tactile::ghost("git-mode-changes", s)
-                    .h_full()
-                    .px(px(9.))
-                    .radius(5.)
-                    .text_size(px(FS_TAG))
-                    .font_weight(if is_changes {
-                        FontWeight::MEDIUM
-                    } else {
-                        FontWeight::NORMAL
-                    })
-                    .text_color(if is_changes { s.ink } else { s.muted })
-                    .when(is_changes, |b| b.child(pro_mark_selected(&mode_sensor)))
-                    .child(format!("{} {dirty_count}", loc.pick("更改", "Changes")))
-                    .on_press(cx, |this, _, cx| {
-                        this.git_sub_mode = GitSubMode::Changes;
-                        cx.notify();
-                    }),
-            )
-            .child(
-                Tactile::ghost("git-mode-graph", s)
-                    .h_full()
-                    .px(px(9.))
-                    .radius(5.)
-                    .text_size(px(FS_TAG))
-                    .font_weight(if !is_changes {
-                        FontWeight::MEDIUM
-                    } else {
-                        FontWeight::NORMAL
-                    })
-                    .text_color(if !is_changes { s.ink } else { s.muted })
-                    .when(!is_changes, |b| b.child(pro_mark_selected(&mode_sensor)))
-                    .child(if snap.is_demo {
+        let sub_mode_pill = SelectionStrip::options(
+            "git-views",
+            loc.pick("Git 视图", "Git views"),
+            Group::Tabs,
+            [
+                (
+                    GitSubMode::Changes,
+                    format!("{} {dirty_count}", loc.pick("更改", "Changes")),
+                ),
+                (
+                    GitSubMode::Graph,
+                    if snap.is_demo {
                         loc.pick("拓扑演示", "Demo history")
                     } else {
                         loc.pick("历史", "History")
-                    })
-                    .on_press(cx, |this, _, cx| {
-                        this.git_sub_mode = GitSubMode::Graph;
-                        cx.notify();
-                    }),
-            );
+                    }
+                    .to_owned(),
+                ),
+            ],
+            self.git_sub_mode,
+            s,
+            cx,
+            |wb, mode, _, cx| {
+                wb.git_sub_mode = mode;
+                cx.notify();
+            },
+        );
 
         // ── Branch Picker Trigger + Menu ────────────────────────────────────
+        let compact_toolbar = pane_w < 470.;
         let branch_trigger = Tactile::ghost("git-branch-trigger", s)
             .radius(5.)
-            .h(px(24.))
-            .px(px(9.))
+            .h(px(28.))
+            .px(px(6.))
             .gap(px(5.))
             .lit(self.open_menu == Some(Menu::GitBranch))
-            .tip("点击切换或新建本地 Git 分支")
+            .aria(format!("{} · {}", loc.pick("切换分支", "Switch branch"), branch_name))
+            .tip(loc.pick("切换或新建本地分支", "Switch or create a local branch"))
             .child(render_git_branch_icon(12., s.text))
             .child(
                 div()
-                    .max_w(px(102.))
+                    .max_w(px(if compact_toolbar { 74. } else { 132. }))
                     .truncate()
-                    .font_family(mono_font(cx))
-                    .text_size(px(FS_TAG))
+                    .text_size(px(FS_CONTROL))
+                    .line_height(px(LH_CONTROL))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(s.text)
                     .child(branch_name.clone()),
@@ -276,7 +242,7 @@ impl KarWorkbench {
             .filter(|f| f.is_staged())
             .map(|f| f.path.clone())
             .collect();
-        let remote_rows = vec![
+        let mut remote_rows = vec![
             menu_icon_item(
                 "git-menu-stage-all",
                 ProIcon::Plus,
@@ -332,6 +298,23 @@ impl KarWorkbench {
                 })
                 .into_any_element(),
         ];
+        if compact_toolbar {
+            let workspace = ws.clone();
+            let refresh = menu_icon_item(
+                "git-menu-refresh",
+                ProIcon::Refresh,
+                loc.pick("刷新变更", "Refresh changes"),
+                s,
+            )
+            .on_press(cx, move |this, _, cx| {
+                this.open_menu = None;
+                this.bridge.send(KarCommand::RefreshGitWorkspace {
+                    workspace: workspace.clone(),
+                });
+                cx.notify();
+            });
+            remote_rows.insert(0, refresh.into_any_element());
+        }
         let remote_menu = menu_host(
             crate::ui_motion::icon_button(
                 "git-more",
@@ -394,19 +377,19 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .gap(px(2.))
-                    .child(
-                        crate::ui_motion::icon_button(
+                    .when(!compact_toolbar, |row| {
+                        row.child(crate::ui_motion::icon_button(
                             "git-refresh-btn",
                             ProIcon::Refresh,
-                            "刷新变更",
+                            loc.pick("刷新变更", "Refresh changes"),
                             s,
                         )
                         .on_press(cx, move |this, _, _| {
                             this.bridge.send(KarCommand::RefreshGitWorkspace {
                                 workspace: ws_refresh.clone(),
                             });
-                        }),
-                    )
+                        }))
+                    })
                     .child(remote_menu)
                     .when(is_changes && dirty_count > 0 && !snap.is_demo, |d| {
                         d.child(
@@ -444,7 +427,6 @@ impl KarWorkbench {
                                         crate::types::ChatAccessMode::NoneSelected
                                     )),
                         )
-                        .child(pro_icon(ProIcon::Sparkles, ICON_XS, s.ink))
                         .on_press(cx, move |this, win, cx| {
                             this.pin_git_changes_to_composer(win, cx);
                         }),
@@ -998,7 +980,7 @@ impl KarWorkbench {
                                 div()
                                     .min_w_0()
                                     .truncate()
-                                    .text_size(px(13.))
+                                    .text_size(px(FS_CONTROL))
                                     .text_color(s.ink)
                                     .child(file_name),
                             )
@@ -1162,7 +1144,7 @@ impl KarWorkbench {
                                     .rounded(px(4.))
                                     .bg(s.soft)
                                     .font_family(mono_font(cx))
-                                    .text_size(px(10.5))
+                                    .text_size(px(FS_TAG))
                                     .text_color(s.muted)
                                     .child(c.hash.clone()),
                             )

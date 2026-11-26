@@ -517,7 +517,7 @@ impl KarWorkbench {
                     )
                     .child(
                         div()
-                            .text_size(px(13.5))
+                            .text_size(px(FS_UI))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(s.ink)
                             .truncate()
@@ -541,7 +541,7 @@ impl KarWorkbench {
                         div()
                             .flex_1()
                             .truncate()
-                            .text_size(px(13.5))
+                            .text_size(px(FS_UI))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(s.ink)
                             .child(loc.pick("共享的实时对话", "Shared live thread")),
@@ -959,7 +959,7 @@ impl KarWorkbench {
                 .flex()
                 .items_center()
                 .gap(px(3.5))
-                .text_size(px(11.5))
+                .text_size(px(FS_META))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(s.pro.amber_ink)
                 .child(render_approval_hand(12., s.pro.amber_ink))
@@ -970,7 +970,7 @@ impl KarWorkbench {
                 .flex()
                 .items_center()
                 .gap(px(4.))
-                .text_size(px(11.5))
+                .text_size(px(FS_META))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(s.pro.accent_info)
                 .child(status_dot(s.pro.accent_info))
@@ -982,7 +982,7 @@ impl KarWorkbench {
                 .items_center()
                 .gap(px(4.))
                 .font_features(tnum_features())
-                .text_size(px(11.5))
+                .text_size(px(FS_META))
                 .text_color(s.muted)
                 .when(pinned, |d| d.child(pro_icon(ProIcon::Pin, 10., s.muted)))
                 .when(has_assoc, |d| {
@@ -1244,7 +1244,7 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .gap(px(3.5))
-                    .text_size(px(11.5))
+                    .text_size(px(FS_META))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(s.pro.amber_ink)
                     .child(render_approval_hand(12., s.pro.amber_ink))
@@ -1269,7 +1269,7 @@ impl KarWorkbench {
             "claude",
             div()
                 .font_features(tnum_features())
-                .text_size(px(11.5))
+                .text_size(px(FS_META))
                 .text_color(s.muted)
                 .child("24m")
                 .into_any_element(),
@@ -1292,7 +1292,7 @@ impl KarWorkbench {
                     "codex",
                     div()
                         .font_features(tnum_features())
-                        .text_size(px(11.5))
+                        .text_size(px(FS_META))
                         .text_color(s.muted)
                         .child("41m")
                         .into_any_element(),
@@ -1314,7 +1314,7 @@ impl KarWorkbench {
                         .flex()
                         .items_center()
                         .gap(px(3.5))
-                        .text_size(px(11.5))
+                        .text_size(px(FS_META))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(s.pro.green_ink)
                         .child(render_circle_check_icon(12., s.pro.green))
@@ -1333,7 +1333,7 @@ impl KarWorkbench {
                     "claude",
                     div()
                         .font_features(tnum_features())
-                        .text_size(px(11.5))
+                        .text_size(px(FS_META))
                         .text_color(s.muted)
                         .child("2h")
                         .into_any_element(),
@@ -1399,7 +1399,7 @@ impl KarWorkbench {
         rows.push(
             menu_icon_item(
                 "side-add-project",
-                ProIcon::Plus,
+                ProIcon::FolderPlus,
                 loc.pick("添加项目…", "Add project…"),
                 s,
             )
@@ -1595,7 +1595,7 @@ fn demo_static_card(
             div()
                 .w_full()
                 .truncate()
-                .text_size(px(13.5))
+                .text_size(px(FS_UI))
                 .line_height(px(18.5))
                 .font_weight(if selected {
                     FontWeight::MEDIUM
@@ -1626,7 +1626,7 @@ fn demo_static_card(
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(11.5))
+                                    .text_size(px(FS_META))
                                     .text_color(s.muted)
                                     .child(br),
                             ),

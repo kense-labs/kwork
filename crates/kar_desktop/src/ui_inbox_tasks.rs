@@ -1,4 +1,5 @@
 //! Activity from Kar's persisted session list and the currently attached live feed.
+use crate::ui_motion::selection::{Group, SelectionStrip};
 use gpui::{prelude::*, *};
 use kar::{RequestKind, TaskStatus, chat::TurnStatus};
 use kui::primitives::pro_icons::{ProIcon, pro_icon};
@@ -8,7 +9,7 @@ use crate::{
     remote_link::now_epoch_ms,
     types::{format_relative_age, runtime_display_name},
     ui_motion::Tactile,
-    ui_primitives::{FS_META, FS_UI, StudioPalette, UiLocale},
+    ui_primitives::{FS_META, FS_TITLE, FS_UI, StudioPalette, UiLocale},
     workbench::{InboxScopeFilter as Scope, KarWorkbench, MainStageView},
 };
 
@@ -160,22 +161,20 @@ impl KarWorkbench {
             (Scope::Running, loc.pick("进行中", "In progress")),
             (Scope::Done, loc.pick("已结束", "Finished")),
         ];
-        let mut filters = div().flex().items_center().flex_wrap().gap(px(2.));
-        for (i, (scope, label)) in scopes.into_iter().enumerate() {
-            let active = self.inbox_scope == scope;
-            filters = filters.child(
-                Tactile::ghost(("inbox-filter", i), &s)
-                    .lit(active)
-                    .h(px(32.))
-                    .px(px(8.))
-                    .text_size(px(FS_META))
-                    .child(label)
-                    .on_press(cx, move |this, _, cx| {
-                        this.inbox_scope = scope;
-                        cx.notify();
-                    }),
-            );
-        }
+        let filters = SelectionStrip::options(
+            "inbox-scopes",
+            loc.pick("任务状态", "Task status"),
+            Group::Tabs,
+            scopes,
+            self.inbox_scope,
+            &s,
+            cx,
+            |wb, scope, _, cx| {
+                wb.inbox_scope = scope;
+                cx.notify();
+            },
+        );
+
         let controls = div()
             .w_full()
             .flex()
@@ -235,7 +234,7 @@ impl KarWorkbench {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_size(px(14.))
+                                        .text_size(px(FS_UI))
                                         .font_weight(FontWeight::MEDIUM)
                                         .child(row.title.clone()),
                                 )
@@ -300,7 +299,7 @@ impl KarWorkbench {
                             .justify_center()
                             .child(pro_icon(ProIcon::Inbox, 18., s.muted)),
                     )
-                    .child(div().text_size(px(18.)).text_color(s.ink).child(title))
+                    .child(div().text_size(px(FS_TITLE)).text_color(s.ink).child(title))
                     .child(
                         div()
                             .text_center()

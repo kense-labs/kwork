@@ -24,8 +24,9 @@ use kui::{
 };
 
 use crate::ui_primitives::{
-    CTRL_H, FS_META, FS_UI, ICON, ICON_SM, ICON_XS, R_CARD, R_CTRL, R_PILL, ROW_H, StudioPalette,
+    CTRL_H, FS_CONTROL, FS_META, FS_UI, LH_CONTROL, ICON, ICON_SM, ICON_XS, R_CARD, R_CTRL, R_PILL, ROW_H, StudioPalette,
 };
+pub(crate) mod selection;
 
 type ClickFn = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 /// Called when a menu should close because of a press somewhere else.
@@ -60,6 +61,9 @@ pub struct Tactile {
     tip: Option<SharedString>,
     aria: Option<SharedString>,
     role: Role,
+    selection: Option<bool>,
+    focus: Option<FocusHandle>,
+    tab_stop: bool,
 }
 
 impl Tactile {
@@ -83,6 +87,9 @@ impl Tactile {
             tip: None,
             aria: None,
             role: Role::Button,
+            selection: None,
+            focus: None,
+            tab_stop: true,
         }
     }
 
@@ -301,8 +308,17 @@ impl RenderOnce for Tactile {
         let key_up = set_press(0.);
         let focus_ring = StudioPalette::get(cx).pro.focus;
         let on_click = self.on_click;
+        let selection_control = self.selection.is_some();
 
         root.role(self.role)
+            .when_some(self.focus, |d, focus| d.track_focus(&focus))
+            .when_some(self.selection, |d, selected| {
+                if self.role == Role::RadioButton {
+                    d.aria_toggled(selected.into())
+                } else {
+                    d.aria_selected(selected)
+                }
+            })
             .when_some(self.aria, |d, label| d.aria_label(label))
             .when_some(self.ink, |d, (rest, hovered)| {
                 d.text_color(if disabled {
@@ -314,8 +330,14 @@ impl RenderOnce for Tactile {
             .when(dimmed, |d| d.opacity(0.5))
             .when(!disabled, |d| {
                 d.tab_index(0)
+                    .tab_stop(self.tab_stop)
                     .cursor_pointer()
-                    .focus_visible(move |st| st.shadow(vec![BoxShadow { color: focus_ring, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(1.), inset: false }]))
+                    .when(selection_control, |d| {
+                        d.border_1()
+                            .border_color(transparent_black())
+                            .focus_visible(move |st| st.border_color(focus_ring))
+                    })
+                    .when(!selection_control, |d| d.focus_visible(move |st| st.shadow(vec![BoxShadow { color: focus_ring, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(1.), inset: false }])))
                     .on_hover(set_hover)
                     .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         press_down(window, cx)
@@ -369,14 +391,17 @@ pub fn text_button(
     label: impl Into<SharedString>,
     s: &StudioPalette,
 ) -> Tactile {
+    let label = label.into();
     Tactile::ghost(id, s)
+        .aria(label.clone())
         .flex_none()
         .h(px(CTRL_H))
         .px(px(8.))
         .gap(px(6.))
-        .text_size(px(FS_UI))
+        .text_size(px(FS_CONTROL))
+        .line_height(px(LH_CONTROL))
         .ink(s.text, s.ink)
-        .child(label.into())
+        .child(label)
 }
 
 /// A labelled button on a quiet fill, for the action worth noticing.
@@ -385,15 +410,18 @@ pub fn soft_button(
     label: impl Into<SharedString>,
     s: &StudioPalette,
 ) -> Tactile {
+    let label = label.into();
     Tactile::soft(id, s)
+        .aria(label.clone())
         .flex_none()
         .h(px(CTRL_H))
         .px(px(10.))
         .gap(px(6.))
-        .text_size(px(FS_UI))
+        .text_size(px(FS_CONTROL))
+        .line_height(px(LH_CONTROL))
         .font_weight(FontWeight::MEDIUM)
         .text_color(s.ink)
-        .child(label.into())
+        .child(label)
 }
 
 /// The primary action of a group.
@@ -402,15 +430,18 @@ pub fn primary_button(
     label: impl Into<SharedString>,
     s: &StudioPalette,
 ) -> Tactile {
+    let label = label.into();
     Tactile::primary(id, s)
+        .aria(label.clone())
         .flex_none()
         .h(px(CTRL_H))
         .px(px(12.))
         .gap(px(6.))
-        .text_size(px(FS_UI))
+        .text_size(px(FS_CONTROL))
+        .line_height(px(LH_CONTROL))
         .font_weight(FontWeight::MEDIUM)
         .text_color(s.on_primary)
-        .child(label.into())
+        .child(label)
 }
 
 // ── Menus ───────────────────────────────────────────────────────────────────

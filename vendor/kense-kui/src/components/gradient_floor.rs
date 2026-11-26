@@ -24,6 +24,7 @@ struct CacheKey {
     bg: [u8; 3],
     aspect_q: u16,
     top_anchored: bool,
+    over_backdrop: bool,
 }
 
 struct LiveSurface {
@@ -77,22 +78,7 @@ impl LiveSurface {
         self.phase
     }
 
-    fn frame(
-        &mut self,
-        stops: [[u8; 3]; 3],
-        bg: [u8; 3],
-        raw_aspect: f32,
-        phase: f32,
-        top_anchored: bool,
-        window: &mut Window,
-    ) -> Arc<RenderImage> {
-        let aspect_q = self.quantize_aspect(raw_aspect);
-        let key = CacheKey {
-            stops,
-            bg,
-            aspect_q,
-            top_anchored,
-        };
+    fn frame(&mut self, key: CacheKey, phase: f32, window: &mut Window) -> Arc<RenderImage> {
         let delta = (phase - self.last_phase).abs();
         let same_phase =
             delta == 0. || (phase >= 0. && self.last_phase >= 0. && delta.min(1. - delta) < 0.0022);
@@ -409,20 +395,43 @@ fn rasterize_floor_frame(
     // GPUI RenderImage expects BGRA byte layout
     let mut raw = vec![0u8; TEX_W * TEX_H * 4];
     for y in 0..TEX_H {
+        // The unreflected crest grows upwards from y=1. Leave a transparent tail
+        // at the far edge even when a wide surface places blurred light across it.
+        let t = (((y as f32 + 0.5) / TEX_H as f32 - 0.10) / 0.54).clamp(0., 1.);
+        let tail = t * t * (3. - 2. * t);
         let dst_y = if key.top_anchored { TEX_H - 1 - y } else { y };
         for x in 0..TEX_W {
             let src = (y + PAD_Y) * GW + (x + PAD_X);
             let [pr, pg, pb, ca] = color_buf[src];
             let ca = ca.clamp(0., 1.);
             let la = light_buf[src][0].clamp(0., 1.);
-            let r = (bg[0] * (1. - ca) + pr + la).clamp(0., 1.);
-            let g = (bg[1] * (1. - ca) + pg + la).clamp(0., 1.);
-            let b = (bg[2] * (1. - ca) + pb + la).clamp(0., 1.);
+            let color = [
+                bg[0] * (1. - ca) + pr + la,
+                bg[1] * (1. - ca) + pg + la,
+                bg[2] * (1. - ca) + pb + la,
+            ]
+            .map(|v| v.clamp(0., 1.));
+            let (rgb, alpha) = if key.over_backdrop {
+                // Keep KUI's additive highlight response on the chosen background.
+                // Remove that backdrop from the covered sample before converting to straight BGRA.
+                let coverage = ca + (1. - ca) * la;
+                let rgb = if coverage > 0. {
+                    std::array::from_fn(|i| bg[i] + (color[i] - bg[i]) / coverage)
+                } else {
+                    bg
+                };
+                (rgb, coverage * tail)
+            } else {
+                (color, 1.)
+            };
+            let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
             let dst = (dst_y * TEX_W + x) * 4;
-            raw[dst] = (b * 255.).round() as u8;
-            raw[dst + 1] = (g * 255.).round() as u8;
-            raw[dst + 2] = (r * 255.).round() as u8;
-            raw[dst + 3] = 255;
+            raw[dst..dst + 4].copy_from_slice(&[
+                byte(rgb[2]),
+                byte(rgb[1]),
+                byte(rgb[0]),
+                byte(alpha),
+            ]);
         }
     }
 
@@ -456,6 +465,7 @@ pub struct GradientFloor {
     radius: Option<Pixels>,
     child_builder: Option<OverlayBuilder>,
     top_anchored: bool,
+    over_backdrop: bool,
     surface: Option<Rc<RefCell<LiveSurface>>>,
 }
 
@@ -476,6 +486,7 @@ impl GradientFloor {
             radius: None,
             child_builder: None,
             top_anchored: false,
+            over_backdrop: false,
             surface: None,
         }
     }
@@ -522,6 +533,14 @@ impl GradientFloor {
     /// Reflect the rendered crest vertically to make it fall from the top edge.
     pub fn top_anchored(mut self) -> Self {
         self.top_anchored = true;
+        self
+    }
+
+    /// Composite only the blurred crests over the parent's existing surface.
+    /// The background color guides the additive highlight without painting a solid fill.
+    /// The soft, transparent tail leaves the backdrop visible at the far edge.
+    pub fn over_backdrop(mut self) -> Self {
+        self.over_backdrop = true;
         self
     }
 
@@ -602,6 +621,7 @@ impl GradientFloor {
         let speed = self.speed;
         let animate = !theme.reduced_motion && !cx.reduce_motion() && !self.paused && speed > 0.001;
         let top_anchored = self.top_anchored;
+        let over_backdrop = self.over_backdrop;
         let stops = self.colors.map(hsla_to_rgb8);
         let bg_rgb = hsla_to_rgb8(bg);
 
@@ -612,7 +632,7 @@ impl GradientFloor {
             .h(self.height)
             .rounded(radius)
             .overflow_hidden()
-            .bg(bg)
+            .when(!over_backdrop, |surface| surface.bg(bg))
             .child(
                 canvas(
                     |_, _, _| (),
@@ -628,8 +648,14 @@ impl GradientFloor {
                         } else {
                             surface.tick(animate, speed)
                         };
-                        let image =
-                            surface.frame(stops, bg_rgb, bh / bw, phase, top_anchored, window);
+                        let key = CacheKey {
+                            stops,
+                            bg: bg_rgb,
+                            aspect_q: surface.quantize_aspect(bh / bw),
+                            top_anchored,
+                            over_backdrop,
+                        };
+                        let image = surface.frame(key, phase, window);
                         let _ = window.paint_image(
                             bounds,
                             bounds,
@@ -692,6 +718,7 @@ mod tests {
             bg: [0x11, 0x11, 0x13],
             aspect_q: 45,
             top_anchored: false,
+            over_backdrop: false,
         };
         let mut cb = vec![[0.0; 4]; GW * GH];
         let mut ct = vec![[0.0; 4]; GW * GH];
@@ -709,6 +736,40 @@ mod tests {
             lum > 450,
             "expected bright glowing crest at bottom, got lum={lum}"
         );
+    }
+
+    #[test]
+    fn overlay_preserves_backdrop_at_far_edge_across_aspects_and_phases() {
+        let mut colors = vec![[0.; 4]; GW * GH];
+        let mut colors_tmp = colors.clone();
+        let mut light = vec![[0.; 1]; GW * GH];
+        let mut light_tmp = light.clone();
+        for aspect_q in [18, 37, 50] {
+            let key = CacheKey {
+                stops: [[255, 185, 103], [254, 135, 90], [220, 91, 98]],
+                bg: [248; 3],
+                aspect_q,
+                top_anchored: true,
+                over_backdrop: true,
+            };
+            for phase in [0., 0.33, 0.66] {
+                let image = rasterize_floor_frame(
+                    key,
+                    phase,
+                    &mut colors,
+                    &mut colors_tmp,
+                    &mut light,
+                    &mut light_tmp,
+                );
+                let pixels = image.as_bytes(0).unwrap();
+                assert!(pixels[..TEX_W * 4].chunks_exact(4).any(|p| p[3] > 128));
+                assert!(
+                    pixels[(TEX_H - 4) * TEX_W * 4..]
+                        .chunks_exact(4)
+                        .all(|p| p[3] == 0)
+                );
+            }
+        }
     }
 
     #[test]

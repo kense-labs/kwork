@@ -1614,7 +1614,7 @@ struct ProIndicatorState {
     y: Slide,
     w: Slide,
     h: Slide,
-    ready: bool,
+    target: Option<Bounds<Pixels>>,
 }
 
 impl ProIndicatorState {
@@ -1625,7 +1625,7 @@ impl ProIndicatorState {
             y: Slide::snappy(0.),
             w: Slide::snappy(0.),
             h: Slide::snappy(0.),
-            ready: false,
+            target: None,
         }
     }
 
@@ -1642,19 +1642,21 @@ impl ProIndicatorState {
         let ty = f32::from(target.top() - surface.top());
         let tw = f32::from(target.size.width);
         let th = f32::from(target.size.height);
-        if !self.ready || &self.key == next_key {
+        let local = Bounds::new(target.origin - surface.origin, target.size);
+        if self.target.is_none() || (&self.key == next_key && self.target != Some(local)) {
+            // A resize or reflow of the same item follows the layout immediately.
             self.x.reset(tx);
             self.y.reset(ty);
             self.w.reset(tw);
             self.h.reset(th);
-            self.ready = true;
-        } else {
-            self.key = next_key.clone();
+        } else if &self.key != next_key {
             self.x.duration(tx, seconds, cx);
             self.y.duration(ty, seconds, cx);
             self.w.duration(tw, seconds, cx);
             self.h.duration(th, seconds, cx);
         }
+        self.key = next_key.clone();
+        self.target = Some(local);
         let cx_x = self.x.get(w, cx);
         let cy_y = self.y.get(w, cx);
         let cw_w = self.w.get(w, cx).max(0.);

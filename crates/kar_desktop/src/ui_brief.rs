@@ -4,6 +4,7 @@
 //! HTML, WebViews, or JavaScript: KUI `AnimatedCounter` digit wheels, `BarChart`, `DonutChart`,
 //! `Sparkline`, `SankeyFlow` (with flow particles), `DataFlow`, and revision-pinned `ReviewForm`s.
 
+use crate::ui_motion::selection::{Group, Item, SelectionStrip};
 use std::collections::BTreeMap;
 
 use gpui::{prelude::*, *};
@@ -219,31 +220,25 @@ impl KarWorkbench {
                     .items_center()
                     .gap(px(4.))
                     .when(brief.history.len() > 1, |row| {
-                        let mut rev_pills = div().flex().items_center().gap(px(2.));
-                        for r in &brief.history {
-                            let rnum = r.revision;
-                            let bid_r = bid.clone();
-                            let active = rnum == selected_rev;
-                            rev_pills = rev_pills.child(
-                                Tactile::ghost(
-                                    SharedString::from(format!("brief-rev-{bid}-{rnum}")),
-                                    s,
-                                )
-                                .lit(active)
-                                .h(px(24.))
-                                .px(px(7.))
-                                .radius(6.)
-                                .font_features(tnum_features())
-                                .text_size(px(FS_TAG))
-                                .text_color(if active { s.ink } else { s.muted })
-                                .child(format!("v{rnum}"))
-                                .on_press(cx, move |this, _, cx| {
-                                    this.brief_widgets.viewed_revision.insert(bid_r.clone(), rnum);
-                                    cx.notify();
-                                }),
-                            );
-                        }
-                        row.child(rev_pills)
+                        let brief_id = bid.clone();
+                        row.child(SelectionStrip::options(
+                            SharedString::from(format!("brief-revisions-{bid}")),
+                            "简报版本",
+                            Group::Tabs,
+                            brief
+                                .history
+                                .iter()
+                                .map(|r| (r.revision, format!("v{}", r.revision))),
+                            selected_rev,
+                            s,
+                            cx,
+                            move |wb, revision, _, cx| {
+                                wb.brief_widgets
+                                    .viewed_revision
+                                    .insert(brief_id.clone(), revision);
+                                cx.notify();
+                            },
+                        ))
                     })
                     .child(
                         Tactile::ghost(SharedString::from(format!("brief-fold-{bid}")), s)
@@ -859,32 +854,41 @@ impl KarWorkbench {
                         .and_then(|d| d.single.get(&fid))
                         .cloned()
                         .or_else(|| field.default_value.clone());
-                    let mut opts = div().flex().flex_wrap().gap(px(6.));
-                    for (o_ix, opt) in field.options.iter().enumerate() {
-                        let is_sel = chosen.as_deref() == Some(opt.as_str());
-                        let bid_c = bid.clone();
-                        let fid_c = fid.clone();
-                        let opt_c = opt.clone();
-                        opts = opts.child(
-                            soft_button(
-                                SharedString::from(format!("bf-sc-{bid}-{f_ix}-{o_ix}")),
-                                opt.clone(),
-                                s,
+                    let choices = field
+                        .options
+                        .iter()
+                        .map(|option| {
+                            let brief_id = bid.clone();
+                            let field_id = fid.clone();
+                            let value = option.clone();
+                            Item::new(
+                                option.clone(),
+                                option.clone(),
+                                chosen.as_ref() == Some(option),
+                                cx,
+                                move |wb, _, cx| {
+                                    let draft = wb
+                                        .brief_widgets
+                                        .drafts
+                                        .entry(brief_id.clone())
+                                        .or_default();
+                                    draft.touch_revision(rev_num);
+                                    draft.single.insert(field_id.clone(), value.clone());
+                                    cx.notify();
+                                },
                             )
-                            .lit(is_sel)
-                            .disabled(locked)
-                            .when(is_sel, |b| {
-                                b.child(pro_icon(ProIcon::Check, ICON_XS, s.ink))
-                            })
-                            .on_press(cx, move |this, _, cx| {
-                                let draft = this.brief_widgets.drafts.entry(bid_c.clone()).or_default();
-                                draft.touch_revision(rev_num);
-                                draft.single.insert(fid_c.clone(), opt_c.clone());
-                                cx.notify();
-                            }),
-                        );
-                    }
-                    field_col = field_col.child(opts);
+                        })
+                        .collect();
+                    field_col = field_col.child(
+                        SelectionStrip::new(
+                            SharedString::from(format!("brief-choice-{bid}-{fid}")),
+                            field.label.clone(),
+                            Group::Choices,
+                            choices,
+                            s,
+                        )
+                        .disabled(locked),
+                    );
                 }
                 BriefFieldKind::MultiChoice => {
                     let selected_set = self
@@ -941,28 +945,39 @@ impl KarWorkbench {
                         .get(&fid)
                         .copied()
                         .or_else(|| field.default_value.as_ref()?.parse().ok());
-                    let mut options = div().flex().gap(px(6.));
-                    for (label, val) in [("是", true), ("否", false)] {
-                        let bid = bid.clone();
-                        let fid = fid.clone();
-                        options = options.child(
-                            soft_button(
-                                SharedString::from(format!("bf-bool-{bid}-{f_ix}-{val}")),
-                                label,
-                                s,
-                            )
-                            .lit(value == Some(val))
-                            .disabled(locked)
-                            .on_press(cx, move |this, _, cx| {
+                    let choices = [
+                        (true, self.ui_locale.pick("是", "Yes")),
+                        (false, self.ui_locale.pick("否", "No")),
+                    ]
+                    .into_iter()
+                    .map(|(answer, label)| {
+                        let brief_id = bid.clone();
+                        let field_id = fid.clone();
+                        Item::new(
+                            answer.to_string(),
+                            label,
+                            value == Some(answer),
+                            cx,
+                            move |wb, _, cx| {
                                 let draft =
-                                    this.brief_widgets.drafts.entry(bid.clone()).or_default();
+                                    wb.brief_widgets.drafts.entry(brief_id.clone()).or_default();
                                 draft.touch_revision(rev_num);
-                                draft.boolean.insert(fid.clone(), val);
+                                draft.boolean.insert(field_id.clone(), answer);
                                 cx.notify();
-                            }),
-                        );
-                    }
-                    field_col = field_col.child(options);
+                            },
+                        )
+                    })
+                    .collect();
+                    field_col = field_col.child(
+                        SelectionStrip::new(
+                            SharedString::from(format!("brief-boolean-{bid}-{fid}")),
+                            field.label.clone(),
+                            Group::Choices,
+                            choices,
+                            s,
+                        )
+                        .disabled(locked),
+                    );
                 }
                 BriefFieldKind::Note => {
                     let ekey = format!("{bid}#{rev_num}#note#{fid}");

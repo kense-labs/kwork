@@ -1,11 +1,11 @@
 //! Searchable workspace skills, commands, MCP servers, and tool schemas.
 
+use crate::ui_motion::selection::{Group, SelectionStrip};
 use gpui::{prelude::*, *};
 use kui::{
     components::{
         code_block::CodeBlock,
         json_viewer::JsonViewer,
-        pro_chrome::{pro_mark_selected, pro_pill_indicator, pro_selection_sensor},
     },
     primitives::pro_icons::{ProIcon, pro_icon},
 };
@@ -14,8 +14,8 @@ use crate::{
     studio_hub::InventoryTab,
     ui_motion::{Tactile, icon_button, pulse_beacon, soft_button},
     ui_primitives::{
-        FS_META, FS_TAG, FS_UI, ICON_XS, R_CARD, R_CTRL, R_PILL, SkillCardGlyph, StudioPalette,
-        mono_font, tnum_features,
+        FS_CONTROL, FS_META, FS_TAG, FS_UI, ICON_XS, R_CARD, R_CTRL, R_PILL, SkillCardGlyph, StudioPalette,
+        mono_font,
     },
     workbench::KarWorkbench,
 };
@@ -56,77 +56,33 @@ impl KarWorkbench {
         let query = self.skills_filter_query.trim().to_lowercase();
 
         // ── 1. Gliding Category Tab Strip + Search Input ────────────────────
-        let tab_sensor = pro_selection_sensor();
-        let active_key = SharedString::from(format!("inv-tab-{:?}", self.active_inventory_tab));
-        let mut tabs_row = div()
-            .relative()
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .p(px(2.5))
-            .rounded(px(R_CTRL + 2.))
-            .bg(s.tray)
-            .border_1()
-            .border_color(s.line_soft)
-            .child(pro_pill_indicator(
-                "kar-inv-tab-pill",
-                active_key,
-                tab_sensor.clone(),
-                R_CTRL,
-                s.card,
-                Some(s.line),
-                false,
-            ));
-
-        for (ix, tab) in InventoryTab::ALL.into_iter().enumerate() {
-            let selected = self.active_inventory_tab == tab;
-            let count = match tab {
-                InventoryTab::All => {
-                    inv.skills.len() + inv.mcp_servers.len() + inv.commands.len() + inv.tools.len()
-                }
-                InventoryTab::Skills => inv.skills.len(),
-                InventoryTab::McpServers => inv.mcp_servers.len(),
-                InventoryTab::Commands => inv.commands.len(),
-                InventoryTab::Tools => inv.tools.len(),
+        let options = InventoryTab::ALL.into_iter().map(|tab| {
+            let (english, count) = match tab {
+                InventoryTab::All => (
+                    "All",
+                    inv.skills.len() + inv.mcp_servers.len() + inv.commands.len() + inv.tools.len(),
+                ),
+                InventoryTab::Skills => ("Skills", inv.skills.len()),
+                InventoryTab::McpServers => ("MCP", inv.mcp_servers.len()),
+                InventoryTab::Commands => ("Commands", inv.commands.len()),
+                InventoryTab::Tools => ("Tools", inv.tools.len()),
             };
-            tabs_row = tabs_row.child(
-                div()
-                    .relative()
-                    .rounded(px(R_CTRL))
-                    .when(selected, |d| d.child(pro_mark_selected(&tab_sensor)))
-                    .child(
-                        Tactile::ghost(("inv-tab-btn", ix), s)
-                            .fills(transparent_black(), s.hover)
-                            .h(px(26.))
-                            .px(px(8.))
-                            .gap(px(4.))
-                            .text_size(px(FS_META))
-                            .text_color(if selected { s.ink } else { s.muted })
-                            .child(loc.pick(
-                                tab.label(),
-                                match tab {
-                                    InventoryTab::All => "All",
-                                    InventoryTab::Skills => "Skills",
-                                    InventoryTab::McpServers => "MCP",
-                                    InventoryTab::Tools => "Tools",
-                                    InventoryTab::Commands => "Commands",
-                                },
-                            ))
-                            .child(
-                                div()
-                                    .font_features(tnum_features())
-                                    .text_size(px(FS_TAG))
-                                    .text_color(s.faint)
-                                    .child(format!("{count}")),
-                            )
-                            .on_press(cx, move |this, _, cx| {
-                                this.selected_skill_inspector = None;
-                                this.active_inventory_tab = tab;
-                                cx.notify();
-                            }),
-                    ),
-            );
-        }
+            (tab, format!("{}  {count}", loc.pick(tab.label(), english)))
+        });
+        let tabs_row = SelectionStrip::options(
+            "inventory-views",
+            loc.pick("技能与工具类别", "Inventory categories"),
+            Group::Tabs,
+            options,
+            self.active_inventory_tab,
+            s,
+            cx,
+            |wb, tab, _, cx| {
+                wb.selected_skill_inspector = None;
+                wb.active_inventory_tab = tab;
+                cx.notify();
+            },
+        );
 
         let filter_bar = div()
             .px(px(20.))
@@ -139,7 +95,7 @@ impl KarWorkbench {
             .justify_between()
             .gap(px(8.))
             .flex_wrap()
-            .child(tabs_row.flex_wrap())
+            .child(tabs_row)
             .child(
                 div()
                     .flex_1()
@@ -450,7 +406,7 @@ impl KarWorkbench {
                                                     .rounded(px(R_PILL))
                                                     .bg(s.tray)
                                                     .font_family(mono_font(cx))
-                                                    .text_size(px(10.))
+                                                    .text_size(px(FS_TAG))
                                                     .text_color(s.muted)
                                                     .truncate()
                                                     .child(format!("${}", sk.name)),
@@ -484,7 +440,7 @@ impl KarWorkbench {
                                     .gap(px(6.))
                                     .child(
                                         div()
-                                            .text_size(px(10.5))
+                                            .text_size(px(FS_TAG))
                                             .text_color(s.faint)
                                             .truncate()
                                             .child(scope_label(&sk.scope_label, loc)),
@@ -784,7 +740,7 @@ impl KarWorkbench {
                                                 .gap(px(2.))
                                                 .child(
                                                     div()
-                                                        .text_size(px(13.5))
+                                                        .text_size(px(FS_UI))
                                                         .font_weight(FontWeight::SEMIBOLD)
                                                         .text_color(s.ink)
                                                         .truncate()
@@ -792,7 +748,7 @@ impl KarWorkbench {
                                                 )
                                                 .child(
                                                     div()
-                                                        .text_size(px(10.5))
+                                                        .text_size(px(FS_TAG))
                                                         .text_color(s.muted)
                                                         .truncate()
                                                         .child(scope_label(&sk.scope_label, loc)),
@@ -892,7 +848,7 @@ impl KarWorkbench {
                         .child(
                             div()
                                 .font_family(mono_font(cx))
-                                .text_size(px(13.))
+                                .text_size(px(FS_CONTROL))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(s.ink)
                                 .child(t.name.clone()),

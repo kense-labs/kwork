@@ -50,10 +50,10 @@ use crate::{
         pulse_beacon, soft_button, spinner, text_button,
     },
     ui_primitives::{
-        CTRL_H, DETAILS_CARD_W, DotTone, FS_META, FS_READ, FS_TAG, FS_UI, HEADER_H, ICON,
+        CTRL_H, DETAILS_CARD_W, DotTone, FS_CONTROL, FS_META, FS_READ, FS_TAG, FS_UI, HEADER_H, ICON,
         ICON_SM, ICON_XS, LH_META, LH_READ, LH_UI, R_CARD, R_CTRL, R_HERO, R_PILL, StudioPalette, UiLocale,
         THREAD_PAD, THREAD_W, clean_display_doc_name, macos_traffic_pad, mono_font,
-        render_approval_hand, render_bg_layers_icon, render_doc_outline_icon,
+        render_approval_hand, render_bg_layers_icon,
         render_file_diff_icon, render_folder_git_icon, render_folder_icon, render_git_branch_icon,
         render_machine_icon, render_office_chip, render_panel_bottom_icon, render_panel_right_icon,
         render_project_monogram, render_runtime_mark, render_schedule_repeat_icon,
@@ -438,7 +438,7 @@ impl KarWorkbench {
                     div()
                         .max_w(px((pane_w * 0.18).clamp(44., 160.)))
                         .truncate()
-                        .text_size(px(14.))
+                        .text_size(px(FS_UI))
                         .text_color(s.muted)
                         .child(proj_name),
                 )
@@ -459,7 +459,7 @@ impl KarWorkbench {
                     div()
                         .min_w_0()
                         .truncate()
-                        .text_size(px(13.5))
+                        .text_size(px(FS_UI))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(s.ink)
                         .child(title),
@@ -472,7 +472,7 @@ impl KarWorkbench {
             div()
                 .min_w_0()
                 .truncate()
-                .text_size(px(13.5))
+                .text_size(px(FS_UI))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(s.ink)
                 .child(title)
@@ -533,7 +533,7 @@ impl KarWorkbench {
                     })
                     .child(project_crumb)
                     .when(!compact_crumb, |d| {
-                        d.child(div().text_size(px(13.)).text_color(s.faint).child("/"))
+                        d.child(div().text_size(px(FS_CONTROL)).text_color(s.faint).child("/"))
                     })
                     .child(title_el)
                     .when(!on_start_screen, |d| {
@@ -898,7 +898,7 @@ impl KarWorkbench {
             .into_any_element(),
             menu_item(
                 "det-open-office",
-                Some(render_doc_outline_icon(OfficeKind::Word, ICON, s.muted)),
+                Some(pro_icon(ProIcon::PageDoc, ICON, s.muted)),
                 loc.pick("打开本地 Office 文档…", "Open Office document…"),
                 s,
             )
@@ -1501,7 +1501,7 @@ impl KarWorkbench {
                         secondary
                             .h(px(26.))
                             .px(px(4.))
-                            .text_size(px(14.))
+                            .text_size(px(FS_UI))
                             .ink(s.muted, s.ink),
                     ),
                 )
@@ -2069,7 +2069,7 @@ impl KarWorkbench {
                         .flex()
                         .items_center()
                         .gap(px(4.))
-                        .text_size(px(12.))
+                        .text_size(px(FS_META))
                         .child(mode)
                         .child(div().flex_1())
                         .when(self.git_snapshot.is_repo && pane_w >= 400., |row| {
@@ -3172,7 +3172,7 @@ impl KarWorkbench {
                         .items_center()
                         .px(px(5.))
                         .text_color(s.muted)
-                        .text_size(px(12.))
+                        .text_size(px(FS_META))
                         .child(loc.pick("思考深度", "Reasoning")),
                 );
             for (i, level) in std::iter::once(None)
@@ -3260,7 +3260,7 @@ impl KarWorkbench {
                 .flex()
                 .flex_col()
                 .opacity(amount)
-                .text_size(px(13.))
+                .text_size(px(FS_CONTROL))
                 .text_color(s.text)
                 .child(body)
                 .child(footer)
@@ -3698,7 +3698,7 @@ impl KarWorkbench {
                         .ml(px(-6.))
                         .gap(px(5.))
                         .font_features(tnum_features())
-                        .text_size(px(13.5))
+                        .text_size(px(FS_CONTROL))
                         .ink(s.muted, s.ink)
                         .child(worked_label)
                         .child(pro_icon(
@@ -4236,7 +4236,7 @@ impl KarWorkbench {
                         div()
                             .w_full()
                             .min_w_0()
-                            .text_size(px(14.))
+                            .text_size(px(FS_UI))
                             .line_height(px(LH_READ))
                             .text_color(s.ink)
                             .child(
@@ -4271,7 +4271,7 @@ impl KarWorkbench {
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .text_size(px(13.5))
+                                .text_size(px(FS_UI))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(s.ink)
                                 .child(h.clone()),
@@ -4294,7 +4294,7 @@ impl KarWorkbench {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .text_size(px(13.5))
+                                    .text_size(px(FS_UI))
                                     .text_color(if col_ix == 0 { s.text } else { s.ink })
                                     .child(cell),
                             );
@@ -4937,12 +4937,12 @@ impl KarWorkbench {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(px(14.))
+                            .text_size(px(FS_UI))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(s.ink)
                             .child(name.clone()),
                     )
-                    .child(div().text_size(px(12.)).text_color(s.muted).child(label))
+                    .child(div().text_size(px(FS_META)).text_color(s.muted).child(label))
                     .child(
                         icon_button(
                             "close-turn-file-diff",
@@ -5128,7 +5128,7 @@ impl KarWorkbench {
             .flex()
             .items_center()
             .justify_between()
-            .text_size(px(10.5))
+            .text_size(px(FS_TAG))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(s.muted)
             .child(match request.kind {
@@ -5223,7 +5223,7 @@ impl KarWorkbench {
                         div()
                             .w_full()
                             .font_family(mono.clone())
-                            .text_size(px(12.5))
+                            .text_size(px(FS_META))
                             .text_color(s.muted)
                             .child(format!("{label}  {value}"))
                     })),
@@ -5409,7 +5409,7 @@ fn user_bubble(text: String, s: &StudioPalette) -> Div {
         .pb(px(11.))
         .rounded(px(16.))
         .bg(s.message_surface)
-        .text_size(px(14.))
+        .text_size(px(FS_UI))
         .line_height(px(23.))
         .text_color(s.ink)
         .child(text)

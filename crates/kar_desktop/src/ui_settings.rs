@@ -1,5 +1,6 @@
 //! Workspace settings with a searchable KUI navigation rail.
 
+use crate::ui_motion::selection::{Group, SelectionStrip};
 use gpui::{prelude::*, *};
 use kui::{
     ThemeMode,
@@ -333,54 +334,25 @@ impl KarWorkbench {
             s, window, cx,
         );
         let rule = || div().mx(px(16.)).h(px(1.)).bg(s.line_soft);
-        let selected = if self.follows_system_appearance() {
-            "system"
-        } else if self.theme_mode == ThemeMode::Dark {
-            "dark"
-        } else {
-            "light"
-        };
-        let sensor = pro_selection_sensor();
-        let mut appearance_picker = div()
-            .relative()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(2.))
-            .h(px(30.))
-            .p(px(2.))
-            .rounded(px(7.))
-            .bg(s.tray)
-            .child(pro_pill_indicator(
-                "settings-theme-indicator",
-                selected,
-                sensor.clone(),
-                5.,
-                s.card,
-                Some(s.line_soft),
-                false,
-            ));
-        for (id, label, mode) in [
-            ("system", loc.pick("系统", "System"), None),
-            ("light", loc.pick("浅色", "Light"), Some(ThemeMode::Light)),
-            ("dark", loc.pick("深色", "Dark"), Some(ThemeMode::Dark)),
-        ] {
-            appearance_picker = appearance_picker.child(
-                Tactile::ghost(SharedString::from(format!("settings-theme-{id}")), s)
-                    .h_full()
-                    .px(px(9.))
-                    .justify_center()
-                    .radius(5.)
-                    .text_size(px(FS_META))
-                    .text_color(if id == selected { s.ink } else { s.muted })
-                    .when(id == selected, |b| b.child(pro_mark_selected(&sensor)))
-                    .child(label)
-                    .on_press(cx, move |wb, _, cx| match mode {
-                        Some(mode) => wb.select_appearance(mode, cx),
-                        None => wb.set_follow_system_appearance(cx),
-                    }),
-            );
-        }
+        let selected = (!self.follows_system_appearance()).then_some(self.theme_mode);
+        let appearance_picker = SelectionStrip::options(
+            "settings-appearance",
+            loc.pick("主题", "Theme"),
+            Group::Choices,
+            [
+                (None, loc.pick("系统", "System")),
+                (Some(ThemeMode::Light), loc.pick("浅色", "Light")),
+                (Some(ThemeMode::Dark), loc.pick("深色", "Dark")),
+            ],
+            selected,
+            s,
+            cx,
+            |wb, mode, _, cx| match mode {
+                Some(mode) => wb.select_appearance(mode, cx),
+                None => wb.set_follow_system_appearance(cx),
+            },
+        );
+
         let appearance = box_group()
             .child(row(
                 loc.pick("主题", "Theme"),

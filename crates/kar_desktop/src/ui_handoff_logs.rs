@@ -1,4 +1,5 @@
 //! Conversation handoff, side questions, and diagnostics.
+use crate::ui_motion::selection::{Group, Item, SelectionStrip};
 use crate::{
     kar_bridge::KarCommand,
     studio_hub::DiagLevel,
@@ -71,30 +72,48 @@ impl KarWorkbench {
             ChatAccessMode::WriteController { .. } | ChatAccessMode::DemoShowcase
         ) && !self.projected.turns.is_empty()
             && !self.turn_in_progress();
-        let mut choices = div().flex().flex_wrap().gap(px(6.));
-        for (idx, provider) in candidates.iter().enumerate() {
-            let id = provider.id.clone();
-            choices = choices.child(
-                soft_button(("handoff-target", idx), provider.display_name(), s)
-                    .lit(target.as_deref() == Some(id.as_str()))
-                    .child(render_runtime_mark(&id, 16., s, cx))
-                    .on_press(cx, move |this, _, cx| {
-                        this.handoff_target_runtime = id.clone();
-                        cx.notify();
-                    }),
-            );
-        }
-        let mut budgets = div().flex().flex_wrap().gap(px(6.));
-        for kb in [16usize, 64, 128] {
-            budgets = budgets.child(
-                soft_button(("handoff-budget", kb), format!("{kb} KB"), s)
-                    .lit(self.handoff_budget_kb == kb)
-                    .on_press(cx, move |this, _, cx| {
-                        this.handoff_budget_kb = kb;
-                        cx.notify();
-                    }),
-            );
-        }
+        let choices = candidates
+            .iter()
+            .map(|provider| {
+                let id = provider.id.clone();
+                let label = provider.display_name();
+                let mark = render_runtime_mark(&id, 16., s, cx);
+                let selected = target.as_ref() == Some(&id);
+                Item::new(id.clone(), label.clone(), selected, cx, move |wb, _, cx| {
+                    wb.handoff_target_runtime = id.clone();
+                    cx.notify();
+                })
+                .content(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .child(mark)
+                        .child(label),
+                )
+            })
+            .collect();
+        let choices = SelectionStrip::new(
+            "handoff-targets",
+            loc.pick("接手智能体", "Receiving agent"),
+            Group::Choices,
+            choices,
+            s,
+        );
+        let budgets = SelectionStrip::options(
+            "handoff-budget",
+            loc.pick("上下文预算", "Context budget"),
+            Group::Choices,
+            [16usize, 64, 128].map(|kb| (kb, format!("{kb} KB"))),
+            self.handoff_budget_kb,
+            s,
+            cx,
+            |wb, kb, _, cx| {
+                wb.handoff_budget_kb = kb;
+                cx.notify();
+            },
+        );
+
         let close = icon_button(
             "handoff-close",
             ProIcon::Close,
@@ -116,7 +135,7 @@ impl KarWorkbench {
             .gap(px(9.))
             .child(sheet_text(description, s))
             .child(sheet_text(loc.pick("接手智能体", "Receiving agent"), s))
-            .child(choices)
+            .when(!candidates.is_empty(), |d| d.child(choices))
             .child(sheet_text(
                 loc.pick("摘要大小上限", "Summary size limit"),
                 s,

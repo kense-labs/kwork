@@ -1,11 +1,10 @@
 //! The document sheet: scrollable tabs, unified selection & status strip, native Kantor editor,
 //! and responsive co-editing inspector.
 
+use crate::ui_motion::selection::{Group, Item, SelectionStrip};
 use gpui::{prelude::*, *};
 use kui::{
-    components::pro_chrome::{
-        pro_fold, pro_mark_selected, pro_pill_indicator, pro_selection_sensor,
-    },
+    components::pro_chrome::pro_fold,
     primitives::pro_icons::{ProIcon, pro_icon},
 };
 
@@ -25,9 +24,20 @@ use crate::{
     workbench::{KarWorkbench, Menu, RightPaneSurface, WorkspaceLayoutMode},
 };
 
+fn close_tab_button(id: String, label: String, s: &StudioPalette) -> Tactile {
+    Tactile::ghost(SharedString::from(id), s)
+        .size(px(20.))
+        .radius(5.)
+        .justify_center()
+        .aria(label.clone())
+        .tip(label)
+        .child(pro_icon(ProIcon::Close, 11., s.muted))
+}
+
 impl KarWorkbench {
     pub(crate) fn render_office_pane(
         &mut self,
+        pane_w: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -45,38 +55,11 @@ impl KarWorkbench {
         let wide_canvas = self.layout_mode == WorkspaceLayoutMode::CanvasWide;
 
         // ── Unified Right-Dock Strip (`变更` · `文件` · `终端` + Open Docs/Code) ──
-        let tab_sensor = pro_selection_sensor();
-        let active_key: SharedString = match &self.right_surface {
-            RightPaneSurface::GitWorkbench => "rtab-git".into(),
-            RightPaneSurface::Files => "rtab-files".into(),
-            RightPaneSurface::Terminal => "rtab-terminal".into(),
-            RightPaneSurface::CodeFile(p) => format!("rtab-code-{}", p.display()).into(),
-            RightPaneSurface::Office => active_tab
-                .as_ref()
-                .map(|t| format!("otab-{}", t.id).into())
-                .unwrap_or_else(|| "otab-launcher".into()),
-        };
-
         let loc = self.ui_locale;
+        let mut tabs = Vec::new();
         let git_sel = self.right_surface == RightPaneSurface::GitWorkbench;
         let files_sel = self.right_surface == RightPaneSurface::Files;
         let term_sel = self.right_surface == RightPaneSurface::Terminal;
-
-        let mut tabs_inner = div()
-            .relative()
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .child(pro_pill_indicator(
-                "kar-office-tab-pill",
-                active_key,
-                tab_sensor.clone(),
-                R_CTRL,
-                s.sidebar_selected,
-                if s.dark { None } else { Some(s.line_soft) },
-                false,
-            ));
-
         let tab_count = self.office_tabs.len()
             + self.code_tab_order.len()
             + usize::from(self.git_tab_open)
@@ -118,185 +101,103 @@ impl KarWorkbench {
                 continue;
             }
             let closed = surface.clone();
-            tabs_inner = tabs_inner.child(
-                div()
-                    .relative()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .rounded(px(6.))
-                    .when(selected, |d| d.child(pro_mark_selected(&tab_sensor)))
-                    .child(
-                        Tactile::ghost(key, &s)
-                            .role(Role::Tab)
-                            .h(px(28.))
-                            .px(px(7.))
-                            .gap(px(5.))
-                            .lit(selected)
-                            .lit_fill(transparent_black())
-                            .child(if surface == RightPaneSurface::GitWorkbench {
-                                render_file_diff_icon(13., s.text)
-                            } else {
-                                pro_icon(glyph, 13., s.text)
-                            })
-                            .child(div().text_size(px(FS_META)).child(label))
-                            .on_press(cx, move |this, _, cx| this.open_surface(&surface, cx)),
-                    )
-                    .child(
-                        Tactile::ghost(SharedString::from(format!("{key}-close")), &s)
-                            .size(px(18.))
-                            .justify_center()
-                            .tip(loc.pick("关闭标签页", "Close tab"))
-                            .child(pro_icon(ProIcon::Close, 10., s.muted))
-                            .on_press(cx, move |this, _, cx| this.close_surface(&closed, cx)),
-                    ),
+            let icon = if surface == RightPaneSurface::GitWorkbench {
+                render_file_diff_icon(13., s.text)
+            } else {
+                pro_icon(glyph, 13., s.text)
+            };
+            let close_label = format!("{} {label}", loc.pick("关闭", "Close"));
+            tabs.push(
+                Item::new(key, label, selected, cx, move |wb, _, cx| {
+                    wb.open_surface(&surface, cx)
+                })
+                .content(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .child(icon)
+                        .child(label),
+                )
+                .close(
+                    close_tab_button(format!("{key}-close"), close_label, &s)
+                        .on_press(cx, move |wb, _, cx| wb.close_surface(&closed, cx)),
+                ),
             );
         }
-
         for (idx, tab) in self.office_tabs.iter().enumerate() {
             let selected = is_office_surface && self.active_office_tab == Some(idx);
             let name = clean_display_doc_name(&tab.doc_name(cx));
-            let dirty = tab.is_dirty(cx);
             let tab_id = tab.id;
-            let grp = SharedString::from(format!("otab-grp-{tab_id}"));
-            tabs_inner = tabs_inner.child(
-                div()
-                    .relative()
-                    .h(px(30.))
-                    .flex_none()
-                    .rounded(px(R_CTRL))
-                    .group(grp.clone())
-                    .when(selected, |d| d.child(pro_mark_selected(&tab_sensor)))
-                    .flex()
-                    .items_center()
-                    .child(
-                        Tactile::ghost(SharedString::from(format!("office-tab-{tab_id}")), &s)
-                            .role(Role::Tab)
-                            .lit(selected)
-                            .lit_fill(transparent_black())
-                            .h(px(30.))
-                            .pl(px(8.))
-                            .pr(px(4.))
-                            .gap(px(6.))
-                            .child(render_office_chip(tab.kind, &s))
-                            .child(
-                                div()
-                                    .max_w(px(name_max_w))
-                                    .truncate()
-                                    .text_size(px(FS_UI))
-                                    .font_weight(if selected {
-                                        FontWeight::MEDIUM
-                                    } else {
-                                        FontWeight::NORMAL
-                                    })
-                                    .text_color(if selected { s.ink } else { s.muted })
-                                    .child(name),
-                            )
-                            .when(dirty, |t| {
-                                t.child(div().size(px(6.)).rounded_full().bg(s.pro.amber))
-                            })
-                            .when(tab.is_demo && selected, |t| t.child(render_sample_tag(&s)))
-                            .on_press(cx, move |this, _, cx| {
-                                this.activate_office_tab(idx, cx);
-                            }),
-                    )
-                    .child(
-                        div()
-                            .pr(px(4.))
-                            .when(!selected, |d| {
-                                d.opacity(0.).group_hover(grp, |st| st.opacity(1.))
-                            })
-                            .child(
-                                Tactile::ghost(
-                                    SharedString::from(format!("office-tab-close-{tab_id}")),
-                                    &s,
-                                )
-                                .radius(5.)
-                                .size(px(20.))
-                                .flex_none()
-                                .justify_center()
-                                .tip("关闭标签")
-                                .child(pro_icon(ProIcon::Close, 11., s.muted))
-                                .on_press(cx, move |this, window, cx| {
-                                    this.close_office_tab(tab_id, window, cx)
-                                }),
-                            ),
-                    ),
+            let label = div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(render_office_chip(tab.kind, &s))
+                .child(div().max_w(px(name_max_w)).truncate().child(name.clone()))
+                .when(tab.is_dirty(cx), |d| {
+                    d.child(div().size(px(6.)).rounded_full().bg(s.pro.amber))
+                })
+                .when(tab.is_demo && selected, |d| d.child(render_sample_tag(&s)));
+            let close_label = format!("{} {name}", loc.pick("关闭", "Close"));
+            tabs.push(
+                Item::new(
+                    format!("office-tab-{tab_id}"),
+                    name,
+                    selected,
+                    cx,
+                    move |wb, _, cx| wb.activate_office_tab(idx, cx),
+                )
+                .content(label)
+                .close(
+                    close_tab_button(format!("office-tab-close-{tab_id}"), close_label, &s)
+                        .on_press(cx, move |wb, win, cx| wb.close_office_tab(tab_id, win, cx)),
+                ),
             );
         }
-
-        // 5. Open Workspace Code Preview Tabs
-        for (c_ix, rel_path) in self.code_tab_order.clone().into_iter().enumerate() {
+        for rel_path in &self.code_tab_order {
             let selected = self.right_surface == RightPaneSurface::CodeFile(rel_path.clone());
-            let file_label = rel_path
+            let label = rel_path
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| rel_path.display().to_string());
-            let rel_select = rel_path.clone();
-            let rel_close = rel_path.clone();
-            tabs_inner = tabs_inner.child(
-                div()
-                    .relative()
-                    .h(px(30.))
-                    .flex_none()
-                    .rounded(px(R_CTRL))
-                    .when(selected, |d| d.child(pro_mark_selected(&tab_sensor)))
-                    .flex()
-                    .items_center()
-                    .child(
-                        Tactile::ghost(("rtab-code-btn", c_ix), &s)
-                            .role(Role::Tab)
-                            .lit(selected)
-                            .lit_fill(transparent_black())
-                            .h(px(30.))
-                            .pl(px(8.))
-                            .pr(px(4.))
-                            .gap(px(5.))
-                            .child(pro_icon(ProIcon::Code, 12., s.pro.purple))
-                            .child(
-                                div()
-                                    .max_w(px(name_max_w))
-                                    .truncate()
-                                    .font_family(mono_font(cx))
-                                    .text_size(px(FS_META))
-                                    .font_weight(if selected {
-                                        FontWeight::MEDIUM
-                                    } else {
-                                        FontWeight::NORMAL
-                                    })
-                                    .text_color(if selected { s.ink } else { s.muted })
-                                    .child(file_label),
-                            )
-                            .on_press(cx, move |this, _, cx| {
-                                this.right_surface = RightPaneSurface::CodeFile(rel_select.clone());
-                                cx.notify();
-                            }),
-                    )
-                    .child(
-                        div()
-                            .pr(px(4.))
-                            .child(
-                                Tactile::ghost(("rtab-code-close", c_ix), &s)
-                                    .radius(5.)
-                                    .size(px(20.))
-                                    .justify_center()
-                                    .tip("关闭文件标签")
-                                    .child(pro_icon(ProIcon::Close, 11., s.muted))
-                                    .on_press(cx, move |this, _, cx| {
-                                        this.close_workspace_code_tab(&rel_close, cx)
-                                    }),
-                            ),
-                    ),
+                .unwrap_or(rel_path.as_os_str())
+                .to_string_lossy()
+                .into_owned();
+            let select = rel_path.clone();
+            let close = rel_path.clone();
+            let key = format!("code-tab-{}", rel_path.display());
+            let close_label = format!("{} {label}", loc.pick("关闭", "Close"));
+            tabs.push(
+                Item::new(
+                    key.clone(),
+                    label.clone(),
+                    selected,
+                    cx,
+                    move |wb, _, cx| {
+                        wb.right_surface = RightPaneSurface::CodeFile(select.clone());
+                        cx.notify();
+                    },
+                )
+                .content(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .child(pro_icon(ProIcon::Code, 13., s.pro.purple))
+                        .child(div().max_w(px(name_max_w)).truncate().child(label)),
+                )
+                .close(
+                    close_tab_button(format!("{key}-close"), close_label, &s)
+                        .on_press(cx, move |wb, _, cx| wb.close_workspace_code_tab(&close, cx)),
+                ),
             );
         }
-
-        let tabs_scroll = div()
-            .id("office-tabs-scroll")
-            .min_w_0()
-            .overflow_x_scroll()
-            .flex()
-            .items_center()
-            .child(tabs_inner);
+        let tabs_scroll = SelectionStrip::new(
+            "office-tabs-scroll",
+            loc.pick("工作区标签页", "Workspace tabs"),
+            Group::Documents,
+            tabs,
+            &s,
+        );
 
         let add_doc_menu = menu_host(
             icon_button(
@@ -405,7 +306,7 @@ impl KarWorkbench {
             );
 
         let body = match self.right_surface.clone() {
-            RightPaneSurface::GitWorkbench => self.render_git_workbench_body(&s, window, cx),
+            RightPaneSurface::GitWorkbench => self.render_git_workbench_body(pane_w, &s, window, cx),
             RightPaneSurface::Files => self.render_files_dock_body(&s, cx),
             RightPaneSurface::Terminal => self.render_terminal_dock_body(&s, window, cx),
             RightPaneSurface::CodeFile(rel) => self.render_workspace_code_tab_body(&rel, &s, cx),
@@ -807,7 +708,7 @@ impl KarWorkbench {
                         div()
                             .pb(px(12.))
                             .text_center()
-                            .text_size(px(14.))
+                            .text_size(px(FS_UI))
                             .font_weight(FontWeight::MEDIUM)
                             .child(self.ui_locale.pick("打开面板", "Open a surface")),
                     )

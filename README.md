@@ -364,6 +364,14 @@ cargo run -p kantor -- file.xlsx
 cargo test --workspace
 ```
 
+Build and open the native Kwrok workbench on macOS with its original Kwork Dock icon:
+
+```sh
+cargo build -p kar_desktop
+./scripts/macos-kwrok-app.sh target/debug/kar-desktop target
+open target/Kwrok.app
+```
+
 Expect `target/` to reach 10–20 GB and the first build to need plenty of RAM.
 
 ## Layout

@@ -1,5 +1,6 @@
 //! Pair a local chat with a remote controller, inspect permissions, and revoke access.
 
+use crate::ui_motion::selection::{Group, SelectionStrip};
 use gpui::{prelude::*, *};
 use kui::{
     components::{
@@ -695,42 +696,22 @@ impl KarWorkbench {
                         .justify_between()
                         .when(narrow, |r| r.flex_col().items_start())
                         .gap(px(8.))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .child(
-                                    soft_button(
-                                        "remote-role-ctrl",
-                                        loc.pick("双向控制", "Controller"),
-                                        s,
-                                    )
-                                    .lit(self.remote_requested_role == PeerRole::Controller)
-                                    .on_press(
-                                        cx,
-                                        |this, _, cx| {
-                                            this.remote_requested_role = PeerRole::Controller;
-                                            cx.notify();
-                                        },
-                                    ),
-                                )
-                                .child(
-                                    soft_button(
-                                        "remote-role-view",
-                                        loc.pick("只读观察", "Viewer"),
-                                        s,
-                                    )
-                                    .lit(self.remote_requested_role == PeerRole::Viewer)
-                                    .on_press(
-                                        cx,
-                                        |this, _, cx| {
-                                            this.remote_requested_role = PeerRole::Viewer;
-                                            cx.notify();
-                                        },
-                                    ),
-                                ),
-                        )
+                        .child(SelectionStrip::options(
+                            "remote-requested-role",
+                            loc.pick("连接权限", "Connection permission"),
+                            Group::Choices,
+                            [
+                                (PeerRole::Controller, loc.pick("双向控制", "Controller")),
+                                (PeerRole::Viewer, loc.pick("只读观察", "Viewer")),
+                            ],
+                            self.remote_requested_role,
+                            s,
+                            cx,
+                            |wb, role, _, cx| {
+                                wb.remote_requested_role = role;
+                                cx.notify();
+                            },
+                        ))
                         .child(
                             primary_button(
                                 "remote-pair-submit",
