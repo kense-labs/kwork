@@ -42,7 +42,7 @@ slides_engine.workspace = true
 slides_ui.workspace = true
 tokio.workspace = true
 ureq.workspace = true
-uuid.workspace = true
+uuid = { workspace = true, features = ["v5"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui-pre-macos = { version = "0.3.11", features = ["test-support"] }

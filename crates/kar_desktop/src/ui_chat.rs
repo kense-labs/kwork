@@ -301,6 +301,11 @@ impl KarWorkbench {
                 .child(if view_only {
                     div()
                         .children(activity_row)
+                        .when(self.recoverable_archived_plan(), |row| row.child(
+                            Tactile::soft("resume-archived-proposal",&s)
+                                .h(px(30.)).px(px(9.))
+                                .child(self.ui_locale.pick("在工作区继续这份计划","Continue this plan in the workspace"))
+                                .on_press(cx,|this,w,cx|this.recover_archived_plan(w,cx))))
                         .child(self.render_view_only_bar(&s, cx))
                         .into_any_element()
                 } else {
@@ -1322,19 +1327,15 @@ impl KarWorkbench {
                                 .truncate()
                                 .text_size(px(FS_META))
                                 .text_color(s.ink)
-                                .child(format!("目标：{}", g.objective)),
+                                .child(g.objective.clone()),
                         )
+                        .child(div().flex_none().text_size(px(FS_META)).text_color(s.muted)
+                            .child(self.goal_status_label(&g.status)))
                         .when_some(owner, |d, chat_id| {
                             d.child(
-                                text_button("goal-edit", "修改", s)
+                                text_button("goal-edit", self.ui_locale.pick("管理", "Manage"), s)
                                     .on_press(cx, move |this, window, cx| {
                                         if this.current_chat_id() == Some(chat_id) { this.open_goal_dialog(window, cx); }
-                                    }),
-                            )
-                            .child(
-                                icon_button("goal-clear", ProIcon::Close, "清除目标", s)
-                                    .on_press(cx, move |this, _, _| {
-                                        this.bridge.send(KarCommand::ClearGoal { chat_id })
                                     }),
                             )
                         }),
@@ -1561,13 +1562,18 @@ impl KarWorkbench {
         let dropzone = self.file_dropzone.clone();
         let slash_popup = self.slash_popup(s, window, cx);
         let browsing_commands = slash_popup.is_some();
+        let planning = self.planning_here();
         let composer = self.render_composer(pane_w, None, slash_popup, s, window, cx);
         let content = chat_content_lane(pane_w, window)
             .flex_none()
             .flex()
             .flex_col()
-            .child(heading.when(browsing_commands, |title| title.invisible()))
-            .when(!short, |col| {
+             .when(!planning, |col| col.child(heading.when(browsing_commands, |title| title.invisible())))
+            .when_some(self.planning_topic(), |col,topic| col.child(
+                div().id("planned-user-task").w_full().flex().justify_end().child(
+                    div().max_w(relative(0.86)).max_h(px(60.)).id("planned-task-scroll").overflow_y_scroll()
+                    .px(px(12.)).py(px(7.)).rounded(px(12.)).bg(s.hover).text_size(px(FS_UI)).text_color(s.ink).child(topic.to_owned()))))
+            .when(!short && !planning, |col| {
                 col.child(
                     div().when(browsing_commands, |hint| hint.invisible()).mt(px(4.)).flex().justify_center().child(
                         secondary
@@ -1774,7 +1780,7 @@ impl KarWorkbench {
         let chat_open = self.chat_is_open();
         let turn_running = self.turn_in_progress();
         let has_draft = !draft.trim().is_empty() || !self.pending_attachments.is_empty();
-        let can_send = has_draft && self.queued_prompt.is_none() && (!turn_running || chat_open);
+        let can_send = has_draft && !self.plan_input_blocked() && self.queued_prompt.is_none() && (!turn_running || chat_open);
 
         let start = MenuPlacement::AboveStart;
         let end = MenuPlacement::AboveEnd;
@@ -2101,6 +2107,7 @@ impl KarWorkbench {
                 this.navigate_slash_picker(ev, win, cx);
             }))
             .children(activity_row)
+            .children(self.render_planning_panel(pane_w, window, s, cx))
             .child(
                 div()
                     .relative()
@@ -4382,7 +4389,7 @@ impl KarWorkbench {
     }
 
     /// Keep the document intact so table, code and selection share one Markdown parse.
-    fn render_assistant_markdown_blocks(
+    pub(crate) fn render_assistant_markdown_blocks(
         &self,
         turn_id: Uuid,
         item_ix: usize,

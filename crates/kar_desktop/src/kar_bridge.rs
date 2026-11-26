@@ -5,6 +5,10 @@
 //! communicating with GPUI strictly over `async_channel`.
 
 mod session_commands;
+mod planner;
+pub use planner::PlanQuestion;
+mod chat_goal;
+pub use chat_goal::GoalAction;
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
@@ -75,6 +79,7 @@ pub enum KarCommand {
     CreateChat {
         runtime_id: String,
         initial_goal: Option<String>,
+        initial_plan: Option<(Uuid, String)>,
         model: Option<String>,
         program: Option<PathBuf>,
         workspace: PathBuf,
@@ -92,6 +97,13 @@ pub enum KarCommand {
         chat_id: Uuid,
         title: String,
     },
+    GenerateDraftPlan {
+        draft_id: Uuid, request_id: Uuid, topic: String, previous: Option<String>,
+        workspace: PathBuf, program: Option<PathBuf>, model: Option<String>, effort: Option<String>,
+    },
+    GeneratePlan { chat_id: Uuid, request_id: Uuid, topic: String, previous: Option<String> },
+    CancelPlan { chat_id: Uuid, request_id: Uuid },
+    AnswerPlan { chat_id: Uuid, request_id: Uuid, answers: BTreeMap<String, String> },
     SendPrompt {
         request_id: Uuid,
         raw_user_text: String,
@@ -145,11 +157,7 @@ pub enum KarCommand {
     },
     LoadTurnDiff(crate::turn_review::ReviewKey),
     CompactChat,
-    SetGoal {
-        chat_id: Uuid,
-        objective: String,
-    },
-    ClearGoal { chat_id: Uuid },
+    ManageGoal { chat_id: Uuid, action: GoalAction },
     StopTask {
         task_id: String,
     },
@@ -364,7 +372,10 @@ pub enum KarBridgeEvent {
     },
     ConnectionStateChanged(FeedConnectionState),
     ChatStateUpdated(ProjectedChatState),
-    GoalSetFailed { chat_id: Uuid, objective: String, reason: String },
+    PlanGenerated { chat_id: Uuid, request_id: Uuid, result: Result<String, String> },
+    PlanProgress { chat_id: Uuid, request_id: Uuid, label: String },
+    PlanQuestions { chat_id: Uuid, request_id: Uuid, questions: Vec<PlanQuestion> },
+    GoalResult { chat_id: Uuid, action: GoalAction, result: Result<Option<GoalSnapshot>, String> },
     QueuedInputRetrieved {
         chat_id: Uuid,
         input_id: Uuid,
@@ -374,9 +385,11 @@ pub enum KarBridgeEvent {
     PromptLifecycle {
         attempt: PendingPromptAttempt,
     },
-    GoalChatCreated,
+    PlanChatCreated { chat_id: Uuid, request_id: Uuid, topic: String },
+    GoalChatCreated(Uuid),
     /// A new chat could not be started, so whatever was waiting to be sent in it never left.
     ChatCreateFailed {
+        plan_request_id: Option<Uuid>,
         goal_draft: Option<(PathBuf, String)>,
         cause: ChatCreateFailure,
         detail: String,
@@ -710,44 +723,12 @@ struct WorkerState {
     running_terminals: HashMap<Uuid, watch::Sender<bool>>,
     prompt_suggestions: kar::PromptSuggestions,
     suggestion_watcher: Option<tokio::task::JoinHandle<()>>,
+    planner: Option<planner::PlannerTask>,
     cmd_tx: async_channel::Sender<KarCommand>,
     evt_tx: async_channel::Sender<KarBridgeEvent>,
 }
 
 impl WorkerState {
-    fn set_goal(&self, session: Arc<ChatSession>, objective: String) {
-        let chat_id = session.info().id;
-        let store_opt = self.store.clone();
-        let evt_tx = self.evt_tx.clone();
-        let caps = Some(session.capabilities());
-        tokio::spawn(async move {
-            let opts = GoalSetOptions {
-                objective: objective.clone(),
-                status: Some("active".into()),
-                token_budget: None,
-            };
-            match session.set_goal(opts).await {
-                Ok(_) => {
-                    if let Ok(h) = session.history() {
-                        let queued = active_queued_inputs(store_opt.as_ref(), chat_id);
-                        let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
-                            state_from_history(h, caps, queued),
-                        ));
-                    }
-                    let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
-                        text: "已更新对话目标".into(),
-                        warning: false,
-                    });
-                }
-                Err(err) => {
-                    let _ = evt_tx.send_blocking(KarBridgeEvent::GoalSetFailed {
-                        chat_id, objective, reason: err.to_string(),
-                    });
-                }
-            }
-        });
-    }
-
     fn emit(&self, ev: KarBridgeEvent) {
         let _ = self.evt_tx.send_blocking(ev);
     }
@@ -830,6 +811,7 @@ impl WorkerState {
     }
 
     fn stop_feed(&mut self) {
+        if let Some(plan) = self.planner.take() { plan.cancel(); }
         self.remote_session = None;
         if let Some(cancel) = self.feed_cancel.take() {
             let _ = cancel.send(true);
@@ -2290,6 +2272,7 @@ async fn worker_loop(
         running_terminals: HashMap::new(),
         prompt_suggestions,
         suggestion_watcher: None,
+        planner: None,
         cmd_tx,
         evt_tx,
     };
@@ -2341,6 +2324,7 @@ async fn worker_loop(
             KarCommand::CreateChat {
                 runtime_id,
                 initial_goal,
+                initial_plan,
                 model,
                 program,
                 workspace,
@@ -2350,6 +2334,7 @@ async fn worker_loop(
             } => {
                 let Some(store) = state.store.clone() else {
                     state.emit(KarBridgeEvent::ChatCreateFailed {
+                            plan_request_id: initial_plan.as_ref().map(|p| p.0),
                         goal_draft: initial_goal.map(|s| (workspace.clone(), s)),
                         cause: ChatCreateFailure::Store,
                         detail: format!(
@@ -2381,6 +2366,7 @@ async fn worker_loop(
                         }
                         Err(detail) => {
                             state.emit(KarBridgeEvent::ChatCreateFailed {
+                            plan_request_id: initial_plan.as_ref().map(|p| p.0),
                                 goal_draft: initial_goal.map(|s| (workspace.clone(), s)),
                                 cause: ChatCreateFailure::Worktree,
                                 detail: detail.to_string(),
@@ -2458,9 +2444,12 @@ async fn worker_loop(
                             state.active_controller.as_deref(),
                             state.evt_tx.clone(),
                         ));
+                        if let Some((request_id, topic)) = initial_plan {
+                            state.emit(KarBridgeEvent::PlanChatCreated { chat_id, request_id, topic });
+                        }
                         if let Some(objective) = initial_goal {
-                            state.set_goal(session, objective);
-                            state.emit(KarBridgeEvent::GoalChatCreated);
+                            state.emit(KarBridgeEvent::GoalChatCreated(chat_id));
+                            state.apply_goal(session, GoalAction::Set(objective));
                         }
                         state.refresh_chat_list();
                     }
@@ -2477,6 +2466,7 @@ async fn worker_loop(
                         }
                         state.selected_chat_id = None;
                         state.emit(KarBridgeEvent::ChatCreateFailed {
+                            plan_request_id: initial_plan.as_ref().map(|p| p.0),
                             goal_draft: initial_goal.map(|s| (workspace.clone(), s)),
                             cause: ChatCreateFailure::Runtime(runtime_id),
                             detail,
@@ -2648,6 +2638,22 @@ async fn worker_loop(
                             }
                         }
                     }
+                }
+            }
+            KarCommand::GeneratePlan { chat_id, request_id, topic, previous } => {
+                planner::start(&mut state, chat_id, request_id, topic, previous, planner::Source::CurrentChat);
+            }
+            KarCommand::GenerateDraftPlan { draft_id, request_id, topic, previous, workspace, program, model, effort } => {
+                planner::start(&mut state, draft_id, request_id, topic, previous, planner::Source::Workspace { workspace, program, model, effort });
+            }
+            KarCommand::CancelPlan { chat_id, request_id } => {
+                if state.planner.as_ref().is_some_and(|p| p.matches(chat_id, request_id))
+                    && let Some(plan) = state.planner.take()
+                { plan.cancel(); }
+            }
+            KarCommand::AnswerPlan { chat_id, request_id, answers } => {
+                if let Some(plan) = state.planner.as_ref().filter(|p| p.matches(chat_id, request_id)) {
+                    plan.answer(answers);
                 }
             }
             KarCommand::SendPrompt {
@@ -3253,44 +3259,14 @@ async fn worker_loop(
                     }
                 });
             }
-            KarCommand::SetGoal { chat_id, objective } => {
-                let Some(session) = state.active_controller.clone().filter(|s| s.info().id == chat_id) else {
-                    state.emit(KarBridgeEvent::GoalSetFailed {
-                        chat_id, objective, reason: "当前对话已切换".into(),
+            KarCommand::ManageGoal { chat_id, action } => {
+                if let Some(session) = state.active_controller.clone().filter(|s| s.info().id == chat_id) {
+                    state.apply_goal(session, action);
+                } else {
+                    state.emit(KarBridgeEvent::GoalResult {
+                        chat_id, action, result: Err("当前对话已切换".into()),
                     });
-                    continue;
-                };
-                state.set_goal(session, objective);
-            }
-            KarCommand::ClearGoal { chat_id } => {
-                let Some(session) = state.active_controller.clone().filter(|s| s.info().id == chat_id) else {
-                    continue;
-                };
-                let store_opt = state.store.clone();
-                let evt_tx = state.evt_tx.clone();
-                let caps = Some(session.capabilities());
-                tokio::spawn(async move {
-                    match session.clear_goal().await {
-                        Ok(()) => {
-                            if let Ok(h) = session.history() {
-                                let queued = active_queued_inputs(store_opt.as_ref(), chat_id);
-                                let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
-                                    state_from_history(h, caps, queued),
-                                ));
-                            }
-                            let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
-                                text: "已清除对话目标".into(),
-                                warning: false,
-                            });
-                        }
-                        Err(err) => {
-                            let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
-                                text: format!("清除目标失败：{err}"),
-                                warning: true,
-                            });
-                        }
-                    }
-                });
+                }
             }
             KarCommand::StopTask { task_id } => {
                 let Some(session) = state.active_controller.clone() else {

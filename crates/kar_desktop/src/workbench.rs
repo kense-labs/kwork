@@ -5,7 +5,9 @@
 //! actions they trigger, and talks to Kar strictly through [`KarBridgeHandle`].
 
 mod commands;
+mod chat_goal;
 mod slash_actions;
+mod planning;
 mod resize;
 use resize::{Divider, PaneDrag, Span};
 use std::collections::{BTreeMap, BTreeSet};
@@ -510,6 +512,8 @@ pub struct KarWorkbench {
     pub(crate) http_url_input: Entity<Input>,
     pub(crate) goal_dialog: Entity<Dialog>,
     goal_dialog_owner: Option<DraftLocation>,
+    goal_pending: BTreeSet<Uuid>,
+    goal_form_baseline: String,
     pub(crate) goal_input: Entity<Input>,
     pub(crate) rename_dialog: Entity<Dialog>,
     pub(crate) rename_input: Entity<Input>,
@@ -549,6 +553,7 @@ pub struct KarWorkbench {
     drafts: ComposerDrafts,
     pub(crate) queued_prompt: Option<QueuedPrompt>,
     slash: commands::SlashPicker,
+    planning: planning::Planning,
     /// Local files/images queued as attachments on the next prompt.
     pub(crate) pending_attachments: Vec<PathBuf>,
 
@@ -986,17 +991,17 @@ impl KarWorkbench {
         .detach();
 
         let goal_input = cx.new(|cx| {
-            Input::new("kar-goal-input", "对话目标", window, cx)
-                .with_placeholder("例如：所有测试通过且无编译器警告", cx)
+            Input::new("kar-goal-input", ui_locale.pick("对话目标", "Chat goal"), window, cx)
+                .with_placeholder(ui_locale.pick("输入可验证的目标", "Enter a verifiable objective"), cx)
         });
         let goal_field_for_dialog = goal_input.clone();
+        let goal_owner = cx.weak_entity();
         let goal_dialog = cx.new(|cx| {
-            Dialog::new("kar-goal-dialog", "设定对话目标", "设定对话目标", cx)
+            Dialog::new("kar-goal-dialog", ui_locale.pick("对话目标", "Chat goal"), ui_locale.pick("对话目标", "Chat goal"), cx)
                 .without_trigger()
-                .with_description("智能体会围绕这个目标持续推进，并在完成后自动核验。")
-                .with_body(move |_, _| div().w_full().py_1().child(goal_field_for_dialog.clone()))
-                .with_cancel("取消")
-                .with_confirm("设定目标")
+                .with_body(move |_, cx| Self::goal_dialog_body(&goal_owner, goal_field_for_dialog.clone(), cx))
+                .with_cancel(ui_locale.pick("取消", "Cancel"))
+                .with_confirm(ui_locale.pick("保存目标", "Save goal"))
         });
         cx.subscribe_in(
             &goal_dialog,
@@ -1433,6 +1438,8 @@ impl KarWorkbench {
             http_url_input,
             goal_dialog,
             goal_dialog_owner: None,
+            goal_pending: BTreeSet::new(),
+            goal_form_baseline: String::new(),
             goal_input,
             rename_dialog,
             rename_input,
@@ -1465,6 +1472,7 @@ impl KarWorkbench {
             drafts: ComposerDrafts::new(config.workspace_dir.clone()),
             queued_prompt: None,
             slash: commands::SlashPicker::default(),
+            planning: planning::Planning::default(),
             pending_attachments: Vec::new(),
             copy_buttons: BTreeMap::new(),
             part_open: BTreeMap::new(),
@@ -2047,27 +2055,6 @@ impl KarWorkbench {
             || self.branch_dialog.read(cx).is_open()
     }
 
-    pub(crate) fn open_goal_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.can_set_chat_goal() { return; }
-        self.goal_dialog_owner = Some(DraftLocation::for_mode(&self.access_mode, &self.config.workspace_dir));
-        self.open_menu = None;
-        self.command_palette_open = false;
-        self.provider_sheet_open = false;
-        let existing = self
-            .projected
-            .goal
-            .as_ref()
-            .and_then(|g| g.as_ref())
-            .map(|g| g.objective.clone())
-            .unwrap_or_default();
-        self.goal_input
-            .update(cx, |inp, cx| inp.set_value(existing, window, cx));
-        self.goal_dialog
-            .update(cx, |d, cx| d.set_open(true, window, cx));
-        self.goal_input.read(cx).focus_handle(cx).focus(window, cx);
-        cx.notify();
-    }
-
     pub(crate) fn open_rename_chat_dialog(
         &mut self,
         chat_id: Uuid,
@@ -2335,17 +2322,13 @@ impl KarWorkbench {
                 if (latest || resume) && matches!(self.access_mode, ChatAccessMode::NoneSelected)
                     && self.queued_prompt.is_none() && self.composer_editor.read(cx).value().is_empty()
                     && self.config.subscribe_http.is_none() && !self.config.start_demo_chat {
-                    let saved = crate::client_store::last_chat(&self.config.chat_dir);
-                    let entry = if latest {
-                        self.chat_list.first()
-                    } else if let Some(id) = saved {
-                        self.chat_list.iter().find(|e| e.info.id == id)
+                    let chat = if latest {
+                        self.chat_list.first().map(|entry| entry.info.id)
                     } else {
-                        // Existing installations do not yet have a last-selection record.
-                        self.chat_list.iter().find(|e| e.info.workspace == self.config.workspace_dir)
+                        self.resume_chat_or_workspace_plan(cx)
                     };
-                    if let Some(entry) = entry {
-                        self.bridge.send(KarCommand::SelectLocalChat { chat_id: entry.info.id, prefer_read_only: false });
+                    if let Some(chat_id) = chat {
+                        self.bridge.send(KarCommand::SelectLocalChat { chat_id, prefer_read_only: false });
                     } else if self.config.initial_terminal_cmd.take().is_some() {
                         self.notify_warning("没有可重新打开的对话，启动命令已取消", cx);
                     }
@@ -2395,7 +2378,18 @@ impl KarWorkbench {
                     self.session_commands = Some((chat_id, commands));
                 }
             }
+            KarBridgeEvent::PlanChatCreated { chat_id, request_id, topic } => {
+                self.plan_chat_created(chat_id, request_id, topic, window, cx);
+            }
+            KarBridgeEvent::PlanProgress { chat_id, request_id, label } => self.plan_progress(chat_id,request_id,label,cx),
+            KarBridgeEvent::PlanGenerated { chat_id, request_id, result } => {
+                self.finish_planning(chat_id, request_id, result, window, cx);
+            }
+            KarBridgeEvent::PlanQuestions {chat_id, request_id, questions} => {
+                self.receive_plan_questions(chat_id, request_id, questions, window, cx);
+            }
             KarBridgeEvent::AccessModeChanged(mode) => {
+                if let Some(id) = mode.selected_chat_id() { self.load_saved_plan(id, cx); }
                 self.session_commands = None;
                 let writable =
                     mode.is_writable() || matches!(mode, ChatAccessMode::NoneSelected);
@@ -2441,6 +2435,7 @@ impl KarWorkbench {
                     self.projected.queued_inputs.clear();
                 }
                 self.access_mode = mode;
+                self.sync_plan_placeholder(cx);
                 let live = matches!(self.access_mode, ChatAccessMode::HttpReadOnly { .. } | ChatAccessMode::RemoteController { .. });
                 if (chat_changed || live) && self.main_stage_view == MainStageView::Conversation {
                     match self.access_mode {
@@ -2521,6 +2516,9 @@ impl KarWorkbench {
                     }
                 }
 
+                if proj.chat_id == self.projected.chat_id && proj.goal.is_none() {
+                    proj.goal = self.projected.goal.clone();
+                }
                 if self.question_draft.as_ref().is_some_and(|(cursor, _)| {
                     !proj
                         .pending_requests
@@ -2546,7 +2544,11 @@ impl KarWorkbench {
                     // Kar's public event feed projects turns; the paired state endpoint owns its queue.
                     proj.queued_inputs = std::mem::take(&mut self.projected.queued_inputs);
                 }
+                if self.projected.goal != proj.goal && let Some(id) = proj.chat_id {
+                    self.sync_goal_form(id, proj.goal.as_ref().and_then(Option::as_ref), window, cx);
+                }
                 self.projected = proj;
+                self.reconcile_plan_submission(cx);
                 if switched_chat || workspace_changed {
                     self.sync_workspace_panels(window, cx);
                 }
@@ -2566,16 +2568,19 @@ impl KarWorkbench {
                 }
             }
             KarBridgeEvent::PromptLifecycle { attempt } => {
+                let failed = attempt.last_error.is_some();
+                self.planning.observe_attempt(&attempt);
                 self.prompt_attempts.insert(attempt.request_id, attempt);
+                if failed { self.reconcile_plan_submission(cx); }
             }
-            KarBridgeEvent::GoalSetFailed { chat_id, objective, reason } => {
-                self.prepend_composer_draft(DraftLocation::Chat(chat_id),
-                    QueuedPrompt { text: format!("/goal {objective}"), ..Default::default() }, window, cx);
-                self.notify_warning(format!("{} · {reason}",
-                    self.ui_locale.pick("目标已保留为草稿", "Goal kept as a draft")), cx);
+            KarBridgeEvent::GoalResult { chat_id, action, result } =>
+                self.on_goal_result(chat_id, action, result, window, cx),
+            KarBridgeEvent::GoalChatCreated(chat_id) => {
+                self.slash.creating_goal = false;
+                self.goal_pending.insert(chat_id);
             }
-            KarBridgeEvent::GoalChatCreated => self.slash.creating_goal = false,
-            KarBridgeEvent::ChatCreateFailed { cause, mut detail, goal_draft } => {
+            KarBridgeEvent::ChatCreateFailed { plan_request_id, cause, mut detail, goal_draft } => {
+                if let Some(id) = plan_request_id { self.plan_create_failed(id, window, cx); }
                 self.config.initial_terminal_cmd = None;
                 if let Some((workspace, objective)) = goal_draft {
                     self.slash.creating_goal = false;
@@ -3509,6 +3514,10 @@ impl KarWorkbench {
     }
 
     fn create_real_chat_with_goal(&mut self, initial_goal: Option<String>, cx: &mut Context<Self>) -> bool {
+        self.create_chat_for_composer(initial_goal, None, cx)
+    }
+
+    fn create_chat_for_composer(&mut self, initial_goal: Option<String>, initial_plan: Option<(Uuid, String)>, cx: &mut Context<Self>) -> bool {
         if self.slash.creating_goal { return false; }
         self.open_menu = None;
         let agent = self
@@ -3530,6 +3539,7 @@ impl KarWorkbench {
         self.slash.creating_goal = initial_goal.is_some();
         self.bridge.send(KarCommand::CreateChat {
             initial_goal,
+            initial_plan,
             runtime_id: self.selected_runtime.clone(),
             model: self.selected_model.clone(),
             program,
@@ -3597,7 +3607,7 @@ impl KarWorkbench {
         {
             return;
         }
-        if self.submit_slash_command(&typed, window, cx) {
+        if self.submit_slash_command(&typed, window, cx) || self.submit_planning_input(&typed, window, cx) {
             return;
         }
         let raw = if typed.is_empty() {
@@ -3673,7 +3683,10 @@ impl KarWorkbench {
         attachments: Vec<PathBuf>,
         cx: &mut Context<Self>,
     ) {
-        let request_id = Uuid::new_v4();
+        self.dispatch_prompt_id(Uuid::new_v4(), raw, target, attachments, cx);
+    }
+
+    fn dispatch_prompt_id(&mut self, request_id: Uuid, raw: String, target: Option<SelectionTarget>, attachments: Vec<PathBuf>, cx: &mut Context<Self>) {
         let payload = match &target {
             Some(tgt) => tgt.compose_prompt(&raw),
             None => raw.clone(),

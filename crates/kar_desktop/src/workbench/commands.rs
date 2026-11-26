@@ -48,7 +48,7 @@ impl SlashPicker {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Command {
     Goal,
-    PlanDraft,
+    PlanMode,
     Local(LocalSlash),
     Native(String),
 }
@@ -86,7 +86,7 @@ fn matches_command(token: &str, name: &str, aliases: &[&str]) -> bool {
 }
 
 fn is_desktop_command(token: &str) -> bool {
-    token.eq_ignore_ascii_case("/goal")
+    token.eq_ignore_ascii_case("/goal") || token.eq_ignore_ascii_case("/plan")
         || LOCAL
             .iter()
             .any(|entry| matches_command(token, entry.name, entry.aliases))
@@ -368,7 +368,7 @@ fn args<'a>(text: &'a str, command: &str) -> Option<&'a str> {
 fn command_choices(
     goal: bool,
     native: &[SlashCommandItem],
-    known: bool,
+    planning: bool,
     query: &str,
     loc: UiLocale,
     available: impl Fn(LocalSlash) -> bool,
@@ -379,18 +379,18 @@ fn command_choices(
         choices.push(Choice {
             name: "/goal".into(),
             label: loc.pick("目标", "Goal").into(),
-            description: loc.pick("设置对话目标", "Set a conversation goal").into(),
+            description: loc.pick("查看、编辑和管理会话目标", "View, edit and manage the session goal").into(),
             action: Command::Goal,
             icon: ProIcon::Tasks,
             aliases: &[],
         });
     }
-    if known && !advertised("/plan") {
+    if planning && !advertised("/plan") {
         choices.push(Choice {
             name: "/plan".into(),
             label: loc.pick("计划", "Plan").into(),
-            description: loc.pick("起草计划请求", "Draft a planning request").into(),
-            action: Command::PlanDraft,
+            description: loc.pick("先在只读模式规划，确认后实施", "Plan in read-only mode, then choose whether to implement").into(),
+            action: Command::PlanMode,
             icon: ProIcon::Tasks,
             aliases: &[],
         });
@@ -476,36 +476,13 @@ impl KarWorkbench {
             self.projected.chat_id == Some(*id)
                 && matches!(self.access_mode, ChatAccessMode::WriteController { chat_id } if chat_id == *id)
         });
-        let (native, complete) = match (&self.access_mode, session) {
-            (_, Some((_, commands))) => (commands.as_slice(), true),
-            (ChatAccessMode::WriteController { .. } | ChatAccessMode::NoneSelected, None) => {
-                let workspace = self.effective_workspace_dir();
-                let runtime = self.active_or_selected_runtime_id();
-                let catalog = &self.workspace_inventory;
-                // ACP publishes its commands on the session stream, after a chat opens.
-                // An empty workspace inventory cannot yet rule out a native /plan.
-                let acp = self
-                    .current_chat_info()
-                    .map(|info| info.protocol == kar::Protocol::Acp)
-                    .or_else(|| {
-                        self.providers
-                            .iter()
-                            .find(|p| p.id == runtime)
-                            .map(|p| p.protocol == "acp")
-                    })
-                    .unwrap_or_else(|| {
-                        kar::runtime(runtime).is_ok_and(|rt| rt.protocol == kar::Protocol::Acp)
-                    });
-                (
-                    catalog.advertised_commands_for(&workspace, runtime),
-                    !acp && catalog.commands_for(&workspace, runtime).is_some(),
-                )
-            }
-            (ChatAccessMode::DemoShowcase, _) => (&[][..], true),
-            // Local discovery never describes a remote session.
-            _ => (&[][..], false),
+        let native = match (&self.access_mode, session) {
+            (_, Some((_, commands))) => commands.as_slice(),
+            (ChatAccessMode::WriteController { .. } | ChatAccessMode::NoneSelected, None) =>
+                self.workspace_inventory.advertised_commands_for(&self.effective_workspace_dir(), self.active_or_selected_runtime_id()),
+            _ => &[],
         };
-        command_choices(goal, native, complete, query, self.ui_locale, |action| {
+        command_choices(goal, native, self.supports_planning(), query, self.ui_locale, |action| {
             self.slash_action_available(action)
         })
     }
@@ -542,7 +519,7 @@ impl KarWorkbench {
                 }
                 self.open_goal_dialog(window, cx);
             }
-            Command::PlanDraft => self.fill_plan_request(existing, window, cx),
+            Command::PlanMode => self.enter_planning(existing, false, window, cx),
             Command::Local(action) => {
                 if existing.is_empty() {
                     self.composer_editor
@@ -570,17 +547,6 @@ impl KarWorkbench {
         );
     }
 
-    fn fill_plan_request(&mut self, topic: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let prompt = self.ui_locale.pick(
-            "请先给出实施计划，等我确认后再执行。\n任务：",
-            "Propose an implementation plan and wait for my confirmation before executing.\nTask: ",
-        );
-        self.composer_editor.update(cx, |ed, cx| {
-            ed.set_value(format!("{prompt}{topic}"), window, cx);
-            ed.focus(window, cx);
-        });
-        cx.notify();
-    }
 
     pub(super) fn confirm_chat_goal(&mut self, win: &mut Window, cx: &mut Context<Self>) {
         let Some(owner) = self.goal_dialog_owner.clone() else {
@@ -640,7 +606,9 @@ impl KarWorkbench {
                 return false;
             }
         } else if let ChatAccessMode::WriteController { chat_id } = self.access_mode {
-            self.bridge.send(KarCommand::SetGoal { chat_id, objective });
+            if !self.request_chat_goal(chat_id, crate::kar_bridge::GoalAction::Set(objective), cx) {
+                return false;
+            }
         }
         if args(self.composer_editor.read(cx).value().trim(), "/goal").is_some() {
             self.composer_editor
@@ -670,12 +638,12 @@ impl KarWorkbench {
                 if objective.is_empty() {
                     self.choose_slash(Command::Goal, window, cx);
                 } else {
-                    self.submit_chat_goal(objective.into(), window, cx);
+                    self.handle_goal_command(objective, window, cx);
                 }
                 true
             }
-            Some(Command::PlanDraft) => {
-                self.fill_plan_request(args(text, "/plan").unwrap_or_default(), window, cx);
+            Some(Command::PlanMode) => {
+                self.enter_planning(args(text, "/plan").unwrap_or_default(), true, window, cx);
                 true
             }
             Some(cmd @ Command::Local(_)) => {
@@ -950,7 +918,7 @@ mod tests {
         assert_eq!(partial[0].action, Command::Native("/plan".into()));
         assert_eq!(
             command_choices(true, &[], true, "/plan", UiLocale::En, |_| false)[0].action,
-            Command::PlanDraft
+            Command::PlanMode
         );
     }
 
@@ -996,8 +964,8 @@ mod tests {
         assert!(is_desktop_command("/goal"));
         assert!(!is_desktop_command("/tmp/plan"));
         assert!(!is_desktop_command("/my-provider-command"));
-        // /plan may be supplied by a provider which has not finished discovery.
-        assert!(!is_desktop_command("/plan"));
+        // Only run a plan mode that the provider or this desktop supports.
+        assert!(is_desktop_command("/plan"));
         assert_eq!(
             args(
                 "/plan  path with spaces
