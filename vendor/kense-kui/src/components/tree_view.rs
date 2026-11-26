@@ -34,6 +34,7 @@ impl TreeNode {
     }
 }
 pub struct TreeSelected(pub SharedString);
+pub struct TreeActivated(pub SharedString);
 struct RowEntrance {
     alpha: Slide,
     offset: Slide,
@@ -44,7 +45,6 @@ pub struct TreeView {
     expanded: BTreeSet<SharedString>,
     selected: Option<SharedString>,
     focus: FocusHandle,
-    marker: Option<Slide>,
     appearance: BranchRows<Entry>,
     opened: Option<SharedString>,
     settled_once: bool,
@@ -63,13 +63,13 @@ struct Entry {
     parent: Option<SharedString>,
 }
 impl EventEmitter<TreeSelected> for TreeView {}
+impl EventEmitter<TreeActivated> for TreeView {}
 impl TreeView {
     pub fn new(nodes: Vec<TreeNode>, cx: &App) -> Self {
         Self {
             nodes,
             expanded: Default::default(),
             selected: None,
-            marker: None,
             appearance: Default::default(),
             opened: None,
             settled_once: false,
@@ -134,20 +134,29 @@ impl TreeView {
         }
         cx.notify()
     }
+
+    fn activate(&mut self, id: SharedString, branch: bool, cx: &mut Context<Self>) {
+        if branch {
+            self.toggle(&id);
+        }
+        self.select(id.clone(), cx);
+        cx.emit(TreeActivated(id));
+    }
+
     fn key(&mut self, e: &KeyDownEvent, cx: &mut Context<Self>) {
         let visible = self.visible();
         if visible.is_empty() {
             return;
         }
-        let i = visible
+        let selected = visible
             .iter()
-            .position(|v| Some(&v.id) == self.selected.as_ref())
-            .unwrap_or(0);
+            .position(|v| Some(&v.id) == self.selected.as_ref());
+        let i = selected.unwrap_or(0);
         let it = &visible[i];
         let dir = e.keystroke.key.as_str();
         let j = match dir {
             "up" => i.saturating_sub(1),
-            "down" => (i + 1).min(visible.len() - 1),
+            "down" => selected.map_or(0, |i| (i + 1).min(visible.len() - 1)),
             "home" => 0,
             "end" => visible.len() - 1,
             "left" if self.expanded.remove(&it.id) => i,
@@ -161,10 +170,9 @@ impl TreeView {
             }
             "right" if it.branch => i + 1,
             "enter" | "space" => {
-                if it.branch {
-                    self.toggle(&it.id)
-                }
-                i
+                self.activate(it.id.clone(), it.branch, cx);
+                cx.stop_propagation();
+                return;
             }
             _ => return,
         };
@@ -199,27 +207,6 @@ impl Render for TreeView {
         let still = disabled_motion(cx);
         let initial = !self.settled_once;
         self.settled_once = true;
-        if let Some(index) = rows
-            .iter()
-            .position(|(v, _, live)| *live && Some(&v.id) == self.selected.as_ref())
-        {
-            let y = rows[..index]
-                .iter()
-                .map(|(_, fraction, _)| 36. * fraction.height)
-                .sum();
-            let marker = self.marker.get_or_insert_with(|| Slide::new(y));
-            marker.duration(y, 0.22, cx);
-            root = root.child(
-                div()
-                    .absolute()
-                    .left(px(8.))
-                    .right(px(8.))
-                    .top(px(8. + marker.get(w, cx)))
-                    .h(px(36.))
-                    .rounded(crate::foundation::surface_radius(cx))
-                    .bg(p.hover),
-            );
-        }
         for (index, (entry, frame, live)) in rows.into_iter().enumerate() {
             let a = frame.height;
             let id = entry.id;
@@ -255,6 +242,7 @@ impl Render for TreeView {
             let offset = entrance.offset.get(w, cx);
             self.entrances.insert(id.clone(), entrance);
             let open = self.expanded.contains(&id);
+            let selected = self.selected.as_ref() == Some(&id);
             let branch = entry.branch;
             let target = if open { 1. } else { 0. };
             let chevron = self
@@ -278,6 +266,8 @@ impl Render for TreeView {
                             .pl(px(8. + 16. * entry.depth as f32))
                             .h(px(36.))
                             .role(Role::TreeItem)
+                            .aria_selected(selected)
+                            .when(selected, |b| b.bg(p.hover))
                             .when(branch, |b| {
                                 b.aria_expanded(open).child(transformed(
                                     Glyph::Down,
@@ -297,10 +287,7 @@ impl Render for TreeView {
                                     return;
                                 }
                                 s.focus.focus(w, cx);
-                                if branch {
-                                    s.toggle(&id)
-                                }
-                                s.select(id.clone(), cx)
+                                s.activate(id.clone(), branch, cx)
                             })),
                     ),
             )

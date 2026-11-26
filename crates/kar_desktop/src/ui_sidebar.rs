@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use gpui::{prelude::*, *};
 use gpui_kit::component::tooltip::Tooltip;
-use kar::chat::TurnStatus;
 use kui::{
     components::pro_chrome::{
         pro_fold, pro_mark_selected, pro_pill_indicator, pro_progress_ring, pro_selection_sensor,
@@ -490,12 +489,13 @@ impl KarWorkbench {
             );
         }
 
+        let running_threads = self.running_thread_ids();
         let (working_entries, rest_entries): (Vec<ChatListEntry>, Vec<ChatListEntry>) =
             if self.prefs.sidebar_working_section {
                 active_entries
                     .iter()
                     .cloned()
-                    .partition(|e| e.last_status == Some(TurnStatus::Running))
+                    .partition(|e| running_threads.contains(&e.info.id))
             } else {
                 (Vec::new(), active_entries.clone())
             };
@@ -517,6 +517,7 @@ impl KarWorkbench {
             );
             for entry in working_entries {
                 list_col = list_col.child(self.render_sidebar_thread_card(
+                    running_threads.contains(&entry.info.id),
                     entry,
                     "wrk",
                     active_chat_id,
@@ -616,6 +617,7 @@ impl KarWorkbench {
                 if !collapsed {
                     for entry in items {
                         list_col = list_col.child(self.render_sidebar_thread_card(
+                            running_threads.contains(&entry.info.id),
                             entry,
                             "act",
                             active_chat_id,
@@ -632,6 +634,7 @@ impl KarWorkbench {
         } else {
             for entry in &rest_entries {
                 list_col = list_col.child(self.render_sidebar_thread_card(
+                    running_threads.contains(&entry.info.id),
                     entry.clone(),
                     "act",
                     active_chat_id,
@@ -662,6 +665,7 @@ impl KarWorkbench {
             );
             for entry in snoozed_entries {
                 list_col = list_col.child(self.render_sidebar_thread_card(
+                    running_threads.contains(&entry.info.id),
                     entry,
                     "snz",
                     active_chat_id,
@@ -805,6 +809,7 @@ impl KarWorkbench {
             let mut settled_body = div().px(px(8.)).pb(px(6.)).flex().flex_col().gap(px(2.));
             for entry in settled_entries {
                 settled_body = settled_body.child(self.render_sidebar_thread_card(
+                    running_threads.contains(&entry.info.id),
                     entry,
                     "set",
                     active_chat_id,
@@ -957,6 +962,13 @@ impl KarWorkbench {
                 )
                 .on_press(cx, |this, _, cx| this.open_git_workbench_tab(cx)),
             )
+            .child(more);
+        let settings_footer = div()
+            .flex_none()
+            .mx(px(8.))
+            .border_t_1()
+            .border_color(s.line_soft)
+            .py(px(6.))
             .child(
                 nav_row(
                     "side-footer-settings",
@@ -964,26 +976,8 @@ impl KarWorkbench {
                     loc.pick("设置", "Settings"),
                     self.settings_open,
                 )
-                .on_press(cx, |this, _, cx| {
-                    this.toggle_settings(SettingsTab::General, cx)
-                }),
-            )
-            .child(
-                nav_row(
-                    "side-toggle-theme",
-                    if s.dark { ProIcon::Sun } else { ProIcon::Moon },
-                    if s.dark {
-                        loc.pick("切换到浅色主题", "Switch to light theme")
-                    } else {
-                        loc.pick("切换到深色主题", "Switch to dark theme")
-                    },
-                    false,
-                )
-                .on_press(cx, |this, _, cx| {
-                    this.select_appearance(this.theme_mode.toggle(), cx)
-                }),
-            )
-            .child(more);
+                .on_press(cx, |this, _, cx| this.toggle_settings(SettingsTab::General, cx)),
+            );
 
         // Keep search pinned. On short windows scrolling reaches both navigation and history;
         // a search brings matching threads directly beneath the field.
@@ -1026,12 +1020,14 @@ impl KarWorkbench {
             .child(top_bar)
             .child(search_bar)
             .child(body_scroll)
+            .child(settings_footer)
             .into_any_element()
     }
 
     #[allow(clippy::too_many_arguments)]
     fn render_sidebar_thread_card(
         &self,
+        running: bool,
         entry: ChatListEntry,
         prefix: &'static str,
         active_chat_id: Option<uuid::Uuid>,
@@ -1051,7 +1047,7 @@ impl KarWorkbench {
                     | ChatAccessMode::LocalReadOnlySubscriber { .. }
                     | ChatAccessMode::ArchivedReadOnly { .. }
             );
-        let running = entry.last_status == Some(TurnStatus::Running);
+        let unread = !running && self.unread_completion(&entry).is_some();
         let needs_approval = selected && !self.projected.pending_requests.is_empty();
         let pinned = self.project_registry.is_pinned(chat_id);
         let has_assoc = self.client_reducer.association_for(&chat_id).is_some();
@@ -1097,6 +1093,7 @@ impl KarWorkbench {
             (has_assoc, loc.pick("已关联任务", "Linked task")),
             (needs_approval, loc.pick("待确认", "Approval needed")),
             (running && !needs_approval, loc.pick("运行中", "Working")),
+            (unread, loc.pick("新回复", "New reply")),
         ] {
             if visible {
                 row_label.push_str(" · ");
@@ -1129,30 +1126,25 @@ impl KarWorkbench {
         )
         .when(pinned, |row| row.child(pro_icon(ProIcon::Pin, ICON_SM, s.muted)))
         .when(has_assoc, |row| row.child(render_schedule_repeat_icon(ICON_SM, s.muted)))
-        .child(
-            div()
-                .flex_none()
-                .min_w(px(20.))
-                .text_right()
-                .text_size(px(FS_META))
-                .font_features(tnum_features())
-                .text_color(s.muted)
-                .when(needs_approval, |d| d.text_color(s.pro.amber_ink))
-                .when(!running, |d| {
-                    if show_actions {
-                        d.invisible()
-                    } else {
-                        d.group_hover(row_id.clone(), |st| st.invisible())
-                    }
-                })
-                .child(if needs_approval {
-                    loc.pick("待确认", "Approval").to_owned()
-                } else if running {
-                    loc.pick("运行中", "Working").to_owned()
-                } else {
-                    age_txt
-                }),
-        )
+        .child({
+            let trailing = div().flex_none().h(px(ICON)).min_w(px(ICON))
+                .flex().items_center().justify_center()
+                .text_size(px(FS_META)).font_features(tnum_features()).text_color(s.muted);
+            if needs_approval {
+                trailing.text_color(s.pro.amber_ink).child(loc.pick("待确认", "Approval"))
+            } else if running {
+                trailing.child(crate::ui_motion::spinner(ICON, s.muted, window, cx))
+            } else if unread {
+                trailing
+                    .when(show_actions, |d| d.ml(px(CTRL_SM_H)))
+                    .when(!show_actions, |d| d.group_hover(row_id.clone(), |st| st.ml(px(CTRL_SM_H))))
+                    .child(div().size(px(7.)).rounded_full().bg(s.ink))
+            } else {
+                trailing.when(show_actions, |d| d.invisible())
+                    .when(!show_actions, |d| d.group_hover(row_id.clone(), |st| st.invisible()))
+                    .child(age_txt)
+            }
+        })
         .on_press(cx, move |this, win, cx| {
             this.pending_delete_chat = None;
             this.open_chat(chat_id, win, cx);
@@ -1187,7 +1179,7 @@ impl KarWorkbench {
                     });
             let mut actions = div()
                 .absolute()
-                .right(px(3.))
+                .right(px(if unread { 3. + CTRL_SM_H } else { 3. }))
                 .top(px((THREAD_ROW_H - CTRL_SM_H) / 2.))
                 .when(!show_actions, |d| {
                     d.opacity(0.).group_hover(row_id, |st| st.opacity(1.))

@@ -140,13 +140,23 @@ impl Hosted {
         let hosted = self.clone();
         tokio::spawn(async move {
             let result = async {
-                let ids = persist_attachment_paths(&store,hosted.chat,&attempt.attachments)?;
-                let value = hosted.post("messages", json!({"id":attempt.request_id,"text":attempt.sent_payload,"attachments":ids})).await?;
-                let _: ChatTurn = serde_json::from_value(value)?;
-                Ok::<_,anyhow::Error>(())
+                let ids = persist_attachment_paths(&store, hosted.chat, &attempt.attachments)?;
+                let body = json!({"id": attempt.request_id, "text": attempt.sent_payload, "attachments": ids});
+                let value = hosted.post("messages", body).await?;
+                Ok::<_, anyhow::Error>(serde_json::from_value::<ChatTurn>(value)?)
             }.await;
+            sidebar_journals::signal_turn(store.directory(), hosted.chat);
             attempt.in_flight = false;
-            attempt.last_error = result.err().map(|e| e.to_string());
+            match result {
+                Ok(turn) => {
+                    let _ = events.send(KarBridgeEvent::ChatTurnActivity {
+                        chat_id: hosted.chat,
+                        status: turn.status,
+                        activity_ms: turn.finished_ms.unwrap_or(turn.started_ms),
+                    }).await;
+                }
+                Err(error) => attempt.last_error = Some(error.to_string()),
+            }
             let _ = events
                 .send(KarBridgeEvent::PromptLifecycle { attempt })
                 .await;

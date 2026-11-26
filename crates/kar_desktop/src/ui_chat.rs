@@ -32,6 +32,7 @@ use kui::{
         ai_mascot::{AiMascot, MascotStatus},
         code_suggestion::{Decision as PatchDecision, Hunk as PatchHunk, PatchReview},
         hold_to_confirm::{HoldEvent, HoldToConfirm},
+        morph_loader::MorphLoader,
         pro_chrome::{
             pro_fold, pro_presence, pro_progress_ring, pro_spring_f32, pro_view_transition_fill,
         },
@@ -402,8 +403,9 @@ impl KarWorkbench {
                             |_, _, _, _| {},
                         ).absolute().size_0()))
                         .child(scroll)
+                        .child(timeline_top_fade(self.chat_scroll.clone(), s.surface))
                         .children(rail)
-                        .when(show_jump_bottom, |lane| lane.child(self.jump_to_latest(&s, cx))),
+                        .when(show_jump_bottom, |lane| lane.child(self.jump_to_latest(activity.is_some(), &s, window, cx))),
                 )
                 .child(foot);
 
@@ -479,28 +481,45 @@ impl KarWorkbench {
         (pane, rail)
     }
 
-    fn jump_to_latest(&self, s: &StudioPalette, cx: &Context<Self>) -> Div {
+    fn jump_to_latest(
+        &self,
+        generating: bool,
+        s: &StudioPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let palette = *s;
+        let loader = generating.then(|| {
+            window
+                .use_keyed_state("jump-generating-indicator", cx, |_, cx| {
+                    cx.new(|_| MorphLoader::new("jump-dots").with_size(20.).decorative(true))
+                })
+                .read(cx)
+                .clone()
+        });
         let label = self.ui_locale.pick("回到最新消息", "Jump to latest message");
         div()
             .absolute()
             .left(relative(0.5))
             .ml(px(-20.))
             .bottom(px(4.))
+            .occlude()
             .child(
                 Tactile::ghost("chat-jump-bottom", s)
                     .w(px(40.)).h(px(36.)).justify_center().radius(R_PILL)
                     .fills(transparent_black(), white().opacity(0.))
                     .aria(label)
                     .hover_glyph(move |reveal| {
-                        let glyph = |icon, alpha: f32, color| {
+                        let arrow = if loader.is_some() { reveal } else { 1. };
+                        let layer = || {
                             div().absolute().inset_0().flex().items_center().justify_center()
-                                .opacity(alpha).child(pro_icon(icon, 18., color))
                         };
-                        div().relative().w(px(40. - 8. * reveal)).h(px(CTRL_H)).rounded_full()
+                        div().relative().w(px(40. - 8. * arrow)).h(px(CTRL_H)).rounded_full()
                             .bg(palette.card).border_1().border_color(palette.line)
-                            .child(glyph(ProIcon::MoreHorizontal, 1. - reveal, palette.muted))
-                            .child(glyph(ProIcon::ArrowDown, reveal, palette.ink))
+                            .when_some(loader.filter(|_| arrow < 1.), |d, loader| {
+                                d.child(layer().opacity(1. - arrow).text_color(palette.muted).child(loader))
+                            })
+                            .child(layer().opacity(arrow).child(pro_icon(ProIcon::ArrowDown, 18., palette.ink)))
                             .into_any_element()
                     })
                     .on_press(cx, |this, window, cx| {
@@ -3877,18 +3896,13 @@ impl KarWorkbench {
         if mascot.read(cx).status() != pose {
             mascot.update(cx, |view, cx| view.set_status(pose, cx));
         }
-        // Each status starts on the same baseline, without a rising/fading label transition.
-        let label_key = SharedString::from(format!("composer-activity-{label}"));
-        let shimmer = window
-            .use_keyed_state(label_key, cx, |_, cx| {
-                cx.new(|cx| {
-                    kui::components::text_shimmer::TextShimmer::new(label.clone(), cx)
-                        .with_font_size(FS_CONTROL)
-                        .with_highlight_strength(0.6)
-                })
-            })
-            .read(cx)
-            .clone();
+        let shimmer = activity::shimmer(
+            format!("composer-activity-{label}").into(),
+            label.clone().into(),
+            FS_CONTROL,
+            window,
+            cx,
+        );
         div()
             .id("composer-activity")
             .role(Role::Status)
@@ -4232,7 +4246,12 @@ impl KarWorkbench {
                         (_, true) => (ProIcon::Sparkles, loc.pick("子智能体思考过程", "Subagent reasoning")),
                         _ => (ProIcon::Sparkles, loc.pick("思考过程", "Reasoning")),
                     };
-                    rows.push(self.render_step_text((turn_id, ix), text.trim(), icon, label, running && !*complete, s, window, cx)
+                    let (label, body) = if *role == KarRole::Reasoning {
+                        activity::reasoning_summary(text).unwrap_or((label, text.trim()))
+                    } else {
+                        (label, text.trim())
+                    };
+                    rows.push(self.render_step_text((turn_id, ix), body, icon, label, running && !*complete, s, window, cx)
                         .into_any_element());
                 }
                 Item::Message {
@@ -4870,7 +4889,7 @@ impl KarWorkbench {
         key: (Uuid, usize),
         text: &str,
         icon: ProIcon,
-        label: &'static str,
+        label: &str,
         active: bool,
         s: &StudioPalette,
         window: &mut Window,
@@ -5649,6 +5668,28 @@ fn policy_option_label(pol: &PolicyOption, idx: usize, loc: UiLocale) -> String 
         .filter(|s| !s.trim().is_empty())
         .map(str::to_owned)
         .unwrap_or_else(|| format!("{} {}", loc.pick("策略", "Policy"), idx + 1))
+}
+
+fn timeline_top_fade(scroll: ScrollHandle, surface: Hsla) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let opacity = (-f32::from(scroll.offset().y) / LH_READ).clamp(0., 1.);
+            if opacity > 0. {
+                let gradient = linear_gradient(
+                    180.,
+                    linear_color_stop(surface.opacity(opacity), 0.),
+                    linear_color_stop(surface.opacity(0.), 1.),
+                );
+                window.paint_quad(fill(bounds, gradient));
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .right_0()
+    .h(px(LH_READ))
 }
 
 // The reference caps the content itself at 46rem, with the viewport gutters outside it.

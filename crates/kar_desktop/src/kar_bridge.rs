@@ -7,6 +7,7 @@
 pub(crate) mod session_commands;
 mod planner;
 mod sidebar;
+mod sidebar_journals;
 mod hosted;
 #[cfg(all(test,unix))]
 mod side_question_test;
@@ -22,7 +23,8 @@ use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
+use sidebar_journals::FileStamp;
 
 use anyhow::{Context as _, Result};
 use kar::{
@@ -422,6 +424,8 @@ pub enum KarBridgeEvent {
     ProvidersProbing(bool),
     ProvidersUpdated(Vec<ProviderStatusInfo>),
     ChatsListed(Vec<ChatListEntry>),
+    ChatsPatched { dir: PathBuf, changed: Vec<ChatListEntry>, removed: Vec<Uuid> },
+    ReadReceiptsChanged { dir: PathBuf, bytes: Vec<u8> },
     TurnTargetsLoaded(BTreeMap<Uuid, SelectionTarget>),
     TurnDiffLoaded {
         key: crate::turn_review::ReviewKey,
@@ -437,6 +441,8 @@ pub enum KarBridgeEvent {
     },
     ConnectionStateChanged(FeedConnectionState),
     ChatStateUpdated(ProjectedChatState),
+    /// The runner may finish after the reader has selected a different chat.
+    ChatTurnActivity { chat_id: Uuid, status: TurnStatus, activity_ms: u64 },
     PlanGenerated { chat_id: Uuid, request_id: Uuid, result: Result<String, String> },
     PlanDelta { chat_id: Uuid, request_id: Uuid, item: String, delta: String },
     PlanProgress { chat_id: Uuid, request_id: Uuid, label: String },
@@ -806,7 +812,8 @@ struct WorkerState {
     mcp_office: Option<ServedMcpTools>,
     mcp_supported_runtimes: HashMap<String, bool>,
     goals_supported_runtimes: HashMap<String, bool>,
-    chat_list_cache: HashMap<Uuid, (Option<SystemTime>, Option<String>, ChatListEntry)>,
+    chat_list_cache: HashMap<Uuid, (Option<FileStamp>, Option<String>, ChatListEntry)>,
+    sidebar_changes: sidebar_journals::Changes,
     forge_read: Option<JoinHandle<()>>,
     probe_generation: u64,
     demo_turns: Vec<ChatTurn>,
@@ -1059,7 +1066,12 @@ impl WorkerState {
             // overtake its buffered text and make a finished reply jump back to a partial one.
             attempt.in_flight = false;
             match send_res {
-                Ok(_turn) => {
+                Ok(turn) => {
+                    let _ = evt_tx.send_blocking(KarBridgeEvent::ChatTurnActivity {
+                        chat_id,
+                        status: turn.status,
+                        activity_ms: turn.finished_ms.unwrap_or(turn.started_ms),
+                    });
                     attempt.last_error = None;
                     let _ = evt_tx.send_blocking(KarBridgeEvent::PromptLifecycle { attempt });
                 }
@@ -1075,22 +1087,9 @@ impl WorkerState {
                     });
                 }
             }
-            if let Some(store) = store_opt
-                && let Ok(infos) = store.list()
-            {
-                let custom_titles = load_persisted_titles(&store_dir);
-                let entries = infos
-                    .into_iter()
-                    .map(|info| {
-                        let title_override = custom_titles.get(&info.id).map(String::as_str);
-                        let turns = read_chat_history_resilient(&store, &store_dir, info.id)
-                            .map(|h| h.turns)
-                            .unwrap_or_default();
-                        ChatListEntry::from_info_and_turns_with_title(info, &turns, title_override)
-                    })
-                    .collect();
-                let _ = evt_tx.send_blocking(KarBridgeEvent::ChatsListed(entries));
-            }
+            // Other windows can now project this particular journal, even if its original
+            // window switched chats and stopped following it before the reply finished.
+            sidebar_journals::signal_turn(&store_dir, chat_id);
         });
     }
 
@@ -1156,9 +1155,7 @@ impl WorkerState {
                 let mut entries = Vec::with_capacity(infos.len());
                 for info in infos {
                     let karchat = self.store_dir.join(format!("{}.karchat", info.id));
-                    let mtime = std::fs::metadata(&karchat)
-                        .and_then(|m| m.modified())
-                        .ok();
+                    let mtime = FileStamp::read(&karchat).ok();
                     let custom_title = custom_titles.get(&info.id).cloned();
                     let entry = match self.chat_list_cache.get(&info.id) {
                         Some((cached_m, cached_title, cached_entry))
@@ -1900,7 +1897,13 @@ fn spawn_local_follower(
         let inbox = store_dir.join(format!("{chat_id}.inputs"));
         let mut queue_stamp = None;
         let mut queued = Vec::new();
+        let mut last_activity = replica.turns().last().map(|turn| (turn.id, turn.status));
         let mut publish = |replica: &ChatReplica, text_only: bool, duplicates_ignored, gaps_recovered| {
+            let activity = replica.turns().last().map(|turn| (turn.id, turn.status));
+            if activity != last_activity {
+                last_activity = activity;
+                sidebar_journals::signal_turn(&store_dir, chat_id);
+            }
             // SDK queue receipts reread the whole journal. Text deltas cannot change receipts,
             // but another client can still atomically publish a new inbox while we stream.
             let stamp = std::fs::metadata(&inbox).and_then(|m| Ok((m.len(), m.modified()?))).ok();
@@ -2547,6 +2550,7 @@ async fn worker_loop(
         mcp_supported_runtimes: HashMap::new(),
         goals_supported_runtimes: HashMap::new(),
         chat_list_cache: HashMap::new(),
+        sidebar_changes: Default::default(),
         forge_read: None,
         probe_generation: 0,
         demo_turns: build_demo_seed_turns(),
@@ -2563,7 +2567,13 @@ async fn worker_loop(
     init_store_and_providers(&mut state, initial_store_dir, initial_workspace);
 
     let mut inventory_probes = BTreeMap::<(PathBuf, String), tokio::task::JoinHandle<()>>::new();
-    while let Ok(cmd) = cmd_rx.recv().await {
+    let mut sidebar_tick = tokio::time::interval(Duration::from_millis(650));
+    sidebar_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        let cmd = tokio::select! {
+            cmd = cmd_rx.recv() => match cmd { Ok(cmd) => cmd, Err(_) => break },
+            _ = sidebar_tick.tick() => { state.sync_sidebar_journals(); continue; }
+        };
         // Convert a paired command and execute it in this iteration. Re-enqueueing it would
         // allow an intervening SelectLocalChat to redirect a prompt or permission decision.
         let cmd = if let KarCommand::HandleRemoteCommand {peer_id,env} = cmd {
@@ -3892,6 +3902,7 @@ async fn worker_loop(
                         warning: true,
                     });
                 } else {
+                    let _ = std::fs::remove_file(state.store_dir.join(format!("{chat_id}.kwrok-turn")));
                     let _ = std::fs::remove_file(&lock_file);
                     let _ = std::fs::remove_file(&stop_lock);
                     let _ = std::fs::remove_file(&inputs_file);
@@ -5546,6 +5557,10 @@ fn init_store_and_providers(
 ) {
     let _ = std::fs::create_dir_all(&store_dir);
     let _ = std::fs::create_dir_all(&workspace);
+    if state.store_dir != store_dir {
+        state.chat_list_cache.clear();
+    }
+    state.sidebar_changes = sidebar_journals::Changes::watch(&store_dir);
     state.store_dir = store_dir.clone();
     state.workspace = workspace.clone();
 

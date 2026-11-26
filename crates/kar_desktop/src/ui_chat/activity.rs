@@ -337,6 +337,43 @@ fn summary(tool: &Tool, runtime: &str, loc: UiLocale) -> Summary {
     Summary { kind, subject }
 }
 
+/// Split a public reasoning summary into its short disclosure and the remaining body.
+pub(super) fn reasoning_summary(text: &str) -> Option<(&str, &str)> {
+    let (line, body) = text.trim().split_once('\n')?;
+    let line = line.trim();
+    let heading = if let Some(bold) = line.strip_prefix("**") {
+        bold.strip_suffix("**")?
+    } else {
+        line.trim_start_matches('#')
+    };
+    let heading = heading.trim();
+    let body = body.trim_start();
+    (!heading.is_empty() && !body.is_empty() && heading.chars().take(81).count() <= 80)
+        .then_some((heading, body))
+}
+
+pub(super) fn shimmer(
+    id: SharedString,
+    text: SharedString,
+    size: f32,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<TextShimmer> {
+    let view = window
+        .use_keyed_state(id, cx, |_, cx| {
+            cx.new(|cx| {
+                TextShimmer::new(text.clone(), cx)
+                    .with_font_size(size)
+                    .with_highlight_strength(0.88)
+                    .with_duration(std::time::Duration::from_millis(1650))
+            })
+        })
+        .read(cx)
+        .clone();
+    view.update(cx, |view, cx| view.set_text(text, cx));
+    view
+}
+
 /// Semantic icon, one line of status, and a disclosure affordance flush with the reply.
 pub(super) fn activity_line(
     id: SharedString,
@@ -356,17 +393,7 @@ pub(super) fn activity_line(
     };
     let text: AnyElement = if active {
         let text: SharedString = label.clone().into();
-        let shimmer = window
-            .use_keyed_state(SharedString::from(format!("{id}-shimmer")), cx, |_, cx| {
-                cx.new(|cx| {
-                    TextShimmer::new(text.clone(), cx)
-                        .with_font_size(FS_UI)
-                        .with_highlight_strength(0.6)
-                })
-            })
-            .read(cx)
-            .clone();
-        shimmer.update(cx, |view, cx| view.set_text(text, cx));
+        let shimmer = shimmer(format!("{id}-shimmer").into(), text, FS_UI, window, cx);
         div()
             .min_w_0()
             .overflow_hidden()
@@ -824,9 +851,21 @@ fn recorded_image(
 #[cfg(test)]
 mod tests {
     use super::{
-        Phase, Tool, UiLocale, Value, args, command, phase, summary, unwrap_shell_command,
+        Phase, Tool, UiLocale, Value, args, command, phase, reasoning_summary, summary,
+        unwrap_shell_command,
     };
     use serde_json::json;
+
+    #[test]
+    fn reasoning_disclosure_separates_complete_headings_from_their_details() {
+        assert_eq!(reasoning_summary("**Inspecting changes"), None);
+        assert_eq!(reasoning_summary("Scoping the"), None);
+        assert_eq!(reasoning_summary("**Checking files**\n\n"), None);
+        assert_eq!(reasoning_summary("**Inspecting changes**\n\nThree files."), Some(("Inspecting changes", "Three files.")));
+        assert_eq!(reasoning_summary("## 检查项目\n内容"), Some(("检查项目", "内容")));
+        assert_eq!(reasoning_summary("Checking the manifest\nNext step"), Some(("Checking the manifest", "Next step")));
+        assert_eq!(reasoning_summary(&format!("{}\nbody", "字".repeat(81))), None);
+    }
 
     #[test]
     fn command_display_preserves_flags_quotes_and_legacy_argument_vectors() {

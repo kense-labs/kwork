@@ -713,6 +713,8 @@ pub(crate) fn remember_chat(dir: &std::path::Path, chat: Uuid) -> std::io::Resul
     write_desktop_preference(dir, "last-chat", &chat.to_string())
 }
 
+pub(crate) const THREAD_RECEIPTS_FILE: &str = "thread-read-receipts.json";
+
 pub(crate) fn desktop_preference(dir: &Path, key: &str) -> Option<String> {
     std::fs::read_to_string(dir.join(key)).ok()
 }

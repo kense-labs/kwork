@@ -9,6 +9,7 @@ pub enum SidebarAction {
     Pin(bool),
     Settle(bool),
     Archive(bool),
+    Visit(u64),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -17,6 +18,7 @@ pub struct SidebarMetadata {
     pub pinned: bool,
     pub settled: bool,
     pub archived: bool,
+    pub visited_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -36,6 +38,7 @@ struct Metadata {
     pinned_ms: Option<u64>,
     settled_override: Option<String>,
     updated_ms: u64,
+    visited_ms: Option<u64>,
 }
 #[derive(Deserialize)]
 struct Rows {
@@ -91,6 +94,7 @@ fn projection(rows: Vec<Row>) -> BTreeMap<Uuid, SidebarMetadata> {
                     pinned: r.metadata.pinned_ms.is_some(),
                     settled: r.metadata.settled_override.as_deref() == Some("settled"),
                     archived: r.archived,
+                    visited_ms: r.metadata.visited_ms,
                 },
             )
         })
@@ -219,13 +223,16 @@ pub(super) async fn change(
                 )
                 .await?;
         }
+        (None, Some(SidebarAction::Visit(visited_ms))) => {
+            post(engine, project, chat, json!({"action":"visit","visited_ms":visited_ms,"opened":true}), Uuid::new_v4()).await?;
+        }
         (None, Some(action)) => {
             let action = match action {
                 SidebarAction::Pin(true) => "pin",
                 SidebarAction::Pin(false) => "unpin",
                 SidebarAction::Settle(true) => "settle",
                 SidebarAction::Settle(false) => "unsettle",
-                SidebarAction::Archive(_) => unreachable!(),
+                SidebarAction::Archive(_) | SidebarAction::Visit(_) => unreachable!(),
             };
             post(
                 engine,

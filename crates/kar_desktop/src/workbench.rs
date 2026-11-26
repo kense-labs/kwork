@@ -11,6 +11,7 @@ mod hardware;
 mod slash_actions;
 mod planning;
 mod resize;
+mod read_receipts;
 use resize::{Divider, PaneDrag, Span};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -39,7 +40,7 @@ use kui::{
         log_stream::LogStream,
         presence_stack::{PresencePerson, PresenceSize, PresenceStack, PresenceStatus},
         pro_chrome::{pro_presence, pro_view_transition_fill},
-        tree_view::{TreeNode, TreeSelected, TreeView},
+        tree_view::{TreeActivated, TreeNode, TreeView},
     },
     primitives::{
         disclosure::SurfaceEvent,
@@ -552,6 +553,8 @@ pub struct KarWorkbench {
     pub registry_catalog: Vec<crate::registry::CatalogEntry>,
     pub registry_installed: Vec<crate::registry::Installed>,
     pub chat_list: Vec<ChatListEntry>,
+    read_receipts: read_receipts::ThreadReadReceipts,
+    opened_unread_reply: Option<(Uuid, u64)>,
     pub(crate) pending_delete_chat: Option<(Uuid, Instant)>,
     pub access_mode: ChatAccessMode,
     pub connection_state: FeedConnectionState,
@@ -762,6 +765,7 @@ impl KarWorkbench {
             if !window.is_window_active() && this.held_voice_key.take().is_some() && this.active_voice_rec.is_some() {
                 this.toggle_voice_dictation(window,cx);
             }
+            cx.notify();
         }).detach();
         cx.observe_window_appearance(window, |this, window, cx| {
             if this.follow_system_appearance {
@@ -1396,6 +1400,7 @@ impl KarWorkbench {
             crate::client_store::desktop_preference(&config.chat_dir, "new-chat-worktree")
                 .as_deref()
                 == Some("true");
+        let read_receipts = read_receipts::ThreadReadReceipts::load(&config.chat_dir, now_epoch_ms());
         let client_reducer = ClientReducer::new(&config.chat_dir);
         let fence_ledger = RevisionFenceLedger::load(&config.docs_dir);
         let schedule_registry = ScheduleRegistry::default();
@@ -1535,6 +1540,8 @@ impl KarWorkbench {
             providers: Vec::new(),
             registry_catalog: vec![], registry_installed: vec![],
             chat_list: Vec::new(),
+            read_receipts,
+            opened_unread_reply: None,
             pending_delete_chat: None,
             access_mode: ChatAccessMode::NoneSelected,
             connection_state: FeedConnectionState::Idle,
@@ -2509,6 +2516,24 @@ impl KarWorkbench {
                     }
                 }
             }
+            KarBridgeEvent::ReadReceiptsChanged { dir, bytes } => {
+                if self.config.chat_dir == dir { self.read_receipts.refresh(&bytes); }
+            }
+            KarBridgeEvent::ChatsPatched { dir, changed, removed } => {
+                if self.config.chat_dir != dir { return; }
+                self.chat_list.retain(|entry| !removed.contains(&entry.info.id));
+                for mut entry in changed {
+                    if let Some(title) = self.sidebar_metadata.get(&entry.info.id).and_then(|m| m.title.as_ref()) {
+                        entry.title.clone_from(title);
+                    }
+                    if let Some(existing) = self.chat_list.iter_mut().find(|old| old.info.id == entry.info.id) {
+                        *existing = entry;
+                    } else {
+                        self.chat_list.push(entry);
+                    }
+                }
+                self.chat_list.sort_by_key(|entry| std::cmp::Reverse(entry.last_activity_ms));
+            }
             KarBridgeEvent::ChatsListed(entries) => {
                 let latest = std::mem::take(&mut self.config.open_latest_chat);
                 let resume = std::mem::take(&mut self.config.resume_last_chat);
@@ -2711,6 +2736,14 @@ impl KarWorkbench {
                 }
                 self.connection_state = conn;
             }
+            KarBridgeEvent::ChatTurnActivity { chat_id, status, activity_ms } => {
+                if let Some(entry) = self.chat_list.iter_mut().find(|entry| entry.info.id == chat_id)
+                    && entry.last_activity_ms.is_none_or(|last| activity_ms >= last)
+                {
+                    entry.last_status = Some(status);
+                    entry.last_activity_ms = Some(activity_ms);
+                }
+            }
             KarBridgeEvent::ChatStateUpdated(mut proj) => {
                 // Ignore stale projections arriving from a previously deselected chat.
                 if let Some(proj_cid) = proj.chat_id
@@ -2761,6 +2794,16 @@ impl KarWorkbench {
                 }
                 if self.projected.goal != proj.goal && let Some(id) = proj.chat_id {
                     self.sync_goal_form(id, proj.goal.as_ref().and_then(Option::as_ref), window, cx);
+                }
+                if let (Some(id), Some(turn)) = (proj.chat_id, proj.turns.last())
+                    && let Some(entry) = self.chat_list.iter_mut().find(|entry| entry.info.id == id)
+                {
+                    if entry.turn_count == 0 && entry.title == "新对话" {
+                        entry.title = ChatListEntry::from_info_and_turns(entry.info.clone(), &proj.turns).title;
+                    }
+                    entry.turn_count = proj.turns.len();
+                    entry.last_status = Some(turn.status);
+                    entry.last_activity_ms = Some(turn.finished_ms.unwrap_or(turn.started_ms));
                 }
                 self.projected = proj;
                 self.reconcile_plan_submission(cx);
@@ -3495,6 +3538,45 @@ impl KarWorkbench {
     }
 
     /// Work in this window can outlive the selected conversation or the visible panel.
+    pub(crate) fn running_thread_ids(&self) -> BTreeSet<Uuid> {
+        let mut running: BTreeSet<_> = self.chat_list.iter()
+            .filter(|entry| entry.last_status == Some(TurnStatus::Running))
+            .map(|entry| entry.info.id).collect();
+        running.extend(self.prompt_attempts.values()
+            .filter(|attempt| attempt.in_flight).filter_map(|attempt| attempt.chat_id));
+        running
+    }
+
+    pub(crate) fn unread_completion(&self, entry: &ChatListEntry) -> Option<u64> {
+        let at = entry.last_activity_ms?;
+        let visited = self.sidebar_metadata.get(&entry.info.id).and_then(|meta| meta.visited_ms);
+        (entry.last_status == Some(TurnStatus::Completed)
+            && self.read_receipts.unread(entry.info.id, at, visited)).then_some(at)
+    }
+
+    fn mark_visible_reply_read(&mut self, window_active: bool) {
+        let Some(id) = self.current_chat_id() else { return };
+        if self.projected.chat_id != Some(id) {
+            return;
+        }
+        let Some(turn) = self.projected.turns.last().filter(|turn| turn.status == TurnStatus::Completed)
+        else { return };
+        let at = turn.finished_ms.unwrap_or(turn.started_ms);
+        // An explicit open acknowledges only the reply the reader chose. A later background
+        // completion still needs attention, even if this chat is selected in an inactive window.
+        let opened = self.opened_unread_reply == Some((id, at));
+        if !window_active && !opened { return; }
+        if opened { self.opened_unread_reply = None; }
+        let visited = self.sidebar_metadata.get(&id).and_then(|meta| meta.visited_ms);
+        if !self.read_receipts.unread(id, at, visited) { return; }
+        self.read_receipts.acknowledge(id, at);
+        if self.sidebar_metadata.contains_key(&id) {
+            self.bridge.send(KarCommand::UpdateSidebar {
+                chat_id: id, action: crate::kar_bridge::SidebarAction::Visit(at),
+            });
+        }
+    }
+
     pub(crate) fn has_running_task(&self) -> bool {
         self.turn_in_progress()
             || self.prompt_attempts.values().any(|attempt| attempt.in_flight)
@@ -3715,6 +3797,8 @@ impl KarWorkbench {
     }
 
     pub fn open_chat(&mut self, chat_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        self.opened_unread_reply = self.chat_list.iter().find(|entry| entry.info.id == chat_id)
+            .and_then(|entry| self.unread_completion(entry)).map(|at| (chat_id, at));
         self.dismiss_compact_sidebar(cx);
         self.config.resume_last_chat = false;
         self.config.open_latest_chat = false;
@@ -6655,7 +6739,7 @@ impl KarWorkbench {
         cx.subscribe_in(
             &tv,
             window,
-            |this, _, ev: &TreeSelected, window, cx| {
+            |this, _, ev: &TreeActivated, window, cx| {
                 let rel = PathBuf::from(ev.0.as_ref());
                 let workspace = this.effective_workspace_dir();
                 match workspace.join(&rel).metadata() {
@@ -6768,6 +6852,11 @@ impl Render for KarWorkbench {
             && (self.layout_mode != WorkspaceLayoutMode::ChatFocus
                 || (!compact && chat_frac < 0.997));
         let single_dock = compact && show_doc;
+        if in_conversation_stage && !single_dock && !drawer_active && !overlay_open
+            && !self.command_palette_open && !self.any_dialog_open(cx)
+        {
+            self.mark_visible_reply_read(window.is_window_active());
+        }
         if ((single_dock || !in_conversation_stage)
             && self.composer_editor.read(cx).focus.is_focused(window))
             || (!self.sidebar_open && self.sidebar_search.read(cx).focus.is_focused(window))
