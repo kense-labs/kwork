@@ -5899,6 +5899,7 @@ dependencies = [
  "kar-documents",
  "kense-kui",
  "log",
+ "objc2-app-kit 0.3.2",
  "ring",
  "serde",
  "serde_json",

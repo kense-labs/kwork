@@ -559,7 +559,7 @@ impl KarWorkbench {
         let ws_name = ws
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("workspace")
+            .map_or("Kwork", crate::studio_hub::project_display_name)
             .to_owned();
         let show_hidden = self.tree_show_hidden;
         let ws_refresh = ws.clone();

@@ -579,7 +579,7 @@ pub fn materialize_coedit_demo_files(demo_dir: &Path) -> Result<(PathBuf, PathBu
     // 1. Word demo: release schedule with date + owner in the same paragraph.
     let word_path = demo_dir.join("demo_coedit_schedule.docx");
     let mut doc = Document::from_paragraphs(vec![
-        Paragraph::new("Kar Desktop 发布排期纪要（演示数据）"),
+        Paragraph::new("Kwrok 发布排期纪要（演示数据）"),
         Paragraph::new("发布排期：日期 2026-11-24，负责人：待定，状态：评审中"),
         Paragraph::new("回归范围：聊天时间线、Office 本地保存重开、人机双写裁决。"),
     ]);

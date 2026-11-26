@@ -413,9 +413,10 @@ impl KarWorkbench {
         } else {
             chat_id
                 .and_then(|cid| self.project_registry.project_for_chat(&ws, cid))
-                .map(|p| p.name.clone())
-                .or_else(|| ws.file_name().and_then(|n| n.to_str()).map(str::to_owned))
-                .unwrap_or_else(|| "workspace".into())
+                .map(|p| p.name.as_str())
+                .or_else(|| ws.file_name().and_then(|name| name.to_str()))
+                .map_or("Kwork", crate::studio_hub::project_display_name)
+                .to_owned()
         };
 
         let project_crumb = Tactile::ghost("chat-project-crumb", s)
@@ -1375,72 +1376,88 @@ impl KarWorkbench {
                     .map(|n| n.to_string_lossy().into_owned())
             })
             .unwrap_or_else(|| workspace.display().to_string());
-        let inline = f32::from(window.viewport_size().width) >= 1024.
-            && pane_w > 480. + project.chars().count() as f32 * 16.;
+        let project =
+            crate::studio_hub::project_display_name(&project).replace(['\n', '\r', '\t'], " ");
+        let content_w = (pane_w - 2. * chat_lane_gutter(pane_w, window)).clamp(1., THREAD_W);
+        let title_size = (content_w / 18.).clamp(22., 30.);
+        let title_line = (title_size * 1.35).ceil();
         let short = f32::from(window.viewport_size().height) <= 544.;
-        let title_size = if pane_w < 560. { 24. } else { 30. };
-        let project_label = div()
-            .min_w_0()
-            .max_w(px((pane_w - 80.).clamp(100., 440.)))
-            .truncate()
-            .text_color(s.ink)
-            .child(project);
-        let project_trigger = Tactile::ghost("draft-project", s)
-            .h(px(if inline { 38. } else { 26. }))
-            .max_w_full()
-            .text_size(px(if inline { title_size } else { 16. }))
-            .font_weight(FontWeight::NORMAL)
-            .tip(workspace.display().to_string())
-            .child(project_label);
-        let project_picker = if self.chat_is_open() {
-            project_trigger.inert().into_any_element()
-        } else {
+        let can_switch = !self.chat_is_open();
+        let full_title = match loc {
+            crate::ui_primitives::UiLocale::Zh => format!("要在 {project} 中构建什么？"),
+            crate::ui_primitives::UiLocale::En => format!("What should we build in {project}?"),
+        };
+        let run = window.text_style().to_run(full_title.len());
+        let title_width = window
+            .text_system()
+            .shape_line(full_title.into(), px(title_size), &[run], None)
+            .width();
+        let inline = f32::from(title_width) + 32. <= content_w;
+        let label_size = if inline { title_size } else { 15. };
+        let label_line = if inline { title_line } else { 22. };
+        let picker = Tactile::ghost("draft-project", s)
+            .h(px(label_line + 8.))
+            .max_w(px(content_w))
+            .px(px(4.))
+            .gap(px(4.))
+            .text_size(px(label_size))
+            .line_height(px(label_line))
+            .font_weight(FontWeight::MEDIUM)
+            .ink(s.ink, s.ink)
+            .when(self.open_menu != Some(Menu::ComposerProject), |button| {
+                button.tip(workspace.display().to_string())
+            })
+            .aria(format!(
+                "{} · {project}",
+                loc.pick("切换项目", "Switch project")
+            ))
+            .child(
+                div()
+                    .max_w(px((content_w - 38.).max(1.)))
+                    .truncate()
+                    .child(project),
+            )
+            .when(can_switch, |button| {
+                button.child(pro_icon(ProIcon::ChevronDown, 12., s.muted))
+            });
+        let project_picker = if can_switch {
             menu_host(
-                project_trigger.on_press(cx, |this, _, cx| {
+                picker.on_press(cx, |this, _, cx| {
                     this.toggle_menu(Menu::ComposerProject, cx)
                 }),
-                self.render_composer_project_menu(MenuPlacement::BelowStart, s, cx),
+                self.render_composer_project_menu(s, window, cx),
             )
             .into_any_element()
+        } else {
+            picker.inert().into_any_element()
         };
         let heading = div()
             .w_full()
             .flex()
             .items_center()
             .justify_center()
-            .gap(px(if inline { 0. } else { 8. }))
-            .when(!inline, |d| d.flex_col())
             .text_size(px(title_size))
-            .line_height(px(if title_size == 24. { 32. } else { 36. }))
+            .line_height(px(title_line))
             .font_weight(FontWeight::NORMAL)
-            .text_color(s.ink)
-            .when(self.pinned_target.is_some(), |d| {
-                d.child(loc.pick("讨论选中内容", "Discuss selection"))
-            })
-            .when(self.pinned_target.is_none(), |d| {
-                d.when(inline, |row| {
-                    row.child(
-                        div()
-                            .mr(px(7.))
-                            .child(loc.pick("要在", "What should we build in")),
-                    )
-                })
-                .when(!inline, |col| {
-                    col.child(loc.pick("我们要构建什么？", "What should we build?"))
-                })
+            .text_color(s.ink);
+        let heading = if self.pinned_target.is_some() {
+            heading.child(loc.pick("讨论选中内容", "Discuss selection"))
+        } else if inline {
+            heading
+                .child(
+                    div()
+                        .mr(px(2.))
+                        .child(loc.pick("要在", "What should we build in")),
+                )
                 .child(project_picker)
-                .when(inline, |row| {
-                    row.child(
-                        div()
-                            .ml(px(if loc == crate::ui_primitives::UiLocale::Zh {
-                                4.
-                            } else {
-                                0.
-                            }))
-                            .child(loc.pick("中构建什么？", "?")),
-                    )
-                })
-            });
+                .child(loc.pick("中构建什么？", "?"))
+        } else {
+            heading
+                .flex_col()
+                .gap(px(3.))
+                .child(loc.pick("我们要构建什么？", "What should we build?"))
+                .child(project_picker)
+        };
 
         let recent = self
             .chat_list
@@ -1461,53 +1478,48 @@ impl KarWorkbench {
         };
         let dropzone = self.file_dropzone.clone();
         let composer = self.render_composer(pane_w, s, window, cx);
+        let content = chat_content_lane(pane_w, window)
+            .flex_none()
+            .flex()
+            .flex_col()
+            .child(heading)
+            .when(!short, |col| {
+                col.child(
+                    div().mt(px(4.)).flex().justify_center().child(
+                        secondary
+                            .h(px(26.))
+                            .px(px(4.))
+                            .text_size(px(14.))
+                            .ink(s.muted, s.ink),
+                    ),
+                )
+            })
+            .child(div().mt(px(if short { 10. } else { 16. })).child(composer))
+            .when(self.start_dropzone_open, |col| {
+                col.child(pro_fold(
+                    "kar-start-dropzone-fold",
+                    true,
+                    184.,
+                    0.,
+                    move || div().w_full().pt(px(8.)).child(dropzone).into_any_element(),
+                ))
+            });
+
         div()
             .id("kar-start-scroll")
             .size_full()
             .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .items_center()
             .child(
-                chat_content_lane(pane_w, window)
-                    .relative()
-                    .flex_none()
-                    .mt_auto()
-                    .when(!short, |d| d.mb_auto().top(px((32. - HEADER_H) / 2.)))
-                    .when(short, |d| d.pb(px(12.)))
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .bottom(relative(1.))
-                            .px(px(12.))
-                            .pb(px(16.))
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .child(heading)
-                            .when(!short, |d| {
-                                d.child(
-                                    secondary
-                                        .mt(px(8.))
-                                        .h(px(24.))
-                                        .px(px(4.))
-                                        .text_size(px(14.))
-                                        .ink(s.muted, s.ink),
-                                )
-                            }),
-                    )
-                    .child(composer)
-                    .when(self.start_dropzone_open, |d| {
-                        d.child(pro_fold(
-                            "kar-start-dropzone-fold",
-                            true,
-                            184.,
-                            0.,
-                            move || div().w_full().pt(px(8.)).child(dropzone).into_any_element(),
-                        ))
-                    }),
+                div()
+                    .w_full()
+                    .min_h_full()
+                    .py(px(if short { 10. } else { 16. }))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(div().flex_grow(0.72))
+                    .child(content)
+                    .child(div().flex_grow(1.)),
             )
     }
 
@@ -2107,39 +2119,64 @@ impl KarWorkbench {
 
     fn render_composer_project_menu(
         &self,
-        placement: MenuPlacement,
         s: &StudioPalette,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let loc = self.ui_locale;
+        let open = self.open_menu == Some(Menu::ComposerProject);
         let cur_norm = self
             .config
             .workspace_dir
             .canonicalize()
             .unwrap_or_else(|_| self.config.workspace_dir.clone());
+        let current = self.project_registry.projects.iter().position(|project| {
+            project
+                .root_path
+                .canonicalize()
+                .unwrap_or_else(|_| project.root_path.clone())
+                == cur_norm
+        });
+        let count = self.project_registry.projects.len();
+        let nav = window.use_keyed_state("home-project-navigation", cx, |_, cx| HomeProjectMenu {
+            focus: cx.focus_handle(),
+            scroll: ScrollHandle::new(),
+            cursor: 0,
+            open: false,
+            focus_on_mount: false,
+        });
+        if nav.read(cx).open != open {
+            nav.update(cx, |state, cx| {
+                state.open = open;
+                if open {
+                    state.focus_on_mount = true;
+                    state.cursor = current.unwrap_or(0);
+                    state.reveal(count);
+                } else if state.focus.contains_focused(window, cx) {
+                    self.composer_editor
+                        .read(cx)
+                        .focus
+                        .clone()
+                        .focus(window, cx);
+                }
+            });
+        }
+        let cursor = nav.read(cx).cursor.min(count);
         let mut rows: Vec<AnyElement> =
             vec![menu_caption(loc.pick("切换活跃项目", "Switch project"), s).into_any_element()];
 
         for (ix, proj) in self.project_registry.projects.iter().enumerate() {
-            let is_cur = proj
-                .root_path
-                .canonicalize()
-                .unwrap_or_else(|_| proj.root_path.clone())
-                == cur_norm;
-            let root = proj.root_path.clone();
             rows.push(
                 menu_item(
                     ("cmp-proj-item", ix),
                     Some(render_folder_icon(15., s.text)),
-                    proj.name.clone(),
+                    crate::studio_hub::project_display_name(&proj.name).to_owned(),
                     s,
                 )
-                .when(is_cur, |r| r.child(menu_check(s)))
-                .on_press(cx, move |this, window, cx| {
-                    this.open_menu = None;
-                    if !is_cur {
-                        this.select_project_and_new_chat(root.clone(), window, cx);
-                    }
+                .lit(ix == cursor)
+                .when(Some(ix) == current, |r| r.child(menu_check(s)))
+                .on_press(cx, move |this, win, cx| {
+                    this.choose_home_project(ix, current, win, cx)
                 })
                 .into_any_element(),
             );
@@ -2153,11 +2190,112 @@ impl KarWorkbench {
                 loc.pick("添加并选择其他文件夹…", "Choose another folder…"),
                 s,
             )
-            .on_press(cx, |this, window, cx| this.pick_workspace(window, cx))
+            .lit(cursor == count)
+            .on_press(cx, move |this, win, cx| {
+                this.choose_home_project(count, current, win, cx)
+            })
             .into_any_element(),
         );
 
-        self.render_menu(Menu::ComposerProject, placement, 232., rows, s, cx)
+        let mounted = nav.clone();
+        let forward = nav.clone();
+        let backward = nav.clone();
+        let list = div()
+            .id("home-project-options")
+            .key_context(HOME_PROJECT_KEY_CONTEXT)
+            .track_focus(&nav.read(cx).focus)
+            .track_scroll(&nav.read(cx).scroll)
+            .max_h(px(
+                (f32::from(window.viewport_size().height) - 32.).clamp(36., 348.)
+            ))
+            .overflow_y_scroll()
+            .children(rows)
+            .on_action(cx.listener(move |_, _: &NextHomeProject, _, cx| {
+                forward.update(cx, |state, _| state.advance(1, count));
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .on_action(cx.listener(move |_, _: &PreviousHomeProject, _, cx| {
+                backward.update(cx, |state, _| state.advance(count, count));
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .when(open, |list| {
+                list.child(
+                    canvas(
+                        |_, _, _| (),
+                        move |_, _, win, cx| {
+                            if mounted.read(cx).focus_on_mount {
+                                mounted.update(cx, |state, _| state.focus_on_mount = false);
+                                win.defer(cx, move |win, cx| {
+                                    let state = mounted.read(cx);
+                                    if state.open {
+                                        state.focus.clone().focus(win, cx);
+                                    }
+                                });
+                            }
+                        },
+                    )
+                    .absolute()
+                    .size_0(),
+                )
+            })
+            .capture_key_down(cx.listener(move |this, ev: &KeyDownEvent, win, cx| {
+                if this.open_menu != Some(Menu::ComposerProject) {
+                    return;
+                }
+                let key = ev.keystroke.key.as_str();
+                let index = nav.read(cx).cursor.min(count);
+                let next = match key {
+                    "home" => 0,
+                    "end" => count,
+                    "enter" | "space" => {
+                        this.choose_home_project(index, current, win, cx);
+                        win.prevent_default();
+                        cx.stop_propagation();
+                        return;
+                    }
+                    _ => return,
+                };
+                nav.update(cx, |state, _| {
+                    state.cursor = next;
+                    state.reveal(count);
+                });
+                win.prevent_default();
+                cx.stop_propagation();
+                cx.notify();
+            }));
+        self.render_menu(
+            Menu::ComposerProject,
+            MenuPlacement::BelowStart,
+            232.,
+            vec![list.into_any_element()],
+            s,
+            cx,
+        )
+    }
+
+    fn choose_home_project(
+        &mut self,
+        index: usize,
+        current: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_menu = None;
+        self.composer_editor
+            .read(cx)
+            .focus
+            .clone()
+            .focus(window, cx);
+        if let Some(project) = self.project_registry.projects.get(index) {
+            if Some(index) != current {
+                self.select_project_and_new_chat(project.root_path.clone(), window, cx);
+            }
+        } else {
+            self.pick_workspace(window, cx);
+        }
+        cx.notify();
     }
 
     fn render_background_commands_strip(
@@ -5451,6 +5589,40 @@ fn request_facts(request: &PendingRequest, loc: UiLocale) -> Vec<(&'static str, 
         facts.push((loc.pick("操作", "Action"), what));
     }
     facts
+}
+
+const HOME_PROJECT_KEY_CONTEXT: &str = "HomeProjectPicker";
+actions!(home_project, [NextHomeProject, PreviousHomeProject]);
+
+pub(crate) fn init_project_picker_keys(cx: &mut App) {
+    let context = Some(HOME_PROJECT_KEY_CONTEXT);
+    cx.bind_keys([
+        KeyBinding::new("tab", NextHomeProject, context),
+        KeyBinding::new("down", NextHomeProject, context),
+        KeyBinding::new("shift-tab", PreviousHomeProject, context),
+        KeyBinding::new("up", PreviousHomeProject, context),
+    ]);
+}
+
+struct HomeProjectMenu {
+    focus: FocusHandle,
+    scroll: ScrollHandle,
+    cursor: usize,
+    open: bool,
+    focus_on_mount: bool,
+}
+
+impl HomeProjectMenu {
+    fn advance(&mut self, steps: usize, count: usize) {
+        self.cursor = (self.cursor.min(count) + steps) % (count + 1);
+        self.reveal(count);
+    }
+
+    fn reveal(&self, count: usize) {
+        // The list starts with a caption and has a divider before the folder picker.
+        self.scroll
+            .scroll_to_item(self.cursor + 1 + usize::from(self.cursor == count));
+    }
 }
 
 /// Search state outlives repainting so keyboard focus and IME composition are retained.

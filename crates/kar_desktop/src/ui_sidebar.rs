@@ -179,7 +179,7 @@ impl KarWorkbench {
             }
         };
 
-        let chrome_ink = white();
+        let chrome_ink = s.ink;
         let toolbar_button = |id, label, icon, size| {
             Tactile::ghost(id, &s)
                 .size(px(28.))
@@ -220,7 +220,7 @@ impl KarWorkbench {
                     .radius(6.)
                     .justify_center()
                     .fills(transparent_black(), chrome_ink.opacity(0.14))
-                    .tip(loc.pick("Kar 主页", "Kar home"))
+                    .tip(loc.pick("Kwrok 主页", "Kwrok home"))
                     .child(kar_brand_on(chrome_ink, cx))
                     .on_press(cx, |this, win, cx| this.start_new_chat(win, cx)),
             )
@@ -327,7 +327,7 @@ impl KarWorkbench {
             let pname = proj_path
                 .file_name()
                 .and_then(|n| n.to_str())
-                .unwrap_or("project")
+                .map_or("Kwork", crate::studio_hub::project_display_name)
                 .to_owned();
             div().px(px(10.)).pb(px(6.)).flex_none().child(
                 div()
@@ -398,7 +398,11 @@ impl KarWorkbench {
             let proj_match = self
                 .project_registry
                 .project_for_chat(&e.info.workspace, e.info.id)
-                .is_some_and(|p| p.name.to_lowercase().contains(&query))
+                .is_some_and(|p| {
+                    crate::studio_hub::project_display_name(&p.name)
+                        .to_lowercase()
+                        .contains(&query)
+                })
                 || e.info
                     .workspace
                     .file_name()
@@ -867,6 +871,7 @@ impl KarWorkbench {
             .pb(px(8.))
             .child(list_col);
 
+        let has_running_task = self.sidebar_open && self.has_running_task();
         div()
             .relative()
             .size_full()
@@ -875,7 +880,7 @@ impl KarWorkbench {
             .overflow_hidden()
             .border_r_1()
             .border_color(s.line)
-            .child(sidebar_texture(&s, width, window))
+            .child(sidebar_texture(&s, width, has_running_task, window))
             .child(top_bar)
             .child(thread_header)
             .when_some(active_proj_chip, |d, chip| d.child(chip))
@@ -918,16 +923,10 @@ impl KarWorkbench {
         let proj_name = self
             .project_registry
             .project_for_chat(&entry.info.workspace, chat_id)
-            .map(|p| p.name.clone())
-            .or_else(|| {
-                entry
-                    .info
-                    .workspace
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(str::to_owned)
-            })
-            .unwrap_or_else(|| "project".into());
+            .map(|p| p.name.as_str())
+            .or_else(|| entry.info.workspace.file_name()?.to_str())
+            .map_or("Kwork", crate::studio_hub::project_display_name)
+            .to_owned();
 
         let display_title = if entry.turn_count == 0 && entry.title == "新对话" {
             loc.pick("新对话", "New thread").to_owned()
@@ -1367,8 +1366,8 @@ impl KarWorkbench {
             rows.push(
                 menu_item(
                     ("side-flt-proj", ix),
-                    Some(render_project_monogram(&proj.name, 16., s, cx).into_any_element()),
-                    proj.name.clone(),
+                    Some(render_project_monogram(crate::studio_hub::project_display_name(&proj.name), 16., s, cx).into_any_element()),
+                    crate::studio_hub::project_display_name(&proj.name).to_owned(),
                     s,
                 )
                 .when(is_sel, |r| r.child(menu_check(s)))

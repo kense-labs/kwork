@@ -44,6 +44,7 @@ uuid.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui-pre-macos = { version = "0.3.11", features = ["test-support"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSAccessibility", "NSWorkspace"] }
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -311,8 +311,8 @@ impl KarWorkbench {
             .child(row(
                 loc.pick("主题", "Theme"),
                 loc.pick(
-                    "跟随系统，或为 Kar 选择固定外观。",
-                    "Follow the system or choose an appearance for Kar.",
+                    "跟随系统，或为 Kwrok 选择固定外观。",
+                    "Follow the system or choose an appearance for Kwrok.",
                 ),
                 appearance_picker.into_any_element(),
             ))

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use gpui::*;
 use kar_desktop::{
-    SmokeIntegrationView,
+    APP_NAME, SmokeIntegrationView,
     coedit::{ScenarioKey, UserResolutionChoice},
     init_runtime_ui,
     kar_bridge::KarCommand,
@@ -17,14 +17,14 @@ use kar_desktop::{
 };
 
 const USAGE: &str = "\
-kar-desktop — Pure-Rust GPUI desktop client for Kar + Kantor Office (Kense Monochrome + KUI)
+Kwrok — native GPUI desktop for Kar conversations and Kantor Office
 
 USAGE:
   kar-desktop [OPTIONS] [FILE...]
 
 OPTIONS:
   --chat-dir <DIR>             Isolated KAR_CHAT_DIR for ChatStore (default: $KAR_CHAT_DIR or ./.kar-desktop-chats)
-  --workspace <DIR>            Default workspace directory for new Kar chats
+  --workspace <DIR>            Default workspace directory for new conversations
   --docs-dir <DIR>             Working copies directory for Office sample documents
   --open <FILE>                Open a .docx, .xlsx, or .pptx copy in the Office pane (repeatable)
   --subscribe-http <URL>       Start in HTTP Read-Only Subscriber mode (GET /snapshot + GET /events)
@@ -429,7 +429,7 @@ fn main() {
         let (init_w, init_h) = opts.window_size.unwrap_or((1100., 780.));
         let interactive = opts.screenshot_out.is_none();
         let mut window_options = studio_window_options(
-            "Kar",
+            APP_NAME,
             size(px(init_w), px(init_h)),
             size(px(400.), px(360.)),
             cx,

@@ -50,7 +50,7 @@ impl UiLocale {
 pub const HEADER_H: f32 = 52.0;
 pub const MACOS_TRAFFIC_LIGHT_PAD: f32 = 76.0;
 pub const SIDEBAR_W: f32 = 257.0;
-pub const SHEET_GUTTER: f32 = 6.0;
+pub const SHEET_GUTTER: f32 = 1.0;
 pub const DOC_MIN_W: f32 = 380.0;
 pub const THREAD_W: f32 = 736.0;
 pub const THREAD_PAD: f32 = 24.0;
@@ -610,11 +610,11 @@ pub fn render_doc_outline_icon(kind: OfficeKind, side: f32, color: Hsla) -> AnyE
     pro_svg("0 0 24 24", path, side, color)
 }
 
-/// Render the sidebar grain and drafting grid through GPUI's native image atlas.
-/// These layers stay fixed while the conversation list scrolls above them.
-pub(crate) fn sidebar_texture(s: &StudioPalette, width: f32, window: &Window) -> Div {
+/// A fixed paper grain and a warm KUI crest anchored to the top of the sidebar.
+pub(crate) fn sidebar_texture(s: &StudioPalette, width: f32, running: bool, window: &Window) -> Div {
+    use kui::components::gradient_floor::GradientFloor;
+
     static GRAIN: [OnceLock<Arc<RenderImage>>; 2] = [const { OnceLock::new() }; 2];
-    static GRID: [OnceLock<Arc<Image>>; 2] = [const { OnceLock::new() }; 2];
     let grain = GRAIN[s.dark as usize].get_or_init(|| {
         let noise = image::RgbaImage::from_fn(384, 1024, |x, y| {
             let n =
@@ -627,56 +627,58 @@ pub(crate) fn sidebar_texture(s: &StudioPalette, width: f32, window: &Window) ->
         });
         Arc::new(RenderImage::new([image::Frame::new(noise)]))
     });
-    let grid = GRID[s.dark as usize].get_or_init(|| {
-        let (bottom, mid, top) = if s.dark {
-            ("#101f6e", "#2050ae", "#3a7ad1")
-        } else {
-            ("#1538d0", "#347ff8", "#67c2ff")
-        };
-        let markup = format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="2048" height="160" viewBox="0 0 1228.8 96">
-          <defs>
-            <linearGradient id="blue" x1="60" y1="0" x2="220" y2="96" gradientUnits="userSpaceOnUse" spreadMethod="reflect">
-              <stop stop-color="{bottom}"/><stop offset=".5" stop-color="{mid}"/><stop offset="1" stop-color="{top}"/>
-            </linearGradient>
-            <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(216 14) rotate(137) scale(120 84)">
-              <stop stop-color="#d4f6ff" stop-opacity=".4"/><stop offset=".52" stop-color="#65c8ff" stop-opacity=".16"/><stop offset="1" stop-color="{bottom}" stop-opacity="0"/>
-            </radialGradient>
-            <pattern id="minor" width="8" height="8" patternUnits="userSpaceOnUse"><path d="M8 0H0V8" stroke="#eaf6ff" stroke-opacity=".14" stroke-width=".5" fill="none"/></pattern>
-            <pattern id="major" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" stroke="#eaf6ff" stroke-opacity=".26" stroke-width=".6" fill="none"/></pattern>
-            <pattern id="ticks" width="32" height="6" patternUnits="userSpaceOnUse"><path d="M4 0V2.5M12 0V2.5M20 0V4M28 0V2.5" stroke="#ddf7ff" stroke-opacity=".5" stroke-width=".5"/></pattern>
-            <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
-              <stop offset=".28" stop-color="white"/><stop offset=".4" stop-color="white" stop-opacity=".9"/><stop offset=".52" stop-color="white" stop-opacity=".7"/><stop offset=".64" stop-color="white" stop-opacity=".32"/><stop offset=".75" stop-color="white" stop-opacity=".09"/><stop offset=".92" stop-color="white" stop-opacity="0"/>
-            </linearGradient>
-            <mask id="taper"><rect width="1229" height="96" fill="url(#fade)"/></mask>
-          </defs>
-          <g mask="url(#taper)">
-            <rect width="1229" height="96" fill="url(#blue)"/><rect width="1229" height="96" fill="url(#glow)"/>
-            <rect width="1229" height="96" fill="url(#minor)"/><rect width="1229" height="96" fill="url(#major)"/><rect width="1229" height="6" fill="url(#ticks)"/>
-            <g fill="none" stroke="#ddf7ff" stroke-width=".55" opacity=".6"><circle cx="196" cy="38" r="13" stroke-dasharray="3.5 4"/><path d="M196 33V43M191 38H201"/></g>
-          </g>
-        </svg>"##);
-        Arc::new(Image::from_bytes(ImageFormat::Svg, markup.into_bytes()))
-    });
+    let stops = if s.dark {
+        [0xb56a3b, 0xf07b4b, 0xa64553]
+    } else {
+        [0xffb967, 0xfe875a, 0xdc5b62]
+    };
+    let background = if s.dark { 0x040404 } else { 0xf8f8f8 };
+    let height = 78.;
+    // Keep the atlas sampling fringe outside the visible strip on Retina displays.
+    let bleed = 4.;
+    let crest = GradientFloor::new("sidebar-brand-floor")
+        .top_anchored()
+        .with_height(px(height + 2. * bleed))
+        .with_radius(px(0.))
+        .with_speed(5.4)
+        .with_background(rgb(background).into())
+        .with_colors(stops.map(|color| rgb(color).into()))
+        .paused(!running);
     // One clipped image keeps Metal's atlas filtering away from visible tile edges.
-    div().absolute().inset_0().overflow_hidden().child(
-        img(grain.clone())
-            .absolute()
-            .left(px(-2.))
-            .top(px(-2.))
-            .w(px(width.max(384.) + 4.))
-            .h(px(f32::from(window.viewport_size().height).max(1024.) + 4.))
-            .object_fit(ObjectFit::Fill),
-    ).child(
-        img(grid.clone())
-            .absolute()
-            .top_0()
-            .left_0()
-            .w(px(1024.))
-            .h(px(80.)),
-    )
+    div()
+        .absolute()
+        .inset_0()
+        .overflow_hidden()
+        .child(
+            img(grain.clone())
+                .absolute()
+                .left(px(-2.))
+                .top(px(-2.))
+                .w(px(width.max(384.) + 4.))
+                .h(px(f32::from(window.viewport_size().height).max(1024.) + 4.))
+                .object_fit(ObjectFit::Fill),
+        )
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(height))
+                .overflow_hidden()
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(-bleed))
+                        .left(px(-bleed))
+                        .right(px(-bleed))
+                        .when(s.dark, |d| d.opacity(0.43))
+                        .child(crest),
+                ),
+        )
 }
 
-/// Kar's official Kense brand emblem (`kense_mark::LIGHT` / `kense_mark::DARK` via `pro_app_artwork`) + crisp wordmark.
+/// Kense emblem and desktop product wordmark.
 pub fn render_kar_brand_lockup(s: &StudioPalette, cx: &App) -> Div {
     kar_brand_on(s.ink, cx)
 }
@@ -692,7 +694,7 @@ pub(crate) fn kar_brand_on(ink: Hsla, cx: &App) -> Div {
                 .text_size(px(14.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(ink)
-                .child("Kar"),
+                .child(crate::APP_NAME),
         )
 }
 

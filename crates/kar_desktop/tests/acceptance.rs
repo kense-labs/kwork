@@ -233,7 +233,7 @@ fn coedit_three_scenarios_and_mid_conflict_reconfirm() {
     {
         SubmissionOutcome::Accepted { proposal, .. } => {
             let res = proposal.resolution_result.unwrap();
-            assert!(res.contains("6.50cm") && res.contains("终版标题：Kar 原生双写工作台发布"));
+            assert!(res.contains("6.50cm") && res.contains("终版标题：Kwrok 原生双写工作台发布"));
         }
         other => panic!("expected Accepted for PPT orthogonal merge, got {other:?}"),
     }

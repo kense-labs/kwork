@@ -944,7 +944,7 @@ pub async fn probe_inventory_with_office(workspace: &Path, runtime_id: &str, off
         }).collect();
         snap.mcp_servers.push(McpServerCardItem {
             id: OFFICE_SERVER_NAME.into(), name: "Kantor Office".into(), status: "可连接".into(),
-            source: "Kar 桌面端".into(), tool_count: snap.tools.len(), builtin_office: true, error: None,
+            source: "Kwrok 桌面端".into(), tool_count: snap.tools.len(), builtin_office: true, error: None,
         });
     }
     snap.observed_at = "刚刚同步".into();
@@ -1574,7 +1574,7 @@ impl Default for DiagLogRing {
             DiagLevel::Info,
             "workbench",
             Some("BOOT"),
-            "Kar Studio GPUI + KUI 渲染管线与 Tokio 桥接线程初始化完成",
+            "Kwrok GPUI + KUI 渲染管线与 Tokio 桥接线程初始化完成",
             vec![("unsafe_code".into(), "forbid".into()), ("renderer".into(), "Metal GPUI".into())],
         );
         ring
@@ -1655,6 +1655,19 @@ fn project_registry_file(chat_dir: &Path) -> PathBuf {
 
 fn normalize_project_path(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// A display alias for the generic workspace folder. Storage and routing use its original path.
+pub(crate) fn project_display_name(name: &str) -> &str {
+    let name = name.trim();
+    if name.is_empty()
+        || name.eq_ignore_ascii_case("workspace")
+        || name.eq_ignore_ascii_case("work space")
+    {
+        "Kwork"
+    } else {
+        name
+    }
 }
 
 fn derive_project_name(path: &Path) -> String {
@@ -1916,6 +1929,25 @@ index 111..222 100644
         assert_eq!(recs.len(), 16);
         assert_eq!(recs.first().unwrap().message, "msg-9");
         assert_eq!(recs.last().unwrap().message, "msg-24");
+    }
+
+    #[test]
+    fn generic_workspace_alias_preserves_saved_project_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let chats = tmp.path().join("chats");
+        std::fs::create_dir(&workspace).unwrap();
+        let mut registry = ProjectRegistry::load_or_seed(&chats, &workspace);
+        let original = registry.ensure_project(&workspace);
+        registry.save(&chats).unwrap();
+        let restored = ProjectRegistry::load_or_seed(&chats, &workspace);
+        let project = &restored.projects[0];
+        assert_eq!(project.id, original.id);
+        assert_eq!(project.root_path, original.root_path);
+        assert_eq!(project.name, "workspace");
+        assert_eq!(project_display_name(&project.name), "Kwork");
+        assert_eq!(project_display_name("Work Space"), "Kwork");
+        assert_eq!(project_display_name("Workspace Notes"), "Workspace Notes");
     }
 
     #[test]

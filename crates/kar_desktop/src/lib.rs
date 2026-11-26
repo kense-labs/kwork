@@ -59,6 +59,8 @@ use crate::ui_primitives::{
     render_kar_brand_lockup, render_office_chip, ui_font,
 };
 
+pub const APP_NAME: &str = "Kwrok";
+
 /// Initialize shared GPUI Kit, Kantor Office editors, and KUI foundation globals.
 pub fn init_runtime_ui(cx: &mut App) {
     kantor_ui::set_embedded_host(true);
@@ -70,6 +72,11 @@ pub fn init_runtime_ui(cx: &mut App) {
     docs_ui::init(cx);
     slides_ui::init(cx);
     kui::init(cx);
+    ui_chat::init_project_picker_keys(cx);
+    #[cfg(target_os = "macos")]
+    cx.set_reduce_motion(
+        objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion(),
+    );
     cx.set_global(UiLanguage::Chinese);
     apply_unified_theme(system_theme(cx.window_appearance()), cx);
 }
@@ -214,7 +221,7 @@ impl SmokeIntegrationView {
         let panels = cx.new(|cx| {
             ResizablePanels::new(
                 "smoke-split",
-                "Kar KUI + Kantor Split",
+                "Kwrok KUI + Kantor Split",
                 vec![
                     Pane::new("kui-pane", "KUI Controls", 0.34, move |_, _, cx| {
                         weak_left

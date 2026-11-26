@@ -2213,8 +2213,8 @@ async fn worker_loop(
     });
     let host_label = std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
-        .map(|u| format!("Kar ({u})"))
-        .unwrap_or_else(|_| "Kar 桌面主机".into());
+        .map(|u| format!("{} ({u})", crate::APP_NAME))
+        .unwrap_or_else(|_| "Kwrok 桌面主机".into());
     let remote_link = Arc::new(std::sync::Mutex::new(RemoteLinkCore::new(
         host_label,
         Some(remote_dispatch_tx),

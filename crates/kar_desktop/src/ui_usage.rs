@@ -661,13 +661,13 @@ impl KarWorkbench {
                             turns += c.turn_count;
                         }
                     }
-                    (p.name.clone(), chats, turns)
+                    (crate::studio_hub::project_display_name(&p.name).to_owned(), chats, turns)
                 })
                 .collect();
 
             if is_demo_fallback && proj_rows.iter().all(|(_, c, _)| *c == 0) {
                 proj_rows = vec![
-                    ("workspace".into(), 8, 38),
+                    ("Kwork".into(), 8, 38),
                     ("kar-frontend".into(), 4, 17),
                     ("kantor-docs".into(), 2, 7),
                 ];

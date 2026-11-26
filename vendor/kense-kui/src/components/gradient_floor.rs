@@ -23,13 +23,15 @@ struct CacheKey {
     stops: [[u8; 3]; 3],
     bg: [u8; 3],
     aspect_q: u16,
-    static_pose: bool,
+    top_anchored: bool,
 }
 
 struct LiveSurface {
     key: Option<CacheKey>,
     last_aspect: f32,
     last_phase: f32,
+    phase: f32,
+    last_tick: Option<Instant>,
     image: Option<Arc<RenderImage>>,
     color_buf: Vec<[f32; 4]>,
     color_tmp: Vec<[f32; 4]>,
@@ -43,6 +45,8 @@ impl LiveSurface {
             key: None,
             last_aspect: 0.45,
             last_phase: -2.0,
+            phase: 0.0,
+            last_tick: None,
             image: None,
             color_buf: vec![[0.0; 4]; GW * GH],
             color_tmp: vec![[0.0; 4]; GW * GH],
@@ -61,13 +65,25 @@ impl LiveSurface {
         }
     }
 
+    fn tick(&mut self, animate: bool, speed: f32) -> f32 {
+        if animate {
+            let now = Instant::now();
+            if let Some(last) = self.last_tick.replace(now) {
+                self.phase = (self.phase + (now - last).as_secs_f32() / speed).fract();
+            }
+        } else {
+            self.last_tick = None;
+        }
+        self.phase
+    }
+
     fn frame(
         &mut self,
         stops: [[u8; 3]; 3],
         bg: [u8; 3],
         raw_aspect: f32,
         phase: f32,
-        static_pose: bool,
+        top_anchored: bool,
         window: &mut Window,
     ) -> Arc<RenderImage> {
         let aspect_q = self.quantize_aspect(raw_aspect);
@@ -75,16 +91,13 @@ impl LiveSurface {
             stops,
             bg,
             aspect_q,
-            static_pose,
+            top_anchored,
         };
-        let phase_diff = if static_pose {
-            0.0
-        } else {
-            let d = (phase - self.last_phase).abs();
-            d.min(1.0 - d)
-        };
+        let delta = (phase - self.last_phase).abs();
+        let same_phase =
+            delta == 0. || (phase >= 0. && self.last_phase >= 0. && delta.min(1. - delta) < 0.0022);
         if self.key == Some(key)
-            && (static_pose || phase_diff < 0.0022)
+            && same_phase
             && let Some(existing) = &self.image
         {
             return existing.clone();
@@ -92,7 +105,7 @@ impl LiveSurface {
 
         let rendered = Arc::new(rasterize_floor_frame(
             key,
-            if static_pose { -1.0 } else { phase },
+            phase,
             &mut self.color_buf,
             &mut self.color_tmp,
             &mut self.light_buf,
@@ -396,6 +409,7 @@ fn rasterize_floor_frame(
     // GPUI RenderImage expects BGRA byte layout
     let mut raw = vec![0u8; TEX_W * TEX_H * 4];
     for y in 0..TEX_H {
+        let dst_y = if key.top_anchored { TEX_H - 1 - y } else { y };
         for x in 0..TEX_W {
             let src = (y + PAD_Y) * GW + (x + PAD_X);
             let [pr, pg, pb, ca] = color_buf[src];
@@ -404,7 +418,7 @@ fn rasterize_floor_frame(
             let r = (bg[0] * (1. - ca) + pr + la).clamp(0., 1.);
             let g = (bg[1] * (1. - ca) + pg + la).clamp(0., 1.);
             let b = (bg[2] * (1. - ca) + pb + la).clamp(0., 1.);
-            let dst = (y * TEX_W + x) * 4;
+            let dst = (dst_y * TEX_W + x) * 4;
             raw[dst] = (b * 255.).round() as u8;
             raw[dst + 1] = (g * 255.).round() as u8;
             raw[dst + 2] = (r * 255.).round() as u8;
@@ -441,8 +455,8 @@ pub struct GradientFloor {
     height: Pixels,
     radius: Option<Pixels>,
     child_builder: Option<OverlayBuilder>,
-    started_at: Instant,
-    surface: Rc<RefCell<LiveSurface>>,
+    top_anchored: bool,
+    surface: Option<Rc<RefCell<LiveSurface>>>,
 }
 
 impl GradientFloor {
@@ -461,8 +475,8 @@ impl GradientFloor {
             height: px(360.),
             radius: None,
             child_builder: None,
-            started_at: Instant::now(),
-            surface: Rc::new(RefCell::new(LiveSurface::new())),
+            top_anchored: false,
+            surface: None,
         }
     }
 
@@ -502,6 +516,12 @@ impl GradientFloor {
     /// Override the resting backdrop color (`#fafafa` in light mode, `#111113` in dark mode).
     pub fn with_background(mut self, background: Hsla) -> Self {
         self.background = Some(background);
+        self
+    }
+
+    /// Reflect the rendered crest vertically to make it fall from the top edge.
+    pub fn top_anchored(mut self) -> Self {
+        self.top_anchored = true;
         self
     }
 
@@ -565,7 +585,6 @@ impl GradientFloor {
 
     fn render_surface(
         &self,
-        started_at: Instant,
         surface: Rc<RefCell<LiveSurface>>,
         w: &mut Window,
         cx: &mut App,
@@ -581,7 +600,8 @@ impl GradientFloor {
         });
         let radius = self.radius.unwrap_or(px(20.));
         let speed = self.speed;
-        let animate = !theme.reduced_motion && !self.paused && speed > 0.001;
+        let animate = !theme.reduced_motion && !cx.reduce_motion() && !self.paused && speed > 0.001;
+        let top_anchored = self.top_anchored;
         let stops = self.colors.map(hsla_to_rgb8);
         let bg_rgb = hsla_to_rgb8(bg);
 
@@ -602,19 +622,14 @@ impl GradientFloor {
                         if bw <= 2. || bh <= 2. {
                             return;
                         }
-                        let phase = if animate {
-                            (started_at.elapsed().as_secs_f32() / speed).fract()
+                        let mut surface = surface.borrow_mut();
+                        let phase = if !animate && !top_anchored && surface.last_phase < 0. {
+                            -1.
                         } else {
-                            0.0
+                            surface.tick(animate, speed)
                         };
-                        let image = surface.borrow_mut().frame(
-                            stops,
-                            bg_rgb,
-                            bh / bw,
-                            phase,
-                            !animate,
-                            window,
-                        );
+                        let image =
+                            surface.frame(stops, bg_rgb, bh / bw, phase, top_anchored, window);
                         let _ = window.paint_image(
                             bounds,
                             bounds,
@@ -648,7 +663,11 @@ impl GradientFloor {
 
 impl Render for GradientFloor {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.render_surface(self.started_at, self.surface.clone(), w, cx)
+        let surface = self
+            .surface
+            .get_or_insert_with(|| Rc::new(RefCell::new(LiveSurface::new())))
+            .clone();
+        self.render_surface(surface, w, cx)
     }
 }
 
@@ -656,10 +675,9 @@ impl RenderOnce for GradientFloor {
     fn render(self, w: &mut Window, cx: &mut App) -> impl IntoElement {
         let state_id: ElementId = (self.id.clone(), "gf-live-state").into();
         let state = w.use_keyed_state(state_id, cx, |_, _| {
-            (Instant::now(), Rc::new(RefCell::new(LiveSurface::new())))
+            Rc::new(RefCell::new(LiveSurface::new()))
         });
-        let (started_at, surface) = state.read(cx).clone();
-        self.render_surface(started_at, surface, w, cx)
+        self.render_surface(state.read(cx).clone(), w, cx)
     }
 }
 
@@ -673,7 +691,7 @@ mod tests {
             stops: [[0xff, 0x77, 0x00], [0xff, 0x00, 0x55], [0x00, 0x73, 0xff]],
             bg: [0x11, 0x11, 0x13],
             aspect_q: 45,
-            static_pose: false,
+            top_anchored: false,
         };
         let mut cb = vec![[0.0; 4]; GW * GH];
         let mut ct = vec![[0.0; 4]; GW * GH];

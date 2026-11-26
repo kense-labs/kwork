@@ -458,7 +458,7 @@ impl KarWorkbench {
                             .line_height(px(LH_META))
                             .text_color(s.muted)
                             .child(if has_chat {
-                                loc.pick("启动后自动绑定本机端口并签发 60 秒有效的一次性 6 位配对码。未配对者无法控制。", "Open another Kar window on this computer and pair it using a code valid for 60 seconds.")
+                                loc.pick("启动后自动绑定本机端口并签发 60 秒有效的一次性 6 位配对码。未配对者无法控制。", "Open another Kwrok window on this computer and pair it using a code valid for 60 seconds.")
                             } else {
                                 loc.pick("先打开一个本地对话，再生成配对码。", "Open a local thread to generate a pairing code.")
                             }),
@@ -508,7 +508,7 @@ impl KarWorkbench {
                     .text_color(s.muted)
                     .child(loc.pick(
                         "暂无已配对控制端。在另一窗口输入上方地址与 6 位短码即可接入。",
-                        "Enter the address and code in another Kar window to pair.",
+                        "Enter the address and code in another Kwrok window to pair.",
                     )),
             );
         } else {

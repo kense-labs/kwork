@@ -243,8 +243,8 @@ impl DemoCoEditEngine {
             selection_desc: format!("[演示] demo_coedit_launch.pptx · 第 1 页 · 文本框 #{sid}"),
             base_value: "初版标题：Q4 增长复盘 @ (2.00cm, 3.00cm)".into(),
             current_value: "初版标题：Q4 增长复盘 @ (2.00cm, 3.00cm)".into(),
-            proposed_value: "终版标题：Kar 原生双写工作台发布（保持人工移动后的新坐标）".into(),
-            merged_preview: Some("终版标题：Kar 原生双写工作台发布 @ (2.00cm, 3.00cm)".into()),
+            proposed_value: "终版标题：Kwrok 原生双写工作台发布（保持人工移动后的新坐标）".into(),
+            merged_preview: Some("终版标题：Kwrok 原生双写工作台发布 @ (2.00cm, 3.00cm)".into()),
             conflict_reason: None,
             resolution_result: None,
             status: CoEditStatus::ReadyDualKeep,
@@ -421,7 +421,7 @@ impl CoEditService for DemoCoEditEngine {
                     prop.current_value =
                         format!("{} @ ({x:.2}cm, {y:.2}cm)", live.current_value);
                     prop.merged_preview = Some(format!(
-                        "终版标题：Kar 原生双写工作台发布 @ ({x:.2}cm, {y:.2}cm)"
+                        "终版标题：Kwrok 原生双写工作台发布 @ ({x:.2}cm, {y:.2}cm)"
                     ));
                     prop.conflict_reason = Some(format!(
                         "人工将文本框移动至 ({x:.2}cm, {y:.2}cm)，AI 基于 rev #{} 修改文本框文字，位置与文字正交可同时生效。",
@@ -560,12 +560,12 @@ impl CoEditService for DemoCoEditEngine {
                 let (x, y) = xy.unwrap_or((2.0, 3.0));
                 (
                     format!(
-                        "两项修改均已生效：保留人工新坐标 ({x:.2}cm, {y:.2}cm) + 应用 AI 新文字「终版标题：Kar 原生双写工作台发布」"
+                        "两项修改均已生效：保留人工新坐标 ({x:.2}cm, {y:.2}cm) + 应用 AI 新文字「终版标题：Kwrok 原生双写工作台发布」"
                     ),
                     DemoEditorMutation::UpdatePptShape {
                         slide: 0,
                         shape_id: sid,
-                        text: Some("终版标题：Kar 原生双写工作台发布".into()),
+                        text: Some("终版标题：Kwrok 原生双写工作台发布".into()),
                         xy_cm: xy,
                     },
                 )

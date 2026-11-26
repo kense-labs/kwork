@@ -19,7 +19,7 @@ use crate::{
 };
 
 const MCP_INSTRUCTIONS: &str = "\
-Kar Desktop hosts live Kantor Office editors (`Word .docx`, `Excel .xlsx`, `PPT .pptx`) AND native KUI Interactive Briefs beside this chat. \
+Kwrok hosts live Kantor Office editors (`Word .docx`, `Excel .xlsx`, `PPT .pptx`) AND native KUI Interactive Briefs beside this chat. \
 Use `office_list_tabs` and `office_get_selection` to inspect open documents and their monotonic `revision`, \
 `office_read_*` / `office_edit_*` / `office_write_excel` (passing optional `operation_id` and `expected_revision` for safe revision-fenced co-editing), \
 and `kar_write_brief` / `kar_read_brief` to render pure-GPUI KUI interactive charts, Sankey flows, rolling KPIs, and review forms directly in the chat.";
@@ -116,7 +116,7 @@ pub(crate) fn office_tool_specs() -> Vec<(&'static str, &'static str, Value)> {
     vec![
         (
             "office_list_tabs",
-            "List open Word (.docx), Excel (.xlsx), and PowerPoint (.pptx) tabs in the Kar Desktop Office pane.",
+            "List open Word (.docx), Excel (.xlsx), and PowerPoint (.pptx) tabs in the Kwrok Office pane.",
             json!({
                 "type": "object",
                 "properties": {},

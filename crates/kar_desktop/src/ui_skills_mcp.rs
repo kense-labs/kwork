@@ -334,7 +334,7 @@ impl KarWorkbench {
                                                             loc.pick("已配置", "Configured")
                                                         } else { &srv.status },
                                                         if srv.builtin_office {
-                                                            loc.pick("Kar 桌面端", "Kar desktop")
+                                                            loc.pick("Kwrok 桌面端", "Kwrok desktop")
                                                         } else { &srv.source }
                                                     )),
                                             ),

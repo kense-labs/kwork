@@ -4,7 +4,8 @@
 //! Rendering lives in the `ui_*` modules. This file owns the state those modules draw and the
 //! actions they trigger, and talks to Kar strictly through [`KarBridgeHandle`].
 
-use std::cell::Cell;
+mod resize;
+use resize::{Divider, PaneDrag, Span};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -439,13 +440,14 @@ pub struct KarWorkbench {
     pub layout_mode: WorkspaceLayoutMode,
     /// The conversation's share of the work area in `Split`, as last set by the person.
     pub split_ratio: f32,
-    pub(crate) dragging_split: bool,
-    /// Inner work-area bounds (inside the stage inset padding).
-    pub(crate) main_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    pane_drag: Option<PaneDrag>,
+    sidebar_divider_focus: FocusHandle,
+    doc_divider_focus: FocusHandle,
+    collapsed_sidebar_grip: bool,
+    collapsed_doc_grip: bool,
     /// Rail width in px, sprung so collapsing and expanding glide.
     pub(crate) sidebar_anim: Slide,
     sidebar_width: f32,
-    sidebar_drag: Option<(f32, f32)>,
     /// The conversation's share of the work area; 1.0 when no document is shown.
     pub(crate) split_anim: Slide,
     /// The share the document pane last settled beside.
@@ -690,11 +692,7 @@ impl KarWorkbench {
             WorkspaceLayoutMode::ChatFocus
         };
         let initial_width = f32::from(window.viewport_size().width);
-        let sidebar_width =
-            crate::client_store::desktop_preference(&config.chat_dir, "sidebar-width")
-                .and_then(|s| s.trim().parse::<f32>().ok())
-                .filter(|width| width.is_finite() && *width >= SIDEBAR_W)
-                .unwrap_or(SIDEBAR_W);
+        let (sidebar_width, split_ratio) = resize::initial_sizes(&config);
         let initial_sidebar_open = initial_width >= COMPACT_WORKSPACE_WIDTH
             && (initial_layout == WorkspaceLayoutMode::ChatFocus
                 || initial_width >= AUTO_COLLAPSE_RAIL_WIDTH);
@@ -1350,16 +1348,18 @@ impl KarWorkbench {
             terminal_drag_anchor: None,
             expanded_turn_changes: BTreeMap::new(),
             layout_mode: initial_layout,
-            split_ratio: SPLIT_DEFAULT,
-            dragging_split: false,
-            main_bounds: Rc::new(Cell::new(None)),
+            split_ratio,
+            pane_drag: None,
+            sidebar_divider_focus: cx.focus_handle().tab_stop(true),
+            doc_divider_focus: cx.focus_handle().tab_stop(true),
+            collapsed_sidebar_grip: false,
+            collapsed_doc_grip: false,
             sidebar_anim: Slide::new(if initial_sidebar_open { sidebar_width } else { 0. }),
             sidebar_width,
-            sidebar_drag: None,
             split_anim: Slide::new(if initial_layout == WorkspaceLayoutMode::ChatFocus {
                 1.0
             } else {
-                SPLIT_DEFAULT
+                split_ratio
             }),
             sidebar_reveal: if initial_sidebar_open { 1.0 } else { 0.0 },
             open_menu: config.open_context_popover.then_some(Menu::ContextUsage),
@@ -1896,14 +1896,6 @@ impl KarWorkbench {
             WorkspaceLayoutMode::CanvasWide
         };
         self.set_layout_mode(next, cx);
-    }
-
-    fn save_sidebar_width(&self) {
-        let _ = crate::client_store::write_desktop_preference(
-            &self.config.chat_dir,
-            "sidebar-width",
-            &self.sidebar_width.round().to_string(),
-        );
     }
 
     pub(crate) fn collection_search_field(
@@ -3136,6 +3128,14 @@ impl KarWorkbench {
         )
     }
 
+    /// Work in this window can outlive the selected conversation or the visible panel.
+    pub(crate) fn has_running_task(&self) -> bool {
+        self.turn_in_progress()
+            || self.prompt_attempts.values().any(|attempt| attempt.in_flight)
+            || !self.schedule_leases.is_empty()
+            || self.terminal_runs.iter().any(|run| run.running)
+    }
+
     /// Scoped strictly to the currently open chat so switching chats or pressing `⌘N`
     /// is never blocked by an in-flight turn on another chat.
     pub(crate) fn turn_in_progress(&self) -> bool {
@@ -3733,8 +3733,12 @@ impl KarWorkbench {
         sub_cfg.lang_zh = self.ui_locale == UiLocale::Zh;
         sub_cfg.open_latest_chat = true;
         sub_cfg.subscribe_http = self.active_http_server_url.clone();
-        let options =
-            studio_window_options("Kar", size(px(1260.), px(800.)), size(px(860.), px(540.)), cx);
+        let options = studio_window_options(
+            crate::APP_NAME,
+            size(px(1260.), px(800.)),
+            size(px(860.), px(540.)),
+            cx,
+        );
         let _ = gpui_kit::open_window(options, cx, move |w, cx| {
             cx.new(|cx| KarWorkbench::new(sub_cfg, w, cx))
         });
@@ -6199,6 +6203,9 @@ impl Render for KarWorkbench {
 
         // Keep both working panes usable when an already-split window is resized.
         let window_w = f32::from(window.viewport_size().width);
+        if self.pane_drag.is_some() && (self.previous_window_width - window_w).abs() > 0.1 {
+            self.finish_divider(true, cx);
+        }
         let compact = window_w < COMPACT_WORKSPACE_WIDTH;
         let crossed_compact = compact && self.previous_window_width >= COMPACT_WORKSPACE_WIDTH;
         let crossed_split = self.layout_mode != WorkspaceLayoutMode::ChatFocus
@@ -6245,9 +6252,13 @@ impl Render for KarWorkbench {
         let sidebar_limit = if compact {
             SIDEBAR_W
         } else {
-            (window_w - 640.).max(SIDEBAR_W)
+            resize::sidebar_max(window_w, self.layout_mode != WorkspaceLayoutMode::ChatFocus)
         };
-        let rail_width = self.sidebar_width.min(sidebar_limit);
+        let rail_width = if compact {
+            SIDEBAR_W
+        } else {
+            self.sidebar_width.min(sidebar_limit)
+        };
         self.sidebar_reveal =
             (self.sidebar_anim.get(window, cx) / self.sidebar_width).clamp(0., 1.);
         let sidebar_w = self.sidebar_reveal * rail_width;
@@ -6281,10 +6292,12 @@ impl Render for KarWorkbench {
 
         let rail_space = if compact { 0. } else { sidebar_w };
         let usable = (window_w - rail_space - split_gutter).max(1.);
-        let chat_w = if usable >= CHAT_MIN_W + DOC_MIN_W {
-            (usable * chat_frac).clamp(CHAT_MIN_W, usable - DOC_MIN_W)
+        let split_span = resize::chat_span(usable, chat_frac);
+        let chat_w = if self.layout_mode == WorkspaceLayoutMode::ChatFocus {
+            // Interpolate through the readable minimum on exit, so the dock can slide away.
+            split_span.value.max(usable * chat_frac)
         } else {
-            usable * 0.45
+            split_span.value
         };
         let pane_w = if show_doc && !single_dock {
             chat_w
@@ -6308,51 +6321,30 @@ impl Render for KarWorkbench {
         let doc_view = show_doc.then(|| self.render_office_pane(window, cx));
         let sidebar_view = (sidebar_w > 0.5).then(|| self.render_sidebar(rail_width, window, cx));
 
-        let bounds_cell = self.main_bounds.clone();
-        let dragging = self.dragging_split;
-        let line_idle = s.line_strong;
-        let line_hot = s.ink;
-
-        let gutter = (show_doc && !single_dock).then(|| {
-            div()
-                .id("kar-split-divider")
-                .w(px(SHEET_GUTTER))
-                .h_full()
-                .flex_none()
-                .cursor_col_resize()
-                .flex()
-                .items_center()
-                .justify_center()
-                .group("split-handle")
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, ev: &MouseDownEvent, _, cx| {
-                        if ev.click_count >= 2 {
-                            this.split_ratio = SPLIT_DEFAULT;
-                            this.layout_mode = WorkspaceLayoutMode::Split;
-                            this.split_anim.duration(SPLIT_DEFAULT, SHELL_SETTLE, cx);
-                        } else {
-                            this.dragging_split = true;
-                            this.split_ratio =
-                                this.split_anim.value(cx).clamp(SPLIT_MIN, SPLIT_MAX);
-                            this.layout_mode = WorkspaceLayoutMode::Split;
-                        }
-                        cx.stop_propagation();
-                        cx.notify();
-                    }),
-                )
-                .child(
-                    div()
-                        .w(px(3.))
-                        .h(px(if dragging { 42. } else { 28. }))
-                        .rounded(px(2.))
-                        .bg(if dragging {
-                            line_hot
-                        } else {
-                            transparent_black()
-                        })
-                        .group_hover("split-handle", move |st| st.bg(line_idle)),
-                )
+        let left_handle = (!compact && (self.sidebar_open || self.collapsed_sidebar_grip)).then(|| {
+            let span = Span {
+                value: rail_width,
+                min: resize::SIDEBAR_MIN,
+                max: sidebar_limit,
+                extent: window_w,
+            };
+            let document_width = (show_doc && self.layout_mode != WorkspaceLayoutMode::ChatFocus)
+                .then_some(usable - chat_w);
+            self.workspace_divider(
+                Divider::Sidebar, sidebar_w, span, !self.sidebar_open, document_width, &s, window, cx,
+            )
+        });
+        let dock_closed = self.layout_mode == WorkspaceLayoutMode::ChatFocus;
+        let show_right_handle = !compact && in_conversation_stage && (!dock_closed || self.collapsed_doc_grip);
+        let right_handle = show_right_handle.then(|| {
+            let x = if dock_closed {
+                window_w
+            } else {
+                rail_space + chat_w + SHEET_GUTTER * 0.5
+            };
+            self.workspace_divider(
+                Divider::Document, x, split_span, dock_closed, None, &s, window, cx,
+            )
         });
 
         let chat_column = div()
@@ -6388,16 +6380,8 @@ impl Render for KarWorkbench {
             .h_full()
             .flex()
             .flex_row()
-            .child(
-                canvas(
-                    move |bounds, _, _| bounds_cell.set(Some(bounds)),
-                    |_, _, _, _| (),
-                )
-                .absolute()
-                .inset_0(),
-            )
             .when(!single_dock, |d| d.child(chat_column))
-            .when_some(gutter, |d, g| d.child(g))
+            .when(show_doc && !single_dock, |d| d.child(div().flex_none().h_full().w(px(SHEET_GUTTER)).bg(s.line)))
             .when_some(doc_view, |d, doc| {
                 d.child(
                     div()
@@ -6405,7 +6389,6 @@ impl Render for KarWorkbench {
                         .flex_1()
                         .min_w_0()
                         .bg(s.surface)
-                        .when(!single_dock, |d| d.border_l_1().border_color(s.line))
                         .flex()
                         .flex_col()
                         .overflow_hidden()
@@ -6462,34 +6445,6 @@ impl Render for KarWorkbench {
                         .opacity(self.sidebar_reveal)
                         .child(sidebar),
                 )
-                .when(!compact, |rail| {
-                    rail.child(
-                        div()
-                            .id("sidebar-width-drag")
-                            .absolute()
-                            .right_0()
-                            .top_0()
-                            .bottom_0()
-                            .w(px(5.))
-                            .cursor_col_resize()
-                            .hover(|st| st.bg(s.primary.opacity(0.15)))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                                    cx.stop_propagation();
-                                    if ev.click_count >= 2 {
-                                        this.sidebar_width = SIDEBAR_W;
-                                        this.sidebar_anim.reset(SIDEBAR_W);
-                                        this.save_sidebar_width();
-                                    } else {
-                                        this.sidebar_drag =
-                                            Some((f32::from(ev.position.x), rail_width));
-                                    }
-                                    cx.notify();
-                                }),
-                            ),
-                    )
-                })
         });
         let (inline_rail, drawer_rail) = if compact { (None, rail) } else { (rail, None) };
 
@@ -6532,27 +6487,6 @@ impl Render for KarWorkbench {
             }))
             .on_key_down(cx.listener(Self::handle_global_key))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
-                if let Some((start, width)) = this.sidebar_drag {
-                    if ev.pressed_button == Some(MouseButton::Left) {
-                        let limit = (f32::from(window.viewport_size().width) - 640.).max(SIDEBAR_W);
-                        this.sidebar_width = (width + f32::from(ev.position.x) - start).clamp(SIDEBAR_W, limit);
-                        this.sidebar_anim.reset(this.sidebar_width);
-                    } else {
-                        this.sidebar_drag = None;
-                        this.save_sidebar_width();
-                    }
-                    cx.notify();
-                }
-                if this.dragging_split
-                    && let Some(bounds) = this.main_bounds.get()
-                {
-                    let total = (f32::from(bounds.size.width) - SHEET_GUTTER).max(1.);
-                    let x = f32::from(ev.position.x - bounds.origin.x);
-                    let ratio = (x / total).clamp(SPLIT_MIN, SPLIT_MAX);
-                    this.split_ratio = ratio;
-                    this.split_anim.reset(ratio);
-                    cx.notify();
-                }
                 if this.dragging_terminal
                     && let Some((start_y, start_h)) = this.terminal_drag_anchor
                 {
@@ -6568,12 +6502,7 @@ impl Render for KarWorkbench {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    if this.sidebar_drag.take().is_some() {
-                        this.save_sidebar_width();
-                        cx.notify();
-                    }
-                    if this.dragging_split || this.dragging_terminal {
-                        this.dragging_split = false;
+                    if this.dragging_terminal {
                         this.dragging_terminal = false;
                         this.terminal_drag_anchor = None;
                         cx.notify();
@@ -6588,6 +6517,9 @@ impl Render for KarWorkbench {
             .overflow_hidden()
             .when_some(inline_rail, |d, rail| d.child(rail))
             .child(main)
+            .children(left_handle)
+            .children(right_handle)
+            .when(self.pane_drag.is_some(), |d| d.child(self.capture_divider_drag(cx)))
             .when_some(drawer_rail, |d, rail| {
                 d.child(
                     div().absolute().inset_0().flex().child(rail).child(
