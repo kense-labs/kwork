@@ -5,7 +5,7 @@ use crate::{
     studio_hub::DiagLevel,
     types::{ChatAccessMode, runtime_display_name},
     ui_motion::{Tactile, icon_button, primary_button, soft_button},
-    ui_primitives::{FS_META, FS_TITLE, FS_UI, R_CARD, StudioPalette, render_runtime_mark},
+    ui_primitives::{FS_META, FS_TITLE, FS_UI, R_MODAL, StudioPalette, render_runtime_mark},
     workbench::KarWorkbench,
 };
 use gpui::{prelude::*, *};
@@ -54,7 +54,7 @@ impl KarWorkbench {
             .providers
             .iter()
             .filter(|p| {
-                p.id != current
+                p.id != current && !(crate::aster::is_aster(&p.id) && crate::aster::is_aster(&current))
                     && (p.is_ready() || matches!(self.access_mode, ChatAccessMode::DemoShowcase))
             })
             .collect();
@@ -71,7 +71,7 @@ impl KarWorkbench {
             self.access_mode,
             ChatAccessMode::WriteController { .. } | ChatAccessMode::DemoShowcase
         ) && !self.projected.turns.is_empty()
-            && !self.turn_in_progress();
+            && (!self.turn_in_progress() || self.hosted_writer.is_some());
         let choices = candidates
             .iter()
             .map(|provider| {
@@ -127,7 +127,7 @@ impl KarWorkbench {
         let description = if matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
             loc.pick("演示模式会模拟交接。", "Demo mode simulates the handoff.")
         } else {
-            loc.pick("将最近对话的摘要和交接说明发给另一个智能体。原对话会保留。", "Send a summary of this thread and your note to another agent. Your original thread stays available.")
+            loc.pick("在同一段对话中切换智能体。Kar 保留历史，并在下一条消息中附上交接摘要。", "Switch the agent in this thread. Kar preserves its history and attaches the handoff context to the next message.")
         };
         let fields = div()
             .flex()
@@ -141,7 +141,17 @@ impl KarWorkbench {
                 s,
             ))
             .child(budgets)
-            .child(self.handoff_note_input.clone());
+            .when(!self.turn_in_progress(),|fields| fields.child(self.handoff_note_input.clone()))
+            .when_some(self.handoff_receipt.as_ref().filter(|(id,_)|Some(*id)==self.current_chat_id()),|fields,(_,receipt)| {
+                let status = match receipt.status {
+                    kar::chat::HandoffStatus::Ready=>loc.pick("已交接","Handed off"),
+                    kar::chat::HandoffStatus::Failed=>loc.pick("交接失败","Handoff failed"),
+                    kar::chat::HandoffStatus::Prepared=>loc.pick("正在交接","Handing off"),
+                };
+                let route=format!("{} → {}",runtime_display_name(&receipt.from.runtime),runtime_display_name(&receipt.request.runtime));
+                fields.child(sheet_text(format!("{status} · {route}"),s))
+                    .when_some(receipt.error.as_ref(),|fields,error|fields.child(sheet_text(error.clone(),s)))
+            });
         let mut body = div()
             .id("handoff-content")
             .flex_1()
@@ -163,7 +173,7 @@ impl KarWorkbench {
             };
             body = body.child(div().pt(px(12.)).child(sheet_text(explanation, s)));
         }
-        let submit = primary_button("handoff-submit", loc.pick("交接对话", "Hand off thread"), s)
+        let submit = primary_button("handoff-submit", if self.turn_in_progress() { loc.pick("回合结束后交接", "Hand off after this turn") } else { loc.pick("交接对话", "Hand off thread") }, s)
             .disabled(!eligible || target.is_none())
             .tip(format!(
                 "{} {target_name}",
@@ -171,7 +181,7 @@ impl KarWorkbench {
             ))
             .on_press(cx, move |this, _, cx| {
                 let Some(id) = target.clone() else { return };
-                let note = this.handoff_note_input.read(cx).value(cx).trim().to_owned();
+                let note = if this.turn_in_progress() { String::new() } else { this.handoff_note_input.read(cx).value(cx).trim().to_owned() };
                 if note.len() > this.handoff_budget_kb * 1024 - 512 {
                     this.notify_warning(
                         this.ui_locale.pick(
@@ -189,7 +199,6 @@ impl KarWorkbench {
                     target_model: None,
                     user_note: note,
                     budget_bytes: this.handoff_budget_kb * 1024,
-                    workspace: this.effective_workspace_dir(),
                 });
                 cx.notify();
             });
@@ -199,11 +208,11 @@ impl KarWorkbench {
             .h(px(
                 (f32::from(window.viewport_size().height) - 60.).clamp(1., 480.)
             ))
-            .rounded(px(R_CARD))
+            .rounded(px(R_MODAL))
             .bg(s.card)
             .border_1()
             .border_color(s.line)
-            .shadow(s.popover_shadow())
+            .shadow(s.floating_shadow())
             .overflow_hidden()
             .flex()
             .flex_col()
@@ -233,6 +242,14 @@ impl KarWorkbench {
             cx,
         )
     }
+    pub(crate) fn supports_side_question(&self) -> bool {
+        let Some(info)=self.projected.info.as_ref() else { return false; };
+        matches!(self.access_mode,ChatAccessMode::WriteController { chat_id } if chat_id==info.id)
+            && info.protocol==kar::Protocol::Claude
+            && !self.projected.turns.is_empty()
+            && self.side_question_capability.as_ref().is_some_and(|(chat,native)|*chat==info.id && native==&info.native_id)
+    }
+
     pub(crate) fn render_side_question_modal(
         &mut self,
         s: &StudioPalette,
@@ -253,8 +270,7 @@ impl KarWorkbench {
         let submit = primary_button("side-q-submit", submit_label, s)
             .disabled(self.side_question_pending)
             .on_press(cx, |this, _, cx| this.submit_side_question(cx));
-        let description = loc.pick("Claude 可在独立分支回答；其他智能体显示本对话的最近摘录。",
-            "Claude can answer in a separate session. Other agents show recent excerpts from this conversation.");
+        let description = loc.pick("Claude 会在当前对话的临时分支中回答，主对话保留原样。","Claude answers in a temporary fork of this conversation.");
         let mut body = div()
             .flex()
             .flex_col()
@@ -263,7 +279,7 @@ impl KarWorkbench {
             .child(sheet_text(description, s))
             .child(self.side_question_input.clone())
             .child(div().flex().justify_end().child(submit));
-        if let Some((q, ans, fork)) = &self.side_question_last_reply {
+        if let Some((q, ans)) = &self.side_question_last_reply {
             let q = q.clone();
             body = body.child(
                 div()
@@ -274,11 +290,7 @@ impl KarWorkbench {
                     .flex_col()
                     .gap(px(8.))
                     .child(sheet_text(
-                        if *fork {
-                            loc.pick("独立回复", "Private reply")
-                        } else {
-                            loc.pick("本地对话摘录", "Local conversation excerpts")
-                        },
+                        loc.pick("独立回复", "Private reply"),
                         s,
                     ))
                     .child(
@@ -326,11 +338,11 @@ impl KarWorkbench {
             .w(px(500.))
             .max_w_full()
             .max_h(px(cap))
-            .rounded(px(R_CARD))
+            .rounded(px(R_MODAL))
             .bg(s.card)
             .border_1()
             .border_color(s.line)
-            .shadow(s.popover_shadow())
+            .shadow(s.floating_shadow())
             .overflow_hidden()
             .flex()
             .flex_col()
@@ -348,7 +360,7 @@ impl KarWorkbench {
             );
         self.render_modal(
             "kar-side-question-sheet",
-            self.side_question_open,
+            self.side_question_open && self.supports_side_question(),
             30.,
             card.into_any_element(),
             |this, _, _| this.side_question_open = false,
@@ -357,9 +369,8 @@ impl KarWorkbench {
     }
 
     pub fn submit_side_question(&mut self, cx: &mut Context<Self>) {
-        if self.side_question_pending {
-            return;
-        }
+        if self.side_question_pending || !self.supports_side_question() { return; }
+        let Some(chat_id)=self.current_chat_id() else {return};
         let q = self
             .side_question_input
             .read(cx)
@@ -374,32 +385,7 @@ impl KarWorkbench {
         self.side_question_last_reply = None;
         let request_id = uuid::Uuid::new_v4();
         self.side_question_request = Some(request_id);
-        let rt_id = self.active_or_selected_runtime_id().to_owned();
-        let native_id = self.projected.info.as_ref().map(|i| i.native_id.clone());
-        let mut excerpt_lines = Vec::new();
-        for t in self.projected.turns.iter().rev().take(3).rev() {
-            for it in &t.items {
-                if let kar::chat::Item::Message { role, text, .. } = &it.item {
-                    let prefix = match role {
-                        kar::chat::Role::User => "用户",
-                        kar::chat::Role::Assistant => "智能体",
-                        _ => "消息",
-                    };
-                    excerpt_lines.push(format!(
-                        "- {prefix}: {}",
-                        crate::studio_hub::truncate_chars(text.trim(), 160)
-                    ));
-                }
-            }
-        }
-        self.bridge.send(KarCommand::AskSideQuestion {
-            request_id,
-            runtime_id: rt_id,
-            native_session_id: native_id,
-            workspace: self.effective_workspace_dir(),
-            question: q,
-            context_excerpt: excerpt_lines.join("\n"),
-        });
+        self.bridge.send(KarCommand::AskSideQuestion{request_id,chat_id,question:q});
         cx.notify();
     }
 

@@ -338,7 +338,7 @@ impl KarWorkbench {
                             .text_size(px(FS_META))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(s.ink)
-                            .tip(loc.pick("将当前选中的段落、单元格或幻灯片对象放入对话", "Add the selected paragraph, cell, or slide object to the chat draft"))
+                            .tip(loc.pick("将当前选中的段落、单元格、幻灯片对象或 PDF 页放入对话", "Add the selected paragraph, cell, slide object, or PDF page to the chat draft"))
                             .child(pro_icon(ProIcon::Pin, ICON_XS, s.muted))
                             .child(loc.pick("引用到对话", "Add to chat"))
                             .on_press(cx, |this, window, cx| {
@@ -510,6 +510,8 @@ impl KarWorkbench {
                         .text_size(px(FS_TAG))
                         .on_press(cx, move |this, _, cx| {
                             this.tree_show_hidden = !this.tree_show_hidden;
+                            this.prefs.tree_show_hidden = this.tree_show_hidden;
+                            this.save_prefs();
                             this.bridge.send(KarCommand::RefreshWorkspaceTree {
                                 workspace: ws_toggle.clone(),
                                 show_hidden: this.tree_show_hidden,
@@ -1038,7 +1040,22 @@ impl KarWorkbench {
                             .flex()
                             .items_center()
                             .gap(px(4.))
-                            .child(self.coedit_segmented.clone())
+                            .child(SelectionStrip::options(
+                                "coedit-scenario-strip",
+                                "示例场景",
+                                Group::Choices,
+                                [
+                                    (ScenarioKey::WordSameParagraph, "Word"),
+                                    (ScenarioKey::ExcelSameCellConflict, "Excel"),
+                                    (ScenarioKey::PptMoveAndText, "PPT"),
+                                ],
+                                self.active_coedit_scenario,
+                                s,
+                                cx,
+                                |wb, sc, win, cx| {
+                                    wb.switch_coedit_scenario(sc, win, cx);
+                                },
+                            ))
                             .child(
                                 text_button("coedit-reset-all", "重置", s)
                                     .child(pro_icon(ProIcon::Refresh, ICON_XS, s.muted))

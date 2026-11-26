@@ -4,6 +4,8 @@
 //! pure Rust for Kar Desktop: revision-fenced schedule definitions, idempotent dispatch receipts
 //! (uncertain outcomes are never blindly replayed on restart), and optional Office template binding.
 
+pub mod workflow;
+
 use std::{
     fs::{self, File, OpenOptions},
     io::ErrorKind,
@@ -17,14 +19,38 @@ use uuid::Uuid;
 
 use crate::client_store::SessionAssociation;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScheduleCadence {
     EveryMinutes(u32),
     #[default]
     DailyNineAm,
     WeeklyMonday,
+    /// Arbitrary wall-clock `HH:MM` on selected weekdays (`weekdays_mask` bit `0` = Mon .. bit `6` = Sun; `0x7F` = every day).
+    CustomTime {
+        hour: u8,
+        minute: u8,
+        weekdays_mask: u8,
+    },
+    /// One-shot trigger at a specific epoch millisecond timestamp.
+    OnceAtMs(u64),
+    /// Triggered externally via webhook token or manually.
+    Webhook {
+        secret: String,
+    },
     ManualOnly,
+}
+
+fn weekday_bit(w: Weekday) -> u8 {
+    match w {
+        Weekday::Mon => 1 << 0,
+        Weekday::Tue => 1 << 1,
+        Weekday::Wed => 1 << 2,
+        Weekday::Thu => 1 << 3,
+        Weekday::Fri => 1 << 4,
+        Weekday::Sat => 1 << 5,
+        Weekday::Sun => 1 << 6,
+    }
 }
 
 impl ScheduleCadence {
@@ -35,28 +61,70 @@ impl ScheduleCadence {
         Self::ManualOnly,
     ];
 
-    pub fn label(self) -> String {
+    pub fn label(&self) -> String {
         match self {
             Self::EveryMinutes(m) => format!("每 {m} 分钟"),
             Self::DailyNineAm => "每日 09:00".into(),
             Self::WeeklyMonday => "每周一 09:00".into(),
+            Self::CustomTime {
+                hour,
+                minute,
+                weekdays_mask,
+            } => {
+                let mask = if *weekdays_mask == 0 { 0x7F } else { *weekdays_mask & 0x7F };
+                if mask == 0x7F {
+                    format!("每日 {:02}:{:02}", hour.min(&23), minute.min(&59))
+                } else if mask == 0b001_1111 {
+                    format!("工作日 {:02}:{:02}", hour.min(&23), minute.min(&59))
+                } else {
+                    let names = ["一", "二", "三", "四", "五", "六", "日"];
+                    let picked: Vec<&str> = (0..7)
+                        .filter(|b| (mask & (1 << b)) != 0)
+                        .map(|b| names[b])
+                        .collect();
+                    format!("周{} {:02}:{:02}", picked.join("/"), hour.min(&23), minute.min(&59))
+                }
+            }
+            Self::OnceAtMs(ts) => {
+                if let Some(dt) = Local.timestamp_millis_opt(*ts as i64).single() {
+                    format!("单次 {}", dt.format("%m-%d %H:%M"))
+                } else {
+                    "单次定时".into()
+                }
+            }
+            Self::Webhook { .. } => "Webhook 触发".into(),
             Self::ManualOnly => "仅手动触发".into(),
         }
     }
 
-    fn next_due_after(self, now_ms: u64) -> Option<u64> {
+    pub fn hour_of_day(&self) -> Option<(u8, u8)> {
         match self {
-            Self::ManualOnly => None,
+            Self::DailyNineAm | Self::WeeklyMonday => Some((9, 0)),
+            Self::CustomTime { hour, minute, .. } => Some(((*hour).min(23), (*minute).min(59))),
+            Self::OnceAtMs(ts) => Local
+                .timestamp_millis_opt(*ts as i64)
+                .single()
+                .map(|dt| {
+                    use chrono::Timelike;
+                    (dt.hour() as u8, dt.minute() as u8)
+                }),
+            _ => None,
+        }
+    }
+
+    pub fn next_due_after(&self, now_ms: u64) -> Option<u64> {
+        match self {
+            Self::ManualOnly | Self::Webhook { .. } => None,
+            Self::OnceAtMs(ts) => (*ts > now_ms).then_some(*ts),
             Self::EveryMinutes(_) => now_ms.checked_add(self.interval_ms()?),
             Self::DailyNineAm | Self::WeeklyMonday => {
                 let now = Local
                     .timestamp_millis_opt(now_ms.try_into().ok()?)
                     .single()?;
                 let today = now.date_naive();
-                // Include the following week when today's Monday occurrence has passed.
                 (0..=14).find_map(|offset| {
                     let day = today.checked_add_days(chrono::Days::new(offset))?;
-                    if self == Self::WeeklyMonday && day.weekday() != Weekday::Mon {
+                    if matches!(self, Self::WeeklyMonday) && day.weekday() != Weekday::Mon {
                         return None;
                     }
                     let due = Local
@@ -65,15 +133,38 @@ impl ScheduleCadence {
                     (due > now).then(|| due.timestamp_millis() as u64)
                 })
             }
+            Self::CustomTime {
+                hour,
+                minute,
+                weekdays_mask,
+            } => {
+                let mask = if *weekdays_mask == 0 { 0x7F } else { *weekdays_mask & 0x7F };
+                let h = u32::from((*hour).min(23));
+                let m = u32::from((*minute).min(59));
+                let now = Local
+                    .timestamp_millis_opt(now_ms.try_into().ok()?)
+                    .single()?;
+                let today = now.date_naive();
+                (0..=14).find_map(|offset| {
+                    let day = today.checked_add_days(chrono::Days::new(offset))?;
+                    if (mask & weekday_bit(day.weekday())) == 0 {
+                        return None;
+                    }
+                    let due = Local
+                        .from_local_datetime(&day.and_hms_opt(h, m, 0)?)
+                        .earliest()?;
+                    (due > now).then(|| due.timestamp_millis() as u64)
+                })
+            }
         }
     }
 
-    pub fn interval_ms(self) -> Option<u64> {
+    pub fn interval_ms(&self) -> Option<u64> {
         match self {
-            Self::EveryMinutes(m) => Some(u64::from(m.max(1)) * 60_000),
-            Self::DailyNineAm => Some(24 * 3600 * 1000),
+            Self::EveryMinutes(m) => Some(u64::from((*m).max(1)) * 60_000),
+            Self::DailyNineAm | Self::CustomTime { .. } => Some(24 * 3600 * 1000),
             Self::WeeklyMonday => Some(7 * 24 * 3600 * 1000),
-            Self::ManualOnly => None,
+            Self::OnceAtMs(_) | Self::Webhook { .. } | Self::ManualOnly => None,
         }
     }
 }
@@ -124,6 +215,9 @@ pub struct ScheduleRunReceipt {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduledTask {
+    /// Complex workflows remain runnable in this editor, while Kar owns their definition.
+    #[serde(skip)]
+    pub engine_read_only: bool,
     pub id: String,
     pub revision: u64,
     pub title: String,
@@ -137,9 +231,12 @@ pub struct ScheduledTask {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
-    /// Optional Office document template (`.docx` / `.xlsx` / `.pptx`) bound to this automation.
+    /// Optional Office document template (`.docx` / `.xlsx` / `.pptx` / `.pdf`) bound to this automation.
     #[serde(default)]
     pub office_template: Option<PathBuf>,
+    /// Optional shell setup script run in `workspace` right before dispatching the agent prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_script: Option<String>,
     #[serde(default)]
     pub tone: ScheduleToneChoice,
     #[serde(default)]
@@ -156,6 +253,10 @@ impl ScheduledTask {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ScheduleRegistry {
+    #[serde(skip)]
+    pub migration_warnings: Vec<String>,
+    #[serde(skip)]
+    pub webhook_base: Option<String>,
     pub revision: u64,
     pub seeded_defaults: bool,
     pub tasks: Vec<ScheduledTask>,
@@ -170,6 +271,7 @@ impl ScheduleRunLease {
     fn path(dir: &Path, id: Uuid) -> PathBuf {
         dir.join(format!(".schedule-run-{id}.lock"))
     }
+    #[cfg(test)]
     pub(crate) fn acquire(dir: &Path, id: Uuid) -> Result<Self> {
         let path = Self::path(dir, id);
         let file = File::create_new(&path)?;
@@ -215,7 +317,9 @@ impl ScheduleRegistry {
             if task.enabled
                 && matches!(
                     task.cadence,
-                    ScheduleCadence::DailyNineAm | ScheduleCadence::WeeklyMonday
+                    ScheduleCadence::DailyNineAm
+                        | ScheduleCadence::WeeklyMonday
+                        | ScheduleCadence::CustomTime { .. }
                 )
                 && task.next_due_ms.is_none_or(|due| {
                     task.cadence.next_due_after(due.saturating_sub(1)) != Some(due)
@@ -370,7 +474,7 @@ impl ScheduleRegistry {
             };
             if now_ms >= due_ms {
                 let req_id = Uuid::new_v4();
-                let next = match task.cadence {
+                let next = match &task.cadence {
                     ScheduleCadence::EveryMinutes(_) => task
                         .cadence
                         .next_due_after(due_ms)
@@ -499,6 +603,7 @@ mod tests {
         let mut reg = ScheduleRegistry::default();
         reg.save_task(
             ScheduledTask {
+                engine_read_only: false,
                 id: String::new(),
                 revision: 0,
                 title: "Review".into(),
@@ -510,6 +615,7 @@ mod tests {
                 model: None,
                 effort: None,
                 office_template: None,
+                pre_script: None,
                 tone: ScheduleToneChoice::default(),
                 next_due_ms: None,
                 history: vec![],

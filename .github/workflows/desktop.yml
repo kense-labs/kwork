@@ -1,0 +1,23 @@
+name: Native desktop
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  workbench:
+    runs-on: macos-15
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the native workbench
+        run: cargo build --locked -p kar_desktop
+      - name: Run tests independent of a signed-in coding agent
+        run: >
+          cargo test --locked -p kar_desktop --
+          --skip real_codex_send_second_client_mid_tool_disconnect_reconnect_and_history_parity
+          --skip workbench_guest_link_stays_bound_to_its_chat_and_revokes
+      - name: Package the app
+        run: scripts/macos-kwrok-app.sh target/debug/kar-desktop target

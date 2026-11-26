@@ -5,6 +5,95 @@ use crate::{
 };
 
 impl KarWorkbench {
+    pub(crate) fn render_approved_plan_turn(
+        &self,
+        id: Uuid,
+        proposal: &str,
+        s: &StudioPalette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let loc = self.ui_locale;
+        let expanded = self.planning.expanded_approvals.contains(&id);
+        let title = proposal
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| line.trim().trim_start_matches('#').trim())
+            .unwrap_or("");
+        let status = loc.pick("已确认计划", "Approved plan");
+        let mut header = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .child(pro_icon(ProIcon::Tasks, 15., s.muted))
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(FS_META))
+                    .text_color(s.muted)
+                    .child(status),
+            );
+        if !title.is_empty() {
+            header = header.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(FS_CONTROL))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(title.to_owned()),
+            );
+        }
+        header = header.child(pro_icon(
+            if expanded {
+                ProIcon::ChevronDown
+            } else {
+                ProIcon::ChevronRight
+            },
+            12.,
+            s.muted,
+        ));
+        let bar = Tactile::ghost(format!("approved-plan-{id}"), s)
+            .w_full()
+            .h(px(32.))
+            .px(px(8.))
+            .aria(format!("{status} {title}"))
+            .child(header)
+            .on_press(cx, move |wb, _, cx| {
+                if !wb.planning.expanded_approvals.remove(&id) {
+                    wb.planning.expanded_approvals.insert(id);
+                }
+                cx.notify();
+            });
+        let mut card = div()
+            .min_w_0()
+            .w_full()
+            .rounded(px(R_CTRL))
+            .bg(s.soft)
+            .child(bar);
+        if expanded {
+            let plan_body = Uuid::new_v5(&id, b"approved-plan");
+            let copy = proposal.to_owned();
+            let label = loc.pick("复制计划", "Copy plan");
+            card = card.child(
+                div()
+                    .px(px(10.))
+                    .pb(px(7.))
+                    .child(
+                        self.render_assistant_markdown_blocks(plan_body, 0, proposal, false, s, cx),
+                    )
+                    .child(
+                        icon_button(format!("copy-approved-plan-{id}"), ProIcon::Copy, label, s)
+                            .on_press(cx, move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                            }),
+                    ),
+            );
+        }
+        card.into_any_element()
+    }
+
     pub(crate) fn render_planning_panel(
         &self,
         pane_w: f32,
@@ -22,9 +111,11 @@ impl KarWorkbench {
         let question = record
             .and_then(|p| self.planning.questions.get(&p.id))
             .and_then(Clarification::next);
+        let preview = record.and_then(|p| self.planning.previews.get(&p.id));
         let title = match phase {
             _ if question.is_some() => loc.pick("需要你确认", "A question for you"),
             Phase::Draft => loc.pick("计划模式", "Plan mode"),
+            Phase::Working if preview.is_some() => loc.pick("正在起草计划", "Drafting plan"),
             Phase::Working => loc.pick("正在制定计划", "Planning"),
             Phase::Ready => loc.pick("待确认的计划", "Proposed plan"),
             Phase::Interrupted => loc.pick("规划已中断", "Planning interrupted"),
@@ -80,6 +171,20 @@ impl KarWorkbench {
                             .text_size(px(FS_CONTROL))
                             .child(title),
                     ),
+            );
+        }
+        if let Some(questions) = record.and_then(|p| self.planning.questions.get(&p.id))
+            && questions.questions.len() > 1
+        {
+            header = header.child(
+                div()
+                    .text_size(px(FS_META))
+                    .text_color(s.muted)
+                    .child(format!(
+                        "{} / {}",
+                        questions.answers.len() + 1,
+                        questions.questions.len()
+                    )),
             );
         }
         header = header.child(div().flex_1());
@@ -153,7 +258,8 @@ impl KarWorkbench {
                         .child(q.prompt.clone()),
                 );
             for (index, option) in q.options.iter().enumerate() {
-                let answer = option.clone();
+                let question_id = q.id.clone();
+                let answer = option.label.clone();
                 body = body.child(
                     Tactile::ghost(("plan-answer", index), s)
                         .max_w_full()
@@ -163,17 +269,33 @@ impl KarWorkbench {
                         .text_size(px(FS_CONTROL))
                         .ink(s.text, s.ink)
                         .aria(answer.clone())
-                        .child(answer.clone())
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(div().font_weight(FontWeight::MEDIUM).child(answer.clone()))
+                                .when_some(option.description.clone(), |row, description| {
+                                    row.child(
+                                        div()
+                                            .text_size(px(FS_META))
+                                            .text_color(s.muted)
+                                            .child(description),
+                                    )
+                                }),
+                        )
                         .on_press(cx, move |wb, w, cx| {
-                            wb.answer_plan_question(chat, id, &answer, w, cx)
+                            wb.answer_plan_question(chat, id, &question_id, &answer, w, cx)
                         }),
                 );
             }
             panel = panel.child(body);
-        } else if phase == Phase::Ready
-            && expanded
-            && let Some(p) = record
-        {
+        } else if let Some((id, text)) = match (phase, record, preview) {
+            (Phase::Ready, Some(p), _) if expanded => Some((p.id, p.proposal.as_str())),
+            (Phase::Working, Some(p), Some(draft)) => Some((p.id, draft.text.as_str())),
+            _ => None,
+        } {
             panel = panel.child(
                 div()
                     .id("proposal-scroll")
@@ -182,14 +304,7 @@ impl KarWorkbench {
                     .max_h(px(height))
                     .overflow_y_scroll()
                     .px(px(5.))
-                    .child(self.render_assistant_markdown_blocks(
-                        p.id,
-                        0,
-                        &p.proposal,
-                        false,
-                        s,
-                        cx,
-                    )),
+                    .child(self.render_assistant_markdown_blocks(id, 0, text, false, s, cx)),
             );
         } else if phase == Phase::Interrupted
             && let (Some(p), Some(chat)) = (record, chat)

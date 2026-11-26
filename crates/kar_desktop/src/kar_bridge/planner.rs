@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use kar::chat::{ChatSession, Item, Role};
+use kar::chat::ChatSession;
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
@@ -24,7 +24,13 @@ use super::{KarBridgeEvent, WorkerState, augmented_path_os};
 pub struct PlanQuestion {
     pub id: String,
     pub prompt: String,
-    pub options: Vec<String>,
+    pub options: Vec<PlanOption>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PlanOption {
+    pub label: String,
+    pub description: Option<String>,
 }
 
 type Answers = BTreeMap<String, String>;
@@ -148,59 +154,24 @@ impl Launch {
     fn new(session: &ChatSession, topic: &str, previous: Option<&str>) -> Result<Self> {
         let info = session.info();
         let history = session.history()?;
-        let mut context = Vec::new();
-        let mut remaining = 12000;
-        for entry in history
-            .turns
-            .iter()
-            .rev()
-            .flat_map(|turn| turn.items.iter().rev())
-        {
-            let Item::Message { role, text, .. } = &entry.item else {
-                continue;
-            };
-            if remaining == 0 {
-                break;
-            }
-            if !entry.source.path.is_empty() {
-                continue;
-            }
-            let (speaker, text) = match role {
-                Role::User => ("User", crate::types::strip_selection_envelope(text)),
-                Role::Assistant => ("Assistant", text.as_str()),
-                Role::Reasoning => continue,
-            };
-            let visible: String = text.chars().take(remaining.min(1800)).collect();
-            if !visible.trim().is_empty() {
-                remaining = remaining.saturating_sub(visible.chars().count() + 8);
-                context.push(format!("{speaker}: {visible}"));
-                if context.len() == 16 {
-                    break;
-                }
-            }
-        }
-        context.reverse();
-        let prompt = Self::instructions(topic, previous, &context);
+        // Let Codex fork the native history, including tool results, images and compaction.
+        // A newly created thread has no persisted rollout until its first turn.
+        let original = (!history.turns.is_empty()).then(|| info.native_id.clone());
         Ok(Self {
             program: info.program.clone(),
             cwd: info.workspace.clone(),
-            original: Some(info.native_id.clone()),
-            prompt,
+            original,
+            prompt: Self::instructions(topic, previous),
             model: info.model.clone(),
             effort: info.settings.effort.clone(),
             unset_env: info.unset_env.clone(),
         })
     }
 
-    fn instructions(topic: &str, previous: Option<&str>, context: &[String]) -> String {
+    fn instructions(topic: &str, previous: Option<&str>) -> String {
         let mut prompt = String::from(
             "Prepare a proposed implementation plan for the user's request. Use the user's language. Ask for clarification when needed. Do not implement.\n\n",
         );
-        if !context.is_empty() {
-            prompt.push_str("Recent conversation:\n");
-            prompt.push_str(&context.join("\n\n"));
-            prompt.push_str("\n\n");
-        }
         if let Some(previous) = previous {
             prompt.push_str("Previous proposed plan:\n");
             prompt.push_str(previous);
@@ -244,7 +215,7 @@ impl Launch {
             effort,
             original: None,
             unset_env: Default::default(),
-            prompt: Self::instructions(topic, previous, &[]),
+            prompt: Self::instructions(topic, previous),
         })
     }
 
@@ -345,6 +316,21 @@ impl Launch {
                 if params["threadId"] != thread {
                     continue;
                 }
+                if method == "item/plan/delta"
+                    && params["turnId"] == turn
+                    && let (Some(item), Some(delta)) =
+                        (params["itemId"].as_str(), params["delta"].as_str())
+                    && !delta.is_empty()
+                {
+                    events
+                        .send(KarBridgeEvent::PlanDelta {
+                            chat_id: chat,
+                            request_id: request,
+                            item: item.to_owned(),
+                            delta: delta.to_owned(),
+                        })
+                        .await?;
+                }
                 if params["turnId"] == turn
                     && let Some(label) = progress_label(method, params)
                     && previous_progress.as_ref() != Some(&label)
@@ -435,11 +421,20 @@ impl Launch {
         .into_iter()
         .map(|k| (k, false))
         .collect();
-        let mut start = json!({"cwd":self.cwd,"sandbox":"read-only","approvalPolicy":"never","ephemeral":true,"dynamicTools":[],"config":{"features":features,"mcp_servers":servers,"web_search":"disabled"}});
+        let mut start = json!({"cwd":self.cwd,"sandbox":"read-only","approvalPolicy":"never","ephemeral":true,"config":{"features":features,"mcp_servers":servers,"web_search":"disabled"}});
         if let Some(model) = &self.model {
             start["model"] = model.clone().into();
         }
-        let opened = wire.call("thread/start", start, false).await?;
+        let method = if let Some(original) = &self.original {
+            start["threadId"] = json!(original);
+            // Omit the response's turn list; the fork still inherits all native history.
+            start["excludeTurns"] = true.into();
+            "thread/fork"
+        } else {
+            start["dynamicTools"] = json!([]);
+            "thread/start"
+        };
+        let opened = wire.call(method, start, false).await?;
         let thread = string(&opened["thread"], "id")?;
         ensure!(
             self.original.as_deref() != Some(thread)
@@ -575,7 +570,15 @@ fn read_questions(value: &Value) -> Result<Vec<PlanQuestion>> {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter_map(|o| o["label"].as_str().map(str::to_owned))
+                .filter_map(|o| {
+                    Some(PlanOption {
+                        label: o["label"].as_str()?.to_owned(),
+                        description: o["description"]
+                            .as_str()
+                            .filter(|s| !s.trim().is_empty())
+                            .map(str::to_owned),
+                    })
+                })
                 .collect(),
         });
     }
@@ -724,7 +727,9 @@ reply '{"id":1,"result":{}}'
 take initialized
 take config/read
 reply '{"id":2,"result":{"config":{"mcp_servers":{"external":{}}}}}'
-take thread/start
+take thread/fork
+case "$packet" in *'"threadId":"real"'*) ;; *) exit 8;; esac
+case "$packet" in *'"ephemeral":true'*) ;; *) exit 9;; esac
 case "$packet" in *'"external":{"enabled":false}'*) ;; *) exit 4;; esac
 reply '{"id":3,"result":{"thread":{"id":"private","ephemeral":true},"model":"native-default","sandbox":{"type":"readOnly","networkAccess":false},"approvalPolicy":"never"}}'
 take mcpServerStatus/list
@@ -739,7 +744,7 @@ reply '{"method":"turn/plan/updated","params":{"threadId":"another","turnId":"tw
 reply '{"method":"turn/plan/updated","params":{"threadId":"private","turnId":"two","plan":[{"step":"Check the index","status":"inProgress"}]}}'
 reply '{"method":"turn/plan/updated","params":{"threadId":"private","turnId":"two","plan":[{"step":"Check the index","status":"inProgress"}]}}'
 reply '{"method":"item/completed","params":{"threadId":"private","turnId":"two","item":{"type":"reasoning","text":"private"}}}'
-reply '{"method":"item/tool/requestUserInput","id":45,"params":{"threadId":"private","turnId":"two","questions":[{"id":"scope","question":"Scope?","options":[{"label":"Local"}]}]}}'
+reply '{"method":"item/tool/requestUserInput","id":45,"params":{"threadId":"private","turnId":"two","questions":[{"id":"scope","question":"Scope?","options":[{"label":"Local","description":"Only this project"}]}]}}'
 take '"scope":{"answers":["Local"]}'
 reply '{"method":"item/completed","params":{"threadId":"private","turnId":"two","item":{"type":"agentMessage","phase":"final_answer","text":"Which file?"}}}'
 reply '{"method":"turn/completed","params":{"threadId":"private","turn":{"id":"two","status":"completed"}}}'
@@ -747,6 +752,9 @@ take turn/start
 case "$packet" in *'README'*) ;; *) exit 6;; esac
 reply '{"id":7,"result":{"turn":{"id":"three"}}}'
 reply '{"method":"turn/plan/updated","params":{"threadId":"private","turnId":"three","plan":[{"step":"internal progress"}]}}'
+reply '{"method":"item/plan/delta","params":{"threadId":"foreign","turnId":"three","itemId":"proposal","delta":"Should never appear"}}'
+reply '{"method":"item/plan/delta","params":{"threadId":"private","turnId":"two","itemId":"proposal","delta":"Obsolete turn"}}'
+reply '{"method":"item/plan/delta","params":{"threadId":"private","turnId":"three","itemId":"proposal","delta":"Review README"}}'
 reply '{"method":"item/completed","params":{"threadId":"private","turnId":"three","item":{"type":"plan","text":"Review README headings"}}}'
 reply '{"method":"turn/completed","params":{"threadId":"private","turn":{"id":"three","status":"completed"}}}'
 IFS= read -r packet || true
@@ -796,11 +804,30 @@ IFS= read -r packet || true
                 assert_eq!((chat_id, request_id), (chat, request));
                 assert_eq!(questions.len(), 1);
                 assert_eq!(questions[0].prompt, prompt);
+                if prompt == "Scope?" {
+                    assert_eq!(
+                        questions[0].options[0].description.as_deref(),
+                        Some("Only this project")
+                    );
+                }
                 answers
                     .send(BTreeMap::from([(questions[0].id.clone(), response.into())]))
                     .await
                     .unwrap();
             }
+            let KarBridgeEvent::PlanDelta {
+                chat_id,
+                request_id,
+                item,
+                delta,
+            } = rx.recv().await.unwrap()
+            else {
+                panic!("expected this turn's streamed proposal")
+            };
+            assert_eq!(
+                (chat_id, request_id, item.as_str(), delta.as_str()),
+                (chat, request, "proposal", "Review README")
+            );
             assert_eq!(task.await.unwrap().unwrap(), "Review README headings");
         })
         .await

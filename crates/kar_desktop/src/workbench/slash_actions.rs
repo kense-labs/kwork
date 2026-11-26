@@ -126,7 +126,7 @@ impl KarWorkbench {
                         .any(|p| p.is_ready() && p.id != self.active_or_selected_runtime_id())
             }
             SideQuestion => {
-                writer && !self.projected.turns.is_empty() && !self.side_question_pending
+                self.supports_side_question() && !self.side_question_pending
             }
             Stop => (writer || remote) && self.turn_in_progress(),
             Attach | Files | Terminal | Skills => local,

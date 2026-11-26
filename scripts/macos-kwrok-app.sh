@@ -19,7 +19,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>Kwrok</string>
+    <key>NSMicrophoneUsageDescription</key><string>Dictate a message into the conversation composer.</string>
+<key>CFBundleName</key><string>Kwrok</string>
     <key>CFBundleDisplayName</key><string>Kwrok</string>
     <key>CFBundleIdentifier</key><string>com.kense-labs.kwrok.desktop</string>
     <key>CFBundleExecutable</key><string>Kwrok</string>

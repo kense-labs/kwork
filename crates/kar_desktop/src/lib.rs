@@ -6,12 +6,21 @@
 
 extern crate gpui_kit as gpui;
 
+mod aster;
 pub mod brief;
 pub mod client_store;
 pub mod coedit;
+mod engine;
+pub mod hardware;
+pub mod forge_devices_voice;
 pub mod kar_bridge;
+mod kremote;
 pub mod mcp_office;
 pub mod office_host;
+pub mod prefs;
+pub mod pty_terminal;
+pub mod qr;
+pub mod registry;
 pub mod remote_link;
 pub mod schedules;
 pub mod studio_hub;
@@ -30,6 +39,7 @@ pub mod ui_primitives;
 pub mod ui_remote;
 pub mod ui_schedules;
 pub mod ui_settings;
+pub mod ui_settings_panels;
 pub mod ui_sidebar;
 pub mod ui_skills_mcp;
 pub mod ui_terminal;
@@ -47,11 +57,11 @@ use kui::{
         badge::{Badge, BadgeTone},
         copy_button::CopyButton,
         input::Input,
-        pro_chrome::{ProBtnStyle, pro_btn},
         resizable_panels::{Pane, ResizablePanels},
         theme_switch::{ThemeChange, ThemeSwitch},
     },
-    primitives::{control::UiLanguage, pro_icons::ProIcon},
+    foundation::AccentPalette,
+    primitives::control::UiLanguage,
 };
 
 use crate::ui_primitives::{
@@ -71,8 +81,11 @@ pub fn init_runtime_ui(cx: &mut App) {
     sheets_ui::init(cx);
     docs_ui::init(cx);
     slides_ui::init(cx);
+    pdf_ui::init(cx);
     kui::init(cx);
     ui_primitives::material::init_window_glass(cx);
+    cx.set_global(ui_primitives::ActiveNamedTheme::default());
+    cx.set_global(ui_primitives::ActiveTypography::default());
     ui_chat::init_project_picker_keys(cx);
     workbench::init_palette_keys(cx);
     #[cfg(target_os = "macos")]
@@ -100,47 +113,109 @@ fn apply_ui_language(locale: ui_primitives::UiLocale, cx: &mut App) {
     cx.refresh_windows();
 }
 
-/// Apply authentic Kense architectural monochrome tokens (`DESIGN.md` & `ProPalette`) across KUI and Kantor.
+/// Apply signature Kwrok monochrome OR any named `kantor_theme` palette + typography across KUI & Kantor.
 pub fn apply_unified_theme(mode: ThemeMode, cx: &mut App) {
+    let named = cx
+        .try_global::<ui_primitives::ActiveNamedTheme>()
+        .and_then(|g| g.0.clone());
+    apply_palette_and_mode(mode, named, cx);
+}
+
+pub fn apply_theme_and_typography(
+    fallback_mode: ThemeMode,
+    prefs: &prefs::DesktopPreferences,
+    cx: &mut App,
+) {
+    cx.set_global(ui_primitives::ActiveTypography {
+        ui_delta_px: prefs.ui_font_scale.delta_px(),
+        code_font_size: prefs.code_font_size.clamp(11.0, 18.0),
+        code_font_family: prefs
+            .code_font_family
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| SharedString::from(s.to_owned())),
+    });
+    let resolved_palette = prefs
+        .named_theme_id
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|id| {
+            let tid = kantor_theme::catalog::ThemeId::parse(id);
+            kantor_theme::catalog::resolve(&tid)
+        });
+    let effective_mode = match &resolved_palette {
+        Some(p) => {
+            if p.dark {
+                ThemeMode::Dark
+            } else {
+                ThemeMode::Light
+            }
+        }
+        None => fallback_mode,
+    };
+    cx.set_global(ui_primitives::ActiveNamedTheme(resolved_palette.clone()));
+    apply_palette_and_mode(effective_mode, resolved_palette, cx);
+}
+
+fn apply_palette_and_mode(
+    mode: ThemeMode,
+    named_palette: Option<kantor_theme::Palette>,
+    cx: &mut App,
+) {
     {
         let theme = kui::Theme::global_mut(cx);
         theme.set_mode(mode);
+        theme.set_accent(AccentPalette::default());
     }
 
+    cx.set_global(ui_primitives::ActiveNamedTheme(named_palette.clone()));
     let shell = ui_primitives::StudioPalette::get(cx);
-    let colors = &mut kui::Theme::global_mut(cx).tokens.colors;
-    colors.background = shell.surface;
-    colors.surface = shell.card;
-    colors.surface_muted = shell.soft;
-    colors.foreground = shell.ink;
-    colors.text_secondary = shell.text;
-    colors.text_muted = shell.muted;
-    colors.border = shell.line;
-    colors.border_strong = shell.line_strong;
-    colors.accent = shell.brand_action;
-    colors.accent_foreground = shell.on_brand_action;
-    colors.focus_outline = shell.brand_action;
+    {
+        let theme = kui::Theme::global_mut(cx);
+        let colors = &mut theme.tokens.colors;
+        colors.background = shell.surface;
+        colors.surface = shell.card;
+        colors.surface_muted = shell.soft;
+        colors.foreground = shell.ink;
+        colors.text_secondary = shell.text;
+        colors.text_muted = shell.muted;
+        colors.border = shell.line;
+        colors.border_strong = shell.line_strong;
+        colors.accent = shell.brand_action;
+        colors.accent_foreground = shell.on_brand_action;
+        colors.accent_subtle = shell.brand_action.opacity(0.15);
+        colors.focus_outline = shell.brand_action;
+    }
 
-    let rgb24 = |color: Hsla| u32::from(color.to_rgb()) >> 8;
-    let palette = kantor_theme::Palette {
-        dark: shell.dark,
-        background: rgb24(shell.surface),
-        dark_background: rgb24(shell.tray),
-        lighter_background: rgb24(shell.card),
-        foreground: rgb24(shell.ink),
-        dark_foreground: rgb24(shell.text),
-        accent: rgb24(shell.brand_action),
-        selection: rgb24(shell.message_surface),
-        muted: rgb24(shell.muted),
-        red: rgb24(colors.danger),
-        green: rgb24(colors.success),
-        yellow: rgb24(colors.warning),
-        blue: rgb24(shell.brand_action),
-        magenta: if shell.dark { 0xc084fc } else { 0x7c3aed },
-        cyan: if shell.dark { 0x2dd4bf } else { 0x0d9488 },
-    };
+    let palette = named_palette.unwrap_or_else(|| {
+        let rgb24 = |color: Hsla| u32::from(color.to_rgb()) >> 8;
+        let colors = &kui::Theme::global(cx).tokens.colors;
+        kantor_theme::Palette {
+            dark: shell.dark,
+            background: rgb24(shell.surface),
+            dark_background: rgb24(shell.tray),
+            lighter_background: rgb24(shell.card),
+            foreground: rgb24(shell.ink),
+            dark_foreground: rgb24(shell.text),
+            accent: rgb24(shell.brand_action),
+            selection: rgb24(shell.message_surface),
+            muted: rgb24(shell.muted),
+            red: rgb24(colors.danger),
+            green: rgb24(colors.success),
+            yellow: rgb24(colors.warning),
+            blue: rgb24(shell.brand_action),
+            magenta: if shell.dark { 0xc084fc } else { 0x7c3aed },
+            cyan: if shell.dark { 0x2dd4bf } else { 0x0d9488 },
+        }
+    });
     kantor_ui::tokens::apply_palette(&palette, cx);
     kantor_ui::fonts::apply(None, cx);
+    if let Some(mono) = cx
+        .try_global::<ui_primitives::ActiveTypography>()
+        .and_then(|t| t.code_font_family.clone())
+    {
+        gpui_kit::component::Theme::global_mut(cx).mono_font_family = mono;
+    }
     cx.refresh_windows();
 }
 
@@ -346,14 +421,13 @@ impl SmokeIntegrationView {
                                     .justify_between()
                                     .gap(px(8.))
                                     .child(self.copy_btn.clone())
-                                    .child(pro_btn(
-                                        "smoke-insert-btn",
-                                        "插入段落至 Word",
-                                        Some(ProIcon::Plus),
-                                        ProBtnStyle::Primary,
-                                        true,
-                                        cx,
-                                        |this, window, cx| {
+                                    .child(
+                                        ui_motion::primary_button(
+                                            "smoke-insert-btn",
+                                            "插入段落至 Word",
+                                            &s,
+                                        )
+                                        .on_press(cx, |this, window, cx| {
                                             this.clicks += 1;
                                             let next = this.clicks;
                                             let custom =
@@ -410,8 +484,8 @@ impl SmokeIntegrationView {
                                                 );
                                             });
                                             cx.notify();
-                                        },
-                                    )),
+                                        }),
+                                    ),
                             ),
                     ),
             )

@@ -13,8 +13,8 @@ use crate::{
     studio_hub::{RuntimeTokenRow, UsageAnalyticsSnapshot},
     types::{ChatAccessMode, format_tokens_compact},
     ui_primitives::{
-        FS_HERO, FS_META, FS_TAG, FS_UI, LH_META, R_CARD, R_PILL, StudioPalette, UiLocale,
-        render_provider_color_tile, render_tray_folder_artwork, tnum_features,
+        FS_HERO, FS_META, FS_TAG, FS_UI, LH_META, R_PILL, StudioPalette, UiLocale, card_box,
+        render_provider_color_tile, render_tray_folder_artwork, settings_page_shell, tnum_features,
     },
     workbench::KarWorkbench,
 };
@@ -108,12 +108,7 @@ impl KarWorkbench {
         let total_combined = snap
             .total_input_tokens
             .saturating_add(snap.total_output_tokens);
-        let hero_card = div()
-            .w_full()
-            .rounded(px(R_CARD))
-            .bg(s.surface)
-            .border_1()
-            .border_color(s.line_soft)
+        let hero_card = card_box(s)
             .overflow_hidden()
             .flex()
             .flex_col()
@@ -165,7 +160,7 @@ impl KarWorkbench {
                                         .child(
                                             div()
                                                 .font_features(tnum_features())
-                                                .text_size(px(28.))
+                                                .text_size(px(FS_HERO))
                                                 .line_height(px(32.))
                                                 .font_weight(FontWeight::BOLD)
                                                 .text_color(s.ink)
@@ -273,13 +268,8 @@ impl KarWorkbench {
             },
         );
 
-        let mut breakdown_card = div()
-            .w_full()
+        let mut breakdown_card = card_box(s)
             .p(px(15.))
-            .rounded(px(R_CARD))
-            .bg(s.surface)
-            .border_1()
-            .border_color(s.line_soft)
             .flex()
             .flex_col()
             .gap(px(12.))
@@ -520,11 +510,7 @@ impl KarWorkbench {
         }
 
         let activity = self.conversation_activity(snap, is_demo_fallback, s, window, cx);
-        let body = div()
-            .p(px(20.))
-            .flex()
-            .flex_col()
-            .gap(px(16.))
+        let body = settings_page_shell()
             .child(activity)
             .child(hero_card)
             .child(breakdown_card);
@@ -588,17 +574,12 @@ impl KarWorkbench {
             options,
             s,
         );
-        let card = div()
-            .w_full()
+        let card = card_box(s)
             .min_w_0()
             .flex()
             .flex_col()
             .gap(px(16.))
             .p(px(16.))
-            .bg(s.card)
-            .border_1()
-            .border_color(s.line_soft)
-            .rounded(px(R_CARD))
             .child(
                 div()
                     .flex()

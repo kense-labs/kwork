@@ -57,8 +57,26 @@ pub(super) struct Planning {
     creating: Option<(Uuid, PathBuf, Uuid)>,
     questions: BTreeMap<Uuid, Clarification>,
     expanded: BTreeSet<Uuid>,
+    expanded_approvals: BTreeSet<Uuid>,
     progress: BTreeMap<Uuid, String>,
+    previews: BTreeMap<Uuid, PlanPreview>,
     dispatching: BTreeSet<Uuid>,
+}
+
+#[derive(Default)]
+struct PlanPreview {
+    item: String,
+    text: String,
+}
+
+impl PlanPreview {
+    fn append(&mut self, item: String, delta: &str) {
+        if self.item != item {
+            self.item = item;
+            self.text.clear();
+        }
+        self.text.push_str(delta);
+    }
 }
 
 impl Planning {
@@ -71,6 +89,7 @@ impl Planning {
 
 impl KarWorkbench {
     pub(super) fn supports_planning(&self) -> bool {
+        if self.hosted_writer.is_some() { return false; }
         match self.access_mode {
             ChatAccessMode::NoneSelected => {
                 self.selected_runtime == "codex"
@@ -233,6 +252,11 @@ impl KarWorkbench {
             .is_some_and(|p| self.planning.questions.contains_key(&p.id))
         {
             loc.pick("输入你的回答…", "Type your answer…")
+        } else if self
+            .current_plan()
+            .is_some_and(|p| p.phase == Phase::Working)
+        {
+            loc.pick("正在规划…", "Planning…")
         } else if self.current_plan().is_some_and(|p| !p.proposal.is_empty()) {
             loc.pick("想调整哪里？", "What should change in the plan?")
         } else {
@@ -251,6 +275,10 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.supports_aster_planning() {
+            self.enter_aster_planning(topic, submit, window, cx);
+            return;
+        }
         if !self.supports_planning() {
             return;
         }
@@ -308,7 +336,9 @@ impl KarWorkbench {
         let accepted = if let Some(p) = self.current_plan()
             && self.planning.questions.contains_key(&p.id)
         {
-            self.answer_plan_question(owner, p.id, typed, window, cx);
+            if let Some(question_id) = self.planning.questions[&p.id].next().map(|q| q.id.clone()) {
+                self.answer_plan_question(owner, p.id, &question_id, typed, window, cx);
+            }
             true
         } else {
             self.generate_plan(owner, typed, cx)
@@ -437,6 +467,24 @@ impl KarWorkbench {
         true
     }
 
+    pub(super) fn plan_delta(
+        &mut self,
+        chat: Uuid,
+        id: Uuid,
+        item: String,
+        delta: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if self.plan_is_working(chat, id) {
+            self.planning
+                .previews
+                .entry(id)
+                .or_default()
+                .append(item, delta);
+            cx.notify();
+        }
+    }
+
     pub(super) fn plan_progress(
         &mut self,
         chat: Uuid,
@@ -485,6 +533,7 @@ impl KarWorkbench {
         &mut self,
         chat: Uuid,
         id: Uuid,
+        question_id: &str,
         answer: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -498,6 +547,9 @@ impl KarWorkbench {
         let Some(question) = pending.next() else {
             return;
         };
+        if question.id != question_id {
+            return;
+        }
         pending
             .answers
             .insert(question.id.clone(), answer.trim().to_owned());
@@ -528,6 +580,7 @@ impl KarWorkbench {
         }
         self.planning.questions.remove(&id);
         self.planning.progress.remove(&id);
+        self.planning.previews.remove(&id);
         let mut plan = self.planning.by_chat[&chat].clone();
         match result {
             Ok(body) if !body.trim().is_empty() => {
@@ -560,6 +613,7 @@ impl KarWorkbench {
                 });
                 self.planning.questions.remove(&plan.id);
                 self.planning.progress.remove(&plan.id);
+                self.planning.previews.remove(&plan.id);
             }
             plan.phase = Phase::Saved;
             self.save_plan(chat, plan, cx);
@@ -602,6 +656,11 @@ impl KarWorkbench {
             self.remember_workspace_plan(cx);
             self.sync_plan_placeholder(cx);
         }
+    }
+
+    pub(crate) fn current_plan_was_approved(&self, chat: Option<Uuid>, turn: Uuid) -> bool {
+        chat.and_then(|chat| self.planning.by_chat.get(&chat))
+            .is_some_and(|plan| plan.id == turn && plan.phase == Phase::Submitted)
     }
 
     pub(crate) fn planning_topic(&self) -> Option<&str> {

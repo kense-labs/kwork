@@ -4,8 +4,10 @@
 //! Rendering lives in the `ui_*` modules. This file owns the state those modules draw and the
 //! actions they trigger, and talks to Kar strictly through [`KarBridgeHandle`].
 
+mod aster_plan;
 mod commands;
 mod chat_goal;
+mod hardware;
 mod slash_actions;
 mod planning;
 mod resize;
@@ -49,9 +51,8 @@ use kui::{
 use uuid::Uuid;
 
 use crate::{
-    apply_unified_theme,
     brief::{BriefBlock, BriefInventory, KarBrief, build_showcase_kui_brief},
-    client_store::{ClientReducer, SessionAssociation, TurnCapture},
+    client_store::{ClientReducer, TurnCapture},
     coedit::{
         CoEditService, DemoCoEditEngine, DemoEditorMutation, FenceMutationPayload, LiveTargetState,
         RevisionFenceLedger, ScenarioKey, SubmissionOutcome, UserResolutionChoice,
@@ -59,7 +60,7 @@ use crate::{
     kar_bridge::{ChatCreateFailure, KarBridgeEvent, KarBridgeHandle, KarCommand, ProjectedChatState},
     office_host::{OfficeEditorView, OfficeTab, clean_doc_para_text, materialize_coedit_demo_files},
     remote_link::{PeerRole, QueueCopyError, RemoteAction, RemoteExtendedSnapshot, RemoteHostTelemetry, now_epoch_ms},
-    schedules::{ScheduleCadence, ScheduleRegistry, ScheduleRunOutcome, ScheduledTask},
+    schedules::{ScheduleCadence, ScheduleRegistry, ScheduleRunOutcome, ScheduledTask, workflow},
     studio_hub::{
         DiagLevel, DiagLogRing, DiffHunkData, GitWorkspaceSnapshot, GlobalSearchHit, InventoryTab,
         ProjectRegistry, TerminalRunRecord, UsageAnalyticsSnapshot, WorkspaceFilePreview,
@@ -75,7 +76,7 @@ use crate::{
     ui_motion::{DismissFn, MenuPlacement, ToastState, menu_popup, render_toast},
     ui_primitives::{
         DOC_MIN_W, FS_META, FS_READ, FS_TAG, FS_UI, ICON_SM, LH_META, LH_UI,
-        R_CTRL, SHEET_GUTTER, SIDEBAR_W, StudioPalette, TERMINAL_DEFAULT_H, TERMINAL_MIN_H,
+        R_CTRL, R_MODAL, SHEET_GUTTER, SIDEBAR_W, StudioPalette, TERMINAL_MIN_H,
         UiLocale, clean_display_doc_name, render_kbd, ui_font,
     },
     ui_settings::SettingsTab,
@@ -136,6 +137,8 @@ pub enum GitSubMode {
     #[default]
     Changes,
     Graph,
+    PullRequests,
+    Issues,
 }
 
 /// Primary stage surface inside the floating sheet (`Conversation` | `TasksInbox` | `OfficeGallery`).
@@ -457,6 +460,8 @@ pub struct KarWorkbench {
     pub sidebar_filter: String,
     pub sidebar_project_filter: Option<PathBuf>,
     pub settled_chats: BTreeSet<Uuid>,
+    pub(crate) hosted_writer: Option<Uuid>,
+    pub(crate) sidebar_metadata: BTreeMap<Uuid, crate::kar_bridge::SidebarMetadata>,
     pub settled_shelf_open: bool,
     pub thread_details_open: bool,
     pub bottom_terminal_open: bool,
@@ -515,6 +520,7 @@ pub struct KarWorkbench {
     goal_pending: BTreeSet<Uuid>,
     goal_form_baseline: String,
     pub(crate) goal_input: Entity<Input>,
+    goal_budget_input: Entity<Input>,
     pub(crate) rename_dialog: Entity<Dialog>,
     pub(crate) rename_input: Entity<Input>,
     pub(crate) branch_dialog: Entity<Dialog>,
@@ -532,7 +538,7 @@ pub struct KarWorkbench {
     /// Specific model id chosen for new chats (`None` uses the agent's default model).
     pub selected_model: Option<String>,
     /// The person chose `selected_runtime`; do not swap it for another ready agent.
-    pub(crate) runtime_chosen: bool,
+
     /// True while `kar::orientation::orient` is probing CLI agents in the background.
     pub(crate) providers_probing: bool,
     /// What new chats do when the agent needs permission.
@@ -540,6 +546,8 @@ pub struct KarWorkbench {
     /// Reasoning effort requested for new chats when the agent supports it.
     pub reasoning_effort: Option<String>,
     pub providers: Vec<ProviderStatusInfo>,
+    pub registry_catalog: Vec<crate::registry::CatalogEntry>,
+    pub registry_installed: Vec<crate::registry::Installed>,
     pub chat_list: Vec<ChatListEntry>,
     pub(crate) pending_delete_chat: Option<(Uuid, Instant)>,
     pub access_mode: ChatAccessMode,
@@ -554,6 +562,7 @@ pub struct KarWorkbench {
     pub(crate) queued_prompt: Option<QueuedPrompt>,
     slash: commands::SlashPicker,
     planning: planning::Planning,
+    aster_planning: aster_plan::AsterPlanning,
     /// Local files/images queued as attachments on the next prompt.
     pub(crate) pending_attachments: Vec<PathBuf>,
 
@@ -593,6 +602,7 @@ pub struct KarWorkbench {
     pub remote_telemetry: RemoteHostTelemetry,
     pub(crate) remote_mode_segmented: Entity<GlassSegmented>,
     pub(crate) remote_connect_url_input: Entity<Input>,
+    pub(crate) kremote_invite_input: Entity<Input>,
     pub(crate) remote_connect_code_input: Entity<Input>,
     pub(crate) remote_device_name_input: Entity<Input>,
     pub(crate) remote_requested_role: PeerRole,
@@ -602,7 +612,12 @@ pub struct KarWorkbench {
     pub(crate) schedule_creator_open: bool,
     pub schedule_registry: ScheduleRegistry,
     schedule_refresh_ms: u64,
-    schedule_leases: BTreeMap<Uuid, crate::schedules::ScheduleRunLease>,
+    pub(crate) schedule_workspace: Option<PathBuf>,
+    pub(crate) schedule_loaded: bool,
+    pub(crate) schedule_error: Option<String>,
+    pub(crate) editing_schedule_revision: Option<u64>,
+    pub(crate) schedule_pending_runs: BTreeMap<Uuid, (Uuid, bool)>,
+    pub(crate) schedule_save_pending: bool,
     pub(crate) schedule_title_input: Entity<Input>,
     pub(crate) schedule_prompt_input: Entity<Input>,
     pub(crate) schedule_draft_cadence: ScheduleCadence,
@@ -627,6 +642,7 @@ pub struct KarWorkbench {
     pub inline_git_diffs: BTreeMap<(PathBuf, bool), Vec<DiffHunkData>>,
     panel_workspace: PathBuf,
     git_drafts: BTreeMap<PathBuf, String>,
+    pub(crate) generating_commits: BTreeMap<PathBuf, String>,
     pub git_snapshot: GitWorkspaceSnapshot,
     pub(crate) git_branch_graph: Option<Entity<BranchGraph>>,
     pub(crate) git_commit_input: Entity<Input>,
@@ -650,6 +666,7 @@ pub struct KarWorkbench {
     pub usage_sheet_open: bool,
     pub usage_analytics: UsageAnalyticsSnapshot,
     pub handoff_sheet_open: bool,
+    pub handoff_receipt: Option<(Uuid, Box<kar::chat::Handoff>)>,
     pub handoff_target_runtime: String,
     pub handoff_budget_kb: usize,
     pub(crate) handoff_note_input: Entity<Input>,
@@ -657,7 +674,8 @@ pub struct KarWorkbench {
     pub(crate) side_question_input: Entity<Input>,
     pub(crate) side_question_request: Option<Uuid>,
     pub side_question_pending: bool,
-    pub side_question_last_reply: Option<(String, String, bool)>,
+    pub side_question_last_reply: Option<(String, String)>,
+    pub(crate) side_question_capability: Option<(Uuid,String)>,
     pub logs_sheet_open: bool,
     pub diag_logs: DiagLogRing,
     pub(crate) log_stream_revision: Option<u64>,
@@ -677,6 +695,42 @@ pub struct KarWorkbench {
     pub usage_by_project: bool,
     pub usage_period_days: u32,
     pub selected_skill_inspector: Option<String>,
+
+    // ── Complete Preferences, PTY, Voice, Forge, Devices & Search ───────────
+    pub prefs: crate::prefs::DesktopPreferences,
+    pub active_pty: Option<std::sync::Arc<crate::pty_terminal::InteractivePtySession>>,
+    pub pty_focus: FocusHandle,
+    pub detected_dev_ports: Vec<u16>,
+    pub active_voice_rec: Option<crate::hardware::Recording>,
+    voice_owner: Option<DraftLocation>,
+    hardware_owners: BTreeMap<Uuid,DraftLocation>,
+    migrating_voice_keys: BTreeMap<Uuid, String>,
+    held_voice_key: Option<String>,
+    pub(crate) microphone_name: Option<String>,
+    pub voice_env: crate::hardware::VoiceState,
+    pub installed_editors: Vec<crate::forge_devices_voice::InstalledEditor>,
+    pub forge_prs: Vec<crate::forge_devices_voice::ForgePullRequest>,
+    pub forge_issues: Vec<crate::forge_devices_voice::ForgeIssue>,
+    pub forge_error: Option<String>,
+    pub forge_create_pr_open: bool,
+    pub(crate) forge_workspace: Option<PathBuf>,
+    pub(crate) forge_pending: Option<Uuid>,
+    forge_last_operation: Option<(String,Uuid)>,
+    pub(crate) forge_draft_epoch: usize,
+    pub devices: crate::hardware::DeviceState,
+    pub external_transcripts: Vec<crate::forge_devices_voice::ExternalTranscriptCandidate>,
+    pub storage_breakdown: Option<crate::forge_devices_voice::StorageUsageSummary>,
+    pub managed_worktrees: Vec<crate::forge_devices_voice::ManagedWorktreeItem>,
+    pub desktop_update_report: Option<crate::forge_devices_voice::DesktopAppUpdateReport>,
+    pub agent_update_statuses: BTreeMap<String, (String, bool)>,
+    pub login_prompt: Option<(String, Option<String>, Option<String>, String)>,
+    pub editing_schedule_id: Option<String>,
+    pub chat_search_open: bool,
+    pub chat_search_query: String,
+    pub chat_search_match_ix: usize,
+    pub quit_pending_since: Option<Instant>,
+    pub pending_confirm_action: Option<(String, Instant)>,
+    pub(crate) caffeinate_guard: crate::forge_devices_voice::CaffeinateGuard,
 }
 
 impl KarWorkbench {
@@ -686,6 +740,7 @@ impl KarWorkbench {
             && !config.open_tasks_inbox && !config.open_office_gallery
             && config.open_files.is_empty() && config.initial_terminal_cmd.is_none();
 
+        let loaded_prefs = crate::prefs::DesktopPreferences::load(&config.chat_dir);
         let override_mode = match (config.dark_mode, config.light_mode) {
             (true, _) => Some(ThemeMode::Dark),
             (_, true) => Some(ThemeMode::Light),
@@ -699,15 +754,20 @@ impl KarWorkbench {
         };
         let theme_mode =
             override_mode.unwrap_or_else(|| crate::system_theme(cx.window_appearance()));
+        cx.observe_window_activation(window, |this, window, cx| {
+            if !window.is_window_active() && this.held_voice_key.take().is_some() && this.active_voice_rec.is_some() {
+                this.toggle_voice_dictation(window,cx);
+            }
+        }).detach();
         cx.observe_window_appearance(window, |this, window, cx| {
             if this.follow_system_appearance {
                 this.theme_mode = crate::system_theme(window.appearance());
-                apply_unified_theme(this.theme_mode, cx);
+                crate::apply_theme_and_typography(this.theme_mode, &this.prefs, cx);
                 cx.notify();
             }
         })
         .detach();
-        apply_unified_theme(theme_mode, cx);
+        crate::apply_theme_and_typography(theme_mode, &loaded_prefs, cx);
 
         let bridge =
             KarBridgeHandle::spawn(config.chat_dir.clone(), config.workspace_dir.clone());
@@ -724,9 +784,10 @@ impl KarWorkbench {
         };
         let initial_width = f32::from(window.viewport_size().width);
         let (sidebar_width, split_ratio) = resize::initial_sizes(&config);
-        let initial_sidebar_open = initial_width >= COMPACT_WORKSPACE_WIDTH
+        let default_sidebar_open = initial_width >= COMPACT_WORKSPACE_WIDTH
             && (initial_layout == WorkspaceLayoutMode::ChatFocus
                 || initial_width >= AUTO_COLLAPSE_RAIL_WIDTH);
+        let initial_sidebar_open = loaded_prefs.sidebar_open.unwrap_or(default_sidebar_open);
         let initial_scenario = config
             .initial_coedit_scenario
             .unwrap_or(ScenarioKey::WordSameParagraph);
@@ -994,6 +1055,10 @@ impl KarWorkbench {
             Input::new("kar-goal-input", ui_locale.pick("对话目标", "Chat goal"), window, cx)
                 .with_placeholder(ui_locale.pick("输入可验证的目标", "Enter a verifiable objective"), cx)
         });
+        let goal_budget_input = cx.new(|cx| {
+            Input::new("kar-goal-budget", ui_locale.pick("Token 预算", "Token budget"), window, cx)
+                .with_placeholder(ui_locale.pick("可选，输入 token 数", "Optional token limit"), cx)
+        });
         let goal_field_for_dialog = goal_input.clone();
         let goal_owner = cx.weak_entity();
         let goal_dialog = cx.new(|cx| {
@@ -1043,7 +1108,7 @@ impl KarWorkbench {
         )
         .detach();
 
-        for (field, dialog) in [(&rename_input, rename_dialog.clone()), (&goal_input, goal_dialog.clone())] {
+        for (field, dialog) in [(&rename_input, rename_dialog.clone()), (&goal_input, goal_dialog.clone()), (&goal_budget_input, goal_dialog.clone())] {
             let editor = field.read(cx).editor();
             cx.subscribe_in(&editor, window, move |this, _, event: &EditEvent, window, cx| {
                 if !dialog.read(cx).is_open() { return; }
@@ -1126,6 +1191,7 @@ impl KarWorkbench {
         )
         .detach();
 
+        let kremote_invite_input = Self::kremote_invite_field(ui_locale, window, cx);
         let remote_mode_segmented = Self::remote_mode_selector(ui_locale, false, cx);
         let [
             remote_connect_url_input,
@@ -1314,7 +1380,6 @@ impl KarWorkbench {
         )
         .detach();
 
-        let now_ms = now_epoch_ms();
         let agent_choice =
             crate::client_store::desktop_preference(&config.chat_dir, "agent-choice")
                 .and_then(|s| serde_json::from_str::<AgentChoice>(&s).ok())
@@ -1329,7 +1394,7 @@ impl KarWorkbench {
                 == Some("true");
         let client_reducer = ClientReducer::new(&config.chat_dir);
         let fence_ledger = RevisionFenceLedger::load(&config.docs_dir);
-        let schedule_registry = ScheduleRegistry::load_or_seed(&config.chat_dir, "codex", now_ms);
+        let schedule_registry = ScheduleRegistry::default();
         let project_registry =
             ProjectRegistry::load_or_seed(&config.chat_dir, &config.workspace_dir);
         let initial_briefs = if config.start_brief_demo {
@@ -1386,17 +1451,21 @@ impl KarWorkbench {
             navigation_index: navigation.len() - 1,
             navigation,
             sidebar_filter: String::new(),
-            sidebar_project_filter: None,
-            settled_chats: BTreeSet::new(),
+            sidebar_project_filter: loaded_prefs.active_project_filter.clone(),
+            settled_chats: loaded_prefs.settled_chats.clone(),
+            sidebar_metadata: BTreeMap::new(),
+            hosted_writer: None,
             settled_shelf_open: false,
             thread_details_open: !config.hide_details_card,
-            bottom_terminal_open: config.open_bottom_terminal,
-            bottom_terminal_h: TERMINAL_DEFAULT_H,
-            bottom_terminal_anim: Slide::new(if config.open_bottom_terminal {
-                TERMINAL_DEFAULT_H
-            } else {
-                0.
-            }),
+            bottom_terminal_open: config.open_bottom_terminal || loaded_prefs.bottom_terminal_open,
+            bottom_terminal_h: loaded_prefs.bottom_terminal_h.clamp(TERMINAL_MIN_H, 680.),
+            bottom_terminal_anim: Slide::new(
+                if config.open_bottom_terminal || loaded_prefs.bottom_terminal_open {
+                    loaded_prefs.bottom_terminal_h.clamp(TERMINAL_MIN_H, 680.)
+                } else {
+                    0.
+                },
+            ),
             dragging_terminal: false,
             terminal_drag_anchor: None,
             expanded_turn_changes: BTreeMap::new(),
@@ -1441,6 +1510,7 @@ impl KarWorkbench {
             goal_pending: BTreeSet::new(),
             goal_form_baseline: String::new(),
             goal_input,
+            goal_budget_input,
             rename_dialog,
             rename_input,
             branch_input,
@@ -1453,13 +1523,13 @@ impl KarWorkbench {
             coedit_manual_editor,
             selected_runtime: agent_choice
                 .as_ref()
-                .map_or_else(|| "codex".into(), |c| c.runtime.clone()),
-            runtime_chosen: agent_choice.is_some(),
+                .map_or_else(|| crate::aster::ID.into(), |c| c.runtime.clone()),
             selected_model: agent_choice.as_ref().and_then(|c| c.model.clone()),
             providers_probing: true,
             approval_mode,
             reasoning_effort: agent_choice.and_then(|c| c.effort),
             providers: Vec::new(),
+            registry_catalog: vec![], registry_installed: vec![],
             chat_list: Vec::new(),
             pending_delete_chat: None,
             access_mode: ChatAccessMode::NoneSelected,
@@ -1473,6 +1543,7 @@ impl KarWorkbench {
             queued_prompt: None,
             slash: commands::SlashPicker::default(),
             planning: planning::Planning::default(),
+            aster_planning: Default::default(),
             pending_attachments: Vec::new(),
             copy_buttons: BTreeMap::new(),
             part_open: BTreeMap::new(),
@@ -1495,6 +1566,7 @@ impl KarWorkbench {
             brief_widgets: BriefWidgetCache::default(),
             remote_sheet_open: config.open_remote_sheet,
             remote_tab_connect: false,
+            kremote_invite_input,
             remote_telemetry: RemoteHostTelemetry::default(),
             remote_mode_segmented,
             remote_connect_url_input,
@@ -1506,8 +1578,13 @@ impl KarWorkbench {
             schedules_sheet_open: config.open_schedules_sheet,
             schedule_creator_open: false,
             schedule_registry,
-            schedule_refresh_ms: now_ms,
-            schedule_leases: BTreeMap::new(),
+            schedule_refresh_ms: 0,
+            schedule_workspace: None,
+            schedule_loaded: false,
+            schedule_error: None,
+            editing_schedule_revision: None,
+            schedule_pending_runs: BTreeMap::new(),
+            schedule_save_pending: false,
             schedule_title_input,
             schedule_prompt_input,
             schedule_draft_cadence: ScheduleCadence::DailyNineAm,
@@ -1530,6 +1607,7 @@ impl KarWorkbench {
             inline_git_diffs: BTreeMap::new(),
             panel_workspace: config.workspace_dir.clone(),
             git_drafts: BTreeMap::new(),
+            generating_commits: BTreeMap::new(),
             git_snapshot: if config.start_demo_chat || config.start_brief_demo {
                 crate::studio_hub::demo_git_snapshot()
             } else {
@@ -1544,7 +1622,7 @@ impl KarWorkbench {
             tool_json_viewers: BTreeMap::new(),
             workspace_tree: Vec::new(),
             workspace_tree_view: None,
-            tree_show_hidden: false,
+            tree_show_hidden: loaded_prefs.tree_show_hidden,
             terminal_runs: Vec::new(),
             terminal_cmd_input,
             skills_sheet_open: config.open_skills_sheet,
@@ -1560,13 +1638,15 @@ impl KarWorkbench {
             usage_sheet_open: config.open_usage_sheet,
             usage_analytics: UsageAnalyticsSnapshot::default(),
             handoff_sheet_open: config.open_handoff_sheet,
+            handoff_receipt: None,
             handoff_target_runtime: "claude".into(),
             handoff_budget_kb: 64,
             handoff_note_input,
-            side_question_open: config.open_side_question,
+            side_question_open: false,
             side_question_input,
             side_question_pending: false,
             side_question_last_reply: None,
+            side_question_capability: None,
             side_question_request: None,
             logs_sheet_open: config.open_logs_sheet,
             diag_logs: DiagLogRing::default(),
@@ -1590,12 +1670,43 @@ impl KarWorkbench {
             usage_by_project: false,
             usage_period_days: 28,
             selected_skill_inspector: None,
+            prefs: loaded_prefs,
+            active_pty: None,
+            pty_focus: cx.focus_handle(),
+            detected_dev_ports: Vec::new(),
+            active_voice_rec: None,
+            voice_owner: None,
+            hardware_owners: Default::default(),
+            migrating_voice_keys: Default::default(),
+            held_voice_key: None,
+            microphone_name: None,
+            voice_env: Default::default(),
+            installed_editors: Vec::new(),
+            forge_prs: Vec::new(),
+            forge_issues: Vec::new(),
+            forge_error: None,
+            forge_create_pr_open: false,
+            forge_workspace:None, forge_pending:None, forge_last_operation:None, forge_draft_epoch:0,
+            devices: Default::default(),
+            external_transcripts: Vec::new(),
+            storage_breakdown: None,
+            managed_worktrees: Vec::new(),
+            desktop_update_report: None,
+            agent_update_statuses: BTreeMap::new(),
+            login_prompt: None,
+            editing_schedule_id: None,
+            chat_search_open: false,
+            chat_search_query: String::new(),
+            chat_search_match_ix: 0,
+            quit_pending_since: None,
+            pending_confirm_action: None,
+            caffeinate_guard: crate::forge_devices_voice::CaffeinateGuard::new(),
         };
 
         if config.open_office_gallery {
             this.bridge.send(KarCommand::RefreshWorkspaceTree {
                 workspace: config.workspace_dir.clone(),
-                show_hidden: false,
+                show_hidden: this.tree_show_hidden,
             });
         }
 
@@ -1749,6 +1860,8 @@ impl KarWorkbench {
         }
         if self.bottom_terminal_open != open {
             self.bottom_terminal_open = open;
+            self.prefs.bottom_terminal_open = open;
+            self.save_prefs();
             self.bottom_terminal_anim.duration(
                 if open { self.bottom_terminal_h } else { 0. },
                 0.22,
@@ -1763,19 +1876,8 @@ impl KarWorkbench {
     }
 
     pub fn toggle_settle_chat(&mut self, chat_id: Uuid, cx: &mut Context<Self>) {
-        let loc = self.ui_locale;
-        if self.settled_chats.remove(&chat_id) {
-            self.notify_toast(
-                loc.pick("已恢复到活跃对话列表", "Moved back to active threads"),
-                cx,
-            );
-        } else {
-            self.settled_chats.insert(chat_id);
-            self.notify_toast(
-                loc.pick("已归档至已结项 (Settled)", "Thread marked as settled"),
-                cx,
-            );
-        }
+        let settled = !self.settled_chats.contains(&chat_id);
+        self.bridge.send(KarCommand::UpdateSidebar { chat_id, action: crate::kar_bridge::SidebarAction::Settle(settled) });
         cx.notify();
     }
 
@@ -1806,6 +1908,55 @@ impl KarWorkbench {
         }
     }
 
+    pub fn save_prefs(&self) {
+        self.prefs.save(&self.config.chat_dir);
+    }
+
+    pub(crate) fn forge_operation(&mut self,key:&str) -> Uuid {
+        let id=self.forge_last_operation.as_ref().filter(|(k,_)|k==key).map(|(_,id)|*id).unwrap_or_else(Uuid::new_v4);
+        self.forge_last_operation=Some((key.to_owned(),id));
+        self.forge_pending=Some(id);
+        id
+    }
+
+    pub fn confirm_or_run(
+        &mut self,
+        key: impl Into<String>,
+        required: bool,
+        hint: impl Into<String>,
+        cx: &mut Context<Self>,
+        action: impl FnOnce(&mut Self, &mut Context<Self>),
+    ) {
+        let key = key.into();
+        if !required {
+            self.pending_confirm_action = None;
+            action(self, cx);
+            return;
+        }
+        if let Some((prev_key, at)) = &self.pending_confirm_action
+            && prev_key == &key
+            && at.elapsed().as_secs_f32() < 5.0
+        {
+            self.pending_confirm_action = None;
+            action(self, cx);
+        } else {
+            self.pending_confirm_action = Some((key, Instant::now()));
+            self.notify_toast(hint.into(), cx);
+        }
+    }
+
+    pub fn open_workspace_in_preferred_editor(
+        &mut self,
+        target: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        self.bridge.send(KarCommand::OpenEditor {
+            workspace: self.effective_workspace_dir(), target,
+            preferred: self.prefs.preferred_external_editor.clone(),
+        });
+        cx.notify();
+    }
+
     pub(crate) fn follows_system_appearance(&self) -> bool {
         self.follow_system_appearance
     }
@@ -1818,7 +1969,7 @@ impl KarWorkbench {
             "appearance",
             "system",
         );
-        apply_unified_theme(self.theme_mode, cx);
+        crate::apply_theme_and_typography(self.theme_mode, &self.prefs, cx);
         cx.notify();
     }
 
@@ -1834,7 +1985,7 @@ impl KarWorkbench {
                 "light"
             },
         );
-        apply_unified_theme(mode, cx);
+        crate::apply_theme_and_typography(mode, &self.prefs, cx);
         cx.notify();
     }
 
@@ -1928,6 +2079,9 @@ impl KarWorkbench {
             ed.set_placeholder(cmp_ph);
             cx.notify();
         });
+        let invite = self.kremote_invite_input.read(cx).value(cx).to_string();
+        self.kremote_invite_input = Self::kremote_invite_field(self.ui_locale, window, cx);
+        self.kremote_invite_input.update(cx, |input, cx| input.set_value(invite, window, cx));
         self.remote_mode_segmented =
             Self::remote_mode_selector(self.ui_locale, self.remote_tab_connect, cx);
         let values = [
@@ -2003,7 +2157,10 @@ impl KarWorkbench {
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.set_sidebar_open(!self.sidebar_open, cx);
+        let next = !self.sidebar_open;
+        self.prefs.sidebar_open = Some(next);
+        self.save_prefs();
+        self.set_sidebar_open(next, cx);
     }
 
     // ── Menus, dialogs, toasts, notices ─────────────────────────────────────
@@ -2170,11 +2327,9 @@ impl KarWorkbench {
 
     fn filtered_palette_items(&self) -> Vec<&'static PaletteItem> {
         let q = self.cmd_query.trim().to_lowercase();
-        if q.is_empty() {
-            return PALETTE_ITEMS.iter().collect();
-        }
         PALETTE_ITEMS
             .iter()
+            .filter(|item|item.id!="side_question" || self.supports_side_question())
             .filter(|item| {
                 item.label.to_lowercase().contains(&q)
                     || item.label_en.to_lowercase().contains(&q)
@@ -2290,20 +2445,41 @@ impl KarWorkbench {
 
     fn on_bridge_event(&mut self, ev: KarBridgeEvent, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
-            KarBridgeEvent::StoreReady { .. } => {}
+            KarBridgeEvent::StorageInspected(report) => self.storage_breakdown = Some(report),
+            KarBridgeEvent::EditorsLoaded(editors) => self.installed_editors = editors,
+            KarBridgeEvent::RegistryCatalog(rows) => self.registry_catalog = rows,
+            KarBridgeEvent::RegistryInstalled(rows) => {
+                crate::registry::merge(&mut self.providers, &rows);
+                self.registry_installed = rows;
+            }
+            KarBridgeEvent::LegacyAcpRegistered(id) => {
+                self.prefs.custom_acp_agents.retain(|agent| agent.id != id);
+                self.save_prefs();
+            }
+            KarBridgeEvent::ForgeCredentialStored(index) => {
+                let old = match index { 0 => &mut self.prefs.github_token, 1 => &mut self.prefs.gitlab_token, _ => &mut self.prefs.linear_token };
+                if !old.is_empty() { old.clear(); self.save_prefs(); }
+            }
+            KarBridgeEvent::StoreReady { .. } => {
+                self.bridge.send(KarCommand::Registry(crate::registry::Action::List));
+                for agent in self.prefs.custom_acp_agents.iter().filter(|agent| agent.enabled) {
+                    self.bridge.send(KarCommand::Registry(crate::registry::Action::Register(agent.clone())));
+                }
+
+                let legacy = [self.prefs.github_token.clone(), self.prefs.gitlab_token.clone(), self.prefs.linear_token.clone()];
+                if legacy.iter().any(|s| !s.is_empty()) {
+                    self.bridge.send(KarCommand::StoreForgeCredentials(crate::kar_bridge::ForgeCredentials(legacy)));
+                }
+            }
             KarBridgeEvent::ProvidersProbing(probing) => {
                 self.providers_probing = probing;
             }
-            KarBridgeEvent::ProvidersUpdated(list) => {
-                let current_ready = list
-                    .iter()
-                    .any(|p| p.id == self.selected_runtime && p.is_ready());
-                if !self.runtime_chosen
-                    && !current_ready
-                    && let Some(ready) = list.iter().find(|p| p.is_ready())
+            KarBridgeEvent::ProvidersUpdated(mut list) => {
+                crate::registry::merge(&mut list, &self.registry_installed);
+                if crate::aster::is_aster(&self.selected_runtime)
+                    && let Some(aster) = list.iter().find(|p| crate::aster::is_aster(&p.id))
                 {
-                    self.selected_runtime = ready.id.clone();
-                    self.selected_model = None;
+                    self.selected_runtime = aster.id.clone();
                 }
                 if let Some(sel_model) = &self.selected_model
                     && let Some(agent) = list.iter().find(|p| p.id == self.selected_runtime)
@@ -2315,10 +2491,28 @@ impl KarWorkbench {
                 self.providers = list;
                 self.refresh_agent_notice(cx);
             }
+            KarBridgeEvent::SidebarMetadata { dir, rows } => {
+                if self.config.chat_dir != dir { return; }
+                for (id, meta) in &rows {
+                    if meta.pinned { self.project_registry.pinned_chats.insert(*id); } else { self.project_registry.pinned_chats.remove(id); }
+                    if meta.settled || meta.archived { self.settled_chats.insert(*id); } else { self.settled_chats.remove(id); }
+                }
+                self.sidebar_metadata = rows;
+                for entry in &mut self.chat_list {
+                    if let Some(title) = self.sidebar_metadata.get(&entry.info.id).and_then(|m| m.title.as_deref()) {
+                        entry.title = title.to_owned();
+                    }
+                }
+            }
             KarBridgeEvent::ChatsListed(entries) => {
                 let latest = std::mem::take(&mut self.config.open_latest_chat);
                 let resume = std::mem::take(&mut self.config.resume_last_chat);
                 self.chat_list = entries;
+                for entry in &mut self.chat_list {
+                    if let Some(title) = self.sidebar_metadata.get(&entry.info.id).and_then(|m| m.title.as_deref()) {
+                        entry.title = title.to_owned();
+                    }
+                }
                 if (latest || resume) && matches!(self.access_mode, ChatAccessMode::NoneSelected)
                     && self.queued_prompt.is_none() && self.composer_editor.read(cx).value().is_empty()
                     && self.config.subscribe_http.is_none() && !self.config.start_demo_chat {
@@ -2378,9 +2572,11 @@ impl KarWorkbench {
                     self.session_commands = Some((chat_id, commands));
                 }
             }
+            KarBridgeEvent::AsterModeReady { chat_id, result } => self.aster_mode_result(chat_id, result, window, cx),
             KarBridgeEvent::PlanChatCreated { chat_id, request_id, topic } => {
                 self.plan_chat_created(chat_id, request_id, topic, window, cx);
             }
+            KarBridgeEvent::PlanDelta {chat_id, request_id, item, delta} => self.plan_delta(chat_id, request_id, item, &delta, cx),
             KarBridgeEvent::PlanProgress { chat_id, request_id, label } => self.plan_progress(chat_id,request_id,label,cx),
             KarBridgeEvent::PlanGenerated { chat_id, request_id, result } => {
                 self.finish_planning(chat_id, request_id, result, window, cx);
@@ -2388,7 +2584,14 @@ impl KarWorkbench {
             KarBridgeEvent::PlanQuestions {chat_id, request_id, questions} => {
                 self.receive_plan_questions(chat_id, request_id, questions, window, cx);
             }
+            KarBridgeEvent::HandoffReceipt { chat_id, latest } => {
+                if self.current_chat_id() == Some(chat_id) {
+                    self.handoff_receipt = latest.map(|row| (chat_id,row));
+                }
+            }
+            KarBridgeEvent::HostedSession(chat) => self.hosted_writer = Some(chat),
             KarBridgeEvent::AccessModeChanged(mode) => {
+                self.hosted_writer = None;
                 if let Some(id) = mode.selected_chat_id() { self.load_saved_plan(id, cx); }
                 self.session_commands = None;
                 let writable =
@@ -2410,6 +2613,8 @@ impl KarWorkbench {
                     self.notify_warning(format!("无法保存上次打开的对话：{err}"), cx);
                 }
                 if chat_changed {
+                    self.side_question_open=false;
+                    self.side_question_capability=None;
                     self.side_question_request = None;
                     self.side_question_pending = false;
                     self.side_question_last_reply = None;
@@ -2535,6 +2740,8 @@ impl KarWorkbench {
                 let new_turn_appended = same_chat && proj.turns.len() > self.projected.turns.len();
                 let switched_chat = !same_chat;
 
+                let was_running = same_chat && self.turn_in_progress();
+                let had_pending = same_chat && !self.projected.pending_requests.is_empty();
                 self.turn_navigation.update_turns(&self.projected, &proj);
                 self.sync_timeline_entities(&proj, cx);
                 self.sync_client_projection(&proj);
@@ -2549,6 +2756,49 @@ impl KarWorkbench {
                 }
                 self.projected = proj;
                 self.reconcile_plan_submission(cx);
+                let now_running = self.turn_in_progress();
+                let now_pending = !self.projected.pending_requests.is_empty();
+                self.caffeinate_guard
+                    .sync(self.prefs.keep_awake_while_working && now_running);
+                if (!had_pending && now_pending)
+                    && self.prefs.system_notifications != crate::prefs::NotificationLevel::Off
+                {
+                    crate::forge_devices_voice::send_macos_notification(
+                        "Kwrok 需要你的确认",
+                        "智能体正在等待权限审批或问题回复",
+                        self.prefs.notification_sound,
+                    );
+                } else if was_running && !now_running {
+                    let failed = self
+                        .projected
+                        .turns
+                        .last()
+                        .is_some_and(|t| t.status == TurnStatus::Failed);
+                    if failed
+                        && self.prefs.system_notifications != crate::prefs::NotificationLevel::Off
+                    {
+                        crate::forge_devices_voice::send_macos_notification(
+                            "Kwrok 对话执行受阻",
+                            "最新一轮智能体任务未能完成，请查看详情",
+                            self.prefs.notification_sound,
+                        );
+                    } else if !failed
+                        && self.prefs.system_notifications
+                            == crate::prefs::NotificationLevel::All
+                    {
+                        crate::forge_devices_voice::send_macos_notification(
+                            "Kwrok 任务已完成",
+                            "智能体已完成本轮回复与改动",
+                            self.prefs.notification_sound,
+                        );
+                    }
+                    if !now_pending
+                        && self.access_mode.is_writable()
+                        && let Some(queued) = self.queued_prompt.take()
+                    {
+                        self.dispatch_prompt(queued.text, queued.target, queued.attachments, cx);
+                    }
+                }
                 if switched_chat || workspace_changed {
                     self.sync_workspace_panels(window, cx);
                 }
@@ -2573,6 +2823,7 @@ impl KarWorkbench {
                 self.prompt_attempts.insert(attempt.request_id, attempt);
                 if failed { self.reconcile_plan_submission(cx); }
             }
+            KarBridgeEvent::Hardware {workspace,request_id,result} => self.on_hardware(workspace,request_id,result,window,cx),
             KarBridgeEvent::GoalResult { chat_id, action, result } =>
                 self.on_goal_result(chat_id, action, result, window, cx),
             KarBridgeEvent::GoalChatCreated(chat_id) => {
@@ -2582,10 +2833,10 @@ impl KarWorkbench {
             KarBridgeEvent::ChatCreateFailed { plan_request_id, cause, mut detail, goal_draft } => {
                 if let Some(id) = plan_request_id { self.plan_create_failed(id, window, cx); }
                 self.config.initial_terminal_cmd = None;
-                if let Some((workspace, objective)) = goal_draft {
+                if let Some((workspace, command)) = goal_draft {
                     self.slash.creating_goal = false;
                     self.prepend_composer_draft(DraftLocation::Project(workspace),
-                        QueuedPrompt { text: format!("/goal {objective}"), ..Default::default() }, window, cx);
+                        QueuedPrompt { text: command, ..Default::default() }, window, cx);
                 } else {
                     self.restore_queued_prompt(window, cx);
                 }
@@ -2792,47 +3043,40 @@ impl KarWorkbench {
                     }
                 }
             }
-            KarBridgeEvent::RemoteBriefFeedbackReceived {
-                brief_id,
-                revision,
-                summary_markdown,
-            } => {
-                self.notify_toast(
-                    format!("收到配对设备对简报 `{brief_id}` (v{revision}) 的评审回执"),
-                    cx,
-                );
-                self.dispatch_prompt(summary_markdown, None, Vec::new(), cx);
-            }
-            KarBridgeEvent::ScheduleRunFinished { request_id, outcome } => {
-                if let Err(err)=self.schedule_registry.transact(&self.config.chat_dir,now_epoch_ms(),|reg|Ok(reg.update_run(request_id,None,outcome))) {self.notify_warning(err.to_string(),cx);}
-                self.schedule_leases.remove(&request_id);
-            }
-            KarBridgeEvent::ScheduledChatCreated {
-                request_id,
-                task_id,
-                chat_id,
-            } => {
-                let label = self
-                    .schedule_registry
-                    .tasks
-                    .iter()
-                    .find(|t| t.id == task_id)
-                    .map(|t| t.title.clone())
-                    .unwrap_or_else(|| task_id.clone());
-                self.client_reducer
-                    .bind_association(chat_id, SessionAssociation::schedule(task_id, label));
-                if let Err(err) =
-                    self.schedule_registry
-                        .transact(&self.config.chat_dir, now_epoch_ms(), |reg| {
-                            Ok(reg.attach_run_chat(
-                                request_id,
-                                chat_id,
-                                ScheduleRunOutcome::Admitted,
-                            ))
-                        })
-                {
-                    self.notify_warning(err.to_string(), cx);
+            KarBridgeEvent::WorkflowsLoaded { workspace, result, saved, run_task, report_errors } => {
+                if workspace != self.effective_workspace_dir() { return; }
+                self.ensure_schedule_workspace();
+                if saved { self.schedule_save_pending = false; }
+                if let Some(task)=run_task {
+                    if result.is_ok() { self.schedule_pending_runs.remove(&task); }
+                    else if let Some((_,in_flight))=self.schedule_pending_runs.get_mut(&task) { *in_flight=false; }
                 }
+                self.schedule_error=result.as_ref().err().cloned();
+                match result {
+                    Ok(registry) => {
+                        for task in &registry.tasks {
+                            for receipt in &task.history {
+                                if let Some(chat) = receipt.chat_id && self.client_reducer.associations.get(&chat).is_none() {
+                                    self.client_reducer.bind_association(chat, task.association());
+                                }
+                            }
+                        }
+                        self.schedule_loaded = true;
+                        self.schedule_registry = registry;
+                        if saved {
+                            self.schedule_title_input.update(cx, |input,cx| input.set_value("", window, cx));
+                            self.schedule_prompt_input.update(cx, |input,cx| input.set_value("", window, cx));
+                            self.editing_schedule_id = None;
+                            self.schedule_creator_open = false;
+                            self.notify_toast("任务已保存到工作台", cx);
+                        }
+                    }
+                    Err(error) => {
+                        if report_errors { self.notify_warning(error, cx); }
+                        else { log::warn!("Cannot refresh Kar workflows: {error}"); }
+                    }
+                }
+                cx.notify();
             }
             KarBridgeEvent::AutoBackgroundedCommand(bg) => {
                 let summary = bg.command_summary.clone();
@@ -2852,8 +3096,9 @@ impl KarWorkbench {
                     self.git_commit_input.update(cx, |input, cx| input.set_value("", window, cx));
                 }
             }
-            KarBridgeEvent::GitWorkspaceUpdated { workspace, snapshot, tree } => {
+            KarBridgeEvent::GitWorkspaceUpdated { workspace, snapshot } => {
                 if workspace != self.effective_workspace_dir() { return; }
+                let refresh_tree = self.workspace_tree_view.is_none() || self.git_snapshot != snapshot;
                 self.git_snapshot = snapshot;
                 self.inline_git_diffs.clear();
                 self.patch_review_cache
@@ -2871,10 +3116,8 @@ impl KarWorkbench {
                     }
                 }
                 self.git_branch_graph = None;
-                // Bug #11 Fix: only recreate `TreeView` if the directory tree actually changed!
-                if !self.tree_show_hidden && (self.workspace_tree != tree || self.workspace_tree_view.is_none()) {
-                    self.workspace_tree = tree;
-                    self.rebuild_workspace_tree_view(window, cx);
+                if refresh_tree {
+                    self.bridge.send(KarCommand::RefreshWorkspaceTree { workspace, show_hidden: self.tree_show_hidden });
                 }
             }
             KarBridgeEvent::GitFileDiffLoaded { workspace, rel_path, staged, hunks } => {
@@ -2885,8 +3128,10 @@ impl KarWorkbench {
             }
             KarBridgeEvent::WorkspaceTreeUpdated { workspace, show_hidden, tree } => {
                 if workspace != self.effective_workspace_dir() || show_hidden != self.tree_show_hidden { return; }
-                self.workspace_tree = tree;
-                self.rebuild_workspace_tree_view(window, cx);
+                if self.workspace_tree_view.is_none() || self.workspace_tree != tree {
+                    self.workspace_tree = tree;
+                    self.rebuild_workspace_tree_view(window, cx);
+                }
             }
             KarBridgeEvent::WorktreeCreated { chat_id, meta } => {
                 let branch = meta.branch.clone();
@@ -2951,25 +3196,28 @@ impl KarWorkbench {
             KarBridgeEvent::UsageAnalyticsUpdated(analytics) => {
                 self.usage_analytics = analytics;
             }
-            KarBridgeEvent::SideQuestionAnswered {
-                request_id,
-                question,
-                answer,
-                via_native_fork,
-            } => {
-                if self.side_question_request != Some(request_id) {
-                    return;
+            KarBridgeEvent::SideQuestionCapability{chat,native,supported}=>{
+                if self.current_chat_id() == Some(chat) {
+                    self.side_question_capability=supported.then_some((chat,native));
+                    if supported && self.config.open_side_question {self.config.open_side_question=false; self.side_question_open=true;}
                 }
-                self.side_question_request = None;
-                self.side_question_pending = false;
-                self.side_question_last_reply = Some((question, answer, via_native_fork));
+            }
+            KarBridgeEvent::SideQuestionAnswered{ request_id,question,result }=>{
+                if self.side_question_request!=Some(request_id){return;}
+                self.side_question_request=None;
+                self.side_question_pending=false;
+                match result {
+                    Ok(answer)=>self.side_question_last_reply=Some((question,answer)),
+                    Err(message)=>self.notify_warning(format!("旁路提问未完成：{message}"),cx),
+                }
             }
             KarBridgeEvent::HandoffCompleted {
                 target_runtime,
                 summary_message,
-                ..
+                chat_id,
             } => {
-                self.selected_runtime = target_runtime.clone();
+                if chat_id.is_some() && chat_id != self.current_chat_id() { return; }
+                if chat_id.is_none() { self.selected_runtime = target_runtime.clone(); }
                 self.handoff_note_input
                     .update(cx, |input, cx| input.set_value("", window, cx));
                 self.diag_logs.push(
@@ -3002,8 +3250,77 @@ impl KarWorkbench {
                 suggestion,
             } => {
                 if self.current_chat_id() == Some(chat_id) {
-                    self.live_prompt_suggestion = suggestion;
+                    self.live_prompt_suggestion =
+                        self.prefs.prompt_suggestions_enabled.then_some(suggestion).flatten();
                 }
+            }
+            KarBridgeEvent::LoginInteractionPrompt {
+                runtime_id,
+                auth_url,
+                device_code,
+                message,
+            } => {
+                self.login_prompt = Some((runtime_id, auth_url, device_code, message.clone()));
+                self.notify_toast(message, cx);
+            }
+            KarBridgeEvent::AgentUpdateStatus {
+                runtime_id,
+                summary,
+                update_available,
+            } => {
+                self.agent_update_statuses
+                    .insert(runtime_id, (summary, update_available));
+            }
+            KarBridgeEvent::ForgeMutationFinished{workspace,chat,operation,created,result} => {
+                if self.forge_pending==Some(operation){self.forge_pending=None;}
+                match result {
+                    Ok(message) => {
+                        self.forge_last_operation=None;
+                        if self.effective_workspace_dir()==workspace {
+                            if created && self.current_chat_id()==Some(chat) {self.forge_create_pr_open=false; self.forge_draft_epoch=self.forge_draft_epoch.wrapping_add(1);}
+                            self.bridge.send(KarCommand::RefreshForgeData{workspace:workspace.clone()});
+                        }
+                        if self.current_chat_id()==Some(chat) && self.effective_workspace_dir()==workspace { self.notify_toast(message,cx); }
+                    }
+                    Err(error)=>if self.current_chat_id()==Some(chat) && self.effective_workspace_dir()==workspace {self.notify_warning(error,cx)},
+                }
+            }
+            KarBridgeEvent::ForgeDataUpdated {
+                workspace,
+                prs,
+                issues,
+                error,
+            } => {
+                if self.effective_workspace_dir()!=workspace{return;}
+                self.forge_workspace=Some(workspace);
+                self.forge_prs = prs;
+                self.forge_issues = issues;
+                self.forge_error = error;
+            }
+            KarBridgeEvent::CommitMessageGenerated { workspace, result } => {
+                let Some(original) = self.generating_commits.remove(&workspace) else { return; };
+                match result {
+                    Ok(message) if workspace == self.panel_workspace => {
+                        if self.git_commit_input.read(cx).value(cx) == original {
+                            self.git_commit_input.update(cx, |inp, cx| inp.set_value(message, window, cx));
+                        }
+                    }
+                    Ok(message) => {
+                        if self.git_drafts.get(&workspace).map(String::as_str).unwrap_or_default() == original {
+                            self.git_drafts.insert(workspace, message);
+                        }
+                    }
+                    Err(error) => self.notify_warning(format!("生成提交说明失败：{error}"), cx),
+                }
+            }
+            KarBridgeEvent::GitRepoCloned { repo_path } => {
+                let _ = self.project_registry.ensure_project(&repo_path);
+                let _ = self.project_registry.save(&self.config.chat_dir);
+                self.switch_workspace_dir(repo_path, window, cx);
+            }
+            KarBridgeEvent::DesktopUpdateChecked(report) => {
+                self.notify_toast(report.status_message.clone(), cx);
+                self.desktop_update_report = Some(report);
             }
         }
         cx.notify();
@@ -3118,6 +3435,7 @@ impl KarWorkbench {
     /// Choose the agent new chats start with.
     pub fn select_runtime_by_id(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.selected_runtime != id {
+            self.aster_planning.draft = false;
             self.selected_runtime = id.to_owned();
             if matches!(self.access_mode, ChatAccessMode::NoneSelected) {
                 self.sync_workspace_inventory(&self.effective_workspace_dir());
@@ -3133,7 +3451,6 @@ impl KarWorkbench {
                 }
             }
         }
-        self.runtime_chosen = true;
         self.open_menu = None;
         self.refresh_agent_notice(cx);
         cx.notify();
@@ -3172,7 +3489,7 @@ impl KarWorkbench {
     pub(crate) fn has_running_task(&self) -> bool {
         self.turn_in_progress()
             || self.prompt_attempts.values().any(|attempt| attempt.in_flight)
-            || !self.schedule_leases.is_empty()
+            || self.schedule_registry.tasks.iter().any(|t| t.history.iter().any(|r| r.outcome == ScheduleRunOutcome::Admitted))
             || self.terminal_runs.iter().any(|run| run.running)
     }
 
@@ -3363,6 +3680,7 @@ impl KarWorkbench {
     }
 
     pub fn start_new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.aster_planning = Default::default();
         self.dismiss_compact_sidebar(cx);
         self.record_location(WorkspaceLocation::Draft(self.config.workspace_dir.clone()));
         self.config.resume_last_chat = false;
@@ -3412,9 +3730,8 @@ impl KarWorkbench {
     }
 
     pub fn toggle_pin_chat(&mut self, chat_id: Uuid, cx: &mut Context<Self>) {
-        let pinned = self.project_registry.toggle_pin(chat_id);
-        let _ = self.project_registry.save(&self.config.chat_dir);
-        self.notify_toast(if pinned { "已置顶对话" } else { "已取消置顶" }, cx);
+        let pinned = !self.project_registry.is_pinned(chat_id);
+        self.bridge.send(KarCommand::UpdateSidebar { chat_id, action: crate::kar_bridge::SidebarAction::Pin(pinned) });
         cx.notify();
     }
 
@@ -3513,11 +3830,11 @@ impl KarWorkbench {
         self.create_real_chat_with_goal(None, cx)
     }
 
-    fn create_real_chat_with_goal(&mut self, initial_goal: Option<String>, cx: &mut Context<Self>) -> bool {
+    fn create_real_chat_with_goal(&mut self, initial_goal: Option<crate::kar_bridge::GoalEdit>, cx: &mut Context<Self>) -> bool {
         self.create_chat_for_composer(initial_goal, None, cx)
     }
 
-    fn create_chat_for_composer(&mut self, initial_goal: Option<String>, initial_plan: Option<(Uuid, String)>, cx: &mut Context<Self>) -> bool {
+    fn create_chat_for_composer(&mut self, initial_goal: Option<crate::kar_bridge::GoalEdit>, initial_plan: Option<(Uuid, String)>, cx: &mut Context<Self>) -> bool {
         if self.slash.creating_goal { return false; }
         self.open_menu = None;
         let agent = self
@@ -3538,6 +3855,7 @@ impl KarWorkbench {
         let _ = self.project_registry.save(&self.config.chat_dir);
         self.slash.creating_goal = initial_goal.is_some();
         self.bridge.send(KarCommand::CreateChat {
+            aster_plan: crate::aster::is_aster(&self.selected_runtime) && self.aster_planning.draft,
             initial_goal,
             initial_plan,
             runtime_id: self.selected_runtime.clone(),
@@ -3600,6 +3918,7 @@ impl KarWorkbench {
     }
 
     pub fn submit_composer_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.aster_switching() { return; }
         self.open_menu = None;
         let typed = self.composer_editor.read(cx).value().trim().to_owned();
         if (typed.is_empty() && self.pending_attachments.is_empty())
@@ -3627,25 +3946,33 @@ impl KarWorkbench {
             ) {
                 let target = self.pinned_target.take();
                 let attachments = std::mem::take(&mut self.pending_attachments);
-                let request_id = Uuid::new_v4();
-                let payload = match &target {
-                    Some(tgt) => tgt.compose_prompt(&raw),
-                    None => raw.clone(),
-                };
-                if let Some(ref tgt) = target {
-                    self.turn_targets.insert(request_id, tgt.clone());
-                }
-                self.record_immutable_turn_capture(request_id, target.as_ref(), &attachments);
                 self.composer_editor
                     .update(cx, |ed, cx| ed.set_value("", window, cx));
                 self.chat_scroll.scroll_to_bottom();
-                self.bridge.send(KarCommand::SteerOrQueuePrompt {
-                    request_id,
-                    raw_user_text: raw,
-                    payload,
-                    target,
-                    attachments,
-                });
+                if self.prefs.follow_up_mode == crate::prefs::FollowUpMode::Queue {
+                    self.queued_prompt = Some(QueuedPrompt {
+                        text: raw,
+                        target,
+                        attachments,
+                    });
+                } else {
+                    let request_id = Uuid::new_v4();
+                    let payload = match &target {
+                        Some(tgt) => tgt.compose_prompt(&raw),
+                        None => raw.clone(),
+                    };
+                    if let Some(ref tgt) = target {
+                        self.turn_targets.insert(request_id, tgt.clone());
+                    }
+                    self.record_immutable_turn_capture(request_id, target.as_ref(), &attachments);
+                    self.bridge.send(KarCommand::SteerOrQueuePrompt {
+                        request_id,
+                        raw_user_text: raw,
+                        payload,
+                        target,
+                        attachments,
+                    });
+                }
                 cx.notify();
             }
             return;
@@ -3758,18 +4085,23 @@ impl KarWorkbench {
 
     pub(crate) fn start_sharing(&mut self, cx: &mut Context<Self>) {
         self.open_menu = None;
+        let bind_addr = if self.prefs.lan_listen_enabled {
+            "0.0.0.0:0"
+        } else {
+            "127.0.0.1:0"
+        };
         if let ChatAccessMode::WriteController { chat_id }
         | ChatAccessMode::LocalReadOnlySubscriber { chat_id, .. }
         | ChatAccessMode::ArchivedReadOnly { chat_id, .. } = self.access_mode
         {
             self.bridge.send(KarCommand::StartHttpServer {
                 chat_id,
-                listen_addr: "127.0.0.1:0".into(),
+                listen_addr: bind_addr.into(),
             });
         } else if matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
             self.bridge.send(KarCommand::StartHttpServer {
                 chat_id: Uuid::nil(),
-                listen_addr: "127.0.0.1:0".into(),
+                listen_addr: bind_addr.into(),
             });
         } else {
             self.notify_warning("先打开一个本地对话，再开启节点共享", cx);
@@ -4217,6 +4549,7 @@ impl KarWorkbench {
                 OfficeKind::Word => "docx",
                 OfficeKind::Excel => "xlsx",
                 OfficeKind::Ppt => "pptx",
+                OfficeKind::Pdf => "pdf",
             };
             self.config
                 .docs_dir
@@ -4342,6 +4675,9 @@ impl KarWorkbench {
                     .map(|(x, y, _, _)| format!("{x:.2},{y:.2}"))
                     .unwrap_or_else(|| "2.00,3.00".into()),
             ),
+            SelectionLocator::PdfPage { page_index, .. } => {
+                (sel.excerpt.clone(), format!("{}", page_index + 1))
+            }
             SelectionLocator::CodeLines { start_line, .. } => {
                 (sel.excerpt.clone(), format!("{start_line}"))
             }
@@ -4402,6 +4738,22 @@ impl KarWorkbench {
                 let new_txt = (!primary.is_empty()).then_some(primary.as_str());
                 tab.update_ppt_shape(*slide_index, sid, new_txt, parsed_xy, window, cx)
                     .map(|()| format!("已修改第 {} 页的对象", slide_index + 1))
+            }
+            SelectionLocator::PdfPage { .. } => {
+                let page = secondary
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|n| n.checked_sub(1))
+                    .unwrap_or(0);
+                tab.reveal_locator(
+                    &SelectionLocator::PdfPage {
+                        page_index: page,
+                        total_pages: 1,
+                    },
+                    window,
+                    cx,
+                );
+                Ok(format!("已跳转至 PDF 第 {} 页", page + 1))
             }
             SelectionLocator::CodeLines { .. } => Ok("代码文件请在聊天或终端中修改".into()),
         };
@@ -4755,6 +5107,141 @@ impl KarWorkbench {
             return;
         }
 
+        // Custom & built-in dynamic keybindings (`prefs.matches_command`) + `⌘Q` quit safety
+        let ks = &ev.keystroke;
+        if cmd && key.eq_ignore_ascii_case("q") && !shift && !ks.modifiers.alt {
+            match self.prefs.quit_shortcut_mode {
+                crate::prefs::QuitShortcutMode::Immediate => {
+                    cx.quit();
+                    return;
+                }
+                crate::prefs::QuitShortcutMode::PressTwice => {
+                    if self
+                        .quit_pending_since
+                        .is_some_and(|t| t.elapsed().as_secs_f32() < 2.2)
+                    {
+                        cx.quit();
+                    } else {
+                        self.quit_pending_since = Some(Instant::now());
+                        self.notify_toast(
+                            self.ui_locale
+                                .pick("再按一次 ⌘Q 退出 Kwrok", "Press ⌘Q again to quit"),
+                            cx,
+                        );
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+                crate::prefs::QuitShortcutMode::Hold => {
+                    if self
+                        .quit_pending_since
+                        .is_some_and(|t| t.elapsed().as_millis() >= 650 && t.elapsed().as_secs_f32() < 3.5)
+                    {
+                        cx.quit();
+                    } else if self.quit_pending_since.is_none_or(|t| t.elapsed().as_secs_f32() >= 3.5) {
+                        self.quit_pending_since = Some(Instant::now());
+                        self.notify_toast(
+                            self.ui_locale
+                                .pick("继续按住 ⌘Q 退出应用…", "Keep holding ⌘Q to quit…"),
+                            cx,
+                        );
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+            }
+        }
+
+        let matched_cmd = crate::prefs::KEYBINDING_COMMANDS
+            .iter()
+            .find(|def| self.prefs.matches_command(def.id, ks))
+            .map(|def| def.id);
+        if let Some(cid) = matched_cmd {
+            let mut dispatched = true;
+            match cid {
+                "app.command_palette" => self.toggle_command_palette(window, cx),
+                "app.settings" => self.toggle_settings(self.active_settings_tab, cx),
+                "theme.toggle" => {
+                    let next = if self.theme_mode == ThemeMode::Dark {
+                        ThemeMode::Light
+                    } else {
+                        ThemeMode::Dark
+                    };
+                    self.select_appearance(next, cx);
+                }
+                "locale.toggle" => self.toggle_ui_locale(window, cx),
+                "chat.new" => self.start_new_chat(window, cx),
+                "chat.find" if self.main_stage_view == MainStageView::Conversation
+                    && (self.layout_mode == WorkspaceLayoutMode::ChatFocus
+                        || self.focus_handle.contains_focused(window, cx)) =>
+                {
+                    self.chat_search_open = !self.chat_search_open;
+                    cx.notify();
+                }
+                "chat.handoff" => {
+                    self.handoff_sheet_open = !self.handoff_sheet_open;
+                    cx.notify();
+                }
+                "chat.side_question" => self.toggle_side_question_sheet(cx),
+                "chat.voice_dictate" => {
+                    if !ev.is_held {
+                        if self.prefs.voice_dictation_mode == crate::prefs::DictationTriggerMode::Hold {
+                            if self.active_voice_rec.is_none() {
+                                self.held_voice_key = Some(key.to_owned());
+                                self.toggle_voice_dictation(window, cx);
+                                if self.active_voice_rec.is_none() {self.held_voice_key=None;}
+                            }
+                        } else {
+                            self.toggle_voice_dictation(window, cx);
+                        }
+                    }
+                },
+                "chat.compact" => self.bridge.send(KarCommand::CompactChat),
+                "view.toggle_sidebar" => self.toggle_sidebar(cx),
+                "view.toggle_terminal" => self.toggle_bottom_terminal(cx),
+                "view.toggle_right_dock" => self.toggle_document_pane(cx),
+                "view.open_inbox" => {
+                    self.main_stage_view = MainStageView::TasksInbox;
+                    cx.notify();
+                }
+                "view.open_gallery" => {
+                    self.main_stage_view = MainStageView::OfficeGallery;
+                    cx.notify();
+                }
+                "view.open_git" => self.open_git_workbench_tab(cx),
+                "view.open_prs" => {
+                    self.git_sub_mode = GitSubMode::PullRequests;
+                    self.open_git_workbench_tab(cx);
+                }
+                "view.open_issues" => {
+                    self.git_sub_mode = GitSubMode::Issues;
+                    self.open_git_workbench_tab(cx);
+                }
+                "view.open_files" => self.open_files_dock_tab(cx),
+                "office.save"
+                    if self.active_office_tab.is_some()
+                        && self.right_surface == RightPaneSurface::Office
+                        && self.layout_mode != WorkspaceLayoutMode::ChatFocus =>
+                {
+                    self.save_active_document(window, cx);
+                }
+                "editor.open_external" => self.open_workspace_in_preferred_editor(None, cx),
+                "settings.agents" => self.toggle_settings(SettingsTab::Agents, cx),
+                "settings.skills_mcp" => self.toggle_settings(SettingsTab::SkillsMcp, cx),
+                "settings.usage" => self.toggle_settings(SettingsTab::Usage, cx),
+                "settings.schedules" => self.toggle_settings(SettingsTab::Schedules, cx),
+                "settings.keybindings" => self.toggle_settings(SettingsTab::Keybindings, cx),
+                "settings.devices" => self.toggle_settings(SettingsTab::Devices, cx),
+                "settings.remote" => self.toggle_settings(SettingsTab::Remote, cx),
+                "settings.logs" => self.toggle_settings(SettingsTab::Logs, cx),
+                _ => dispatched = false,
+            }
+            if dispatched {
+                cx.stop_propagation();
+                return;
+            }
+        }
+
         if cmd {
             // Note: `⌘B` is intentionally NOT hijacked here so Word/Excel/PPT retain native Bold!
             let handled = match key.to_ascii_lowercase().as_str() {
@@ -4869,7 +5356,6 @@ impl KarWorkbench {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let weak = cx.weak_entity();
-        let backdrop = StudioPalette::get(cx).surface;
         pro_presence(id, open, 0.17, 0.12, move |amount| {
             div()
                 .absolute()
@@ -4879,7 +5365,7 @@ impl KarWorkbench {
                         div()
                             .id(id)
                             .size_full()
-                            .bg(backdrop.opacity(0.60 * amount))
+                            .bg(hsla(0., 0., 0., 0.45 * amount))
                             .flex()
                             .flex_col()
                             .items_center()
@@ -5255,7 +5741,7 @@ impl KarWorkbench {
                 div()
                     .h(px(38.))
                     .flex_none()
-                    .rounded_b(px(14.))
+                    .rounded_b(px(R_MODAL))
                     .px(px(14.))
                     .bg(s.stage)
                     .border_t_1()
@@ -5346,6 +5832,7 @@ impl KarWorkbench {
             .to_owned(),
             workspace: self.effective_workspace_dir(),
             target_selection: target.cloned(),
+            approved_plan: self.current_plan_was_approved(chat_id, turn_id),
             document_revisions: office_revs,
             association,
             captured_at_ms: now_epoch_ms(),
@@ -5364,9 +5851,10 @@ impl KarWorkbench {
             host_name: String::new(),
             chat_id,
             association,
-            briefs: self.active_briefs.clone(),
+            briefs: self.active_briefs.iter().filter(|brief|brief.chat_id==chat_id).cloned().collect(),
             queued_inputs: None,
-            turn_captures: self.client_reducer.turn_captures.clone(),
+            turn_captures: self.client_reducer.turn_captures.iter().filter(|(_,capture)|capture.chat_id==chat_id)
+                .map(|(id,capture)|(*id,capture.clone())).collect(),
             revision: 0,
         };
         self.bridge
@@ -5645,77 +6133,75 @@ impl KarWorkbench {
         self.toggle_settings(SettingsTab::Schedules, cx);
     }
 
+    pub(crate) fn ensure_schedule_workspace(&mut self) -> bool {
+        let workspace = self.effective_workspace_dir();
+        if self.schedule_workspace.as_ref() == Some(&workspace) {
+            return false;
+        }
+        self.schedule_workspace = Some(workspace);
+        self.schedule_registry = ScheduleRegistry::default();
+        self.schedule_loaded = false;
+        self.schedule_error = None;
+        self.schedule_creator_open = false;
+        self.schedule_save_pending = false;
+        self.editing_schedule_id = None;
+        self.editing_schedule_revision = None;
+        self.expanded_schedule_history.clear();
+        self.schedule_pending_runs.clear();
+        true
+    }
+
+    pub(crate) fn toggle_schedule_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_schedule_workspace();
+        self.schedule_creator_open = !self.schedule_creator_open;
+        self.editing_schedule_id = None;
+        self.editing_schedule_revision = None;
+        self.schedule_bind_active_doc = false;
+        self.schedule_draft_cadence = ScheduleCadence::DailyNineAm;
+        self.schedule_title_input.update(cx, |i,cx| i.set_value("",window,cx));
+        self.schedule_prompt_input.update(cx, |i,cx| i.set_value("",window,cx));
+        cx.notify();
+    }
+
     pub(crate) fn refresh_schedules(
         &mut self,
         now_ms: u64,
         show_error: bool,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) {
+        self.ensure_schedule_workspace();
         self.schedule_refresh_ms = now_ms;
-        match ScheduleRegistry::read(&self.config.chat_dir, now_ms) {
-            Ok(latest) => {
-                if latest.revision != self.schedule_registry.revision
-                    || latest.tasks != self.schedule_registry.tasks
-                {
-                    self.schedule_registry = latest;
-                    cx.notify();
-                }
-            }
-            Err(error) if show_error => {
-                self.notify_warning(error.to_string(), cx);
-            }
-            Err(error) => log::debug!("Cannot refresh schedules: {error}"),
-        }
+        self.bridge.send(KarCommand::Workflows {workspace:self.effective_workspace_dir(),action:workflow::Action::Refresh,report_errors:show_error});
     }
 
     fn poll_due_schedules(&mut self, cx: &mut Context<Self>) {
         let now_ms = now_epoch_ms();
-        if now_ms.saturating_sub(self.schedule_refresh_ms) >= 15_000 {
+        // Wake up any snoozed threads whose reminder time has arrived
+        if !self.prefs.snoozed_chats.is_empty() {
+            let before = self.prefs.snoozed_chats.len();
+            self.prefs.snoozed_chats.retain(|_, wake_ms| *wake_ms > now_ms);
+            if self.prefs.snoozed_chats.len() < before {
+                self.save_prefs();
+                self.notify_toast("已唤醒到期的「稍后提醒」对话", cx);
+            }
+        }
+        // Refresh PTY live output & sniff localhost dev ports when PTY is active
+        if let Some(ref pty) = self.active_pty {
+            let snap = pty.snapshot(self.theme_mode == ThemeMode::Dark);
+            for port in snap.detected_ports {
+                if !self.detected_dev_ports.contains(&port) {
+                    self.detected_dev_ports.push(port);
+                }
+            }
+        }
+        let viewing = self.settings_open && self.active_settings_tab == SettingsTab::Schedules;
+        let interval = if viewing { 2_000 } else { 30_000 };
+        if self.schedule_workspace.as_ref()!=Some(&self.effective_workspace_dir()) || now_ms.saturating_sub(self.schedule_refresh_ms) >= interval {
             self.refresh_schedules(now_ms, false, cx);
         }
-        if !self
-            .schedule_registry
-            .tasks
-            .iter()
-            .any(|t| t.enabled && t.next_due_ms.is_some_and(|due| due <= now_ms))
-        {
-            return;
-        }
-        let dir = &self.config.chat_dir;
-        let runs = self.schedule_registry.transact(dir, now_ms, |reg| {
-            reg.claim_due_runs(now_ms)
-                .into_iter()
-                .map(|(task, id)| {
-                    Ok((
-                        task,
-                        id,
-                        crate::schedules::ScheduleRunLease::acquire(dir, id)?,
-                    ))
-                })
-                .collect::<anyhow::Result<Vec<_>>>()
-        });
-        let runs = match runs {
-            Ok(v) => v,
-            Err(e) => {
-                log::warn!("Cannot claim scheduled runs: {e}");
-                return;
-            }
-        };
-        for (task, request_id, lease) in runs {
-            self.schedule_leases.insert(request_id, lease);
-            self.bridge.send(KarCommand::CreateScheduledChat {
-                request_id,
-                workspace: task
-                    .workspace
-                    .clone()
-                    .unwrap_or_else(|| self.config.workspace_dir.clone()),
-                task,
-            });
-        }
-        cx.notify();
     }
 
-    pub fn save_new_schedule_from_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn save_new_schedule_from_form(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let title = self.schedule_title_input.read(cx).value(cx).trim().to_owned();
         let prompt = self.schedule_prompt_input.read(cx).value(cx).trim().to_owned();
         if title.is_empty() || prompt.is_empty() {
@@ -5729,118 +6215,58 @@ impl KarWorkbench {
         } else {
             None
         };
-        let now_ms = now_epoch_ms();
+        if self.ensure_schedule_workspace() || !self.schedule_creator_open || self.schedule_save_pending {return;}
+        let existing = self.editing_schedule_id.as_ref()
+            .and_then(|id|self.schedule_registry.tasks.iter().find(|t| &t.id==id));
+        if self.editing_schedule_id.is_some() && existing.is_none() {
+            self.notify_warning("此任务已被移除，请关闭编辑器。",cx);
+            return;
+        }
+        let expected=self.editing_schedule_revision;
         let draft = ScheduledTask {
-            id: String::new(),
-            revision: 1,
-            title: title.clone(),
-            workspace: Some(self.effective_workspace_dir()),
-            prompt,
-            cadence: self.schedule_draft_cadence,
-            enabled: true,
-            runtime_id: self.selected_runtime.clone(),
-            model: self.selected_model.clone(),
-            effort: self.selected_effort().map(str::to_owned),
-            office_template: template_path,
-            tone: crate::schedules::ScheduleToneChoice::Blue,
-            next_due_ms: None,
-            history: Vec::new(),
+            id: self.editing_schedule_id.clone().unwrap_or_else(||Uuid::new_v4().to_string()),
+            revision: expected.unwrap_or_default(), title, prompt,
+            workspace: Some(self.effective_workspace_dir()), cadence:self.schedule_draft_cadence.clone(),
+            enabled:existing.is_none_or(|t|t.enabled),
+            runtime_id:existing.map_or_else(||self.selected_runtime.clone(),|t|t.runtime_id.clone()),
+            model:existing.map_or_else(||self.selected_model.clone(),|t|t.model.clone()),
+            effort:existing.map_or_else(||self.selected_effort().map(str::to_owned),|t|t.effort.clone()),
+            office_template: template_path.or_else(||existing.and_then(|t|t.office_template.clone())),
+            pre_script: existing.and_then(|t|t.pre_script.clone()),
+            tone:existing.map_or(crate::schedules::ScheduleToneChoice::Blue,|t|t.tone),
+            next_due_ms:None, history:Vec::new(), engine_read_only:false,
         };
-        match self
-            .schedule_registry
-            .transact(&self.config.chat_dir, now_ms, |reg| {
-                reg.save_task(draft, None, now_ms).map(|_| ())
-            }) {
-            Ok(()) => {
-                self.schedule_title_input
-                    .update(cx, |inp, cx| inp.set_value("", window, cx));
-                self.schedule_prompt_input
-                    .update(cx, |inp, cx| inp.set_value("", window, cx));
-                self.schedule_creator_open = false;
-                self.notify_toast(format!("已创建定时任务「{title}」"), cx);
-            }
-            Err(err) => self.notify_warning(err.to_string(), cx),
-        }
+        self.schedule_save_pending = true;
+        self.bridge.send(KarCommand::Workflows {workspace:self.effective_workspace_dir(), action:workflow::Action::Save{task:draft,expected},report_errors:true});
         cx.notify();
     }
 
-    pub fn toggle_schedule_enabled(&mut self, task_id: &str, cx: &mut Context<Self>) {
-        let Some(cur) = self
-            .schedule_registry
-            .tasks
-            .iter()
-            .find(|t| t.id == task_id)
-            .map(|t| t.enabled)
-        else {
-            return;
-        };
-        if let Err(err) = self
-            .schedule_registry
-            .transact(&self.config.chat_dir,now_epoch_ms(),|reg|reg.set_enabled(task_id,!cur,now_epoch_ms()))
-        {
-            self.notify_warning(err.to_string(), cx);
-            return;
+    pub fn toggle_schedule_enabled(&mut self, task_id: &str, _cx: &mut Context<Self>) {
+        if self.ensure_schedule_workspace() {return;}
+        if let Ok(id)=task_id.parse()
+            && let Some(task)=self.schedule_registry.tasks.iter().find(|t|t.id==task_id) {
+            self.bridge.send(KarCommand::Workflows {workspace:self.effective_workspace_dir(),action:workflow::Action::Enable{id,enabled:!task.enabled},report_errors:true});
         }
-        self.notify_toast(
-            if !cur {
-                "已启用自动排程"
-            } else {
-                "已暂停自动排程"
-            },
-            cx,
-        );
-        cx.notify();
     }
 
-    pub fn trigger_schedule_now(
-        &mut self,
-        task_id: &str,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let req_id = Uuid::new_v4();
-        let now_ms = now_epoch_ms();
-        let dir = &self.config.chat_dir;
-        match self.schedule_registry.transact(dir, now_ms, |reg| {
-            let task = reg.record_manual_run(task_id, req_id, now_ms)?;
-            Ok((
-                task,
-                crate::schedules::ScheduleRunLease::acquire(dir, req_id)?,
-            ))
-        }) {
-            Ok((task, lease)) => {
-                self.schedule_leases.insert(req_id, lease);
-                self.expanded_schedule_history.insert(task.id.clone());
-                self.bridge.send(KarCommand::CreateScheduledChat {
-                    request_id: req_id,
-                    workspace: task
-                        .workspace
-                        .clone()
-                        .unwrap_or_else(|| self.config.workspace_dir.clone()),
-                    task: task.clone(),
-                });
-                self.notify_toast(format!("正在运行「{}」并绑定独立关联会话…", task.title), cx);
-            }
-            Err(err) => self.notify_warning(err.to_string(), cx),
+    pub fn trigger_schedule_now(&mut self, task_id:&str, _window:&mut Window, cx:&mut Context<Self>) {
+        if self.ensure_schedule_workspace() { return; }
+        if let Ok(id)=task_id.parse() {
+            let entry = self.schedule_pending_runs.entry(id).or_insert_with(||(Uuid::new_v4(), false));
+            if entry.1 { return; }
+            entry.1=true;
+            let operation=entry.0;
+            self.expanded_schedule_history.insert(task_id.to_owned());
+            self.bridge.send(KarCommand::Workflows {workspace:self.effective_workspace_dir(), action:workflow::Action::Run{id,operation},report_errors:true});
+            cx.notify();
         }
-        cx.notify();
     }
 
-    pub fn remove_schedule_task(&mut self, task_id: &str, cx: &mut Context<Self>) {
-        if match self
-            .schedule_registry
-            .transact(&self.config.chat_dir, now_epoch_ms(), |reg| {
-                Ok(reg.remove_task(task_id))
-            }) {
-            Ok(v) => v,
-            Err(e) => {
-                self.notify_warning(e.to_string(), cx);
-                return;
-            }
-        } {
-            self.notify_toast("已移除定时任务（历史关联会话已完整保留）", cx);
+    pub fn remove_schedule_task(&mut self, task_id:&str, _cx:&mut Context<Self>) {
+        if self.ensure_schedule_workspace() {return;}
+        if let Ok(id)=task_id.parse() {
+            self.bridge.send(KarCommand::Workflows {workspace:self.effective_workspace_dir(), action:workflow::Action::Remove{id},report_errors:true});
         }
-        cx.notify();
     }
 
     pub fn withdraw_or_edit_queued_input(
@@ -6158,6 +6584,7 @@ impl KarWorkbench {
     }
 
     pub fn toggle_side_question_sheet(&mut self, cx: &mut Context<Self>) {
+        if !self.supports_side_question() {return;}
         let next = !self.side_question_open;
         self.close_all_overlays(cx);
         self.side_question_open = next;
@@ -6563,6 +6990,13 @@ impl Render for KarWorkbench {
                     this.handle_global_key(ev, window, cx);
                 }
             }))
+            .capture_key_up(cx.listener(|this, ev: &gpui::KeyUpEvent, window, cx| {
+                if this.held_voice_key.as_deref() == Some(ev.keystroke.key.as_str()) {
+                    this.held_voice_key = None;
+                    if this.active_voice_rec.is_some() {this.toggle_voice_dictation(window, cx);}
+                    cx.stop_propagation();
+                }
+            }))
             .on_key_down(cx.listener(Self::handle_global_key))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
                 if this.dragging_terminal
@@ -6583,6 +7017,8 @@ impl Render for KarWorkbench {
                     if this.dragging_terminal {
                         this.dragging_terminal = false;
                         this.terminal_drag_anchor = None;
+                        this.prefs.bottom_terminal_h = this.bottom_terminal_h;
+                        this.save_prefs();
                         cx.notify();
                     }
                 }),

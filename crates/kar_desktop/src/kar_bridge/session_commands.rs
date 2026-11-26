@@ -69,7 +69,11 @@ fn available_commands(
         return None;
     }
 
-    let items = update.get("availableCommands")?.as_array()?;
+    advertised_commands(&update["availableCommands"], source)
+}
+
+pub(crate) fn advertised_commands(rows: &Value, source: &str) -> Option<Vec<SlashCommandItem>> {
+    let items = rows.as_array()?;
     let mut commands: Vec<SlashCommandItem> = Vec::with_capacity(items.len());
     for item in items {
         let Some(name) = item

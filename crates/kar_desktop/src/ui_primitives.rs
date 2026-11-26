@@ -76,6 +76,7 @@ pub const FS_META: f32 = 12.0;
 pub const FS_CONTROL: f32 = 13.0;
 pub const FS_UI: f32 = 14.0;
 pub const FS_READ: f32 = 15.0;
+pub const FS_SECTION: f32 = 16.0;
 pub const FS_TITLE: f32 = 18.0;
 pub const FS_HERO: f32 = 30.0;
 
@@ -86,15 +87,55 @@ pub const LH_READ: f32 = 22.5;
 
 
 pub const CTRL_H: f32 = 32.0;
+pub const CTRL_SM_H: f32 = 28.0;
+pub const CTRL_XS_H: f32 = 24.0;
 pub const ROW_H: f32 = 36.0;
 pub const ICON: f32 = 16.0;
 pub const ICON_SM: f32 = 14.0;
 pub const ICON_XS: f32 = 12.0;
 
+pub const R_XS: f32 = 4.0;
+pub const R_SM: f32 = 6.0;
 pub const R_CTRL: f32 = 8.0;
-pub const R_CARD: f32 = 8.0;
-pub const R_HERO: f32 = 8.0;
+pub const R_CARD: f32 = 12.0;
+pub const R_HERO: f32 = 12.0;
+pub const R_MODAL: f32 = 16.0;
 pub const R_PILL: f32 = 999.0;
+
+/// Global optional named `kantor_theme::Palette` override (`None` = signature Kwrok Monochrome).
+#[derive(Clone, Debug, Default)]
+pub struct ActiveNamedTheme(pub Option<kantor_theme::Palette>);
+impl Global for ActiveNamedTheme {}
+
+/// Global user typography & code font preferences applied across Kwrok.
+#[derive(Clone, Debug)]
+pub struct ActiveTypography {
+    pub ui_delta_px: f32,
+    pub code_font_size: f32,
+    pub code_font_family: Option<SharedString>,
+}
+impl Default for ActiveTypography {
+    fn default() -> Self {
+        Self {
+            ui_delta_px: 0.0,
+            code_font_size: FS_CONTROL,
+            code_font_family: None,
+        }
+    }
+}
+impl Global for ActiveTypography {}
+
+pub fn scaled_fs(base: f32, cx: &App) -> f32 {
+    let delta = cx
+        .try_global::<ActiveTypography>()
+        .map_or(0.0, |t| t.ui_delta_px);
+    (base + delta).clamp(10.0, 36.0)
+}
+
+pub fn effective_code_font_size(cx: &App) -> f32 {
+    cx.try_global::<ActiveTypography>()
+        .map_or(FS_CONTROL, |t| t.code_font_size)
+}
 
 // ── KUI Sculpted Vector Icons & Artwork (`assistant_home.rs` + `pro_icons.rs`) ─
 
@@ -196,39 +237,106 @@ pub struct StudioPalette {
 impl StudioPalette {
     pub fn get(cx: &App) -> Self {
         let pro = ProPalette::get(cx);
+        if let Some(named) = cx
+            .try_global::<ActiveNamedTheme>()
+            .and_then(|g| g.0.as_ref())
+        {
+            let kt = kantor_ui::tokens::Tokens::from_palette(named);
+            let dark = named.dark;
+            let ink = kt.fg;
+            return Self {
+                pro,
+                dark,
+                stage: kt.bg,
+                surface: kt.bg,
+                tray: kt.chrome,
+                card: kt.surface,
+                message_surface: kt.selected,
+                sidebar_selected: kt.elevated,
+                sidebar_hover: kt.hover,
+                soft: kt.chrome,
+                soft_hover: ink.opacity(0.10),
+                hover: ink.opacity(0.06),
+                active: ink.opacity(0.11),
+                line: kt.border,
+                line_soft: kt.border.opacity(0.72),
+                line_strong: kt.border_strong,
+                ink,
+                text: kt.fg_muted,
+                muted: kt.fg_dim,
+                faint: kt.fg_dim.opacity(0.82),
+                primary: kt.accent,
+                on_primary: kt.accent_fg,
+                brand_action: kt.accent,
+                on_brand_action: kt.accent_fg,
+            };
+        }
         let dark = pro.dark;
         let tone = |light, night| Hsla::from(rgb(if dark { night } else { light }));
         let ink = tone(0x18181b, 0xf5f5f5);
         let card = tone(0xffffff, 0x0e0e0e);
         let muted = tone(0x71717a, 0xa3a3a3);
-        let line = tone(0xe4e4e7, 0x141414);
+        let line = tone(0xe4e4e7, 0x18181b);
         let primary = tone(0x1447e6, 0x4779e9);
         Self {
             pro,
             dark,
-            stage: tone(0xfafafa, 0x000000),
-            surface: tone(0xfdfdfd, 0x000000),
-            tray: tone(0xf4f4f5, 0x111111),
+            stage: tone(0xfafafa, 0x050505),
+            surface: tone(0xfcfcfc, 0x09090b),
+            tray: tone(0xf4f4f5, 0x121215),
             card,
-            message_surface: tone(0xebebed, 0x212121),
-            sidebar_selected: tone(0xffffff, 0x191919),
-            sidebar_hover: tone(0xfdfdfd, 0x131313),
-            soft: tone(0xf4f4f5, 0x171717),
+            message_surface: tone(0xebebed, 0x212124),
+            sidebar_selected: tone(0xffffff, 0x19191d),
+            sidebar_hover: tone(0xfdfdfd, 0x131316),
+            soft: tone(0xf4f4f5, 0x18181b),
             soft_hover: ink.opacity(0.09),
             hover: ink.opacity(0.055),
             active: ink.opacity(0.10),
             line,
-            line_soft: tone(0xebebeb, 0x1a1a1a),
-            line_strong: tone(0xd4d4d8, 0x323232),
+            line_soft: tone(0xebebef, 0x1d1d22),
+            line_strong: tone(0xd4d4d8, 0x34343a),
             ink,
-            text: tone(0x3f3f46, 0xd4d4d4),
+            text: tone(0x3f3f46, 0xd4d4d8),
             muted,
-            faint: tone(0x75757e, 0x909090),
+            faint: tone(0x75757e, 0x8e8e96),
             primary,
             on_primary: white(),
             brand_action: primary,
             on_brand_action: white(),
         }
+    }
+
+    /// Subtle resting 1px elevation for content cards (`s.card`).
+    pub fn card_shadow(&self) -> Vec<BoxShadow> {
+        let alpha = if self.dark { 0.28 } else { 0.035 };
+        vec![BoxShadow {
+            color: hsla(0., 0., 0., alpha),
+            offset: point(px(0.), px(1.)),
+            blur_radius: px(3.),
+            spread_radius: px(0.),
+            inset: false,
+        }]
+    }
+
+    /// Medium elevation for floating composer cards, rails, and jump pills.
+    pub fn floating_shadow(&self) -> Vec<BoxShadow> {
+        let (far, near) = if self.dark { (0.48, 0.24) } else { (0.08, 0.035) };
+        vec![
+            BoxShadow {
+                color: hsla(0., 0., 0., far),
+                offset: point(px(0.), px(6.)),
+                blur_radius: px(20.),
+                spread_radius: px(-4.),
+                inset: false,
+            },
+            BoxShadow {
+                color: hsla(0., 0., 0., near),
+                offset: point(px(0.), px(1.)),
+                blur_radius: px(4.),
+                spread_radius: px(0.),
+                inset: false,
+            },
+        ]
     }
 
     /// Popover & modal glass elevation shadow.
@@ -347,8 +455,15 @@ pub fn ui_font(cx: &App) -> SharedString {
     gpui_kit::component::Theme::global(cx).font_family.clone()
 }
 
-/// The monospace family for commands and code.
+/// The monospace family for commands and code, honoring user overrides.
 pub fn mono_font(cx: &App) -> SharedString {
+    if let Some(custom) = cx
+        .try_global::<ActiveTypography>()
+        .and_then(|t| t.code_font_family.clone())
+        .filter(|f| !f.trim().is_empty())
+    {
+        return custom;
+    }
     gpui_kit::component::Theme::global(cx).mono_font_family.clone()
 }
 
@@ -371,7 +486,11 @@ pub fn render_tray_folder_artwork(side: f32) -> AnyElement {
     pro_artwork(image, side).into_any_element()
 }
 
-/// Trio of sculpted Kantor Office vector marks (Word, Excel, PPT) for the two-tier composer tray.
+const ART_PDF_SVG: &str = r#"<path d="M3.3 1h3.9L10 3.8v6.4c0 .72-.58 1.3-1.3 1.3H3.3c-.72 0-1.3-.58-1.3-1.3V2.3C2 1.58 2.58 1 3.3 1Z" fill="currentColor" opacity="0.45"></path><path d="M7.2 1v1.8c0 .55.45 1 1 1H10Z" fill="currentColor"></path><path d="M4.1 8.8c1.2-1.8 2.6-3.1 3.8-3.1.5 0 .6.5.2 1-1 1.2-3.4 2.1-4 2.1Z" stroke="currentColor" stroke-width="0.95" stroke-linecap="round" stroke-linejoin="round"></path>"#;
+
+const SVG_PDF_CHIP: &str = r#"<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path><path d="M14 2v6h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path><path d="M9 17c1.5-2.8 4.2-4.8 6-4.5.7.1.8.9.1 1.5-1.6 1.4-4.8 2.6-6.1 3Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>"#;
+
+/// Quartet of sculpted Kantor Office vector marks (Word, Excel, PPT, PDF) for the two-tier composer tray.
 pub fn render_kantor_tray_marks(s: &StudioPalette) -> Div {
     div()
         .flex()
@@ -380,6 +499,7 @@ pub fn render_kantor_tray_marks(s: &StudioPalette) -> Div {
         .child(pro_symbol("0 0 12 12", ART_DOC_SVG, 12.5, s.pro.blue))
         .child(pro_symbol("0 0 12 12", ART_SHEET_SVG, 12.5, s.pro.green))
         .child(pro_symbol("0 0 12 12", ART_SLIDE_SVG, 12.5, s.pro.orange))
+        .child(pro_symbol("0 0 12 12", ART_PDF_SVG, 12.5, s.pro.red))
 }
 
 /// Sculpted KUI starter chip icon categories (`assistant_home.rs:147-169`).
@@ -521,6 +641,7 @@ pub fn render_doc_outline_icon(kind: OfficeKind, side: f32, color: Hsla) -> AnyE
         OfficeKind::Word => SVG_DOC_CHIP,
         OfficeKind::Excel => SVG_SHEET_CHIP,
         OfficeKind::Ppt => SVG_SLIDE_CHIP,
+        OfficeKind::Pdf => SVG_PDF_CHIP,
     };
     pro_symbol("0 0 24 24", path, side, color)
 }
@@ -710,9 +831,9 @@ pub fn render_runtime_mark(runtime_id: &str, side: f32, s: &StudioPalette, cx: &
 pub fn render_kbd(text: impl Into<SharedString>, s: &StudioPalette) -> Div {
     div()
         .flex_none()
-        .h(px(19.))
-        .px(px(5.5))
-        .rounded(px(4.5))
+        .h(px(20.))
+        .px(px(6.))
+        .rounded(px(R_XS))
         .bg(s.soft)
         .border_1()
         .border_color(s.line_soft)
@@ -753,9 +874,9 @@ pub fn render_status(label: impl Into<SharedString>, tone: DotTone, s: &StudioPa
 pub fn render_sample_tag(s: &StudioPalette) -> Div {
     div()
         .flex_none()
-        .h(px(18.))
+        .h(px(20.))
         .px(px(6.))
-        .rounded(px(4.5))
+        .rounded(px(R_XS))
         .bg(s.soft)
         .flex()
         .items_center()
@@ -765,7 +886,7 @@ pub fn render_sample_tag(s: &StudioPalette) -> Div {
         .child("Demo")
 }
 
-/// Mini file-language pill (`[RS]`, `[TS]`, `[MD]`, `[W]`, `[X]`, `[P]`) matching T3 Code's `FileTagChip`.
+/// Mini file-language pill (`[RS]`, `[TS]`, `[MD]`, `[W]`, `[X]`, `[P]`, `[PDF]`) matching T3 Code's `FileTagChip`.
 pub fn render_file_ext_badge(ext_or_path: &str, s: &StudioPalette, cx: &App) -> Div {
     let ext = ext_or_path
         .rsplit('.')
@@ -780,14 +901,15 @@ pub fn render_file_ext_badge(ext_or_path: &str, s: &StudioPalette, cx: &App) -> 
         "DOCX" | "DOC" => ("W", s.pro.accent_info, s.pro.accent_soft),
         "XLSX" | "XLS" => ("X", s.pro.green_ink, s.pro.green_soft),
         "PPTX" | "PPT" => ("P", s.pro.amber_ink, s.pro.amber_soft),
+        "PDF" => ("PDF", s.pro.red_ink, s.pro.red_soft),
         "TOML" | "JSON" | "YAML" | "YML" => ("CFG", s.muted, s.soft),
         "MD" => ("MD", s.pro.accent_info, s.pro.accent_soft),
         _ => ("FILE", s.muted, s.soft),
     };
     div()
-        .h(px(15.))
-        .px(px(3.5))
-        .rounded(px(3.5))
+        .h(px(16.))
+        .px(px(4.))
+        .rounded(px(R_XS))
         .bg(bg)
         .flex()
         .items_center()
@@ -799,22 +921,23 @@ pub fn render_file_ext_badge(ext_or_path: &str, s: &StudioPalette, cx: &App) -> 
         .child(short)
 }
 
-/// The W / X / P square that says what kind of document something is.
+/// The W / X / P / F square that says what kind of document something is.
 pub fn render_office_chip(kind: OfficeKind, s: &StudioPalette) -> Div {
     let (bg, fg, letter) = match kind {
         OfficeKind::Word => (s.pro.accent_soft, s.pro.accent_info, "W"),
         OfficeKind::Excel => (s.pro.green_soft, s.pro.green_ink, "X"),
         OfficeKind::Ppt => (s.pro.amber_soft, s.pro.amber_ink, "P"),
+        OfficeKind::Pdf => (s.pro.red_soft, s.pro.red_ink, "F"),
     };
     div()
         .size(px(ICON))
         .flex_none()
-        .rounded(px(4.))
+        .rounded(px(R_XS))
         .bg(bg)
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(10.))
+        .text_size(px(FS_TAG))
         .font_weight(FontWeight::BOLD)
         .text_color(fg)
         .child(letter)
@@ -967,6 +1090,7 @@ pub enum MiniDocPreviewKind {
     Document,
     Spreadsheet,
     Presentation,
+    Pdf,
     Code,
 }
 
@@ -1036,6 +1160,29 @@ pub fn render_mini_doc_artwork(
                         .child(div().w(px(22.)).h(px(2.)).rounded(px(1.)).bg(s.ink.opacity(0.10))),
                 );
         }
+        MiniDocPreviewKind::Pdf => {
+            page = page
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(12.))
+                        .rounded(px(2.5))
+                        .bg(tag_color.opacity(0.16))
+                        .flex()
+                        .items_center()
+                        .px(px(4.))
+                        .child(div().w(px(16.)).h(px(2.5)).rounded(px(1.)).bg(tag_color)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(div().w_full().h(px(2.)).rounded(px(1.)).bg(s.ink.opacity(0.14)))
+                        .child(div().w(px(24.)).h(px(2.)).rounded(px(1.)).bg(s.ink.opacity(0.11)))
+                        .child(div().w(px(16.)).h(px(2.)).rounded(px(1.)).bg(tag_color.opacity(0.5))),
+                );
+        }
         MiniDocPreviewKind::Document | MiniDocPreviewKind::Code => {
             page = page.child(
                 div()
@@ -1074,10 +1221,139 @@ pub(crate) fn workspace_page() -> Div {
         .w_full()
         .max_w(px(960.))
         .mx_auto()
-        .p(px(32.))
+        .p(px(28.))
         .flex()
         .flex_col()
-        .gap(px(28.))
+        .gap(px(24.))
+}
+
+/// Unified container shell shared across all Settings tabs (`max_w = 880`, `p = 24`, `gap = 20`).
+pub fn settings_page_shell() -> Div {
+    div()
+        .w_full()
+        .max_w(px(880.))
+        .mx_auto()
+        .p(px(24.))
+        .flex()
+        .flex_col()
+        .gap(px(20.))
+}
+
+/// Standard elevated card container (`s.card` + `1px s.line_soft` + `R_CARD` + `card_shadow`)
+/// ensuring clear surface contrast against both `s.stage` and `s.surface` modal backgrounds.
+pub fn card_box(s: &StudioPalette) -> Div {
+    div()
+        .rounded(px(R_CARD))
+        .bg(s.card)
+        .border_1()
+        .border_color(s.line_soft)
+        .shadow(s.card_shadow())
+}
+
+/// Quiet nested container inside a `card_box` (`s.tray` + `1px s.line_soft` + `R_CTRL`).
+pub fn sub_card_box(s: &StudioPalette) -> Div {
+    div()
+        .rounded(px(R_CTRL))
+        .bg(s.tray)
+        .border_1()
+        .border_color(s.line_soft)
+}
+
+/// Section title above a `card_box` inside Settings or Workspace panels.
+pub fn settings_section_title(label: impl Into<SharedString>, s: &StudioPalette) -> Div {
+    div()
+        .px(px(4.))
+        .pb(px(8.))
+        .text_color(s.ink)
+        .text_size(px(FS_SECTION))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(label.into())
+}
+
+/// Hairline separator between rows inside a `card_box`.
+pub fn settings_divider(s: &StudioPalette) -> Div {
+    div().mx(px(16.)).h(px(1.)).bg(s.line_soft)
+}
+
+/// Standard 2-column (or responsive stacked) setting row inside a `card_box`.
+pub fn settings_row_item(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    control: AnyElement,
+    stacked: bool,
+    s: &StudioPalette,
+) -> Div {
+    div()
+        .min_h(px(64.))
+        .px(px(16.))
+        .py(px(12.))
+        .flex()
+        .map(|d| {
+            if stacked {
+                d.flex_col().items_start().gap(px(8.))
+            } else {
+                d.items_center().justify_between().gap(px(16.))
+            }
+        })
+        .child(
+            div()
+                .map(|d| {
+                    if stacked {
+                        d.w_full()
+                    } else {
+                        d.flex_1().min_w_0()
+                    }
+                })
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .child(
+                    div()
+                        .text_size(px(FS_UI))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(s.ink)
+                        .child(title.into()),
+                )
+                .child(
+                    div()
+                        .text_size(px(FS_META))
+                        .line_height(px(17.))
+                        .text_color(s.muted)
+                        .child(description.into()),
+                ),
+        )
+        .child(div().flex_none().child(control))
+}
+
+/// Unified `32px` (`CTRL_H`) single-line search / text input box with focus border feedback.
+pub fn search_input_box(
+    id: impl Into<ElementId>,
+    editor: Entity<kui::primitives::editor::Editor>,
+    focused: bool,
+    with_search_icon: bool,
+    s: &StudioPalette,
+) -> Stateful<Div> {
+    let focus_editor = editor.clone();
+    div()
+        .id(id)
+        .h(px(CTRL_H))
+        .px(px(10.))
+        .rounded(px(R_CTRL))
+        .bg(s.card)
+        .border_1()
+        .border_color(if focused { s.line_strong } else { s.line })
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .cursor_text()
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            let h = focus_editor.focus_handle(cx);
+            window.focus(&h, cx);
+        })
+        .when(with_search_icon, |d| {
+            d.child(pro_icon(ProIcon::Search, ICON_SM, s.muted))
+        })
+        .child(div().flex_1().min_w_0().h(px(20.)).child(editor))
 }
 
 pub(crate) fn section_heading(label: &'static str, count: Option<usize>, s: &StudioPalette) -> Div {
@@ -1091,8 +1367,8 @@ pub(crate) fn section_heading(label: &'static str, count: Option<usize>, s: &Stu
         .border_color(s.line)
         .child(
             div()
-                .text_size(px(FS_UI))
-                .font_weight(FontWeight::MEDIUM)
+                .text_size(px(FS_SECTION))
+                .font_weight(FontWeight::SEMIBOLD)
                 .text_color(s.ink)
                 .child(label),
         )

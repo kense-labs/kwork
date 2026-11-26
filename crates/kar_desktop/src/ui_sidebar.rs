@@ -452,12 +452,20 @@ impl KarWorkbench {
 
         let mut active_entries: Vec<ChatListEntry> = Vec::new();
         let mut settled_entries: Vec<ChatListEntry> = Vec::new();
+        let mut snoozed_entries: Vec<ChatListEntry> = Vec::new();
         for entry in &self.chat_list {
             if !matches_filters(entry) {
                 continue;
             }
             if self.settled_chats.contains(&entry.info.id) {
                 settled_entries.push(entry.clone());
+            } else if self
+                .prefs
+                .snoozed_chats
+                .get(&entry.info.id)
+                .is_some_and(|&wake| wake > now_ms)
+            {
+                snoozed_entries.push(entry.clone());
             } else {
                 active_entries.push(entry.clone());
             }
@@ -572,18 +580,189 @@ impl KarWorkbench {
             );
         }
 
-        for entry in &active_entries {
-            list_col = list_col.child(self.render_sidebar_thread_card(
-                entry.clone(),
-                "act",
-                active_chat_id,
-                now_ms,
-                false,
-                &nav_sensor,
-                &s,
-                window,
-                cx,
-            ));
+        let (working_entries, rest_entries): (Vec<ChatListEntry>, Vec<ChatListEntry>) =
+            if self.prefs.sidebar_working_section {
+                active_entries
+                    .iter()
+                    .cloned()
+                    .partition(|e| e.last_status == Some(TurnStatus::Running))
+            } else {
+                (Vec::new(), active_entries.clone())
+            };
+
+        if !working_entries.is_empty() {
+            list_col = list_col.child(
+                div()
+                    .px(px(6.))
+                    .pt(px(6.))
+                    .pb(px(2.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .text_size(px(FS_TAG))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(s.pro.accent_info)
+                    .child(loc.pick("运行中", "WORKING"))
+                    .child(format!("{}", working_entries.len())),
+            );
+            for entry in working_entries {
+                list_col = list_col.child(self.render_sidebar_thread_card(
+                    entry,
+                    "wrk",
+                    active_chat_id,
+                    now_ms,
+                    false,
+                    &nav_sensor,
+                    &s,
+                    window,
+                    cx,
+                ));
+            }
+        }
+
+        if self.prefs.sidebar_group_by_project && self.sidebar_project_filter.is_none() && !rest_entries.is_empty() {
+            let mut by_proj: Vec<(String, String, u64, Vec<ChatListEntry>)> = Vec::new();
+            for entry in rest_entries {
+                let (pid, pname) = self
+                    .project_registry
+                    .project_for_chat(&entry.info.workspace, entry.info.id)
+                    .map(|p| {
+                        (
+                            p.id.clone(),
+                            crate::studio_hub::project_display_name(&p.name).to_owned(),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        let raw = entry
+                            .info
+                            .workspace
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("workspace");
+                        (
+                            format!("adhoc-{raw}"),
+                            crate::studio_hub::project_display_name(raw).to_owned(),
+                        )
+                    });
+                let ts = entry.last_activity_ms.unwrap_or(0);
+                if let Some(bucket) = by_proj.iter_mut().find(|(id, _, _, _)| id == &pid) {
+                    bucket.2 = bucket.2.max(ts);
+                    bucket.3.push(entry);
+                } else {
+                    by_proj.push((pid, pname, ts, vec![entry]));
+                }
+            }
+            match self.prefs.sidebar_project_order {
+                crate::prefs::ProjectSortOrder::Recent => {
+                    by_proj.sort_by_key(|b| std::cmp::Reverse(b.2));
+                }
+                crate::prefs::ProjectSortOrder::Alphabetical => {
+                    by_proj.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+                }
+                crate::prefs::ProjectSortOrder::Manual => {}
+            }
+            for (gix, (pid, pname, _, items)) in by_proj.into_iter().enumerate() {
+                let collapsed = self.project_registry.is_collapsed(&pid);
+                let pid_toggle = pid.clone();
+                list_col = list_col.child(
+                    Tactile::ghost(("side-proj-grp", gix), &s)
+                        .w_full()
+                        .h(px(26.))
+                        .px(px(6.))
+                        .mt(px(4.))
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(5.))
+                                .text_size(px(FS_TAG))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(s.muted)
+                                .child(pro_icon(
+                                    if collapsed {
+                                        ProIcon::ChevronRight
+                                    } else {
+                                        ProIcon::ChevronDown
+                                    },
+                                    10.,
+                                    s.faint,
+                                ))
+                                .child(pname),
+                        )
+                        .child(
+                            div()
+                                .font_features(tnum_features())
+                                .text_size(px(FS_TAG))
+                                .text_color(s.faint)
+                                .child(format!("{}", items.len())),
+                        )
+                        .on_press(cx, move |wb, _, cx| {
+                            wb.project_registry.toggle_collapsed(&pid_toggle);
+                            let _ = wb.project_registry.save(&wb.config.chat_dir);
+                            cx.notify();
+                        }),
+                );
+                if !collapsed {
+                    for entry in items {
+                        list_col = list_col.child(self.render_sidebar_thread_card(
+                            entry,
+                            "act",
+                            active_chat_id,
+                            now_ms,
+                            false,
+                            &nav_sensor,
+                            &s,
+                            window,
+                            cx,
+                        ));
+                    }
+                }
+            }
+        } else {
+            for entry in &rest_entries {
+                list_col = list_col.child(self.render_sidebar_thread_card(
+                    entry.clone(),
+                    "act",
+                    active_chat_id,
+                    now_ms,
+                    false,
+                    &nav_sensor,
+                    &s,
+                    window,
+                    cx,
+                ));
+            }
+        }
+
+        if !snoozed_entries.is_empty() {
+            list_col = list_col.child(
+                div()
+                    .px(px(6.))
+                    .pt(px(8.))
+                    .pb(px(2.))
+                    .text_size(px(FS_TAG))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(s.faint)
+                    .child(format!(
+                        "{} ({})",
+                        loc.pick("稍后提醒", "SNOOZED"),
+                        snoozed_entries.len()
+                    )),
+            );
+            for entry in snoozed_entries {
+                list_col = list_col.child(self.render_sidebar_thread_card(
+                    entry,
+                    "snz",
+                    active_chat_id,
+                    now_ms,
+                    false,
+                    &nav_sensor,
+                    &s,
+                    window,
+                    cx,
+                ));
+            }
         }
 
         if active_entries.is_empty() && !matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
@@ -742,7 +921,7 @@ impl KarWorkbench {
                             div()
                                 .text_size(px(FS_META))
                                 .text_color(s.muted)
-                                .child(loc.pick("已结项", "Settled")),
+                                .child(if self.sidebar_metadata.values().any(|meta| meta.archived) { loc.pick("已结项与归档", "Settled and archived") } else { loc.pick("已结项", "Settled") }),
                         )
                         .child(
                             div()
@@ -1052,7 +1231,8 @@ impl KarWorkbench {
             .child(icon)
         };
         let in_conv = self.main_stage_view == MainStageView::Conversation;
-        let location = if entry.info.worktree_id.is_some() {
+        let archived = self.sidebar_metadata.get(&chat_id).is_some_and(|meta| meta.archived);
+        let location = if archived { loc.pick("已归档", "Archived") } else if entry.info.worktree_id.is_some() {
             loc.pick("工作树", "Worktree")
         } else {
             loc.pick("本机", "Local")
@@ -1149,7 +1329,41 @@ impl KarWorkbench {
                             bar.invisible().group_hover(row_id, |st| st.visible())
                         })
                         .when(!confirming_del, |bar| {
+                            let is_snoozed = self
+                                .prefs
+                                .snoozed_chats
+                                .get(&chat_id)
+                                .is_some_and(|&w| w > now_ms);
                             bar.child(
+                                action(
+                                    "snooze",
+                                    if is_snoozed {
+                                        loc.pick("取消稍后提醒", "Wake thread")
+                                    } else {
+                                        loc.pick("稍后提醒（2 小时后回到顶部）", "Snooze for 2h")
+                                    },
+                                    render_schedule_repeat_icon(
+                                        14.,
+                                        if is_snoozed { s.pro.accent_info } else { s.text },
+                                    )
+                                    .into_any_element(),
+                                )
+                                .on_press(cx, move |wb, _, cx| {
+                                    cx.stop_propagation();
+                                    let cur = crate::remote_link::now_epoch_ms();
+                                    if wb.prefs.snoozed_chats.remove(&chat_id).is_some() {
+                                        wb.notify_toast("已取消稍后提醒", cx);
+                                    } else {
+                                        wb.prefs
+                                            .snoozed_chats
+                                            .insert(chat_id, cur + 2 * 3_600_000);
+                                        wb.notify_toast("已设为 2 小时后提醒", cx);
+                                    }
+                                    wb.save_prefs();
+                                    cx.notify();
+                                }),
+                            )
+                            .when(!archived, |row| row.child(
                                 action(
                                     "settle",
                                     if is_settled {
@@ -1164,10 +1378,27 @@ impl KarWorkbench {
                                 )
                                 .on_press(cx, move |wb, _, cx| {
                                     cx.stop_propagation();
-                                    wb.toggle_settle_chat(chat_id, cx);
+                                    let req = !is_settled && wb.prefs.confirm_archive;
+                                    wb.confirm_or_run(
+                                        format!("settle-{chat_id}"),
+                                        req,
+                                        "再次点击确认将对话标记为已结项",
+                                        cx,
+                                        move |wb, cx| wb.toggle_settle_chat(chat_id, cx),
+                                    );
                                 }),
-                            )
-                            .child(
+                            ))
+                            .child({
+                                action("archive-thread", if archived { loc.pick("取消归档", "Unarchive") } else { loc.pick("归档对话", "Archive") },
+                                    pro_icon(ProIcon::Inbox, 16., s.text))
+                                    .on_press(cx, move |wb, _, cx| {
+                                        let confirm = !archived && wb.prefs.confirm_archive;
+                                        wb.confirm_or_run(format!("archive-thread-{chat_id}"), confirm, "再次点击归档对话", cx, move |wb, _| {
+                                            wb.bridge.send(crate::kar_bridge::KarCommand::UpdateSidebar {chat_id, action: crate::kar_bridge::SidebarAction::Archive(!archived)});
+                                        });
+                                    })
+                            })
+                            .when(!archived, |row| row.child(
                                 action(
                                     "pin",
                                     if pinned {
@@ -1183,9 +1414,16 @@ impl KarWorkbench {
                                 )
                                 .on_press(cx, move |wb, _, cx| {
                                     cx.stop_propagation();
-                                    wb.toggle_pin_chat(chat_id, cx);
+                                    let req = pinned && wb.prefs.confirm_unpin;
+                                    wb.confirm_or_run(
+                                        format!("unpin-{chat_id}"),
+                                        req,
+                                        "再次点击确认取消置顶",
+                                        cx,
+                                        move |wb, cx| wb.toggle_pin_chat(chat_id, cx),
+                                    );
                                 }),
-                            )
+                            ))
                             .child(
                                 action(
                                     "ren",
@@ -1225,6 +1463,7 @@ impl KarWorkbench {
                             })
                             .into_any_element()
                         } else {
+                            let direct_title = title_for_del.clone();
                             action(
                                 "del",
                                 loc.pick("删除对话", "Delete"),
@@ -1232,9 +1471,17 @@ impl KarWorkbench {
                             )
                             .on_press(cx, move |this, _, cx| {
                                 cx.stop_propagation();
-                                this.pending_delete_chat =
-                                    Some((chat_id, std::time::Instant::now()));
-                                cx.notify();
+                                if this.prefs.confirm_delete {
+                                    this.pending_delete_chat =
+                                        Some((chat_id, std::time::Instant::now()));
+                                    cx.notify();
+                                } else {
+                                    this.stage_deferred_chat_delete(
+                                        chat_id,
+                                        direct_title.clone(),
+                                        cx,
+                                    );
+                                }
                             })
                             .into_any_element()
                         }),
@@ -1388,6 +1635,8 @@ impl KarWorkbench {
             .when(cur_filter.is_none(), |r| r.child(menu_check(s)))
             .on_press(cx, |this, _, cx| {
                 this.sidebar_project_filter = None;
+                this.prefs.active_project_filter = None;
+                this.save_prefs();
                 this.open_menu = None;
                 cx.notify();
             })
@@ -1395,7 +1644,11 @@ impl KarWorkbench {
             menu_divider(s).into_any_element(),
         ];
 
-        for (ix, proj) in self.project_registry.projects.iter().enumerate() {
+        let mut projects = self.project_registry.projects.clone();
+        if self.prefs.sidebar_project_order == crate::prefs::ProjectSortOrder::Alphabetical {
+            projects.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        }
+        for (ix, proj) in projects.iter().enumerate() {
             let p_norm = proj
                 .root_path
                 .canonicalize()
@@ -1412,6 +1665,8 @@ impl KarWorkbench {
                 .when(is_sel, |r| r.child(menu_check(s)))
                 .on_press(cx, move |this, _, cx| {
                     this.sidebar_project_filter = Some(root.clone());
+                    this.prefs.active_project_filter = Some(root.clone());
+                    this.save_prefs();
                     this.open_menu = None;
                     cx.notify();
                 })

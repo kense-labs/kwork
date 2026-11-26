@@ -7,6 +7,7 @@ use anyhow::{Context as _, Result, bail};
 use docs_engine::{Document, OBJECT, Paragraph, Position as DocPos, Selection as DocSel};
 use docs_ui::DocsView;
 use gpui::{prelude::*, *};
+use pdf_ui::PdfView;
 use sheets_engine::{CellRange, Workbook, cell_name, formula::parse_range};
 use sheets_ui::SheetsView;
 use slides_engine::{Focus as SlideFocus, LINE_BREAK, Presentation, ShapeKind};
@@ -21,6 +22,7 @@ pub enum OfficeEditorView {
     Word(Entity<DocsView>),
     Excel(Entity<SheetsView>),
     Ppt(Entity<SlidesView>),
+    Pdf(Entity<PdfView>),
 }
 
 #[derive(Clone)]
@@ -54,6 +56,9 @@ impl OfficeTab {
             OfficeKind::Ppt => {
                 OfficeEditorView::Ppt(cx.new(|cx| SlidesView::new(Some(path), window, cx)))
             }
+            OfficeKind::Pdf => {
+                OfficeEditorView::Pdf(cx.new(|cx| PdfView::new(Some(path), window, cx)))
+            }
         };
         Ok(Self {
             id,
@@ -73,6 +78,9 @@ impl OfficeTab {
             OfficeKind::Ppt => {
                 OfficeEditorView::Ppt(cx.new(|cx| SlidesView::new(None, window, cx)))
             }
+            OfficeKind::Pdf => {
+                OfficeEditorView::Pdf(cx.new(|cx| PdfView::new(None, window, cx)))
+            }
         };
         Self {
             id,
@@ -88,6 +96,7 @@ impl OfficeTab {
             OfficeEditorView::Word(e) => e.clone().into(),
             OfficeEditorView::Excel(e) => e.clone().into(),
             OfficeEditorView::Ppt(e) => e.clone().into(),
+            OfficeEditorView::Pdf(e) => e.clone().into(),
         }
     }
 
@@ -96,6 +105,7 @@ impl OfficeTab {
             OfficeEditorView::Word(e) => e.read(cx).doc_name(cx),
             OfficeEditorView::Excel(e) => e.read(cx).doc_name(cx),
             OfficeEditorView::Ppt(e) => e.read(cx).doc_name(cx),
+            OfficeEditorView::Pdf(e) => e.read(cx).doc_name(cx),
         };
         if self.is_demo && !raw.starts_with("[演示]") {
             format!("[演示] {raw}")
@@ -109,6 +119,7 @@ impl OfficeTab {
             OfficeEditorView::Word(e) => e.read(cx).path(cx),
             OfficeEditorView::Excel(e) => e.read(cx).path(cx),
             OfficeEditorView::Ppt(e) => e.read(cx).path(cx),
+            OfficeEditorView::Pdf(e) => e.read(cx).path(cx),
         }
     }
 
@@ -117,6 +128,7 @@ impl OfficeTab {
             OfficeEditorView::Word(e) => e.read(cx).is_dirty(cx),
             OfficeEditorView::Excel(e) => e.read(cx).is_dirty(cx),
             OfficeEditorView::Ppt(e) => e.read(cx).is_dirty(cx),
+            OfficeEditorView::Pdf(e) => !self.is_demo && e.read(cx).is_dirty(cx),
         }
     }
 
@@ -125,13 +137,16 @@ impl OfficeTab {
             OfficeEditorView::Word(e) => e.read(cx).revision(cx),
             OfficeEditorView::Excel(e) => e.read(cx).revision(cx),
             OfficeEditorView::Ppt(e) => e.read(cx).revision(cx),
+            OfficeEditorView::Pdf(e) => e.read(cx).revision(cx),
         }
     }
 
     pub fn is_busy(&self, cx: &App) -> bool {
         match &self.view {
             OfficeEditorView::Excel(e) => e.read(cx).is_busy(),
-            OfficeEditorView::Word(_) | OfficeEditorView::Ppt(_) => false,
+            OfficeEditorView::Word(_) | OfficeEditorView::Ppt(_) | OfficeEditorView::Pdf(_) => {
+                false
+            }
         }
     }
 
@@ -140,6 +155,7 @@ impl OfficeTab {
             OfficeEditorView::Word(e) => e.read(cx).agent_read(|doc, _| doc.needs_save_as()),
             OfficeEditorView::Excel(e) => e.read(cx).agent_read(cx, |book, _| book.path().is_none()),
             OfficeEditorView::Ppt(e) => e.read(cx).agent_read(|pres, _| pres.needs_save_as()),
+            OfficeEditorView::Pdf(e) => e.read(cx).path(cx).is_none(),
         }
     }
 
@@ -149,6 +165,7 @@ impl OfficeTab {
             OfficeKind::Word => "docx",
             OfficeKind::Excel => "xlsx",
             OfficeKind::Ppt => "pptx",
+            OfficeKind::Pdf => "pdf",
         };
         let stem = std::path::Path::new(&raw)
             .file_stem()
@@ -163,6 +180,7 @@ impl OfficeTab {
             OfficeEditorView::Word(e) => e.read(cx).status(),
             OfficeEditorView::Excel(e) => e.read(cx).status(),
             OfficeEditorView::Ppt(e) => e.read(cx).status(),
+            OfficeEditorView::Pdf(e) => e.read(cx).status(),
         }
     }
 
@@ -171,6 +189,7 @@ impl OfficeTab {
             OfficeEditorView::Word(e) => e.update(cx, |v, cx| v.focus(window, cx)),
             OfficeEditorView::Excel(e) => e.update(cx, |v, cx| v.focus(window, cx)),
             OfficeEditorView::Ppt(e) => e.update(cx, |v, cx| v.focus(window, cx)),
+            OfficeEditorView::Pdf(e) => e.update(cx, |v, cx| v.focus(window, cx)),
         }
     }
 
@@ -182,6 +201,10 @@ impl OfficeTab {
             OfficeEditorView::Word(e) => e.update(cx, |v, cx| v.agent_save(None, window, cx)),
             OfficeEditorView::Excel(e) => e.update(cx, |v, cx| v.agent_save(None, window, cx)),
             OfficeEditorView::Ppt(e) => e.update(cx, |v, cx| v.agent_save(None, window, cx)),
+            OfficeEditorView::Pdf(e) => {
+                e.update(cx, |v, cx| v.save_doc(window, cx));
+                Ok(self.doc_name(cx))
+            }
         }
     }
 
@@ -198,6 +221,14 @@ impl OfficeTab {
                 e.update(cx, |v, cx| v.agent_save(Some(dest), window, cx))
             }
             OfficeEditorView::Ppt(e) => e.update(cx, |v, cx| v.agent_save(Some(dest), window, cx)),
+            OfficeEditorView::Pdf(e) => {
+                if let Some(src) = e.read(cx).path(cx) {
+                    std::fs::copy(&src, dest)?;
+                } else {
+                    e.update(cx, |v, cx| v.save_doc_as(window, cx));
+                }
+                Ok(dest.display().to_string())
+            }
         }
     }
 
@@ -332,6 +363,34 @@ impl OfficeTab {
                     }
                 })
             }
+            OfficeEditorView::Pdf(e) => {
+                let v = e.read(cx);
+                let page_index = v.current_page();
+                let total_pages = v.page_count().max(1);
+                let mut excerpt = v.location();
+                if let Some(ref p) = file_path
+                    && let Ok(bytes) = std::fs::read(p)
+                    && let Ok(doc) = pdf_engine::PdfDoc::open(std::sync::Arc::new(bytes), "")
+                {
+                    let pt = doc.text(page_index);
+                    let snippet: String = pt.text.chars().take(480).collect();
+                    if !snippet.trim().is_empty() {
+                        excerpt = snippet.trim().to_owned();
+                    }
+                }
+                SelectionTarget {
+                    tab_id: self.id,
+                    file_path,
+                    doc_name,
+                    kind: OfficeKind::Pdf,
+                    base_revision,
+                    locator: SelectionLocator::PdfPage {
+                        page_index,
+                        total_pages,
+                    },
+                    excerpt,
+                }
+            }
         }
     }
 
@@ -343,6 +402,12 @@ impl OfficeTab {
         cx: &mut App,
     ) {
         match (&self.view, locator) {
+            (OfficeEditorView::Pdf(e), SelectionLocator::PdfPage { page_index, .. }) => {
+                e.update(cx, |v, cx| {
+                    v.go_to_page(*page_index, cx);
+                    v.focus(window, cx);
+                });
+            }
             (
                 OfficeEditorView::Word(e),
                 SelectionLocator::WordParagraph {

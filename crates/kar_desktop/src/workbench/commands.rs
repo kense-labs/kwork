@@ -478,13 +478,27 @@ impl KarWorkbench {
         });
         let native = match (&self.access_mode, session) {
             (_, Some((_, commands))) => commands.as_slice(),
+            (ChatAccessMode::NoneSelected | ChatAccessMode::WriteController { .. }, None)
+                if (self.hosted_writer.is_some() || matches!(self.access_mode,ChatAccessMode::NoneSelected))
+                    && crate::aster::is_aster(self.active_or_selected_runtime_id()) => {
+                let workspace = self.effective_workspace_dir();
+                self.providers.iter().find(|p| p.id == crate::aster::ID)
+                    .and_then(|p| p.workspace_commands.as_ref())
+                    .filter(|(owner, _)| *owner == workspace)
+                    .map_or(&[][..], |(_, commands)| commands.as_slice())
+            }
             (ChatAccessMode::WriteController { .. } | ChatAccessMode::NoneSelected, None) =>
                 self.workspace_inventory.advertised_commands_for(&self.effective_workspace_dir(), self.active_or_selected_runtime_id()),
             _ => &[],
         };
-        command_choices(goal, native, self.supports_planning(), query, self.ui_locale, |action| {
+        let aster_plan = self.supports_aster_planning();
+        let mut choices = command_choices(goal, native, self.supports_planning() || aster_plan, query, self.ui_locale, |action| {
             self.slash_action_available(action)
-        })
+        });
+        if aster_plan && let Some(plan) = choices.iter_mut().find(|choice| choice.action == Command::PlanMode) {
+            plan.description = self.ui_locale.pick("切换 Aster 原生计划模式", "Switch to Aster's native plan mode").into();
+        }
+        choices
     }
 
     pub(crate) fn open_slash_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -553,12 +567,26 @@ impl KarWorkbench {
             return;
         };
         let objective = self.goal_input.read(cx).value(cx).trim().to_owned();
-        if DraftLocation::for_mode(&self.access_mode, &self.config.workspace_dir) != owner {
-            if !objective.is_empty() {
+        let budget = self.goal_budget_input.read(cx).value(cx);
+        let same_owner = DraftLocation::for_mode(&self.access_mode, &self.config.workspace_dir) == owner;
+        let token_budget = if budget.trim().is_empty() || (same_owner && !self.goal_supports_token_budget()) { None } else {
+            match super::chat_goal::parse_budget(&budget) {
+                Ok(tokens) => Some(tokens),
+                Err(()) => {
+                    self.notify_warning(self.ui_locale.pick("Token 预算须为正整数（最大 9007199254740991）。", "Enter a positive token budget up to 9007199254740991."), cx);
+                    self.goal_dialog.update(cx, |dialog, cx| dialog.set_open(true, win, cx));
+                    self.goal_budget_input.read(cx).focus_handle(cx).focus(win, cx);
+                    return;
+                }
+            }
+        };
+        let edit = crate::kar_bridge::GoalEdit {objective, token_budget};
+        if !same_owner {
+            if !edit.objective.is_empty() {
                 self.prepend_composer_draft(
                     owner,
                     QueuedPrompt {
-                        text: format!("/goal {objective}"),
+                        text: edit.command(),
                         ..Default::default()
                     },
                     win,
@@ -575,7 +603,7 @@ impl KarWorkbench {
             self.goal_dialog_owner = None;
             return;
         }
-        if !objective.is_empty() && self.submit_chat_goal(objective, win, cx) {
+        if !edit.objective.is_empty() && self.submit_chat_goal(edit, win, cx) {
             self.goal_dialog_owner = None;
             return;
         }
@@ -587,7 +615,7 @@ impl KarWorkbench {
 
     pub(super) fn submit_chat_goal(
         &mut self,
-        objective: String,
+        objective: crate::kar_bridge::GoalEdit,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {

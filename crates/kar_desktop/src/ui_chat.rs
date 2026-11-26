@@ -11,7 +11,7 @@ pub(crate) mod turn_navigation;
 pub(crate) mod turn_steps;
 pub(crate) mod questions;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 
@@ -55,20 +55,21 @@ use crate::{
     },
     ui_motion::{
         copy_text_button, copy_with_hint,
-        MenuPlacement, Tactile, close_button, disclosure_body, disclosure_line, icon_button, menu_caption,
+        MenuPlacement, Tactile, close_button, disclosure_body, disclosure_line, icon_button,
+        icon_button_sm, menu_caption,
         menu_check, menu_divider, menu_hint, menu_host, menu_icon_item, menu_item,
         pulse_beacon, soft_button, spinner, text_button,
     },
     ui_primitives::{
-        CTRL_H, DETAILS_CARD_W, DotTone, FS_CONTROL, FS_META, FS_READ, FS_TAG, FS_UI, HEADER_H, ICON,
+        CTRL_H, CTRL_SM_H, DETAILS_CARD_W, DotTone, FS_CONTROL, FS_META, FS_READ, FS_TAG, FS_UI, HEADER_H, ICON,
         ICON_SM, ICON_XS, LH_META, LH_READ, LH_UI, R_CARD, R_CTRL, R_HERO, R_PILL, StudioPalette, UiLocale,
-        THREAD_PAD, THREAD_W, clean_display_doc_name, macos_traffic_pad, mono_font,
+        THREAD_PAD, card_box, clean_display_doc_name, macos_traffic_pad, mono_font,
         render_bg_layers_icon,
         render_file_diff_icon, render_folder_git_icon, render_folder_icon, render_git_branch_icon,
         render_machine_icon, render_office_chip, render_panel_bottom_icon, render_panel_right_icon,
         render_runtime_mark, render_schedule_repeat_icon,
         render_skills_puzzle_icon, render_square_menu_icon, render_square_pen_icon, render_status,
-        render_steer_merge_icon, tnum_features,
+        render_steer_merge_icon, search_input_box, tnum_features,
     },
     ui_settings::SettingsTab,
     workbench::{
@@ -144,6 +145,7 @@ impl KarWorkbench {
             pane_w
         };
 
+        let thread_w = self.prefs.chat_width_mode.max_width_px();
         let header = self.render_chat_header(
             pane_w,
             on_start_screen,
@@ -153,9 +155,26 @@ impl KarWorkbench {
             window,
             cx,
         );
-        let share_bar = self.render_share_bar(&s, cx);
-        let goal_bar = self.render_goal_bar(&s, cx);
-        let notice = self.render_notice(&s, cx);
+        let find_bar = self.render_chat_find_bar(thread_w, &s, window, cx);
+        let share_bar = self.render_share_bar(thread_w, &s, cx);
+        let goal_bar = self.render_goal_bar(thread_w.min(center_w), &s, cx);
+        let notice = self.render_notice(thread_w, &s, cx);
+
+        let search_q_lc = if self.chat_search_open {
+            self.chat_search_query.trim().to_lowercase()
+        } else {
+            String::new()
+        };
+        let active_match_turn_ix = if search_q_lc.is_empty() {
+            None
+        } else {
+            let matches = matching_turn_indices(&self.projected.turns, &search_q_lc);
+            if matches.is_empty() {
+                None
+            } else {
+                Some(matches[self.chat_search_match_ix % matches.len()])
+            }
+        };
 
         let stage = if on_start_screen {
             self.render_start_stage(center_w, &s, window, cx)
@@ -172,9 +191,26 @@ impl KarWorkbench {
             } else {
                 let turns = self.projected.turns.clone();
                 for (turn_idx, turn) in turns.iter().enumerate() {
+                    let is_active_match = active_match_turn_ix == Some(turn_idx);
+                    let turn_matched = !search_q_lc.is_empty()
+                        && turn_matches_search(turn, &search_q_lc);
+                    let rendered = self
+                        .render_turn(turn_idx, turn, !show_review_rail, &s, window, cx)
+                        .when(turn_matched, |d| {
+                            d.pl(px(10.))
+                                .border_l_2()
+                                .border_color(if is_active_match {
+                                    s.primary
+                                } else {
+                                    s.primary.opacity(0.38)
+                                })
+                                .when(is_active_match, |d| {
+                                    d.rounded(px(R_CARD)).bg(s.pro.accent_soft.opacity(0.32)).py(px(6.)).pr(px(8.))
+                                })
+                        });
                     rows.push(
                         arrive(
-                            self.render_turn(turn_idx, turn, !show_review_rail, &s, window, cx),
+                            rendered,
                             ElementId::Name(format!("turn-in-{}", turn.id).into()),
                             0,
                             6.,
@@ -252,7 +288,7 @@ impl KarWorkbench {
             let card = decision.map(|request| {
                 let compact = center_w < 460.;
                 let card = self.render_decision_card(request, pending_count, compact, &s, window, cx);
-                chat_content_lane(center_w, window)
+                chat_content_lane(center_w, thread_w, window)
                     .flex_none()
                     .pb(px(8.))
                     .child(card)
@@ -263,7 +299,7 @@ impl KarWorkbench {
             let activity_row = activity.map(|phase| {
                 self.render_composer_activity(phase, &s, window, cx)
             });
-            let foot = chat_content_lane(center_w, window)
+            let foot = chat_content_lane(center_w, thread_w, window)
                 .relative()
                 .pt(px(8.))
                 .pb(px(20.))
@@ -280,7 +316,7 @@ impl KarWorkbench {
                                 Tactile::soft("chat-jump-bottom", &s)
                                     .fills(s.card, s.hover)
                                     .radius(R_PILL)
-                                    .h(px(28.))
+                                    .h(px(CTRL_SM_H))
                                     .px(px(12.))
                                     .gap(px(5.))
                                     .border_1()
@@ -302,10 +338,12 @@ impl KarWorkbench {
                     div()
                         .children(activity_row)
                         .when(self.recoverable_archived_plan(), |row| row.child(
-                            Tactile::soft("resume-archived-proposal",&s)
-                                .h(px(30.)).px(px(9.))
-                                .child(self.ui_locale.pick("在工作区继续这份计划","Continue this plan in the workspace"))
-                                .on_press(cx,|this,w,cx|this.recover_archived_plan(w,cx))))
+                            Tactile::soft("resume-archived-proposal", &s)
+                                .h(px(CTRL_H))
+                                .px(px(12.))
+                                .radius(R_CTRL)
+                                .child(self.ui_locale.pick("在工作区继续这份计划", "Continue this plan in the workspace"))
+                                .on_press(cx, |this, w, cx| this.recover_archived_plan(w, cx))))
                         .child(self.render_view_only_bar(&s, cx))
                         .into_any_element()
                 } else {
@@ -330,7 +368,7 @@ impl KarWorkbench {
                 .overflow_y_scroll()
                 .on_scroll(cx.listener(|this, _, _, _| this.turn_navigation.cancel_jump()))
                 .children(rows.into_iter().enumerate().map(|(index, row)| {
-                    chat_content_lane(center_w, window)
+                    chat_content_lane(center_w, thread_w, window)
                         .flex_none()
                         .pt(px(if index == 0 { 24. } else { 32. }))
                         .when(index + 1 == count, |d| d.pb(px(32.)))
@@ -406,6 +444,7 @@ impl KarWorkbench {
                 this.handle_dropped_paths(paths.paths(), window, cx);
             }))
             .child(header)
+            .child(find_bar)
             .child(share_bar)
             .child(goal_bar)
             .child(notice)
@@ -657,6 +696,37 @@ impl KarWorkbench {
                     .when_some(self.presence_stack.clone(), |d, ps| {
                         d.child(div().mr(px(4.)).child(ps))
                     })
+                    .when_some(
+                        self.detected_dev_ports
+                            .first()
+                            .copied()
+                            .filter(|_| self.prefs.auto_show_dev_preview_pill),
+                        |d, port| {
+                            d.child(
+                                Tactile::soft("chat-localhost-preview-pill", s)
+                                    .fills(s.pro.accent_soft, s.pro.accent_soft)
+                                    .radius(R_PILL)
+                                    .h(px(24.))
+                                    .px(px(9.))
+                                    .gap(px(5.))
+                                    .text_size(px(FS_TAG))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(s.pro.accent_info)
+                                    .tip(loc.pick(
+                                        "打开本地运行中的预览地址",
+                                        "Open live localhost preview",
+                                    ))
+                                    .child(pro_icon(ProIcon::Globe, 12., s.pro.accent_info))
+                                    .child(format!("localhost:{port}"))
+                                    .on_press(cx, move |_, _, _| {
+                                        let url = format!("http://localhost:{port}");
+                                        let _ = std::process::Command::new("open")
+                                            .arg(&url)
+                                            .spawn();
+                                    }),
+                            )
+                        },
+                    )
                     .when(remote_active, |d| {
                         d.child(
                             Tactile::soft("chat-remote-live-pill", s)
@@ -672,6 +742,21 @@ impl KarWorkbench {
                                 .on_press(cx, |this, _, cx| {
                                     this.open_settings(SettingsTab::Remote, cx)
                                 }),
+                        )
+                    })
+                    .when(!on_start_screen || self.chat_search_open, |d| {
+                        d.child(
+                            icon_button_sm(
+                                "chat-toggle-find",
+                                ProIcon::Search,
+                                loc.pick("对话内查找  ⌘F", "Find in thread  ⌘F"),
+                                s,
+                            )
+                            .lit(self.chat_search_open)
+                            .on_press(cx, |this, _, cx| {
+                                this.chat_search_open = !this.chat_search_open;
+                                cx.notify();
+                            }),
                         )
                     })
                     // 1. `SquareMenu` (`[≡]`) -> Toggle `ThreadDetailsCard` (active threads)
@@ -1099,11 +1184,13 @@ impl KarWorkbench {
                 .on_press(cx, |this, _, cx| this.toggle_handoff_sheet(cx))
                 .into_any_element(),
         );
+        if self.supports_side_question() {
         rows.push(
             menu_icon_item("chat-more-side-q", ProIcon::Sparkles, "旁路快问（不入上下文）…", s)
                 .on_press(cx, |this, _, cx| this.toggle_side_question_sheet(cx))
                 .into_any_element(),
         );
+        }
 
         if self.projected.can_compact {
             rows.push(
@@ -1238,14 +1325,215 @@ impl KarWorkbench {
         }
     }
 
-    fn render_share_bar(&self, s: &StudioPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_chat_find_bar(
+        &self,
+        thread_w: f32,
+        s: &StudioPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        #[derive(Clone)]
+        struct ChatFindBarState {
+            editor: Entity<Editor>,
+            wired: bool,
+            was_open: bool,
+        }
+
+        let loc = self.ui_locale;
+        let open = self.chat_search_open;
+        let state = window.use_keyed_state("kar-chat-find-state", cx, |win, cx| {
+            let editor = cx.new(|cx| {
+                let mut ed = Editor::new("对话内查找", InputMode::Search, win, cx);
+                ed.set_placeholder(loc.pick("在当前对话记录中查找…", "Find in thread…"));
+                ed.font_size = FS_UI;
+                ed
+            });
+            ChatFindBarState {
+                editor,
+                wired: false,
+                was_open: false,
+            }
+        });
+        let cur_state = state.read(cx).clone();
+        let editor = cur_state.editor;
+        if !cur_state.wired {
+            state.update(cx, |st, _| st.wired = true);
+            cx.subscribe_in(
+                &editor,
+                window,
+                |this, ed_ent, ev: &EditEvent, _win, cx| match ev {
+                    EditEvent::Changed => {
+                        this.chat_search_query = ed_ent.read(cx).value().to_owned();
+                        this.chat_search_match_ix = 0;
+                        let q_lc = this.chat_search_query.trim().to_lowercase();
+                        if !q_lc.is_empty() {
+                            let matches = matching_turn_indices(&this.projected.turns, &q_lc);
+                            if let Some(&first_turn_ix) = matches.first() {
+                                this.chat_scroll.scroll_to_item(first_turn_ix);
+                            }
+                        }
+                        cx.notify();
+                    }
+                    EditEvent::Submitted => {
+                        let q_lc = this.chat_search_query.trim().to_lowercase();
+                        let matches = matching_turn_indices(&this.projected.turns, &q_lc);
+                        if !matches.is_empty() {
+                            this.chat_search_match_ix =
+                                (this.chat_search_match_ix + 1) % matches.len();
+                            this.chat_scroll
+                                .scroll_to_item(matches[this.chat_search_match_ix]);
+                            cx.notify();
+                        }
+                    }
+                    EditEvent::Escape => {
+                        this.chat_search_open = false;
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            )
+            .detach();
+        }
+        if open != cur_state.was_open {
+            state.update(cx, |st, _| st.was_open = open);
+            if open {
+                let focus = editor.read(cx).focus.clone();
+                window.defer(cx, move |win, cx| focus.focus(win, cx));
+            }
+        }
+        if !open {
+            return pro_fold("kar-chat-find-bar", false, 46., 0., || {
+                div().into_any_element()
+            });
+        }
+
+        let q_lc = self.chat_search_query.trim().to_lowercase();
+        let matches = if q_lc.is_empty() {
+            Vec::new()
+        } else {
+            matching_turn_indices(&self.projected.turns, &q_lc)
+        };
+        let match_count = matches.len();
+        let cur_ix = if match_count == 0 {
+            0
+        } else {
+            (self.chat_search_match_ix % match_count) + 1
+        };
+        let counter_label = if q_lc.is_empty() {
+            String::new()
+        } else if match_count == 0 {
+            loc.pick("无匹配", "0 matches").to_owned()
+        } else {
+            format!("{cur_ix} / {match_count}")
+        };
+        let matches_prev = matches.clone();
+        let matches_next = matches;
+        let focused = editor.read(cx).focus.is_focused(window);
+
+        let bar = div()
+            .w_full()
+            .max_w(px(thread_w))
+            .mx_auto()
+            .px(px(THREAD_PAD))
+            .pt(px(6.))
+            .pb(px(2.))
+            .child(
+                card_box(s)
+                    .h(px(38.))
+                    .px(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        search_input_box("chat-find-input-box", editor, focused, true, s)
+                            .flex_1()
+                            .min_w_0()
+                            .border_0()
+                            .bg(transparent_black()),
+                    )
+                    .when(!counter_label.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .px(px(6.))
+                                .text_size(px(FS_META))
+                                .text_color(if match_count == 0 {
+                                    s.pro.red_ink
+                                } else {
+                                    s.muted
+                                })
+                                .font_features(tnum_features())
+                                .child(counter_label),
+                        )
+                    })
+                    .child(
+                        icon_button_sm(
+                            "chat-find-prev",
+                            ProIcon::ChevronUp,
+                            loc.pick("上一处匹配", "Previous match"),
+                            s,
+                        )
+                        .disabled(match_count == 0)
+                        .on_press(cx, move |this, _, cx| {
+                            if !matches_prev.is_empty() {
+                                let len = matches_prev.len();
+                                this.chat_search_match_ix =
+                                    (this.chat_search_match_ix + len - 1) % len;
+                                this.chat_scroll
+                                    .scroll_to_item(matches_prev[this.chat_search_match_ix]);
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .child(
+                        icon_button_sm(
+                            "chat-find-next",
+                            ProIcon::ChevronDown,
+                            loc.pick("下一处匹配", "Next match"),
+                            s,
+                        )
+                        .disabled(match_count == 0)
+                        .on_press(cx, move |this, _, cx| {
+                            if !matches_next.is_empty() {
+                                let len = matches_next.len();
+                                this.chat_search_match_ix = (this.chat_search_match_ix + 1) % len;
+                                this.chat_scroll
+                                    .scroll_to_item(matches_next[this.chat_search_match_ix]);
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .child(
+                        icon_button_sm(
+                            "chat-find-close",
+                            ProIcon::Close,
+                            loc.pick("关闭查找  Esc", "Close find  Esc"),
+                            s,
+                        )
+                        .on_press(cx, |this, _, cx| {
+                            this.chat_search_open = false;
+                            cx.notify();
+                        }),
+                    ),
+            )
+            .into_any_element();
+
+        pro_fold("kar-chat-find-bar", true, 46., 0., move || bar)
+    }
+
+    fn render_share_bar(
+        &self,
+        thread_w: f32,
+        s: &StudioPalette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let url = self.active_http_server_url.clone();
         let open = url.is_some();
         let bar = url.map(|url| {
             let to_copy = url.clone();
             div()
                 .w_full()
-                .max_w(px(THREAD_W))
+                .max_w(px(thread_w))
                 .mx_auto()
                 .px(px(THREAD_PAD))
                 .pt(px(6.))
@@ -1297,61 +1585,68 @@ impl KarWorkbench {
         })
     }
 
-    fn render_goal_bar(&self, s: &StudioPalette, cx: &mut Context<Self>) -> AnyElement {
-        let goal = self.projected.goal.as_ref().and_then(Option::as_ref).cloned();
-        let owner = self.projected.chat_id.filter(|_| self.can_set_chat_goal());
-        let open = goal.is_some();
+    fn render_goal_bar(
+        &self,
+        thread_w: f32,
+        s: &StudioPalette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::kar_bridge::GoalAction;
+        let chat = self.current_chat_id().filter(|id| self.projected.chat_id == Some(*id));
+        let goal = chat.and_then(|_| self.projected.goal.as_ref()?.as_ref());
+        let loc = self.ui_locale;
         let bar = goal.map(|g| {
-            div()
-                .w_full()
-                .max_w(px(THREAD_W))
-                .mx_auto()
-                .px(px(THREAD_PAD))
-                .pt(px(6.))
-                .pb(px(2.))
-                .child(
-                    div()
-                        .h(px(34.))
-                        .pl(px(12.))
-                        .pr(px(4.))
-                        .rounded(px(R_CTRL))
-                        .bg(s.soft)
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(pro_icon(ProIcon::Tasks, ICON_SM, s.muted))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(FS_META))
-                                .text_color(s.ink)
-                                .child(g.objective.clone()),
-                        )
-                        .child(div().flex_none().text_size(px(FS_META)).text_color(s.muted)
-                            .child(self.goal_status_label(&g.status)))
-                        .when_some(owner, |d, chat_id| {
-                            d.child(
-                                text_button("goal-edit", self.ui_locale.pick("管理", "Manage"), s)
-                                    .on_press(cx, move |this, window, cx| {
-                                        if this.current_chat_id() == Some(chat_id) { this.open_goal_dialog(window, cx); }
-                                    }),
-                            )
-                        }),
-                )
-                .into_any_element()
+            let budget = g.token_budget.flatten();
+            let owner = chat.filter(|_| self.can_set_chat_goal());
+            let control = match g.status.as_str() {
+                "active" => Some((GoalAction::Pause, ProIcon::Pause, loc.pick("暂停目标", "Pause goal"))),
+                "paused" | "blocked" | "budgetLimited" | "usageLimited" => Some((GoalAction::Resume, ProIcon::ArrowRight, loc.pick("继续目标", "Resume goal"))),
+                _ => None,
+            };
+            let mut row = div().w_full().min_w_0().h(px(34.)).px(px(6.))
+                .rounded(px(R_CTRL)).bg(s.soft).flex().items_center().gap(px(6.));
+            if let Some((used, limit)) = g.tokens_used.zip(budget).filter(|(_, limit)| *limit > 0) {
+                row = row.child(pro_progress_ring((used as f64 / limit as f64).min(1.) as f32, 14., 2., s.ink, s.line_strong));
+            } else {
+                row = row.child(pro_icon(ProIcon::Tasks, ICON_SM, s.muted));
+            }
+            row = row.child(div().flex_1().min_w_0().truncate()
+                    .text_color(s.ink).text_size(px(FS_CONTROL)).child(g.objective.clone()))
+                .child(div().flex_none().text_size(px(FS_META)).text_color(s.muted).child(self.goal_status_label(&g.status)));
+            if thread_w >= 520. && let Some(seconds) = g.time_used_seconds.filter(|s| *s > 0) {
+                row = row.child(div().flex_none().text_size(px(FS_META)).text_color(s.muted)
+                    .child(worked_duration(seconds.saturating_mul(1000), loc)));
+            }
+            if let Some(id) = owner {
+                if let Some((action, icon, label)) = control {
+                    row = row.child(icon_button("goal-toggle", icon, label, s)
+                        .size(px(26.)).disabled(self.goal_request_pending(id))
+                        .on_press(cx, move |this, _, cx| { this.request_chat_goal(id, action.clone(), cx); }));
+                }
+                row = row.child(text_button("goal-edit", loc.pick("管理", "Manage"), s)
+                    .on_press(cx, move |this, window, cx| {
+                        if this.current_chat_id() == Some(id) { this.open_goal_dialog(window, cx); }
+                    }));
+            }
+            div().w_full().max_w(px(thread_w)).mx_auto().px(px(THREAD_PAD)).pt(px(6.)).pb(px(2.))
+                .child(row).into_any_element()
         });
+        let open = bar.is_some();
         pro_fold("kar-goal-bar", open, 42., 0., move || {
             bar.unwrap_or_else(|| div().into_any_element())
         })
     }
 
-    fn render_notice(&self, s: &StudioPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_notice(
+        &self,
+        thread_w: f32,
+        s: &StudioPalette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let block = self
             .notice
             .clone()
-            .map(|notice| self.render_notice_block(notice, s, cx));
+            .map(|notice| self.render_notice_block(thread_w, notice, s, cx));
         pro_fold("kar-notice", self.notice_open, 72., 0., move || {
             block.unwrap_or_else(|| div().into_any_element())
         })
@@ -1359,6 +1654,7 @@ impl KarWorkbench {
 
     fn render_notice_block(
         &self,
+        thread_w: f32,
         notice: Notice,
         s: &StudioPalette,
         cx: &mut Context<Self>,
@@ -1370,7 +1666,7 @@ impl KarWorkbench {
         };
         div()
             .w_full()
-            .max_w(px(THREAD_W))
+            .max_w(px(thread_w))
             .mx_auto()
             .px(px(THREAD_PAD))
             .pt(px(8.))
@@ -1449,6 +1745,7 @@ impl KarWorkbench {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let loc = self.ui_locale;
+        let thread_w = self.prefs.chat_width_mode.max_width_px();
         let workspace = self.effective_workspace_dir();
         let project = self
             .project_registry
@@ -1464,7 +1761,7 @@ impl KarWorkbench {
             .unwrap_or_else(|| workspace.display().to_string());
         let project =
             crate::studio_hub::project_display_name(&project).replace(['\n', '\r', '\t'], " ");
-        let content_w = (pane_w - 2. * chat_lane_gutter(pane_w, window)).clamp(1., THREAD_W);
+        let content_w = (pane_w - 2. * chat_lane_gutter(pane_w, window)).clamp(1., thread_w);
         let title_size = (content_w / 18.).clamp(22., 30.);
         let title_line = (title_size * 1.35).ceil();
         let short = f32::from(window.viewport_size().height) <= 544.;
@@ -1564,15 +1861,26 @@ impl KarWorkbench {
         let browsing_commands = slash_popup.is_some();
         let planning = self.planning_here();
         let composer = self.render_composer(pane_w, None, slash_popup, s, window, cx);
-        let content = chat_content_lane(pane_w, window)
+        let content = chat_content_lane(pane_w, thread_w, window)
             .flex_none()
             .flex()
             .flex_col()
-             .when(!planning, |col| col.child(heading.when(browsing_commands, |title| title.invisible())))
-            .when_some(self.planning_topic(), |col,topic| col.child(
-                div().id("planned-user-task").w_full().flex().justify_end().child(
-                    div().max_w(relative(0.86)).max_h(px(60.)).id("planned-task-scroll").overflow_y_scroll()
-                    .px(px(12.)).py(px(7.)).rounded(px(12.)).bg(s.hover).text_size(px(FS_UI)).text_color(s.ink).child(topic.to_owned()))))
+            .when(!planning, |col| {
+                col.child(heading.when(browsing_commands, |title| title.invisible()))
+            })
+            .when_some(self.planning_topic(), |col, topic| {
+                let visible_lines = if short { 2. } else { 6. };
+                col.child(
+                    div().w_full().flex().justify_end().child(
+                        div().max_w(relative(0.86)).px(px(12.)).py(px(7.))
+                            .rounded(px(12.)).bg(s.hover).child(
+                                div().id("planned-task-scroll").max_h(px(20. * visible_lines))
+                                    .overflow_y_scroll().text_size(px(FS_UI)).line_height(px(20.))
+                                    .text_color(s.ink).child(topic.to_owned())
+                            )
+                    )
+                )
+            })
             .when(!short && !planning, |col| {
                 col.child(
                     div().when(browsing_commands, |hint| hint.invisible()).mt(px(4.)).flex().justify_center().child(
@@ -1736,10 +2044,19 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        let desired_mode = match self.prefs.send_shortcut {
+            crate::prefs::SendShortcutMode::Enter => InputMode::InlineMulti,
+            crate::prefs::SendShortcutMode::ModEnter => InputMode::Multi,
+        };
+        if self.composer_editor.read(cx).mode != desired_mode {
+            self.composer_editor
+                .update(cx, |ed, _| ed.mode = desired_mode);
+        }
         let draft = self.composer_editor.read(cx).value().to_owned();
         // The Git split can halve the writing width. Measure the same shaped text
         // that GPUI paints so wrapped CJK drafts remain visible while editing.
-        let card_width = (pane_w - 2. * chat_lane_gutter(pane_w, window)).min(THREAD_W);
+        let thread_w = self.prefs.chat_width_mode.max_width_px();
+        let card_width = (pane_w - 2. * chat_lane_gutter(pane_w, window)).min(thread_w);
         let input_width = (card_width - 34.).max(60.);
         let lines = if draft.is_empty() {
             2
@@ -1926,6 +2243,7 @@ impl KarWorkbench {
             )
         });
 
+        let rec_active = self.active_voice_rec.is_some();
         let left = div()
             .flex_none()
             .flex()
@@ -1938,6 +2256,38 @@ impl KarWorkbench {
                     .tip(loc.pick("添加文件或图片附件", "Attach files or images"))
                     .child(pro_icon(ProIcon::Paperclip, 16., s.muted))
                     .on_press(cx, |this, win, cx| this.pick_attachments(win, cx)),
+            )
+            .child(
+                Tactile::ghost("cmp-voice-mic", s)
+                    .h(px(CTRL_H))
+                    .when(!rec_active, |b| b.w(px(CTRL_H)))
+                    .when(rec_active, |b| {
+                        b.px(px(9.))
+                            .fills(s.pro.red_soft, s.pro.red.opacity(0.2))
+                            .text_color(s.pro.red_ink)
+                    })
+                    .radius(R_CTRL)
+                    .justify_center()
+                    .gap(px(5.))
+                    .lit(rec_active)
+                    .tip(if rec_active {
+                        loc.pick("正在录音，点击结束并转写语音  ⇧⌘V", "Recording — click to transcribe  ⇧⌘V")
+                    } else {
+                        loc.pick("语音听写输入  ⇧⌘V", "Voice dictation  ⇧⌘V")
+                    })
+                    .when(rec_active, |b| {
+                        b.child(pulse_beacon(s.pro.red, 6., true, window, cx))
+                            .child(
+                                div()
+                                    .text_size(px(FS_META))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(loc.pick("听写中…", "Listening…")),
+                            )
+                    })
+                    .when(!rec_active, |b| {
+                        b.child(pro_icon(ProIcon::Mic, 15.5, s.muted))
+                    })
+                    .on_press(cx, |this, win, cx| this.toggle_voice_dictation(win, cx)),
             )
             .when_some(ctx_control, |d, c| d.child(c));
 
@@ -2029,9 +2379,19 @@ impl KarWorkbench {
                 .lit(can_send)
                 .disabled(!can_send)
                 .tip(if turn_running {
-                    loc.pick("平滑汇入补充指令", "Steer / queue follow-up")
+                    match self.prefs.follow_up_mode {
+                        crate::prefs::FollowUpMode::Queue => {
+                            loc.pick("加入排队，待当前轮完成后自动发送", "Queue follow-up after active turn")
+                        }
+                        crate::prefs::FollowUpMode::Steer => {
+                            loc.pick("实时汇入当前轮引导智能体", "Steer active turn immediately")
+                        }
+                    }
                 } else {
-                    loc.pick("发送  ↵", "Send  ↵")
+                    match self.prefs.send_shortcut {
+                        crate::prefs::SendShortcutMode::Enter => loc.pick("发送  ↵", "Send  ↵"),
+                        crate::prefs::SendShortcutMode::ModEnter => loc.pick("发送  ⌘↵", "Send  ⌘↵"),
+                    }
                 })
                 .child(pro_icon(ProIcon::ArrowUp, 15., s.on_brand_action))
                 .on_press(cx, |this, window, cx| {
@@ -2107,6 +2467,7 @@ impl KarWorkbench {
                 this.navigate_slash_picker(ev, win, cx);
             }))
             .children(activity_row)
+            .children(self.render_aster_mode(s, cx))
             .children(self.render_planning_panel(pane_w, window, s, cx))
             .child(
                 div()
@@ -2989,6 +3350,7 @@ impl KarWorkbench {
             panel = panel.child(self.new_chat_approval_picker("composer-approval-modes", s, cx));
             Some(self.approval_mode)
         };
+        #[allow(unreachable_patterns)]
         let explanation = match mode {
             Some(ApprovalMode::Host) => loc.pick(
                 "智能体请求额外权限时，在对话中选择允许或拒绝。可用的授权范围由智能体提供。",
@@ -2997,6 +3359,10 @@ impl KarWorkbench {
             Some(ApprovalMode::Deny) => loc.pick(
                 "智能体发来的额外权限请求会被自动拒绝。",
                 "Additional permission requests from the agent are declined automatically.",
+            ),
+            Some(_) => loc.pick(
+                "智能体发来的工具与命令权限请求将自动放行执行，无需在对话中逐步确认。",
+                "Permission requests from the agent are approved automatically without prompting.",
             ),
             None => loc.pick("当前连接未提供审批设置。", "This connection has not reported an approval setting."),
         };
@@ -3731,6 +4097,13 @@ impl KarWorkbench {
             } else {
                 capture.map(|c| c.captured_at_ms)
             };
+            if input.primary
+                && (capture.is_some_and(|c| c.approved_plan) || self.current_plan_was_approved(chat_id, turn_id))
+                && let Some((_, proposal)) = clean.split_once("\n\n")
+            {
+                asked = asked.child(self.render_approved_plan_turn(turn_id, proposal, s, cx));
+                continue;
+            }
             asked = asked.child(user_bubble(
                 &format!("{turn_id}-{}", input.index),
                 clean,
@@ -3790,7 +4163,10 @@ impl KarWorkbench {
         let work_grp_key = (turn_id, 900_000);
         let work_grp_open = self.part_is_open(
             work_grp_key,
-            work_failed || turn.status != TurnStatus::Completed || !turn_steps.has_answer(),
+            !self.prefs.default_collapse_tools
+                || work_failed
+                || turn.status != TurnStatus::Completed
+                || !turn_steps.has_answer(),
         );
         let mut work_items_count = 0;
         let mut work_rows = Vec::new();
@@ -4123,11 +4499,14 @@ impl KarWorkbench {
                 | ChatAccessMode::ArchivedReadOnly { .. }
         );
         let has_after_tree = checkpoint.is_some_and(|cp| cp.after_tree.is_some());
-        let has_checkpoint_changes = checkpoint.is_some_and(|cp| !cp.files.is_empty());
+        let aster_session = self.projected.info.as_ref().is_some_and(|info| crate::aster::is_aster(&info.runtime));
+        let runtime_file = |path: &Path| aster_session && crate::aster::runtime_artifact(path);
+        let has_checkpoint_changes = checkpoint.is_some_and(|cp| cp.files.iter().any(|c| !runtime_file(&c.path)));
         let reviewable = local && has_after_tree;
         let mut files = Vec::new();
         if let Some(cp) = checkpoint {
             for change in &cp.files {
+                if runtime_file(&change.path) { continue; }
                 let verb = match change.kind {
                     CheckpointChangeKind::Added => "新增",
                     CheckpointChangeKind::Modified => "修改",
@@ -4138,7 +4517,7 @@ impl KarWorkbench {
         }
         for (path, verb) in touched {
             let path = PathBuf::from(path);
-            if !files.iter().any(|(seen, _, _)| seen == &path) {
+            if !runtime_file(&path) && !files.iter().any(|(seen, _, _)| seen == &path) {
                 files.push((path, verb, false));
             }
         }
@@ -4222,9 +4601,49 @@ impl KarWorkbench {
             .then(|| self.copy_buttons.get(&turn_id).cloned())
             .flatten();
 
+        let can_rewind_context = !running && idle && writable_real;
         let show_hold_rollback = (can_rollback_after && has_checkpoint_changes) || can_undo_turn;
+        let show_extra_actions = show_hold_rollback || can_rewind_context;
         let extra_actions_key = (turn_id, usize::MAX);
         let extra_actions_open = self.part_is_open(extra_actions_key, false);
+        let rewind_context_btn = current_cid
+            .filter(|_| can_rewind_context && extra_actions_open)
+            .map(|chat_id| {
+                Tactile::soft(format!("rewind-ctx-{turn_id}"), s)
+                    .h(px(CTRL_SM_H))
+                    .px(px(10.))
+                    .radius(R_CTRL)
+                    .gap(px(5.))
+                    .text_size(px(FS_META))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(s.ink)
+                    .tip(loc.pick(
+                        "仅撤回此轮之后的对话上下文，完整保留磁盘代码改动",
+                        "Rewind conversation history only and keep all workspace file edits",
+                    ))
+                    .child(pro_icon(ProIcon::Undo, ICON_XS, s.muted))
+                    .child(loc.pick("仅撤回对话", "Rewind context"))
+                    .on_press(cx, move |this, _, cx| {
+                        this.part_open.insert(extra_actions_key, false);
+                        this.confirm_or_run(
+                            format!("rewind-ctx-{turn_id}"),
+                            true,
+                            loc.pick(
+                                "再次点击“仅撤回对话”以确认撤回对话记录（文件改动将完整保留）",
+                                "Click again to rewind conversation history (workspace files stay intact)",
+                            ),
+                            cx,
+                            move |wb, _| {
+                                wb.bridge.send(KarCommand::RewindChat {
+                                    chat_id,
+                                    turn_id,
+                                    restore_files: false,
+                                });
+                            },
+                        );
+                    })
+                    .into_any_element()
+            });
         let rollback_hold = current_cid.filter(|_| show_hold_rollback && extra_actions_open).map(|chat_id| {
             let before = can_undo_turn && !(can_rollback_after && has_checkpoint_changes);
             let tip = if before {
@@ -4258,7 +4677,7 @@ impl KarWorkbench {
                 .child(hold)
         });
 
-        if finish_time.is_some() || copy_button.is_some() || stopped.is_some() || can_retry || can_fork || show_hold_rollback
+        if finish_time.is_some() || copy_button.is_some() || stopped.is_some() || can_retry || can_fork || show_extra_actions
         {
             has_parts = true;
             parts = parts.child(
@@ -4324,12 +4743,12 @@ impl KarWorkbench {
                             }),
                         )
                     })
-                    .when(show_hold_rollback, |row| {
+                    .when(show_extra_actions, |row| {
                         row.child(
                             icon_button(
                                 format!("turn-actions-{turn_id}"),
                                 ProIcon::MoreHorizontal,
-                                loc.pick("更多本轮操作", "More turn actions"),
+                                loc.pick("更多本轮操作（撤回对话 / 恢复文件）", "More turn actions"),
                                 s,
                             )
                             .size(px(28.))
@@ -4362,6 +4781,7 @@ impl KarWorkbench {
                             .mx(px(4.)),
                         )
                     })
+                    .when_some(rewind_context_btn, |row, btn| row.child(btn))
                     .when_some(rollback_hold, |row, hold| row.child(hold)),
             );
         }
@@ -5130,7 +5550,7 @@ impl KarWorkbench {
             actions = actions.child(
                 Tactile::soft("decision-refuse", s)
                     .fills(s.pro.red_soft, s.pro.red.opacity(0.22))
-                    .h(px(30.))
+                    .h(px(CTRL_H))
                     .px(px(button_padding))
                     .radius(R_CTRL)
                     .justify_center()
@@ -5147,7 +5567,7 @@ impl KarWorkbench {
             let req = request.clone();
             policy_rows = policy_rows.child(
                 Tactile::soft(("decision-policy", pix), s)
-                    .h(px(30.))
+                    .h(px(CTRL_H))
                     .px(px(button_padding))
                     .radius(R_CTRL)
                     .justify_center()
@@ -5163,7 +5583,7 @@ impl KarWorkbench {
         if let Some(decision) = allow_more {
             actions = actions.child(
                 Tactile::soft("decision-allow-more", s)
-                    .h(px(30.))
+                    .h(px(CTRL_H))
                     .px(px(button_padding))
                     .radius(R_CTRL)
                     .justify_center()
@@ -5180,7 +5600,7 @@ impl KarWorkbench {
             actions = actions.child(
                 Tactile::primary("decision-allow", s)
                     .fills(s.primary, s.primary.opacity(0.9))
-                    .h(px(30.))
+                    .h(px(CTRL_H))
                     .px(px(button_padding + 2.))
                     .radius(R_CTRL)
                     .justify_center()
@@ -5195,7 +5615,7 @@ impl KarWorkbench {
             if ![refuse, allow, allow_more].contains(&Some(choice)) {
                 policy_rows = policy_rows.child(
                     Tactile::soft(("decision-alternative", i), s)
-                        .h(px(30.))
+                        .h(px(CTRL_H))
                         .px(px(10.))
                         .child(permission_label(choice, loc))
                         .on_press(cx, decide(choice)),
@@ -5253,13 +5673,43 @@ fn chat_lane_gutter(width: f32, window: &Window) -> f32 {
     }
 }
 
-fn chat_content_lane(width: f32, window: &Window) -> Div {
+fn chat_content_lane(width: f32, thread_w: f32, window: &Window) -> Div {
     let gutter = chat_lane_gutter(width, window);
     div()
         .w_full()
         .mx_auto()
-        .max_w(px(THREAD_W + 2. * gutter))
+        .max_w(px(thread_w + 2. * gutter))
         .px(px(gutter))
+}
+
+fn turn_matches_search(turn: &ChatTurn, query_lc: &str) -> bool {
+    if query_lc.is_empty() {
+        return false;
+    }
+    turn.items.iter().any(|entry| match &entry.item {
+        Item::Message { text, .. } => text.to_lowercase().contains(query_lc),
+        Item::Diff { diff, .. } => diff.to_lowercase().contains(query_lc),
+        Item::Tool { activity, .. } => {
+            activity
+                .name
+                .as_deref()
+                .is_some_and(|n| n.to_lowercase().contains(query_lc))
+                || activity
+                    .tool_name
+                    .as_deref()
+                    .is_some_and(|n| n.to_lowercase().contains(query_lc))
+        }
+        Item::RequestError { error } => format!("{error:?}").to_lowercase().contains(query_lc),
+        _ => false,
+    })
+}
+
+fn matching_turn_indices(turns: &[ChatTurn], query_lc: &str) -> Vec<usize> {
+    turns
+        .iter()
+        .enumerate()
+        .filter_map(|(ix, turn)| turn_matches_search(turn, query_lc).then_some(ix))
+        .collect()
 }
 
 struct UserInput<'a> {

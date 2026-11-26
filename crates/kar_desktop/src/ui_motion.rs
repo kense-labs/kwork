@@ -25,7 +25,8 @@ use kui::{
 };
 
 use crate::ui_primitives::{
-    CTRL_H, FS_CONTROL, FS_META, FS_UI, LH_CONTROL, ICON, ICON_SM, ICON_XS, R_CTRL, R_PILL, ROW_H, StudioPalette,
+    CTRL_H, CTRL_SM_H, CTRL_XS_H, FS_CONTROL, FS_META, FS_UI, ICON, ICON_SM, ICON_XS, LH_CONTROL,
+    LH_META, R_CTRL, R_PILL, R_SM, ROW_H, StudioPalette,
 };
 pub(crate) fn copy_with_hint(
     id: String,
@@ -81,6 +82,8 @@ pub struct Tactile {
     rest: Hsla,
     hover: Hsla,
     lit_fill: Hsla,
+    outline: Option<(Hsla, Hsla)>,
+    elevated: bool,
     lit: bool,
     radius: f32,
     face_inset: f32,
@@ -107,6 +110,8 @@ impl Tactile {
             rest: transparent_black(),
             hover: s.hover,
             lit_fill: s.active,
+            outline: None,
+            elevated: false,
             lit: false,
             radius: R_CTRL,
             face_inset: 0.,
@@ -124,25 +129,40 @@ impl Tactile {
         }
     }
 
-    /// A quiet fill. Secondary actions and chips: present without being outlined.
+    /// A quiet fill. Secondary actions and chips: present with subtle hover elevation.
     pub fn soft(id: impl Into<ElementId>, s: &StudioPalette) -> Self {
         Self {
             rest: s.soft,
-            hover: s.soft_hover,
-            lit_fill: s.soft_hover,
+            hover: pro_mix_color(s.soft, s.ink, 0.075),
+            lit_fill: pro_mix_color(s.soft, s.ink, 0.11),
+            elevated: true,
             ..Self::ghost(id, s)
         }
     }
 
-    /// Solid ink. The one primary action in a group.
+    /// Solid primary action with tactile hover lift & press shadow collapse.
     pub fn primary(id: impl Into<ElementId>, s: &StudioPalette) -> Self {
         Self {
             rest: s.primary,
             hover: pro_mix_color(s.primary, s.on_primary, 0.14),
             lit_fill: s.primary,
+            elevated: true,
             ink: Some((s.on_primary, s.on_primary)),
             ..Self::ghost(id, s)
         }
+    }
+
+    /// Crisp 1px outlined surface whose border insets cleanly with the face on press.
+    pub fn outlined(mut self, rest_border: Hsla, hover_border: Hsla) -> Self {
+        self.outline = Some((rest_border, hover_border));
+        self.elevated = true;
+        self
+    }
+
+    /// Enable or disable subtle hover/press micro-shadow elevation.
+    pub fn elevated(mut self, enabled: bool) -> Self {
+        self.elevated = enabled;
+        self
     }
 
     pub fn radius(mut self, radius: f32) -> Self {
@@ -156,10 +176,19 @@ impl Tactile {
         self
     }
 
-    /// Override the resting and hovered fills.
+    /// Override the resting and hovered fills (automatically ensures perceptible hover contrast).
     pub fn fills(mut self, rest: Hsla, hover: Hsla) -> Self {
         self.rest = rest;
-        self.hover = hover;
+        self.hover = if (rest.h - hover.h).abs() < 0.001
+            && (rest.s - hover.s).abs() < 0.001
+            && (rest.l - hover.l).abs() < 0.001
+            && (rest.a - hover.a).abs() < 0.001
+        {
+            let target = if rest.l > 0.55 { black() } else { white() };
+            pro_mix_color(rest, target, 0.12)
+        } else {
+            hover
+        };
         self
     }
 
@@ -283,13 +312,18 @@ impl RenderOnce for Tactile {
         let face_inset = self.face_inset;
         let reduce_motion = disabled_motion(cx);
         let down = if reduce_motion { 0. } else { down };
-        let focus_ring = StudioPalette::get(cx).pro.focus;
+        let palette = StudioPalette::get(cx);
+        let focus_ring = palette.pro.focus;
+        let dark_mode = palette.dark;
+        let outline_pair = self.outline;
+        let elevated = self.elevated && !disabled;
         let show_button_ring = window.last_input_was_keyboard()
             && button_focus
                 .as_ref()
                 .is_some_and(|handle| handle.is_focused(window));
 
-        // The face is painted, not laid out: pressing insets it without moving the hit box.
+        // The face is painted, not laid out: pressing insets it without moving the hit box,
+        // while hover lifts a crisp micro-shadow that collapses cleanly on click.
         let paint_face = canvas(
             |_, _, _| (),
             move |bounds, _, window, _| {
@@ -299,8 +333,8 @@ impl RenderOnce for Tactile {
                 if bw <= 1. || bh <= 1. {
                     return;
                 }
-                let ix = (bw * 0.022 * down).clamp(0., 2.2);
-                let iy = (bh * 0.042 * down).clamp(0., 1.4);
+                let ix = (bw * 0.020 * down).clamp(0., 2.0);
+                let iy = (bh * 0.038 * down).clamp(0., 1.2);
                 let rect = Bounds::new(
                     point(face_bounds.origin.x + px(ix), face_bounds.origin.y + px(iy)),
                     size(px((bw - 2. * ix).max(1.)), px((bh - 2. * iy).max(1.))),
@@ -308,8 +342,34 @@ impl RenderOnce for Tactile {
                 let r = px(radius)
                     .min(rect.size.width / 2.)
                     .min(rect.size.height / 2.);
+                if elevated && down < 0.92 {
+                    let base_a = if dark_mode { 0.16 } else { 0.035 };
+                    let lift_a = if dark_mode { 0.14 } else { 0.045 };
+                    let sh_alpha = (base_a + lift_a * hov) * (1.0 - down);
+                    if sh_alpha > 0.004 {
+                        let sh_rect = Bounds::new(
+                            point(rect.origin.x, rect.origin.y + px(1.0 + 0.5 * hov)),
+                            rect.size,
+                        );
+                        window.paint_quad(
+                            fill(sh_rect, hsla(0., 0., 0., sh_alpha)).corner_radii(r),
+                        );
+                    }
+                }
                 if face.a > 0.001 {
                     window.paint_quad(fill(rect, face).corner_radii(r));
+                }
+                if let Some((b_rest, b_hov)) = outline_pair {
+                    let b_col = if disabled {
+                        b_rest
+                    } else {
+                        pro_mix_color(b_rest, b_hov, hov.max(lit))
+                    };
+                    if b_col.a > 0.001 {
+                        window.paint_quad(
+                            outline(rect, b_col, BorderStyle::default()).corner_radii(r),
+                        );
+                    }
                 }
                 if show_button_ring {
                     window.paint_quad(
@@ -324,8 +384,8 @@ impl RenderOnce for Tactile {
         // Defaults first, so the caller's layout choices win.
         let mut root = div()
             .id(self.id)
-            .text_size(px(FS_UI))
-            .line_height(px(crate::ui_primitives::LH_UI))
+            .text_size(px(FS_CONTROL))
+            .line_height(px(LH_CONTROL))
             .relative()
             .flex()
             .items_center()
@@ -421,9 +481,9 @@ impl RenderOnce for Tactile {
     }
 }
 
-// ── Buttons ─────────────────────────────────────────────────────────────────
+// ── Buttons (Strict 3-Tier Scale: 32px Standard / 28px Compact / 24px Micro) ─
 
-/// Square icon-only button. Always carries a hover hint.
+/// Standard `32×32` square icon-only button (`CTRL_H`, `R_CTRL`). Always carries a hover hint.
 pub fn icon_button(
     id: impl Into<ElementId>,
     icon: ProIcon,
@@ -438,22 +498,54 @@ pub fn icon_button(
         .child(pro_icon(icon, ICON, s.text))
 }
 
-/// Compact close action shared by tabs, chips and search fields.
+/// Compact `28×28` square icon-only button (`CTRL_SM_H`, `R_SM`) for dense subbars and sidebars.
+pub fn icon_button_sm(
+    id: impl Into<ElementId>,
+    icon: ProIcon,
+    tip: impl Into<SharedString>,
+    s: &StudioPalette,
+) -> Tactile {
+    Tactile::ghost(id, s)
+        .size(px(CTRL_SM_H))
+        .radius(R_SM)
+        .flex_none()
+        .justify_center()
+        .tip(tip)
+        .child(pro_icon(icon, ICON, s.text))
+}
+
+/// Micro `24×24` square icon-only button (`CTRL_XS_H`, `R_SM`) for inline row hover actions.
+pub fn icon_button_xs(
+    id: impl Into<ElementId>,
+    icon: ProIcon,
+    tip: impl Into<SharedString>,
+    s: &StudioPalette,
+) -> Tactile {
+    Tactile::ghost(id, s)
+        .size(px(CTRL_XS_H))
+        .radius(R_SM)
+        .flex_none()
+        .justify_center()
+        .tip(tip)
+        .child(pro_icon(icon, ICON_SM, s.muted))
+}
+
+/// Compact `24×24` close action shared by tabs, chips and search fields.
 pub fn close_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     s: &StudioPalette,
 ) -> Tactile {
     Tactile::ghost(id, s)
-        .size(px(24.))
+        .size(px(CTRL_XS_H))
         .flex_none()
-        .radius(6.)
+        .radius(R_SM)
         .justify_center()
         .tip(label)
         .child(pro_icon(ProIcon::Close, ICON_SM, s.muted))
 }
 
-/// A labelled button with no fill at rest, for secondary actions.
+/// Standard `32px` labelled button with no fill at rest, for quiet secondary actions.
 pub fn text_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -464,7 +556,7 @@ pub fn text_button(
         .aria(label.clone())
         .flex_none()
         .h(px(CTRL_H))
-        .px(px(8.))
+        .px(px(10.))
         .gap(px(6.))
         .text_size(px(FS_CONTROL))
         .line_height(px(LH_CONTROL))
@@ -472,7 +564,27 @@ pub fn text_button(
         .child(label)
 }
 
-/// A labelled button on a quiet fill, for the action worth noticing.
+/// Compact `28px` ghost text button (`CTRL_SM_H`, `R_SM`, `FS_META`).
+pub fn text_button_sm(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    s: &StudioPalette,
+) -> Tactile {
+    let label = label.into();
+    Tactile::ghost(id, s)
+        .aria(label.clone())
+        .flex_none()
+        .h(px(CTRL_SM_H))
+        .px(px(8.))
+        .radius(R_SM)
+        .gap(px(5.))
+        .text_size(px(FS_META))
+        .line_height(px(LH_META))
+        .ink(s.text, s.ink)
+        .child(label)
+}
+
+/// Standard `32px` labelled button on a quiet fill with subtle hover lift.
 pub fn soft_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -483,7 +595,7 @@ pub fn soft_button(
         .aria(label.clone())
         .flex_none()
         .h(px(CTRL_H))
-        .px(px(10.))
+        .px(px(12.))
         .gap(px(6.))
         .text_size(px(FS_CONTROL))
         .line_height(px(LH_CONTROL))
@@ -492,7 +604,50 @@ pub fn soft_button(
         .child(label)
 }
 
-/// The primary action of a group.
+/// Compact `28px` labelled soft button (`CTRL_SM_H`, `R_SM`, `FS_META`).
+pub fn soft_button_sm(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    s: &StudioPalette,
+) -> Tactile {
+    let label = label.into();
+    Tactile::soft(id, s)
+        .aria(label.clone())
+        .flex_none()
+        .h(px(CTRL_SM_H))
+        .px(px(10.))
+        .radius(R_SM)
+        .gap(px(5.))
+        .text_size(px(FS_META))
+        .line_height(px(LH_META))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(s.ink)
+        .child(label)
+}
+
+/// Standard `32px` outlined button (`s.card` fill + `1px` inset border).
+pub fn outline_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    s: &StudioPalette,
+) -> Tactile {
+    let label = label.into();
+    Tactile::ghost(id, s)
+        .fills(s.card, pro_mix_color(s.card, s.ink, 0.05))
+        .outlined(s.line, s.line_strong)
+        .aria(label.clone())
+        .flex_none()
+        .h(px(CTRL_H))
+        .px(px(12.))
+        .gap(px(6.))
+        .text_size(px(FS_CONTROL))
+        .line_height(px(LH_CONTROL))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(s.ink)
+        .child(label)
+}
+
+/// Standard `32px` primary action button.
 pub fn primary_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -509,6 +664,76 @@ pub fn primary_button(
         .line_height(px(LH_CONTROL))
         .font_weight(FontWeight::MEDIUM)
         .text_color(s.on_primary)
+        .child(label)
+}
+
+/// Compact `28px` primary action button (`CTRL_SM_H`, `R_SM`, `FS_META`).
+pub fn primary_button_sm(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    s: &StudioPalette,
+) -> Tactile {
+    let label = label.into();
+    Tactile::primary(id, s)
+        .aria(label.clone())
+        .flex_none()
+        .h(px(CTRL_SM_H))
+        .px(px(10.))
+        .radius(R_SM)
+        .gap(px(5.))
+        .text_size(px(FS_META))
+        .line_height(px(LH_META))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(s.on_primary)
+        .child(label)
+}
+
+/// Standard `32px` destructive / danger action button.
+pub fn danger_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    s: &StudioPalette,
+) -> Tactile {
+    let label = label.into();
+    Tactile::soft(id, s)
+        .fills(
+            s.pro.red_soft,
+            pro_mix_color(s.pro.red_soft, s.pro.red_ink, 0.14),
+        )
+        .aria(label.clone())
+        .flex_none()
+        .h(px(CTRL_H))
+        .px(px(12.))
+        .gap(px(6.))
+        .text_size(px(FS_CONTROL))
+        .line_height(px(LH_CONTROL))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(s.pro.red_ink)
+        .child(label)
+}
+
+/// Compact `28px` destructive / danger button (`CTRL_SM_H`, `R_SM`, `FS_META`).
+pub fn danger_button_sm(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    s: &StudioPalette,
+) -> Tactile {
+    let label = label.into();
+    Tactile::soft(id, s)
+        .fills(
+            s.pro.red_soft,
+            pro_mix_color(s.pro.red_soft, s.pro.red_ink, 0.14),
+        )
+        .aria(label.clone())
+        .flex_none()
+        .h(px(CTRL_SM_H))
+        .px(px(10.))
+        .radius(R_SM)
+        .gap(px(5.))
+        .text_size(px(FS_META))
+        .line_height(px(LH_META))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(s.pro.red_ink)
         .child(label)
 }
 

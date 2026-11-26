@@ -329,8 +329,9 @@ pub(crate) fn render(
             .aria_label(bookmark_label)
             .aria_toggled(entry.bookmarked.into())
             .focus_visible(|d| d.border_1().border_color(s.ink))
-            .rounded(px(5.))
+            .rounded(px(crate::ui_primitives::R_SM))
             .hover(|d| d.bg(s.hover))
+            .active(|d| d.bg(s.active))
             .cursor_pointer()
             .on_click(cx.listener(move |wb, _, _, cx| {
                 wb.toggle_rail_bookmark(i, cx);
@@ -348,6 +349,8 @@ pub(crate) fn render(
             .flex()
             .flex_col()
             .gap(px(3.))
+            .hover(|d| d.border_color(s.line_strong))
+            .active(|d| d.bg(s.hover))
             .cursor_pointer()
             .on_click(cx.listener(move |wb, _, win, cx| {
                 wb.jump_to_rail_turn(i, win, cx);

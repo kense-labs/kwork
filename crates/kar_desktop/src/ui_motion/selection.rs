@@ -1,6 +1,6 @@
 //! Controlled peer views and mutually exclusive settings. Workbench state remains authoritative.
 use super::Tactile;
-use crate::ui_primitives::{FS_CONTROL, LH_CONTROL, StudioPalette};
+use crate::ui_primitives::{CTRL_SM_H, FS_CONTROL, LH_CONTROL, R_CTRL, R_SM, StudioPalette};
 use gpui::{prelude::*, *};
 use kui::components::pro_chrome::{
     pro_eid, pro_mark_selected, pro_pill_indicator, pro_selection_sensor,
@@ -164,8 +164,8 @@ impl RenderOnce for SelectionStrip {
             .when(!dock, |d| {
                 d.max_w_full()
                     .flex_wrap()
-                    .p(px(3.))
-                    .rounded(px(9.))
+                    .p(px(2.))
+                    .rounded(px(R_CTRL))
                     .bg(s.tray)
             })
             .on_key_down(move |ev, win, cx| {
@@ -188,7 +188,7 @@ impl RenderOnce for SelectionStrip {
                 pro_eid(&self.id, "indicator"),
                 key,
                 sensor.clone(),
-                6.,
+                R_SM,
                 if dock { s.sidebar_selected } else { s.card },
                 Some(s.line_soft),
                 !dock,
@@ -201,8 +201,8 @@ impl RenderOnce for SelectionStrip {
                 .role(if tabs { Role::Tab } else { Role::RadioButton })
                 .disabled(self.disabled)
                 .aria(item.label.clone())
-                .radius(6.)
-                .h(px(28.))
+                .radius(R_SM)
+                .h(px(CTRL_SM_H))
                 .px(px(if dock { 6. } else { 9. }))
                 .justify_center()
                 .gap(px(5.))

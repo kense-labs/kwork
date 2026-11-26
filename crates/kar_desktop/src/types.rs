@@ -36,6 +36,8 @@ pub fn strip_selection_envelope(text: &str) -> &str {
 
 /// Product name of a Kar runtime, sourced from `kar::brands::runtime_brands()` with fallback.
 pub fn runtime_display_name(id: &str) -> String {
+    if crate::aster::is_aster(id) { return "Aster".into(); }
+    if let Some(name) = crate::registry::name(id) { return name; }
     if let Some(brand) = kar::brands::runtime_brands().get(id) {
         return brand.name.clone();
     }
@@ -367,6 +369,7 @@ pub enum OfficeKind {
     Word,
     Excel,
     Ppt,
+    Pdf,
 }
 
 impl OfficeKind {
@@ -375,6 +378,7 @@ impl OfficeKind {
             Self::Word => "Word (.docx)",
             Self::Excel => "Excel (.xlsx)",
             Self::Ppt => "PPT (.pptx)",
+            Self::Pdf => "PDF (.pdf)",
         }
     }
 
@@ -383,6 +387,7 @@ impl OfficeKind {
             Self::Word => "DOCX",
             Self::Excel => "XLSX",
             Self::Ppt => "PPTX",
+            Self::Pdf => "PDF",
         }
     }
 
@@ -392,6 +397,7 @@ impl OfficeKind {
             "docx" | "doc" | "rtf" | "odt" => Some(Self::Word),
             "xlsx" | "xls" | "csv" | "ods" => Some(Self::Excel),
             "pptx" | "ppt" | "odp" => Some(Self::Ppt),
+            "pdf" => Some(Self::Pdf),
             _ => None,
         }
     }
@@ -421,6 +427,10 @@ pub enum SelectionLocator {
         shape_name: String,
         shape_kind: String,
         bounds_cm: Option<(f64, f64, f64, f64)>,
+    },
+    PdfPage {
+        page_index: usize,
+        total_pages: usize,
     },
     CodeLines {
         rel_path: PathBuf,
@@ -469,6 +479,10 @@ impl SelectionLocator {
                 Some(id) => format!("第 {} 页 · 对象 {id}", slide_index + 1),
                 None => format!("第 {} 页", slide_index + 1),
             },
+            Self::PdfPage {
+                page_index,
+                total_pages,
+            } => format!("第 {} / {} 页", page_index + 1, (*total_pages).max(1)),
             Self::CodeLines {
                 start_line,
                 end_line,
@@ -574,6 +588,10 @@ impl SelectionTarget {
                 }
                 None => format!("对象类型: {shape_kind}"),
             },
+            SelectionLocator::PdfPage {
+                page_index,
+                total_pages,
+            } => format!("PDF 页码: 第 {} 页（共 {} 页）", page_index + 1, total_pages),
             SelectionLocator::CodeLines { language, .. } => format!("语言: {language}"),
         };
         format!(
@@ -672,6 +690,7 @@ impl ProviderModelOption {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderStatusInfo {
+    pub workspace_commands: Option<(PathBuf, Vec<crate::studio_hub::SlashCommandItem>)>,
     pub id: String,
     pub protocol: String,
     pub availability: ProviderAvailability,
@@ -819,6 +838,7 @@ impl ProviderStatusInfo {
 
     /// The terminal command that resolves what is missing, if one exists.
     pub fn fix_command(&self) -> Option<String> {
+        if crate::aster::is_aster(&self.id) { return None; }
         match self.readiness() {
             ProviderReadiness::NeedsLogin => Some(format!("kar account {} login", self.id)),
             ProviderReadiness::NotInstalled => Some(format!("kar install {}", self.id)),
@@ -829,6 +849,9 @@ impl ProviderStatusInfo {
     /// One sentence on why a chat cannot start, or `None` when it can.
     pub fn diagnostic_reason(&self) -> Option<String> {
         let name = self.display_name();
+        if crate::aster::is_aster(&self.id) && matches!(self.availability, ProviderAvailability::Missing) {
+            return Some("在「智能体」中安装 Aster，或将官方 aster-acp 加入 PATH。".into());
+        }
         match (&self.availability, self.readiness()) {
             (_, ProviderReadiness::NotInstalled) => Some(format!(
                 "这台电脑上还没有安装 {name}。在终端运行 `kar install {}` 安装后即可使用。",

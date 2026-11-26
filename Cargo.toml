@@ -78,8 +78,8 @@ slides_pdf = { path = "crates/slides_pdf" }
 slides_scene = { path = "crates/slides_scene" }
 slides_ui = { path = "crates/slides_ui" }
 kui = { package = "kense-kui", path = "vendor/kense-kui", default-features = false }
-kar = { path = "../kar" }
-kar-documents = { path = "../kar/crates/kar-documents" }
+kar = { git = "https://github.com/kense-labs/Kar.git", rev = "45dbf16d837efd021ffa8da395d0202a9aa5a537" }
+kar-documents = { git = "https://github.com/kense-labs/Kar.git", rev = "45dbf16d837efd021ffa8da395d0202a9aa5a537" }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 axum = { version = "0.8", default-features = false, features = ["json", "http1", "tokio", "query"] }

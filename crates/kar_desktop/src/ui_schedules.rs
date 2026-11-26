@@ -1,20 +1,25 @@
-//! Local scheduled tasks, upcoming runs, and execution history.
+//! Local scheduled tasks, custom cron/weekday/interval/webhook builder, edit mode & 24h rhythm chart.
 
 use crate::ui_motion::selection::{Group, SelectionStrip};
 use chrono::{TimeZone, Timelike};
 use gpui::{prelude::*, *};
-use kui::primitives::pro_icons::{ProIcon, pro_icon};
+use kui::{
+    components::input::Input,
+    primitives::pro_icons::{ProIcon, pro_icon},
+};
 use uuid::Uuid;
 
 use crate::{
     remote_link::now_epoch_ms,
     schedules::{ScheduleCadence, ScheduleRunOutcome, ScheduleToneChoice, ScheduledTask},
     types::OfficeKind,
-    ui_motion::{Tactile, primary_button, soft_button, text_button},
+    ui_motion::{
+        Tactile, icon_button_sm, primary_button, soft_button, soft_button_sm, text_button_sm,
+    },
     ui_primitives::{
-        FS_META, FS_TAG, FS_UI, ICON_XS, LH_META, R_CARD, R_CTRL, R_PILL, StudioPalette,
+        FS_META, FS_TAG, FS_UI, ICON_XS, LH_META, R_PILL, R_SM, StudioPalette, card_box,
         clean_display_doc_name, mono_font, render_office_chip, render_provider_color_tile,
-        tnum_features,
+        settings_page_shell, sub_card_box, tnum_features,
     },
     workbench::KarWorkbench,
 };
@@ -51,29 +56,35 @@ impl KarWorkbench {
     pub(crate) fn render_schedules_panel(
         &mut self,
         s: &StudioPalette,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.ensure_schedule_workspace() { self.refresh_schedules(crate::remote_link::now_epoch_ms(),false,cx); }
         let creator_el = self
             .schedule_creator_open
-            .then(|| self.render_schedule_creator(s, cx).into_any_element());
+            .then(|| self.render_schedule_creator(s, window, cx).into_any_element());
         let tasks = self.schedule_registry.tasks.clone();
         let rhythm_card = self.render_24h_rhythm_card(&tasks, s, cx);
 
         let mut list = div().flex().flex_col().gap(px(10.));
-        if tasks.is_empty() {
+        for warning in &self.schedule_registry.migration_warnings {
+            list = list.child(div().text_size(px(FS_META)).text_color(s.muted).child(warning.clone()));
+        }
+        if let Some(error)=&self.schedule_error {
+            list=list.child(div().text_size(px(FS_META)).text_color(s.muted).child(error.clone()));
+        }
+        if tasks.is_empty() && !self.schedule_loaded && self.schedule_error.is_none() {
+            list=list.child(div().text_size(px(FS_META)).text_color(s.muted).child(self.ui_locale.pick("正在读取工作区任务…","Loading workspace schedules…")));
+        } else if tasks.is_empty() && self.schedule_error.is_none() {
             list = list.child(
-                div()
+                card_box(s)
                     .w_full()
                     .p(px(18.))
-                    .rounded(px(R_CARD))
-                    .bg(s.surface)
-                    .border_1()
-                    .border_color(s.line_soft)
                     .text_size(px(FS_UI))
                     .text_color(s.muted)
                     .child(self.ui_locale.pick(
-                        "还没有定时任务。点击「新建任务」添加。",
-                        "Use New task to schedule your first run.",
+                        "还没有定时任务。点击右上角「新建定时任务」添加。",
+                        "Use New task to schedule your first automated run.",
                     )),
             );
         } else {
@@ -82,19 +93,13 @@ impl KarWorkbench {
             }
         }
 
-        div()
-            .w_full()
-            .p(px(20.))
-            .flex()
-            .flex_col()
-            .gap(px(14.))
+        settings_page_shell()
             .when_some(creator_el, |d, form| d.child(form))
             .child(rhythm_card)
             .child(list)
             .into_any_element()
     }
 
-    /// KUI `agent_schedules.rs` signature 24-Hour Smooth Activity Curve + Trigger Stems + Live `NOW` Cursor.
     fn render_24h_rhythm_card(
         &self,
         tasks: &[ScheduledTask],
@@ -138,7 +143,6 @@ impl KarWorkbench {
         }
         let line_soft = s.line_soft;
         let line_base = s.line;
-
         let now_col = s.pro.green;
 
         let plot_canvas = div().w_full().h(px(96.)).child(
@@ -154,7 +158,6 @@ impl KarWorkbench {
                     let pad_bot = 6.0_f32;
                     let usable_h = (bh - pad_top - pad_bot).max(4.);
                     let base_y = bounds.bottom() - px(pad_bot);
-                    // Horizontal guide lines + baseline
                     for frac in [0.35_f32, 0.70] {
                         let gy = bounds.top() + px(pad_top + frac * usable_h);
                         let mut gl = PathBuilder::stroke(px(1.));
@@ -171,7 +174,6 @@ impl KarWorkbench {
                         window.paint_path(p, line_base);
                     }
 
-                    // Scheduled task stems
                     let stem_top = bounds.top() + px(18.);
                     for &(sx, col) in &stems {
                         let mx = bounds.left() + px(sx * bw);
@@ -185,7 +187,6 @@ impl KarWorkbench {
                         paint_disc_at(window, point(mx, stem_top), 2.6, col);
                     }
 
-                    // Live `NOW` cursor stem + glowing head
                     let now_x = bounds.left() + px(now_frac * bw);
                     let now_top = bounds.top() + px(10.);
                     let mut now_stem = PathBuilder::stroke(px(1.6));
@@ -215,13 +216,9 @@ impl KarWorkbench {
             ticks_row = ticks_row.child(div().child(lbl));
         }
 
-        div()
+        card_box(s)
             .w_full()
-            .p(px(15.))
-            .rounded(px(R_CARD))
-            .bg(s.surface)
-            .border_1()
-            .border_color(s.line_soft)
+            .p(px(16.))
             .flex()
             .flex_col()
             .gap(px(8.))
@@ -242,7 +239,7 @@ impl KarWorkbench {
                                     .text_size(px(FS_UI))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(s.ink)
-                                    .child(self.ui_locale.pick("今日待运行", "Upcoming today")),
+                                    .child(self.ui_locale.pick("今日 24 小时触发排期", "24h Schedule Timeline")),
                             )
                             .child(
                                 div()
@@ -261,7 +258,7 @@ impl KarWorkbench {
                     )
                     .child(
                         div()
-                            .px(px(7.))
+                            .px(px(8.))
                             .py(px(2.))
                             .rounded(px(R_PILL))
                             .bg(s.pro.green_soft)
@@ -281,51 +278,221 @@ impl KarWorkbench {
             .child(ticks_row)
     }
 
-    fn render_schedule_creator(&self, s: &StudioPalette, cx: &mut Context<Self>) -> Div {
+    fn render_schedule_creator(
+        &self,
+        s: &StudioPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let loc = self.ui_locale;
         let bound_doc = self
             .active_office_tab
             .and_then(|i| self.office_tabs.get(i))
             .map(|t| (t.kind, clean_display_doc_name(&t.doc_name(cx))));
 
-        let cadences = ScheduleCadence::PRESETS
-            .into_iter()
-            .zip([
-                "Daily at 09:00",
-                "Every hour",
-                "Mondays at 09:00",
-                "Manual only",
-            ])
-            .map(|(preset, english)| {
-                let label = self.ui_locale.pick(&preset.label(), english).to_owned();
-                (preset, label)
-            });
-        let cadence_row = SelectionStrip::options(
-            "schedule-cadence",
-            self.ui_locale.pick("执行频率", "Schedule frequency"),
+        let kind_tag: u8 = match &self.schedule_draft_cadence {
+            ScheduleCadence::DailyNineAm => 0,
+            ScheduleCadence::CustomTime { .. } => 1,
+            ScheduleCadence::EveryMinutes(_) => 2,
+            ScheduleCadence::WeeklyMonday => 3,
+            ScheduleCadence::Webhook { .. } => 4,
+            ScheduleCadence::ManualOnly | ScheduleCadence::OnceAtMs(_) => 5,
+        };
+
+        let mode_strip = SelectionStrip::options(
+            "schedule-cadence-kind",
+            loc.pick("触发周期模式", "Trigger mode"),
             Group::Choices,
-            cadences,
-            self.schedule_draft_cadence,
+            [
+                (0u8, loc.pick("每日 09:00", "Daily 09:00")),
+                (1u8, loc.pick("自定义时刻/星期", "Custom time & days")),
+                (2u8, loc.pick("按分钟间隔", "Interval")),
+                (3u8, loc.pick("每周一", "Mondays")),
+                (4u8, "Webhook"),
+                (5u8, loc.pick("仅手动", "Manual")),
+            ],
+            kind_tag,
             s,
             cx,
-            |wb, preset, _, cx| {
-                wb.schedule_draft_cadence = preset;
+            |wb, tag, _, cx| {
+                wb.schedule_draft_cadence = match tag {
+                    0 => ScheduleCadence::DailyNineAm,
+                    1 => ScheduleCadence::CustomTime {
+                        hour: 9,
+                        minute: 30,
+                        weekdays_mask: 0b001_1111,
+                    },
+                    2 => ScheduleCadence::EveryMinutes(30),
+                    3 => ScheduleCadence::WeeklyMonday,
+                    4 => ScheduleCadence::Webhook {
+                        secret: Uuid::new_v4().simple().to_string()[..12].to_owned(),
+                    },
+                    _ => ScheduleCadence::ManualOnly,
+                };
                 cx.notify();
             },
         );
 
-        div()
+        let hhmm_inp = window.use_keyed_state("sched-custom-hhmm", cx, |win, cx| {
+            Input::new("sched-hhmm", loc.pick("触发时间 (HH:MM)", "Time (HH:MM)"), win, cx)
+                .with_value("09:30", win, cx)
+        });
+        let mins_inp = window.use_keyed_state("sched-custom-mins", cx, |win, cx| {
+            Input::new("sched-mins", loc.pick("间隔分钟数", "Every N minutes"), win, cx)
+                .with_value("30", win, cx)
+        });
+
+        let mut extra_cadence: Option<AnyElement> = None;
+        match &self.schedule_draft_cadence {
+            ScheduleCadence::CustomTime {
+                hour,
+                minute,
+                weekdays_mask,
+            } => {
+                let h_cur = *hour;
+                let m_cur = *minute;
+                let mask_cur = if *weekdays_mask == 0 { 0x7F } else { *weekdays_mask };
+                let hhmm_apply = hhmm_inp.clone();
+                let mut days_row = div().flex().items_center().flex_wrap().gap(px(6.));
+                for (bit, name) in ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let on = (mask_cur & (1 << bit)) != 0;
+                    days_row = days_row.child(
+                        Tactile::soft(("sched-wday", bit), s)
+                            .h(px(28.))
+                            .px(px(9.))
+                            .radius(R_SM)
+                            .lit(on)
+                            .outlined(if on { s.ink } else { s.line_soft }, s.line_strong)
+                            .text_size(px(FS_META))
+                            .child(name)
+                            .on_press(cx, move |wb, _, cx| {
+                                let next_mask = mask_cur ^ (1 << bit);
+                                wb.schedule_draft_cadence = ScheduleCadence::CustomTime {
+                                    hour: h_cur,
+                                    minute: m_cur,
+                                    weekdays_mask: if next_mask == 0 { 1 << bit } else { next_mask },
+                                };
+                                cx.notify();
+                            }),
+                    );
+                }
+                extra_cadence = Some(
+                    sub_card_box(s)
+                        .p(px(12.))
+                        .flex()
+                        .items_end()
+                        .justify_between()
+                        .flex_wrap()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_end()
+                                .gap(px(8.))
+                                .child(div().w(px(140.)).child(hhmm_inp))
+                                .child(
+                                    soft_button_sm("sched-apply-hhmm", loc.pick("应用时刻", "Set time"), s)
+                                        .on_press(cx, move |wb, _, cx| {
+                                            let raw = hhmm_apply.read(cx).value(cx).trim().to_owned();
+                                            let mut sp = raw.split(':');
+                                            let nh = sp.next().and_then(|x| x.parse::<u8>().ok()).unwrap_or(9).min(23);
+                                            let nm = sp.next().and_then(|x| x.parse::<u8>().ok()).unwrap_or(0).min(59);
+                                            wb.schedule_draft_cadence = ScheduleCadence::CustomTime {
+                                                hour: nh,
+                                                minute: nm,
+                                                weekdays_mask: mask_cur,
+                                            };
+                                            cx.notify();
+                                        }),
+                                ),
+                        )
+                        .child(days_row)
+                        .into_any_element(),
+                );
+            }
+            ScheduleCadence::EveryMinutes(cur_m) => {
+                let mins_apply = mins_inp.clone();
+                let cm = *cur_m;
+                extra_cadence = Some(
+                    sub_card_box(s)
+                        .p(px(12.))
+                        .flex()
+                        .items_end()
+                        .gap(px(8.))
+                        .child(div().w(px(160.)).child(mins_inp))
+                        .child(
+                            soft_button_sm("sched-apply-mins", format!("当前：每 {cm} 分钟（点击更新）"), s)
+                                .on_press(cx, move |wb, _, cx| {
+                                    let val = mins_apply
+                                        .read(cx)
+                                        .value(cx)
+                                        .trim()
+                                        .parse::<u32>()
+                                        .unwrap_or(30)
+                                        .clamp(1, 1440);
+                                    wb.schedule_draft_cadence = ScheduleCadence::EveryMinutes(val);
+                                    cx.notify();
+                                }),
+                        )
+                        .into_any_element(),
+                );
+            }
+            ScheduleCadence::Webhook { secret } => {
+                let sec_copy = secret.clone();
+                extra_cadence = Some(
+                    sub_card_box(s)
+                        .px(px(12.))
+                        .py(px(8.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .font_family(mono_font(cx))
+                                .text_size(px(FS_META))
+                                .text_color(s.ink)
+                                .child(if secret.is_empty() {loc.pick("沿用已保存的签名密钥", "Use the saved signing secret")} else {loc.pick("保存前可复制此签名密钥", "Copy this signing secret before saving")}),
+                        )
+                        .child(
+                            soft_button_sm("copy-wh-secret", loc.pick("复制密钥", "Copy secret"), s)
+                                .disabled(secret.is_empty())
+                                .on_press(cx, move |wb, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(sec_copy.clone()));
+                                    wb.notify_toast("已复制 Webhook 密钥", cx);
+                                }),
+                        )
+                        .into_any_element(),
+                );
+            }
+            _ => {}
+        }
+
+        let is_editing = self.editing_schedule_id.is_some();
+
+        card_box(s)
             .w_full()
-            .p(px(14.))
-            .rounded(px(R_CARD))
-            .bg(s.surface)
-            .border_1()
-            .border_color(s.line)
+            .p(px(16.))
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(px(12.))
+            .child(
+                div()
+                    .text_size(px(FS_UI))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(s.ink)
+                    .child(if is_editing {
+                        loc.pick("编辑定时任务", "Edit scheduled task")
+                    } else {
+                        loc.pick("新建自动化定时任务", "New scheduled task")
+                    }),
+            )
             .child(self.schedule_title_input.clone())
             .child(self.schedule_prompt_input.clone())
-            .child(cadence_row)
+            .child(mode_strip)
+            .when_some(extra_cadence, |d, el| d.child(el))
             .child(
                 div()
                     .w_full()
@@ -341,9 +508,8 @@ impl KarWorkbench {
                             match (&bound_doc, self.schedule_bind_active_doc) {
                                 (Some((_, name)), true) => format!("已绑定模板：{name}"),
                                 (Some((_, name)), false) => format!("绑定当前打开文档：{name}"),
-                                (None, _) => self
-                                    .ui_locale
-                                    .pick("无打开的 Office 模板", "No open template")
+                                (None, _) => loc
+                                    .pick("无打开的办公文档模板", "No open document template")
                                     .into(),
                             },
                             s,
@@ -359,11 +525,20 @@ impl KarWorkbench {
                         }),
                     )
                     .child(
-                        primary_button("sched-create-save", self.ui_locale.pick("保存定时任务","Save task"), s)
-                            .child(pro_icon(ProIcon::Check, ICON_XS, s.on_primary))
-                            .on_press(cx, |this, window, cx| {
-                                this.save_new_schedule_from_form(window, cx);
-                            }),
+                        primary_button(
+                            "sched-create-save",
+                            if is_editing {
+                                loc.pick("保存修改", "Save changes")
+                            } else {
+                                loc.pick("保存定时任务", "Save task")
+                            },
+                            s,
+                        )
+                        .disabled(self.schedule_save_pending)
+                        .child(pro_icon(ProIcon::Check, ICON_XS, s.on_primary))
+                        .on_press(cx, |this, window, cx| {
+                            this.save_new_schedule_from_form(window, cx);
+                        }),
                     ),
             )
     }
@@ -379,21 +554,19 @@ impl KarWorkbench {
         let tid_run = tid.clone();
         let tid_del = tid.clone();
         let tid_hist = tid.clone();
+        let task_for_edit = task.clone();
         let enabled = task.enabled;
         let tone_color = resolve_tone(task.tone, s);
         let history_open = self.expanded_schedule_history.contains(&tid);
 
-        let associated_chats =
-            self.client_reducer
-                .associations
-                .list_associated_chats("schedules", "task", Some(&tid));
+        let associated_chats = self
+            .client_reducer
+            .associations
+            .list_associated_chats("schedules", "task", Some(&tid));
 
-        let mut card = div()
+        let mut card = card_box(s)
             .w_full()
             .p(px(14.))
-            .rounded(px(R_CARD))
-            .bg(s.surface)
-            .border_1()
             .border_color(if enabled {
                 tone_color.opacity(0.35)
             } else {
@@ -418,8 +591,9 @@ impl KarWorkbench {
                     .gap(px(10.))
                     .child(
                         Tactile::ghost(SharedString::from(format!("sched-enabled-{tid}")), s)
-                            .h(px(crate::ui_primitives::CTRL_H))
+                            .h(px(28.))
                             .px(px(8.))
+                            .radius(R_SM)
                             .gap(px(6.))
                             .flex_none()
                             .lit(enabled)
@@ -427,11 +601,6 @@ impl KarWorkbench {
                                 self.ui_locale.pick("暂停自动运行", "Pause schedule")
                             } else {
                                 self.ui_locale.pick("启用自动运行", "Enable schedule")
-                            })
-                            .aria(if enabled {
-                                self.ui_locale.pick("已启用，点击暂停自动运行", "Enabled; click to pause")
-                            } else {
-                                self.ui_locale.pick("已暂停，点击启用自动运行", "Paused; click to enable")
                             })
                             .child(div().size(px(6.)).rounded_full().bg(if enabled {
                                 tone_color
@@ -476,25 +645,7 @@ impl KarWorkbench {
                                             .bg(s.tray)
                                             .text_size(px(FS_TAG))
                                             .text_color(s.muted)
-                                            .child(match task.cadence {
-                                                ScheduleCadence::ManualOnly => self
-                                                    .ui_locale
-                                                    .pick("仅手动触发", "Manual only")
-                                                    .to_owned(),
-                                                ScheduleCadence::EveryMinutes(m) => format!(
-                                                    "{} {m} {}",
-                                                    self.ui_locale.pick("每", "Every"),
-                                                    self.ui_locale.pick("分钟", "minutes")
-                                                ),
-                                                ScheduleCadence::DailyNineAm => self
-                                                    .ui_locale
-                                                    .pick("每日 09:00", "Daily at 09:00")
-                                                    .to_owned(),
-                                                ScheduleCadence::WeeklyMonday => self
-                                                    .ui_locale
-                                                    .pick("每周一 09:00", "Mondays at 09:00")
-                                                    .to_owned(),
-                                            }),
+                                            .child(task.cadence.label()),
                                     ),
                             )
                             .child(
@@ -512,15 +663,37 @@ impl KarWorkbench {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(4.))
+                    .gap(px(6.))
                     .child(
-                        soft_button(
+                        soft_button_sm(
+                            SharedString::from(format!("sched-edit-{tid}")),
+                            self.ui_locale.pick("编辑", "Edit"),
+                            s,
+                        )
+                        .disabled(task.engine_read_only)
+                        .on_press(cx, move |this, window, cx| {
+                            this.editing_schedule_id = Some(task_for_edit.id.clone());
+                            this.editing_schedule_revision = Some(task_for_edit.revision);
+                            this.schedule_bind_active_doc = false;
+                            this.schedule_creator_open = true;
+                            this.schedule_draft_cadence = task_for_edit.cadence.clone();
+                            this.schedule_title_input.update(cx, |i, cx| {
+                                i.set_value(task_for_edit.title.clone(), window, cx)
+                            });
+                            this.schedule_prompt_input.update(cx, |i, cx| {
+                                i.set_value(task_for_edit.prompt.clone(), window, cx)
+                            });
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        soft_button_sm(
                             SharedString::from(format!("sched-run-now-{tid}")),
                             self.ui_locale.pick("立即运行", "Run now"),
                             s,
                         )
                         .disabled(
-                            task.history
+                            tid_run.parse().ok().and_then(|id|self.schedule_pending_runs.get(&id)).is_some_and(|(_,pending)|*pending) || matches!(task.cadence, ScheduleCadence::Webhook { .. }) || task.history
                                 .iter()
                                 .any(|r| r.outcome == ScheduleRunOutcome::Admitted),
                         )
@@ -530,14 +703,18 @@ impl KarWorkbench {
                         }),
                     )
                     .child(
-                        Tactile::ghost(SharedString::from(format!("sched-del-{tid}")), s)
-                            .size(px(26.))
-                            .justify_center()
-                            .tip(self.ui_locale.pick("移除此定时任务（保留已生成的关联会话）", "Remove schedule and keep its threads"))
-                            .child(pro_icon(ProIcon::Trash, ICON_XS, s.muted))
-                            .on_press(cx, move |this, _, cx| {
-                                this.remove_schedule_task(&tid_del, cx);
-                            }),
+                        icon_button_sm(
+                            SharedString::from(format!("sched-del-{tid}")),
+                            ProIcon::Trash,
+                            self.ui_locale.pick(
+                                "移除此定时任务（保留已生成的关联会话）",
+                                "Remove schedule and keep its threads",
+                            ),
+                            s,
+                        )
+                        .on_press(cx, move |this, _, cx| {
+                            this.remove_schedule_task(&tid_del, cx);
+                        }),
                     ),
             );
 
@@ -577,7 +754,7 @@ impl KarWorkbench {
                                 .gap(px(4.))
                                 .px(px(6.))
                                 .py(px(1.))
-                                .rounded(px(5.))
+                                .rounded(px(R_SM))
                                 .bg(s.tray)
                                 .text_size(px(FS_TAG))
                                 .text_color(s.text)
@@ -587,7 +764,7 @@ impl KarWorkbench {
                     }),
             )
             .child(
-                text_button(
+                text_button_sm(
                     SharedString::from(format!("sched-hist-btn-{tid}")),
                     format!(
                         "关联会话 ({})",
@@ -613,6 +790,16 @@ impl KarWorkbench {
             );
 
         card = card.child(top).child(meta_bar);
+        if matches!(task.cadence, ScheduleCadence::Webhook {..})
+            && let Some(base) = &self.schedule_registry.webhook_base {
+            let url=format!("{base}/{}", task.id);
+            card=card.child(soft_button_sm(SharedString::from(format!("schedule-hook-{tid}")),
+                self.ui_locale.pick("复制本机 Webhook 地址","Copy local webhook URL"),s)
+                .on_press(cx,move |this,_,cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                    this.notify_toast("已复制此工作台的签名 Webhook 地址",cx);
+                }));
+        }
         if enabled
             && let Some(due) = task
                 .next_due_ms
@@ -645,7 +832,10 @@ impl KarWorkbench {
                     div()
                         .text_size(px(FS_META))
                         .text_color(s.muted)
-                        .child(self.ui_locale.pick("暂无执行记录。点击「立即运行」将自动创建关联对话并投递任务。", "No runs yet. Run now creates a separate thread.")),
+                        .child(self.ui_locale.pick(
+                            "暂无执行记录。点击「立即运行」将自动创建关联对话并投递任务。",
+                            "No runs yet. Run now creates a separate thread.",
+                        )),
                 );
             } else {
                 for (r_ix, rec) in task.history.iter().rev().take(6).enumerate() {
@@ -660,12 +850,10 @@ impl KarWorkbench {
                         .saturating_sub(rec.triggered_ms)
                         .div_ceil(60_000);
                     hist_col = hist_col.child(
-                        div()
+                        sub_card_box(s)
                             .w_full()
                             .px(px(8.))
                             .py(px(5.))
-                            .rounded(px(R_CTRL))
-                            .bg(s.card)
                             .flex()
                             .items_center()
                             .justify_between()
@@ -706,7 +894,7 @@ impl KarWorkbench {
                             )
                             .when_some(chat_opt, |row, cid| {
                                 row.child(
-                                    text_button(
+                                    text_button_sm(
                                         SharedString::from(format!("sched-jump-{tid}-{r_ix}")),
                                         self.ui_locale.pick("打开对话", "Open thread"),
                                         s,

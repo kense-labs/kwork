@@ -660,8 +660,7 @@ async fn real_codex_send_second_client_mid_tool_disconnect_reconnect_and_history
         cp_files
     );
 
-    // Copy this real `.karchat` into `/Users/leon/Documents/KWrok/sandbox/chats` if set via env
-    // so our live GUI screenshot session can display this exact real Codex chat too!
+    // An explicitly selected export directory lets the native UI reopen this verified conversation.
     if let Some(export_dir) = std::env::var_os("KAR_EXPORT_VERIFIED_CHAT_DIR") {
         let dest = PathBuf::from(export_dir);
         let _ = std::fs::create_dir_all(&dest);
@@ -733,9 +732,19 @@ async fn towork_inspired_remote_pairing_hmac_idempotency_and_revocation_e2e() {
     .unwrap();
     assert!(replay_pair.is_err(), "single-use 6-digit code must be burned");
 
+    let wrong = RemoteCommandEnvelope {
+        expected_chat_id:Some(Uuid::new_v4()), request_id:Uuid::new_v4(), expected_revision:None,action:RemoteAction::AbortTurn,
+    };
+    let u=base_url.clone();
+    let token=pair_resp.token.clone();
+    let denied=tokio::task::spawn_blocking(move||client_send_remote_command(&u,&token,&wrong)).await.unwrap().unwrap();
+    assert!(matches!(denied.outcome,RemoteOutcome::Rejected{..}));
+    assert!(dispatch_rx.try_recv().is_err());
+
     // 3. Authenticated `/v1/command` with idempotent `request_id` replay!
     let req_id = Uuid::new_v4();
     let env = RemoteCommandEnvelope {
+        expected_chat_id: None,
         request_id: req_id,
         expected_revision: None,
         action: RemoteAction::SendPrompt {
@@ -910,6 +919,7 @@ fn towork_inspired_fence_briefs_schedules_and_budgets_e2e() {
     let created = sched
         .save_task(
             ScheduledTask {
+                engine_read_only: false,
                 id: String::new(),
                 revision: 1,
                 title: "每日早报".into(),
@@ -921,6 +931,7 @@ fn towork_inspired_fence_briefs_schedules_and_budgets_e2e() {
                 model: None,
                 effort: None,
                 office_template: None,
+                pre_script: None,
                 tone: ScheduleToneChoice::Teal,
                 next_due_ms: None,
                 history: Vec::new(),
@@ -1339,4 +1350,196 @@ async fn decluttered_studio_worktree_unstage_terminal_and_code_selection_e2e() {
         "integrated terminal must stream command output, got: {term_out:?}"
     );
     assert_eq!(term_exit, Some(0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workbench_guest_link_stays_bound_to_its_chat_and_revokes() {
+    use kar_desktop::remote_link::{GuestShareLink, PairRequest, PairResponse, PeerRole};
+
+    async fn next<T>(
+        bridge: &KarBridgeHandle,
+        mut select: impl FnMut(KarBridgeEvent) -> Option<T>,
+    ) -> T {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let event = bridge.rx.recv().await.expect("desktop bridge");
+                if let KarBridgeEvent::ToastMessage { text, warning: true } = &event {
+                    assert!(!text.contains("访客链接"), "{text}");
+                }
+                if let Some(value) = select(event) { return value; }
+            }
+        }).await.expect("desktop event deadline")
+    }
+
+    async fn start(bridge: &KarBridgeHandle, chat_id: Uuid) -> String {
+        bridge.send(KarCommand::StartHttpServer { chat_id, listen_addr: "0.0.0.0:0".into() });
+        next(bridge, |event| match event {
+            KarBridgeEvent::HttpServerState { listening_url: Some(url), chat_id: Some(id), .. }
+                if id == chat_id => Some(url.replace("0.0.0.0", "127.0.0.1")),
+            _ => None,
+        }).await
+    }
+
+    async fn status(base: &str, link: &GuestShareLink) -> u16 {
+        reqwest::get(link.full_url(base)).await
+            .map_err(reqwest::Error::without_url).unwrap().status().as_u16()
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("chats");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let store = ChatStore::open(&dir).unwrap();
+    let a = store.create("codex", None, SessionOptions::new(&workspace)).await.unwrap();
+    let b = store.create("codex", None, SessionOptions::new(&workspace)).await.unwrap();
+    let (a_id, b_id) = (a.info().id, b.info().id);
+    a.close().await.unwrap();
+    b.close().await.unwrap();
+
+    let bridge = KarBridgeHandle::spawn(dir, workspace);
+    let first_host = start(&bridge, a_id).await;
+    let client = reqwest::Client::new();
+    let feed = format!("{first_host}/snapshot");
+    assert_eq!(client.get(&feed).send().await.unwrap().status().as_u16(),401);
+    let ticket = next(&bridge, |event| match event {
+        KarBridgeEvent::RemoteTelemetryUpdated(t) => t.active_ticket,
+        _ => None,
+    }).await;
+    let pair: PairResponse = client.post(format!("{first_host}/v1/pair"))
+        .json(&PairRequest{code:ticket.code, device_name:"QA Viewer".into(), requested_role:PeerRole::Viewer})
+        .send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+    assert!(client.get(&feed).bearer_auth(&pair.token).send().await.unwrap().status().is_success());
+    // Workbench sidebars cache captures from several threads. The host exposes only its bound thread.
+    let mut extended = kar_desktop::remote_link::RemoteExtendedSnapshot {chat_id:Some(a_id), ..Default::default()};
+    let own_turn = Uuid::new_v4();
+    let other_turn = Uuid::new_v4();
+    for (turn_id,chat_id) in [(own_turn,a_id),(other_turn,b_id)] {
+        let capture=serde_json::from_value(serde_json::json!({"turn_id":turn_id,"chat_id":chat_id,"runtime_id":"codex","approval_pretty":"Ask","workspace":"/fixture","captured_at_ms":1})).unwrap();
+        extended.turn_captures.insert(turn_id,capture);
+    }
+    bridge.send(KarCommand::SyncHostExtendedSnapshot{snapshot:extended});
+    tokio::time::timeout(Duration::from_secs(5),async {
+        loop {
+            let snapshot = client.get(format!("{first_host}/v1/state")).bearer_auth(&pair.token).send().await.unwrap().error_for_status().unwrap().json::<kar_desktop::remote_link::RemoteExtendedSnapshot>().await.unwrap();
+            if snapshot.turn_captures.contains_key(&own_turn) {
+                assert!(!snapshot.turn_captures.contains_key(&other_turn));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap();
+    let events = client.get(format!("{first_host}/events")).bearer_auth(&pair.token)
+        .send().await.unwrap().error_for_status().unwrap();
+    bridge.send(KarCommand::RevokePairedPeer{peer_id:pair.peer_id});
+    // An SSE body is normally open-ended. Revocation must finish this live response too.
+    tokio::time::timeout(Duration::from_secs(5),events.bytes()).await.expect("revoke an active SSE feed").unwrap();
+    assert_eq!(client.get(feed).bearer_auth(&pair.token).send().await.unwrap().status().as_u16(),403);
+    bridge.send(KarCommand::IssueGuestShare { chat_id:b_id,label:"wrong thread".into(),ttl_minutes:60 });
+    // Even a delayed click captured in another thread must not mint a link for this host.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let KarBridgeEvent::ToastMessage {text,warning:true} = bridge.rx.recv().await.unwrap() {
+                assert!(text.contains("共享的对话已切换"),"{text}");
+                break;
+            }
+        }
+    }).await.unwrap();
+    bridge.send(KarCommand::IssueGuestShare { chat_id:a_id, label: "guest".into(), ttl_minutes: 60 });
+    let link = next(&bridge, |event| match event {
+        KarBridgeEvent::RemoteTelemetryUpdated(view) => view.guest_shares.into_iter().next(),
+        _ => None,
+    }).await;
+    assert_eq!(link.chat_id, Some(a_id));
+    assert_eq!(status(&first_host, &link).await, 200);
+
+    let second_host = start(&bridge, b_id).await;
+    assert_eq!(status(&second_host, &link).await, 403);
+    let restored_host = start(&bridge, a_id).await;
+    assert_eq!(status(&restored_host, &link).await, 200);
+    bridge.send(KarCommand::RevokeGuestShare { share_id: link.share_id });
+    next(&bridge, |event| match event {
+        KarBridgeEvent::RemoteTelemetryUpdated(view) if view.listen_url.is_some() && view.guest_shares.is_empty() => Some(()),
+        _ => None,
+    }).await;
+    assert_eq!(status(&restored_host, &link).await, 403);
+    bridge.send(KarCommand::Shutdown);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn commit_writer_receives_the_selected_projects_staged_diff() -> anyhow::Result<()> {
+    use axum::{Json, Router, routing::post};
+    use serde_json::{Value, json};
+    use std::process::Command;
+    const WORKSPACE: &str = "KWORK_TEST_COMMIT_WRITER_WORKSPACE";
+    const RESPONSE: &str = "docs: record the river crossing";
+
+    if let Some(workspace) = std::env::var_os(WORKSPACE) {
+        let workspace = PathBuf::from(workspace);
+        let bridge =
+            KarBridgeHandle::spawn(workspace.parent().unwrap().join("chats"), workspace.clone());
+        bridge.send(KarCommand::GenerateAiCommitMessage {
+            workspace: workspace.clone(),
+            style: kar_desktop::prefs::CommitStyleMode::Custom,
+            custom_instructions: "Use the itinerary vocabulary.".to_owned(),
+        });
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if let KarBridgeEvent::CommitMessageGenerated {
+                    workspace: owner,
+                    result,
+                } = bridge.rx.recv().await?
+                {
+                    anyhow::ensure!(owner == workspace);
+                    anyhow::ensure!(result.map_err(anyhow::Error::msg)? == RESPONSE);
+                    return Ok::<_, anyhow::Error>(());
+                }
+            }
+        })
+        .await??;
+        return Ok(());
+    }
+
+    let temp = tempfile::tempdir()?;
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir(&workspace)?;
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&workspace)
+            .status()
+    };
+    anyhow::ensure!(git(&["init", "-q"])?.success());
+    std::fs::write(workspace.join("itinerary.txt"), "Cross the river at dawn.")?;
+    anyhow::ensure!(git(&["add", "itinerary.txt"])?.success());
+    std::fs::write(workspace.join("itinerary.txt"), "Private unstaged note.")?;
+
+    let api = Router::new().route(
+        "/v1/chat/completions",
+        post(|Json(payload): Json<Value>| async move {
+            let prompt = payload["messages"].to_string();
+            assert!(prompt.contains("Cross the river at dawn."));
+            assert!(prompt.contains("Use the itinerary vocabulary."));
+            assert!(!prompt.contains("Private unstaged note."));
+            Json(json!({"choices":[{"message":{"content":RESPONSE}}]}))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let server = tokio::spawn(async move { axum::serve(listener, api).await });
+    let result = tokio::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "commit_writer_receives_the_selected_projects_staged_diff",
+        ])
+        .env(WORKSPACE, workspace)
+        .env("KAR_TEXT_GENERATION_PROVIDER", "openai_compatible")
+        .env("KAR_TEXT_GENERATION_URL", format!("http://{addr}/v1"))
+        .env("KAR_TEXT_GENERATION_API_KEY", "loopback-test")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("ANTHROPIC_API_KEY")
+        .status()
+        .await?;
+    server.abort();
+    anyhow::ensure!(result.success(), "Commit writer validation failed");
+    Ok(())
 }

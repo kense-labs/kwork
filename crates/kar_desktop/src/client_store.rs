@@ -84,6 +84,9 @@ pub struct TurnCapture {
     pub workspace: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_selection: Option<SelectionTarget>,
+    /// This input was dispatched by the explicit plan approval action.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approved_plan: bool,
     /// Open Office document revisions captured when the turn was admitted (`doc_name -> revision`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub document_revisions: BTreeMap<String, u64>,
@@ -94,9 +97,11 @@ pub struct TurnCapture {
 
 impl TurnCapture {
     pub fn approval_label(mode: ApprovalMode) -> &'static str {
+        #[allow(unreachable_patterns)]
         match mode {
             ApprovalMode::Host => "需确认",
             ApprovalMode::Deny => "自动拒绝",
+            _ => "自动放行",
         }
     }
 

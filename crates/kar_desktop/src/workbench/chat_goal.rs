@@ -1,11 +1,19 @@
 use super::{DraftLocation, KarWorkbench, QueuedPrompt};
-use crate::kar_bridge::{GoalAction, KarCommand};
+use crate::kar_bridge::{GoalAction, GoalEdit, KarCommand};
 use crate::types::ChatAccessMode;
 use crate::ui_primitives::{FS_CONTROL, FS_META, R_CTRL, StudioPalette};
 use gpui::{prelude::*, *};
 use kar::GoalSnapshot;
 use kui::components::input::Input;
 use uuid::Uuid;
+
+pub(super) fn parse_budget(text: &str) -> Result<u64, ()> {
+    text.trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|tokens| (1..=9_007_199_254_740_991).contains(tokens))
+        .ok_or(())
+}
 
 fn parse_goal(input: &str) -> Result<GoalAction, ()> {
     let input = input.trim();
@@ -17,17 +25,83 @@ fn parse_goal(input: &str) -> Result<GoalAction, ()> {
         "resume" => GoalAction::Resume,
         "complete" => GoalAction::Complete,
         "clear" => GoalAction::Clear,
+        "budget" => return parse_budget(rest).map(GoalAction::Budget),
+        "--budget" => {
+            let (tokens, objective) = rest.split_once(char::is_whitespace).ok_or(())?;
+            let objective = objective.trim_start();
+            if objective.is_empty() {
+                return Err(());
+            }
+            return Ok(GoalAction::Set(GoalEdit {
+                objective: objective.into(),
+                token_budget: Some(parse_budget(tokens)?),
+            }));
+        }
         "set" => {
             return (!rest.is_empty())
-                .then(|| GoalAction::Set(rest.into()))
+                .then(|| {
+                    GoalAction::Set(GoalEdit {
+                        objective: rest.into(),
+                        token_budget: None,
+                    })
+                })
                 .ok_or(());
         }
-        _ => return Ok(GoalAction::Set(input.into())),
+        _ if !input.is_empty() => {
+            return Ok(GoalAction::Set(GoalEdit {
+                objective: input.into(),
+                token_budget: None,
+            }));
+        }
+        _ => return Err(()),
     };
     if rest.is_empty() { Ok(action) } else { Err(()) }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum GoalCommandError {
+    Syntax,
+    BudgetUnavailable,
+}
+
+fn goal_command(argument: &str, runtime: &str) -> Result<GoalAction, GoalCommandError> {
+    let first = argument.split_whitespace().next().unwrap_or_default();
+    if runtime != "codex"
+        && (first.eq_ignore_ascii_case("budget") || first.eq_ignore_ascii_case("--budget"))
+    {
+        return Err(GoalCommandError::BudgetUnavailable);
+    }
+    parse_goal(argument).map_err(|()| GoalCommandError::Syntax)
+}
+
 impl KarWorkbench {
+    pub(super) fn goal_supports_token_budget(&self) -> bool {
+        self.active_or_selected_runtime_id() == "codex"
+    }
+
+    fn update_goal_budget_hint(&self, existing: Option<u64>, cx: &mut Context<Self>) {
+        let loc = self.ui_locale;
+        let text = match existing {
+            Some(tokens) => format!(
+                "{} {tokens} tokens",
+                loc.pick(
+                    "留空保留现有预算",
+                    "Leave blank to keep the current budget of"
+                )
+            ),
+            None => loc
+                .pick("可选，输入 token 数", "Optional token limit")
+                .to_owned(),
+        };
+        self.goal_budget_input
+            .read(cx)
+            .editor()
+            .update(cx, |editor, cx| {
+                editor.set_placeholder(text);
+                cx.notify();
+            });
+    }
+
     fn current_goal(&self) -> Option<&GoalSnapshot> {
         let id = self.current_chat_id()?;
         (self.projected.chat_id == Some(id)).then_some(())?;
@@ -64,8 +138,15 @@ impl KarWorkbench {
             .map(|g| g.objective.clone())
             .unwrap_or_default();
         self.goal_form_baseline.clone_from(&existing);
+        self.update_goal_budget_hint(
+            self.current_goal()
+                .and_then(|goal| goal.token_budget.flatten()),
+            cx,
+        );
         self.goal_input
             .update(cx, |field, cx| field.set_value(existing, window, cx));
+        self.goal_budget_input
+            .update(cx, |field, cx| field.set_value("", window, cx));
         self.goal_dialog
             .update(cx, |d, cx| d.set_open(true, window, cx));
         self.goal_input.read(cx).focus_handle(cx).focus(window, cx);
@@ -151,7 +232,10 @@ impl KarWorkbench {
                     .text_color(s.muted)
                     .child(details.join(" · ")),
             )
-            .child(field);
+            .child(field)
+            .when(this.goal_supports_token_budget(), |body| {
+                body.child(this.goal_budget_input.clone())
+            });
         if let (Some(goal), Some(id)) = (goal, chat_id) {
             let mut controls = div().flex().flex_wrap().gap(px(4.));
             for (action, key, label) in [
@@ -207,7 +291,11 @@ impl KarWorkbench {
         body.into_any_element()
     }
 
-    pub(super) fn request_chat_goal(
+    pub(crate) fn goal_request_pending(&self, id: Uuid) -> bool {
+        self.goal_pending.contains(&id)
+    }
+
+    pub(crate) fn request_chat_goal(
         &mut self,
         id: Uuid,
         action: GoalAction,
@@ -246,7 +334,7 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match parse_goal(argument) {
+        match goal_command(argument,self.active_or_selected_runtime_id()) {
             Ok(GoalAction::Set(objective)) => {
                 self.submit_chat_goal(objective, window, cx);
             }
@@ -271,10 +359,16 @@ impl KarWorkbench {
                         .update(cx, |ed, cx| ed.set_value("", window, cx));
                 }
             }
-            Err(()) => self.notify_warning(
+            Err(GoalCommandError::BudgetUnavailable) => self.notify_warning(
+                self.ui_locale.pick("DSH 目标按轮次计限。用 /goal set <目标> 设置目标。","DSH limits goals by rounds. Use /goal set <objective> to set a goal."),cx
+            ),
+            Err(GoalCommandError::Syntax) if !self.goal_supports_token_budget() => self.notify_warning(
+                self.ui_locale.pick("用 /goal set <目标> 设置目标，或用 status、pause、resume、complete、clear 管理目标。","Use /goal set <objective>, or manage a goal with status, pause, resume, complete or clear."),cx
+            ),
+            Err(GoalCommandError::Syntax) => self.notify_warning(
                 self.ui_locale.pick(
-                    "可用指令：/goal set <目标>、status、pause、resume、complete、clear",
-                    "Use /goal set <objective>, status, pause, resume, complete or clear",
+                    "用 /goal --budget <正整数> <目标> 设置预算和目标，或用 status、budget、pause、resume、complete、clear 管理目标",
+                    "Use /goal --budget <tokens> <objective>, status, budget, pause, resume, complete or clear",
                 ),
                 cx,
             ),
@@ -293,6 +387,7 @@ impl KarWorkbench {
         {
             return;
         }
+        self.update_goal_budget_hint(goal.and_then(|g| g.token_budget.flatten()), cx);
         let text = goal.map(|g| g.objective.as_str()).unwrap_or("");
         if self.goal_input.read(cx).value(cx) == self.goal_form_baseline
             && self.goal_form_baseline != text
@@ -331,11 +426,16 @@ impl KarWorkbench {
                 }
             }
             Err(reason) => {
-                if let GoalAction::Set(objective) = action {
+                let draft = match action {
+                    GoalAction::Set(edit) => Some(edit.command()),
+                    GoalAction::Budget(tokens) => Some(format!("/goal budget {tokens}")),
+                    _ => None,
+                };
+                if let Some(command) = draft {
                     self.prepend_composer_draft(
                         DraftLocation::Chat(id),
                         QueuedPrompt {
-                            text: format!("/goal set {objective}"),
+                            text: command,
                             ..Default::default()
                         },
                         window,
@@ -361,18 +461,69 @@ impl KarWorkbench {
 
 #[cfg(test)]
 mod tests {
-    use super::{GoalAction, parse_goal};
+    use super::{GoalCommandError, goal_command};
+    use super::{GoalAction, GoalEdit, parse_goal};
+    #[test]
+    fn explicit_budget_syntax_requires_codex_while_goals_work_on_dsh() {
+        for command in [
+            "budget 6800",
+            "--budget 6800 ship",
+            "BUDGET",
+            " --Budget invalid ship",
+        ] {
+            assert_eq!(
+                goal_command(command, "dsh"),
+                Err(GoalCommandError::BudgetUnavailable)
+            );
+        }
+        assert_eq!(
+            goal_command("budget 6800", "codex"),
+            Ok(GoalAction::Budget(6800))
+        );
+        assert_eq!(
+            goal_command("set budget review", "dsh"),
+            parse_goal("set budget review").map_err(|_| GoalCommandError::Syntax)
+        );
+    }
+
     #[test]
     fn goal_commands_keep_literal_objectives_and_validate_actions() {
         assert_eq!(parse_goal("pause"), Ok(GoalAction::Pause));
         assert_eq!(parse_goal("status"), Ok(GoalAction::Inspect));
         assert_eq!(parse_goal("pause now"), Err(()));
         assert_eq!(parse_goal("set"), Err(()));
-        assert_eq!(parse_goal("set pause"), Ok(GoalAction::Set("pause".into())));
+        assert_eq!(
+            parse_goal("set pause"),
+            Ok(GoalAction::Set(GoalEdit {
+                objective: "pause".into(),
+                token_budget: None
+            }))
+        );
         assert_eq!(
             parse_goal("ship safely"),
-            Ok(GoalAction::Set("ship safely".into()))
+            Ok(GoalAction::Set(GoalEdit {
+                objective: "ship safely".into(),
+                token_budget: None
+            }))
         );
+        let edit = GoalEdit {
+            objective: "a multi-word objective".into(),
+            token_budget: Some(6800),
+        };
+        assert_eq!(
+            parse_goal(edit.command().strip_prefix("/goal ").unwrap()),
+            Ok(GoalAction::Set(edit))
+        );
+        assert_eq!(parse_goal("budget 6800"), Ok(GoalAction::Budget(6800)));
+        for invalid in [
+            "budget -1",
+            "budget 0",
+            "budget 9007199254740992",
+            "--budget 1",
+            "--budget 0 task",
+        ] {
+            assert_eq!(parse_goal(invalid), Err(()));
+        }
         assert!(GoalAction::Pause.available("active"));
         assert!(!GoalAction::Resume.available("complete"));
     }

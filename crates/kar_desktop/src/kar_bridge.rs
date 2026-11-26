@@ -4,11 +4,16 @@
 //! Every disk, subprocess, and HTTP/SSE operation runs on a dedicated Tokio runtime thread,
 //! communicating with GPUI strictly over `async_channel`.
 
-mod session_commands;
+pub(crate) mod session_commands;
 mod planner;
+mod sidebar;
+mod hosted;
+#[cfg(all(test,unix))]
+mod side_question_test;
+pub use sidebar::{SidebarAction, SidebarMetadata};
 pub use planner::PlanQuestion;
 mod chat_goal;
-pub use chat_goal::GoalAction;
+pub use chat_goal::{GoalAction, GoalEdit};
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
@@ -17,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use kar::{
     ApprovalMode, Capabilities, CompactionStatus, ContextUsage, Error as KarError, GoalSetOptions,
     GoalSnapshot, InputImage, InstallationOptions, InstallationSnapshot, ManualCompactionReport,
@@ -34,7 +39,7 @@ use kar::{
     orientation::{Depth, OrientOptions, Probe, orient},
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -47,14 +52,12 @@ use crate::{
         client_redeem_pair_code, client_send_remote_command, now_epoch_ms,
         remote_link_router_with_updates,
     },
-    schedules::{ScheduledTask, ScheduleRunOutcome},
+    schedules::{ScheduleRegistry, workflow},
     studio_hub::{
         ChatWorktreeMeta, DiagLevel, DiagLogRecord, DiffHunkData, GitWorkspaceSnapshot,
         GlobalSearchHit, UsageAnalyticsSnapshot, WorkspaceFilePreview, WorkspaceInventorySnapshot,
         WorkspaceTreeItem, build_portable_handoff_context, compute_usage_analytics,
-        create_isolated_worktree_for_chat, discover_git_workspace, probe_inventory_with_office,
-        GitDiffSide, read_diff_side, read_workspace_file_preview, run_global_search,
-        scan_workspace_tree, scan_workspace_tree_with_options, switch_or_create_git_branch,
+        discover_git_workspace, probe_inventory_with_office, GitDiffSide,
         unstage_git_paths,
     },
     types::{
@@ -64,8 +67,16 @@ use crate::{
     },
 };
 
+pub struct ForgeCredentials(pub [String; 3]);
+impl std::fmt::Debug for ForgeCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ForgeCredentials(…)")
+    }
+}
+
 #[derive(Debug)]
 pub enum KarCommand {
+    Hardware { workspace: PathBuf, request_id: Uuid, cmd: crate::hardware::Command },
     RefreshStoreAndProviders {
         store_dir: PathBuf,
         workspace: PathBuf,
@@ -75,10 +86,16 @@ pub enum KarCommand {
         generation: u64,
         providers: Vec<ProviderStatusInfo>,
     },
+    Registry(crate::registry::Action),
+    StoreForgeCredentials(ForgeCredentials),
+    InspectStorage { clean: bool },
     ListChats,
+    OpenEditor { workspace: PathBuf, target: Option<PathBuf>, preferred: String },
+    SetAsterPlanMode { chat_id: Uuid, plan: bool },
     CreateChat {
+        aster_plan: bool,
         runtime_id: String,
-        initial_goal: Option<String>,
+        initial_goal: Option<GoalEdit>,
         initial_plan: Option<(Uuid, String)>,
         model: Option<String>,
         program: Option<PathBuf>,
@@ -93,6 +110,7 @@ pub enum KarCommand {
     },
     /// Leave the open chat and return to the blank start state. Nothing is created or deleted.
     CloseChat,
+    UpdateSidebar { chat_id: Uuid, action: SidebarAction },
     RenameChat {
         chat_id: Uuid,
         title: String,
@@ -199,12 +217,7 @@ pub enum KarCommand {
         peer_id: Uuid,
         env: RemoteCommandEnvelope,
     },
-    /// Spawn an isolated session for a due/manual `ScheduledTask` and bind its `SessionAssociation`.
-    CreateScheduledChat {
-        request_id: Uuid,
-        task: ScheduledTask,
-        workspace: PathBuf,
-    },
+    Workflows { workspace: PathBuf, action: workflow::Action, report_errors: bool },
     EnterDemoShowcase,
     SendDemoPrompt {
         request_id: Uuid,
@@ -303,16 +316,61 @@ pub enum KarCommand {
         target_model: Option<String>,
         user_note: String,
         budget_bytes: usize,
-        workspace: PathBuf,
     },
-    /// Ask an ephemeral zero-pollution side question (`Runtime::side_question` or context-read summary).
-    AskSideQuestion {
-        request_id: Uuid,
+    /// Ask in a disposable Claude fork of the saved native conversation.
+    AskSideQuestion { request_id: Uuid, chat_id: Uuid, question: String },
+    /// Native provider sign-in (`Runtime::login`) or API-key configuration (`OpenCode`/`Pi`/`Qwen` + env).
+    LoginProvider {
         runtime_id: String,
-        native_session_id: Option<String>,
+        sub_provider: Option<String>,
+        api_key: Option<String>,
+    },
+    /// Native provider sign-out (`Runtime::logout`).
+    LogoutProvider {
+        runtime_id: String,
+    },
+    /// Check native CLI update (`Runtime::check_update`) and optionally upgrade (`Runtime::upgrade_receipt`).
+    CheckOrUpgradeAgent {
+        runtime_id: String,
+        apply_upgrade: bool,
+    },
+    /// Rewind conversation context to a completed turn (`restore_files = false` keeps working files untouched).
+    RewindChat {
+        chat_id: Uuid,
+        turn_id: Uuid,
+        restore_files: bool,
+    },
+    /// Issue or revoke a time-bounded read-only Guest Web Share link on the local host server.
+    IssueGuestShare {
+        chat_id: Uuid,
+        label: String,
+        ttl_minutes: u64,
+    },
+    RevokeGuestShare {
+        share_id: Uuid,
+    },
+    /// Refresh GitHub/GitLab Pull Requests and GitHub/GitLab/Linear Issues for `workspace`.
+    RefreshForgeData {workspace: PathBuf},
+    CreatePullRequest {workspace:PathBuf,chat:Uuid,operation:Uuid,title:String,body:String,base:String,draft:bool},
+    MergePullRequest {workspace:PathBuf,chat:Uuid,operation:Uuid,number:u64,expected_head_sha:String,method:crate::prefs::PrMergeMethod},
+    GenerateAiCommitMessage {
         workspace: PathBuf,
-        question: String,
-        context_excerpt: String,
+        style: crate::prefs::CommitStyleMode,
+        custom_instructions: String,
+    },
+    CloneGitRepo {
+        url: String,
+        parent_dir: PathBuf,
+    },
+    ImportExternalTranscript {
+        source_agent: String,
+        path: PathBuf,
+        workspace: PathBuf,
+        target_runtime: String,
+    },
+    CheckDesktopUpdate {
+        channel: String,
+        install: Option<Uuid>,
     },
     Shutdown,
 }
@@ -350,6 +408,11 @@ pub enum ChatCreateFailure {
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum KarBridgeEvent {
+    HostedSession(Uuid),
+    HandoffReceipt { chat_id: Uuid, latest: Option<Box<kar::chat::Handoff>> },
+    Hardware { workspace: PathBuf, request_id: Uuid, result: Result<crate::hardware::Outcome, String> },
+    SidebarMetadata { dir: PathBuf, rows: BTreeMap<Uuid, SidebarMetadata> },
+    AsterModeReady { chat_id: Uuid, result: Result<bool, String> },
     StoreReady {
         store_dir: PathBuf,
         workspace: PathBuf,
@@ -373,6 +436,7 @@ pub enum KarBridgeEvent {
     ConnectionStateChanged(FeedConnectionState),
     ChatStateUpdated(ProjectedChatState),
     PlanGenerated { chat_id: Uuid, request_id: Uuid, result: Result<String, String> },
+    PlanDelta { chat_id: Uuid, request_id: Uuid, item: String, delta: String },
     PlanProgress { chat_id: Uuid, request_id: Uuid, label: String },
     PlanQuestions { chat_id: Uuid, request_id: Uuid, questions: Vec<PlanQuestion> },
     GoalResult { chat_id: Uuid, action: GoalAction, result: Result<Option<GoalSnapshot>, String> },
@@ -424,23 +488,12 @@ pub enum KarBridgeEvent {
         chat_id: Uuid,
         result: Result<String, QueueCopyError>,
     },
-    RemoteBriefFeedbackReceived {
-        brief_id: String,
-        revision: u64,
-        summary_markdown: String,
-    },
-    ScheduleRunFinished { request_id: Uuid, outcome: ScheduleRunOutcome },
-    ScheduledChatCreated {
-        request_id: Uuid,
-        task_id: String,
-        chat_id: Uuid,
-    },
+    WorkflowsLoaded { workspace: PathBuf, result: Result<ScheduleRegistry, String>, saved: bool, run_task: Option<Uuid>, report_errors: bool },
     AutoBackgroundedCommand(BackgroundedCommand),
     GitCommitFinished { workspace: PathBuf, message: String, success: bool },
     GitWorkspaceUpdated {
         workspace: PathBuf,
         snapshot: GitWorkspaceSnapshot,
-        tree: Vec<WorkspaceTreeItem>,
     },
     GitFileDiffLoaded {
         staged: bool,
@@ -473,12 +526,8 @@ pub enum KarBridgeEvent {
         hits: Vec<GlobalSearchHit>,
     },
     UsageAnalyticsUpdated(UsageAnalyticsSnapshot),
-    SideQuestionAnswered {
-        request_id: Uuid,
-        question: String,
-        answer: String,
-        via_native_fork: bool,
-    },
+    SideQuestionCapability { chat:Uuid, native:String, supported:bool },
+    SideQuestionAnswered { request_id:Uuid, question:String, result:Result<String,String> },
     HandoffCompleted {
         chat_id: Option<Uuid>,
         target_runtime: String,
@@ -490,6 +539,39 @@ pub enum KarBridgeEvent {
         chat_id: Uuid,
         suggestion: Option<kar::PromptSuggestion>,
     },
+    /// Interactive OAuth URL or Device Code emitted during `Runtime::login`.
+    LoginInteractionPrompt {
+        runtime_id: String,
+        auth_url: Option<String>,
+        device_code: Option<String>,
+        message: String,
+    },
+    AgentUpdateStatus {
+        runtime_id: String,
+        summary: String,
+        update_available: bool,
+    },
+    ForgeMutationFinished { workspace:PathBuf, chat:Uuid, operation:Uuid, created:bool, result:Result<String,String> },
+    ForgeDataUpdated {
+        workspace: PathBuf,
+        prs: Vec<crate::forge_devices_voice::ForgePullRequest>,
+        issues: Vec<crate::forge_devices_voice::ForgeIssue>,
+        error: Option<String>,
+    },
+    CommitMessageGenerated {
+        workspace: PathBuf,
+        result: Result<String,String>,
+    },
+    GitRepoCloned {
+        repo_path: PathBuf,
+    },
+    RegistryCatalog(Vec<crate::registry::CatalogEntry>),
+    RegistryInstalled(Vec<crate::registry::Installed>),
+    LegacyAcpRegistered(String),
+    ForgeCredentialStored(usize),
+    StorageInspected(crate::forge_devices_voice::StorageUsageSummary),
+    EditorsLoaded(Vec<crate::forge_devices_voice::InstalledEditor>),
+    DesktopUpdateChecked(crate::forge_devices_voice::DesktopAppUpdateReport),
 }
 
 #[derive(Clone)]
@@ -506,6 +588,9 @@ impl KarBridgeHandle {
 
         let _ = std::thread::Builder::new()
             .name("kar-desktop-tokio".into())
+            // Restoring an active native controller polls Kar's transport bootstrap
+            // on this host thread; debug macOS builds exceed its default stack.
+            .stack_size(8 * 1024 * 1024)
             .spawn(move || {
                 let rt = tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(2)
@@ -682,13 +767,13 @@ fn persist_attachment_paths(
 
 struct ActiveHttpServer {
     chat_id: Uuid,
-    stop_tx: oneshot::Sender<()>,
+    stop_tx: watch::Sender<bool>,
     join: JoinHandle<()>,
 }
 
 impl ActiveHttpServer {
     async fn stop(self) {
-        let _ = self.stop_tx.send(());
+        self.stop_tx.send_replace(true);
         let _ = self.join.await;
     }
 }
@@ -707,8 +792,11 @@ struct WorkerState {
     store_dir: PathBuf,
     workspace: PathBuf,
     store: Option<ChatStore>,
+    engine: Option<crate::engine::Engine>,
+    sidebar_watcher: Option<JoinHandle<()>>,
     selected_chat_id: Option<Uuid>,
     active_controller: Option<Arc<ChatSession>>,
+    hosted_chat: Option<hosted::Hosted>,
     feed_cancel: Option<watch::Sender<bool>>,
     http_server: Option<ActiveHttpServer>,
     remote_link: SharedRemoteLink,
@@ -717,6 +805,7 @@ struct WorkerState {
     mcp_supported_runtimes: HashMap<String, bool>,
     goals_supported_runtimes: HashMap<String, bool>,
     chat_list_cache: HashMap<Uuid, (Option<SystemTime>, Option<String>, ChatListEntry)>,
+    forge_read: Option<JoinHandle<()>>,
     probe_generation: u64,
     demo_turns: Vec<ChatTurn>,
     in_demo: bool,
@@ -729,7 +818,40 @@ struct WorkerState {
 }
 
 impl WorkerState {
+    async fn create_native_chat(
+        &self, store: &ChatStore, runtime: &str, program: Option<&Path>, opts: SessionOptions,
+    ) -> kar::Result<ChatSession> {
+        if runtime == crate::aster::ID {
+            let engine = self.engine.as_ref().ok_or_else(|| KarError::Refused("Kar 工作台服务不可用".into()))?;
+            let binary = crate::aster::find_binary().ok_or_else(|| KarError::Refused("请先在「智能体」中安装 Aster".into()))?;
+            let pinned = crate::aster::register(engine, &binary).await.map_err(|e| KarError::Refused(e.to_string()))?;
+            return store.create(&pinned, None, opts).await;
+        }
+        // Dynamic ACP profiles own the executable path; an override is refused by Kar.
+        let program = if runtime.starts_with("acp-profile:") || runtime.starts_with("acp:") { None } else { program };
+        store.create(runtime, program, opts).await
+    }
+
+    fn project_engine(&mut self, workspace: &Path) -> Result<crate::engine::Engine> {
+        let root = workspace.canonicalize()?;
+        if let Some(engine) = &self.engine && engine.root() == root {
+            return Ok(engine.clone());
+        }
+        let store = self.store.clone().ok_or_else(|| anyhow::anyhow!("对话存储未打开"))?;
+        let engine = crate::engine::Engine::open(store, &root)?;
+        self.engine = Some(engine.clone());
+        Ok(engine)
+    }
+
     fn emit(&self, ev: KarBridgeEvent) {
+        if let KarBridgeEvent::AccessModeChanged(mode)=&ev {
+            let chat=match mode {
+                ChatAccessMode::WriteController {chat_id}=>Some(*chat_id),
+                ChatAccessMode::DemoShowcase=>Some(Uuid::nil()),
+                _=>None,
+            };
+            self.remote_link.lock().unwrap_or_else(|e| e.into_inner()).set_writable_chat(chat);
+        }
         let _ = self.evt_tx.send_blocking(ev);
     }
 
@@ -742,10 +864,50 @@ impl WorkerState {
         self.emit(KarBridgeEvent::RemoteTelemetryUpdated(snap));
     }
 
-    fn dispatch_remote_envelope(&self, env: RemoteCommandEnvelope) -> bool {
+    fn local_remote_command(&self, peer_id: Uuid, env: RemoteCommandEnvelope) -> Option<KarCommand> {
+        let target_chat=env.expected_chat_id?;
+        let active=if self.in_demo { Some(Uuid::nil()) } else { self.active_controller.as_ref().map(|s|s.info().id) };
+        let permitted=self.remote_link.lock().unwrap_or_else(|e|e.into_inner()).may_control(peer_id,target_chat);
+        if !permitted || active!=Some(target_chat) || self.http_server.as_ref().map(|s|s.chat_id)!=Some(target_chat) {
+            self.emit(KarBridgeEvent::ToastMessage{text:"共享会话或设备授权已变化，已取消待处理的远端指令".into(),warning:true});
+            return None;
+        }
+        self.emit_remote_telemetry();
+        let input = |text: String, target: Option<SelectionTarget>, steer: bool| {
+            if self.in_demo {return KarCommand::SendDemoPrompt{request_id:env.request_id,raw_user_text:text,target};}
+            let payload=target.as_ref().map_or_else(||text.clone(),|target|target.compose_prompt(&text));
+            if steer || self.turn_appears_busy() {
+                KarCommand::SteerOrQueuePrompt{request_id:env.request_id,raw_user_text:text,payload,target,attachments:Vec::new()}
+            } else {
+                KarCommand::SendPrompt{request_id:env.request_id,raw_user_text:text,payload,target,attachments:Vec::new()}
+            }
+        };
+        Some(match env.action {
+            RemoteAction::SendPrompt{text,target}=>input(text,target,false),
+            RemoteAction::SteerOrQueue{text,target}=>input(text,target,true),
+            RemoteAction::WithdrawQueued{input_id,chat_id}=>{
+                if target_chat.is_nil() || chat_id.is_some_and(|id|id!=target_chat){return None;}
+                KarCommand::WithdrawQueued{chat_id:target_chat,input_id,edit:false}
+            }
+            RemoteAction::AbortTurn=>KarCommand::AbortTurn,
+            RemoteAction::DecidePermission{pending_id,allow}=>{
+                let request=self.active_controller.as_ref()?.history().ok()?.pending_requests.into_iter().find(|r|r.id==pending_id)?;
+                let decision=if allow{kar::PermissionDecision::AllowOnce}else{kar::PermissionDecision::Deny};
+                KarCommand::DecidePermission{request,decision}
+            }
+            RemoteAction::SubmitBriefFeedback{brief_id,revision,formatted_reply}=>{
+                self.emit(KarBridgeEvent::ToastMessage{text:format!("收到设备对简报 {brief_id}（v{revision}）的反馈"),warning:false});
+                input(formatted_reply,None,false)
+            }
+            RemoteAction::Ping{..}=>return None,
+        })
+    }
+
+    fn dispatch_remote_envelope(&self, mut env: RemoteCommandEnvelope) -> bool {
         let Some(ref remote) = self.remote_session else {
             return false;
         };
+        env.expected_chat_id=Some(remote.chat_id.unwrap_or_default());
         if !remote.role.can_mutate() {
             self.emit(KarBridgeEvent::ToastMessage {
                 text: "当前配对角色为「只读观察」，无法发送控制指令".into(),
@@ -765,7 +927,7 @@ impl WorkerState {
                 Ok(Ok(receipt)) => match receipt.outcome {
                     RemoteOutcome::Admitted | RemoteOutcome::Pong { .. } => {
                         let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
-                            text: "指令已通过 HMAC 双向链路送达主机".into(),
+                            text: "主机已收到请求".into(),
                             warning: false,
                         });
                     }
@@ -806,11 +968,13 @@ impl WorkerState {
         self.active_controller
             .as_ref()
             .and_then(|s| s.history().ok())
+            .or_else(|| self.hosted_chat.as_ref().and_then(|h| self.store.as_ref()?.history(h.chat).ok()))
             .and_then(|h| h.turns.last().map(|t| t.status == TurnStatus::Running))
             .unwrap_or(false)
     }
 
     fn stop_feed(&mut self) {
+        self.hosted_chat = None;
         if let Some(plan) = self.planner.take() { plan.cancel(); }
         self.remote_session = None;
         if let Some(cancel) = self.feed_cancel.take() {
@@ -832,8 +996,15 @@ impl WorkerState {
                 &self.store_dir,
             )));
         }
+        if let (Some(host), Some(store)) = (self.hosted_chat.clone(), self.store.clone()) {
+            let attempt = PendingPromptAttempt { chat_id:Some(host.chat),request_id,raw_user_text,sent_payload:payload,target,attachments,attempts:1,in_flight:true,last_error:None };
+            self.emit(KarBridgeEvent::PromptLifecycle{attempt:attempt.clone()});
+            host.send(attempt,store,self.evt_tx.clone());
+            return;
+        }
         let Some(session) = self.active_controller.clone() else {
             if self.dispatch_remote_envelope(RemoteCommandEnvelope {
+                expected_chat_id: None,
                 request_id,
                 expected_revision: None,
                 action: RemoteAction::SendPrompt {
@@ -933,6 +1104,7 @@ impl WorkerState {
     }
 
     async fn close_controller(&mut self, abort_if_busy: bool) {
+        self.remote_link.lock().unwrap_or_else(|e|e.into_inner()).set_writable_chat(None);
         if let Some(task) = self.suggestion_watcher.take() { task.abort(); }
         let should_abort = abort_if_busy && self.turn_appears_busy();
         if let Some(arc_session) = self.active_controller.take() {
@@ -963,11 +1135,16 @@ impl WorkerState {
         let generation = self.probe_generation;
         let workspace = self.workspace.clone();
         let cmd_tx = self.cmd_tx.clone();
+        let engine = self.engine.clone();
         if show_spinner {
             self.emit(KarBridgeEvent::ProvidersProbing(true));
         }
         tokio::spawn(async move {
-            let providers = probe_all_providers(workspace).await;
+            let (mut providers, aster) = tokio::join!(
+                probe_all_providers(workspace.clone()),
+                crate::aster::probe(engine.as_ref(), &workspace),
+            );
+            providers.insert(0, aster);
             let _ = cmd_tx
                 .send(KarCommand::ApplyProbedProviders {
                     generation,
@@ -1223,7 +1400,7 @@ pub fn fast_seed_providers_from_path() -> Vec<ProviderStatusInfo> {
     });
     let path_dirs: Vec<PathBuf> = std::env::split_paths(&augmented_path_os()).collect();
 
-    catalog
+    std::iter::once(crate::aster::seed()).chain(catalog
         .into_iter()
         .map(|rt| {
             let id = rt.id.clone();
@@ -1263,6 +1440,7 @@ pub fn fast_seed_providers_from_path() -> Vec<ProviderStatusInfo> {
                 None => (ProviderAvailability::Missing, ProviderAuthState::NotChecked),
             };
             ProviderStatusInfo {
+                workspace_commands: None,
                 protocol: format!("{:?}", rt.protocol).to_ascii_lowercase(),
                 availability,
                 auth,
@@ -1275,7 +1453,7 @@ pub fn fast_seed_providers_from_path() -> Vec<ProviderStatusInfo> {
                 quota_summary: None,
                 id,
             }
-        })
+        }))
         .collect()
 }
 
@@ -1348,6 +1526,7 @@ async fn probe_all_providers(workspace: PathBuf) -> Vec<ProviderStatusInfo> {
             .map(|rt| {
                 let id = rt.id.clone();
                 ProviderStatusInfo {
+                workspace_commands: None,
                     protocol: format!("{:?}", rt.protocol).to_ascii_lowercase(),
                     availability: ProviderAvailability::Missing,
                     auth: ProviderAuthState::NotChecked,
@@ -1470,6 +1649,7 @@ async fn probe_all_providers(workspace: PathBuf) -> Vec<ProviderStatusInfo> {
             let quota_summary = summarize_account_usage(row.account_usage.as_ref());
 
             ProviderStatusInfo {
+                workspace_commands: None,
                 id,
                 protocol,
                 availability,
@@ -1492,6 +1672,7 @@ fn state_from_replica(
     caps: Option<Capabilities>,
     queued_inputs: Vec<QueuedInput>,
 ) -> ProjectedChatState {
+    let info = info.map(|_| replica.chat().clone());
     let chat_id = info.as_ref().map(|i| i.id);
     ProjectedChatState {
         chat_id,
@@ -1617,6 +1798,25 @@ async fn check_http_reachable(base_url: &str) -> Result<(), String> {
     }
 }
 
+fn probe_side_question(info:&ChatInfo, sender:&async_channel::Sender<KarBridgeEvent>) {
+    if info.protocol!=kar::Protocol::Claude || Uuid::parse_str(&info.native_id).is_err() {return;}
+    let Some(mut rt)=kar::runtime("claude").ok() else { return };
+    rt.program=info.program.clone();
+    let options=kar::InstallationOptions{
+        cwd:Some(info.workspace.clone()),
+        env:info.unset_env.iter().map(|k|(k.clone().into(),None)).collect(),
+    };
+    let chat=info.id;
+    let native=info.native_id.clone();
+    let sender=sender.clone();
+    tokio::spawn(async move {
+        let supported=rt.probe_installation(&options).await.ok()
+            .and_then(|installation|rt.session_capabilities(&installation))
+            .is_some_and(|caps|caps.side_question==Some(true));
+        let _=sender.send(KarBridgeEvent::SideQuestionCapability{chat,native,supported}).await;
+    });
+}
+
 fn spawn_local_follower(
     store: ChatStore,
     store_dir: PathBuf,
@@ -1666,8 +1866,15 @@ fn spawn_local_follower(
             }
         };
 
+        probe_side_question(&snap.history.chat,&evt_tx);
         let info = Some(snap.history.chat.clone());
         let mut replica = ChatReplica::from_snapshot(snap);
+        let send_receipt = |replica: &ChatReplica| {
+            let _ = evt_tx.send_blocking(KarBridgeEvent::HandoffReceipt {
+                chat_id, latest: replica.handoffs().last().cloned().map(Box::new)
+            });
+        };
+        send_receipt(&replica);
         let mut duplicates_ignored = 0u64;
         let mut gaps_recovered = 0u64;
 
@@ -1712,8 +1919,11 @@ fn spawn_local_follower(
                 item = feed.recv() => {
                     match item {
                         Ok(ev) => {
+                            use kar::chat::ChatUpdate;
+                            let receipt_changed = matches!(&ev.update, ChatUpdate::HandoffPrepared{..} | ChatUpdate::HandoffReady{..} | ChatUpdate::HandoffFailed{..} | ChatUpdate::WorkspaceHandoff{..} | ChatUpdate::ContextRewound{..});
                             match replica.apply(ev) {
                                 Ok(true) => {
+                                    if receipt_changed { send_receipt(&replica); probe_side_question(replica.chat(),&evt_tx); }
                                     let queued = active_queued_inputs(Some(&store), chat_id);
                                     let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
                                         state_from_replica(info.clone(), &replica, caps, queued),
@@ -1736,6 +1946,7 @@ fn spawn_local_follower(
                                         move || store.feed_snapshot(chat_id)
                                     }).await {
                                         replica = ChatReplica::from_snapshot(fresh);
+                                        send_receipt(&replica);
                                         let queued = active_queued_inputs(Some(&store), chat_id);
                                         let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
                                             state_from_replica(info.clone(), &replica, caps, queued),
@@ -1836,7 +2047,7 @@ async fn run_http_subscriber_loop(
         }
     }
 
-    let mut feed = match HttpChatFeed::new(&url) {
+    let mut feed = match crate::remote_link::subscriber_feed(&url, paired.as_ref().map(|session| session.token.as_str())) {
         Ok(f) => f,
         Err(err) => {
             let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
@@ -1993,6 +2204,7 @@ async fn run_http_subscriber_loop(
                             let tok = rem.token.clone();
                             match tokio::task::spawn_blocking(move || {
                                 let ping = RemoteCommandEnvelope {
+                                    expected_chat_id: None,
                                     request_id: Uuid::new_v4(),
                                     expected_revision: None,
                                     action: RemoteAction::Ping { sent_ms: now_epoch_ms() },
@@ -2246,7 +2458,8 @@ async fn worker_loop(
         .or_else(|_| std::env::var("USERNAME"))
         .map(|u| format!("{} ({u})", crate::APP_NAME))
         .unwrap_or_else(|_| "Kwrok 桌面主机".into());
-    let remote_link = Arc::new(std::sync::Mutex::new(RemoteLinkCore::new(
+    let remote_link = Arc::new(std::sync::Mutex::new(RemoteLinkCore::new_persistent(
+        &initial_store_dir,
         host_label,
         Some(remote_dispatch_tx),
     )));
@@ -2256,8 +2469,11 @@ async fn worker_loop(
         store_dir: initial_store_dir.clone(),
         workspace: initial_workspace.clone(),
         store: None,
+        engine: None,
+        sidebar_watcher: None,
         selected_chat_id: None,
         active_controller: None,
+        hosted_chat: None,
         feed_cancel: None,
         http_server: None,
         remote_link,
@@ -2266,6 +2482,7 @@ async fn worker_loop(
         mcp_supported_runtimes: HashMap::new(),
         goals_supported_runtimes: HashMap::new(),
         chat_list_cache: HashMap::new(),
+        forge_read: None,
         probe_generation: 0,
         demo_turns: build_demo_seed_turns(),
         in_demo: false,
@@ -2277,11 +2494,41 @@ async fn worker_loop(
         evt_tx,
     };
 
+    state.remote_link.lock().unwrap_or_else(|e|e.into_inner()).set_writable_chat(None);
     init_store_and_providers(&mut state, initial_store_dir, initial_workspace);
 
     let mut inventory_probes = BTreeMap::<(PathBuf, String), tokio::task::JoinHandle<()>>::new();
     while let Ok(cmd) = cmd_rx.recv().await {
+        // Convert a paired command and execute it in this iteration. Re-enqueueing it would
+        // allow an intervening SelectLocalChat to redirect a prompt or permission decision.
+        let cmd = if let KarCommand::HandleRemoteCommand {peer_id,env} = cmd {
+            let Some(command)=state.local_remote_command(peer_id,env) else {continue};
+            command
+        } else {cmd};
+
+        // Kar applies ACP modes when attaching a controller. Reattach to the same native
+        // session without sending a user turn or moving another window's controller.
+        let (cmd, requested_mode) = if let KarCommand::SetAsterPlanMode { chat_id, plan } = cmd {
+            let owns = state.active_controller.as_ref().is_some_and(|s| s.info().id == chat_id && crate::aster::is_aster(&s.info().runtime));
+            if !owns || state.turn_appears_busy() {
+                state.emit(KarBridgeEvent::AsterModeReady { chat_id, result: Err("请等当前会话空闲后再切换模式。".into()) });
+                continue;
+            }
+            (KarCommand::SelectLocalChat { chat_id, prefer_read_only: false }, Some(if plan { "plan" } else { "default" }))
+        } else { (cmd, None) };
         match cmd {
+            KarCommand::Hardware {workspace, request_id, cmd} => {
+                let host = state.project_engine(&workspace);
+                let output = state.evt_tx.clone();
+                tokio::spawn(async move {
+                    let result = match host {
+                        Ok(engine) => crate::hardware::run(engine,cmd).await,
+                        Err(e) => Err(e),
+                    }.map_err(|e| e.to_string());
+                    let _ = output.send(KarBridgeEvent::Hardware {workspace,request_id,result}).await;
+                });
+            }
+            KarCommand::SetAsterPlanMode { .. } => unreachable!("normalized above"),
             KarCommand::RefreshStoreAndProviders {
                 store_dir,
                 workspace,
@@ -2309,19 +2556,121 @@ async fn worker_loop(
                 state.emit(KarBridgeEvent::ProvidersProbing(false));
                 state.emit(KarBridgeEvent::ProvidersUpdated(providers));
             }
+            KarCommand::Registry(action) => {
+                let engine = state.engine.clone();
+                let events = state.evt_tx.clone();
+                tokio::spawn(async move {
+                    let result = match engine {
+                        Some(engine) => crate::registry::run(engine, action, events.clone()).await,
+                        None => Err(anyhow::anyhow!("工作台引擎未连接")),
+                    };
+                    if let Err(error) = result { let _ = events.send(KarBridgeEvent::ToastMessage { text: format!("ACP：{error}"), warning: true }).await; }
+                });
+            }
+            KarCommand::StoreForgeCredentials(credentials) => {
+                let engine = state.engine.clone();
+                let events = state.evt_tx.clone();
+                tokio::spawn(async move {
+                    let Some(engine) = engine else {
+                        let _ = events.send(KarBridgeEvent::ToastMessage { text: "工作台未连接，凭据尚未保存".into(), warning: true }).await;
+                        return;
+                    };
+                    let mut saved = false;
+                    for (index, token) in credentials.0.into_iter().enumerate() {
+                        let token = token.trim();
+                        if token.is_empty() { continue; }
+                        let (method, route, body) = match index {
+                            0 => (axum::http::Method::PUT, "/forge/credentials/github.com", serde_json::json!({"token":token})),
+                            1 => (axum::http::Method::PUT, "/forge/credentials/gitlab.com", serde_json::json!({"token":token})),
+                            _ => (axum::http::Method::POST, "/forge/issue-trackers/connect", serde_json::json!({"tracker":"linear","token":token})),
+                        };
+                        match engine.request(method, route, Some(body)).await {
+                            Ok(_) => {
+                                let _ = events.send(KarBridgeEvent::ForgeCredentialStored(index)).await;
+                                saved = true;
+                            }
+                            Err(error) => {
+                                let name = ["GitHub", "GitLab", "Linear"][index];
+                                let _ = events.send(KarBridgeEvent::ToastMessage { text: format!("{name} 凭据保存失败：{error}"), warning: true }).await;
+                                return;
+                            }
+                        }
+                    }
+                    if saved { let _ = events.send(KarBridgeEvent::ToastMessage { text: "工作台已保存凭据".into(), warning: false }).await; }
+                });
+            }
+            KarCommand::InspectStorage { clean } => {
+                let events = state.evt_tx.clone();
+                let engine = state.engine.clone();
+                tokio::spawn(async move {
+                    let result: Result<_> = async {
+                        let engine = engine.ok_or_else(|| anyhow::anyhow!("工作台引擎未连接"))?;
+                        if clean {
+                            engine.request(axum::http::Method::POST, "/storage", Some(serde_json::json!({"compact_wal":true}))).await?;
+                            kar::clear_installation_cache();
+                        }
+                        let report = engine.request(axum::http::Method::GET, "/storage", None).await?;
+                        crate::forge_devices_voice::StorageUsageSummary::from_report(&report)
+                    }.await;
+                    match result {
+                        Ok(summary) => {
+                            let _ = events.send(KarBridgeEvent::StorageInspected(summary)).await;
+                            if clean { let _ = events.send(KarBridgeEvent::ToastMessage { text: "临时存储清理完成".into(), warning: false }).await; }
+                        }
+                        Err(error) => { let _ = events.send(KarBridgeEvent::ToastMessage { text: error.to_string(), warning: true }).await; }
+                    }
+                });
+            }
+            KarCommand::OpenEditor { workspace, target, preferred } => {
+                let engine = state.project_engine(&workspace);
+                let events = state.evt_tx.clone();
+                tokio::spawn(async move {
+                    let result: Result<String> = async {
+                        if matches!(preferred.as_str(), "xcode" | "sublime" | "iterm" | "terminal") {
+                            return tokio::task::spawn_blocking(move || crate::forge_devices_voice::open_in_external_editor(&preferred, &workspace, target.as_deref())).await?;
+                        }
+                        let engine = engine?;
+                        let id = match preferred.as_str() {
+                            "code" => "vscode".to_owned(),
+                            "finder" => "file-manager".to_owned(),
+                            "auto" | "" => engine.request(axum::http::Method::GET, "/editors", None).await?
+                                .as_array().and_then(|entries| entries.first()).and_then(|e| e["id"].as_str())
+                                .unwrap_or("file-manager").to_owned(),
+                            other => other.to_owned(),
+                        };
+                        let path = target.as_deref().unwrap_or(Path::new("."));
+                        let receipt = engine.request(axum::http::Method::POST, &format!("/projects/{}/editor/open", engine.project_id()),
+                            Some(serde_json::json!({"editor":id, "path":path, "reveal":id == "file-manager" && target.is_some()}))).await?;
+                        Ok(receipt["label"].as_str().unwrap_or(&id).to_owned())
+                    }.await;
+                    let warning = result.is_err();
+                    let text = match result { Ok(label) => format!("已在 {label} 中打开"), Err(e) => format!("打开编辑器失败：{e}") };
+                    let _ = events.send(KarBridgeEvent::ToastMessage { text, warning }).await;
+                });
+            }
             KarCommand::ListChats => {
                 state.refresh_chat_list();
             }
             KarCommand::RenameChat { chat_id, title } => {
-                save_persisted_title(&state.store_dir, chat_id, Some(&title));
-                state.chat_list_cache.remove(&chat_id);
-                state.refresh_chat_list();
-                state.emit(KarBridgeEvent::ToastMessage {
-                    text: "对话标题已更新".into(),
-                    warning: false,
-                });
+                match sidebar::change(&state, chat_id, Some(title), None).await {
+                    Ok(()) => state.emit(KarBridgeEvent::ToastMessage { text:"对话标题已更新".into(),warning:false }),
+                    Err(err) => state.emit(KarBridgeEvent::ToastMessage { text:format!("修改标题失败：{err}"),warning:true }),
+                }
+            }
+            KarCommand::UpdateSidebar { chat_id, action } => {
+                let switching = matches!(action, SidebarAction::Archive(_)) && state.selected_chat_id == Some(chat_id);
+                if switching && state.turn_appears_busy() {
+                    state.emit(KarBridgeEvent::ToastMessage { text:"请在本轮任务结束后归档对话。".into(),warning:true });
+                    continue;
+                }
+                if switching { state.stop_feed(); state.close_controller(false).await; }
+                if let Err(e) = sidebar::change(&state, chat_id, None, Some(action)).await {
+                    state.emit(KarBridgeEvent::ToastMessage { text:format!("对话状态更新失败：{e}"), warning:true });
+                }
+                if switching { let _ = state.cmd_tx.send(KarCommand::SelectLocalChat { chat_id,prefer_read_only:false }).await; }
             }
             KarCommand::CreateChat {
+                aster_plan,
                 runtime_id,
                 initial_goal,
                 initial_plan,
@@ -2335,7 +2684,7 @@ async fn worker_loop(
                 let Some(store) = state.store.clone() else {
                     state.emit(KarBridgeEvent::ChatCreateFailed {
                             plan_request_id: initial_plan.as_ref().map(|p| p.0),
-                        goal_draft: initial_goal.map(|s| (workspace.clone(), s)),
+                        goal_draft: initial_goal.map(|edit| (workspace.clone(), edit.command())),
                         cause: ChatCreateFailure::Store,
                         detail: format!(
                             "无法写入对话存储目录 {}，请检查它的权限。",
@@ -2355,7 +2704,24 @@ async fn worker_loop(
                     let store_dir = state.store_dir.clone();
                     let ws_for_wt = workspace.clone();
                     let prepared = tokio::task::spawn_blocking(move || {
-                        create_isolated_worktree_for_chat(&ws_for_wt, &store_dir, source_id)
+                        let prefs = crate::prefs::DesktopPreferences::load(&store_dir);
+                        let meta = crate::studio_hub::create_isolated_worktree_for_chat_with_options(
+                            &ws_for_wt,
+                            &store_dir,
+                            source_id,
+                            &prefs.worktree_branch_prefix,
+                            prefs.new_worktrees_from_origin,
+                        )?;
+                        let proj_key = meta.repo_root.display().to_string();
+                        if let Some(scripts) = prefs.project_scripts.get(&proj_key) {
+                            for sc in scripts.iter().filter(|s| s.run_on_worktree_create) {
+                                let _ = std::process::Command::new("/bin/zsh")
+                                    .current_dir(&meta.worktree_path)
+                                    .args(["-lc", sc.command.trim()])
+                                    .status();
+                            }
+                        }
+                        Ok::<_, anyhow::Error>(meta)
                     })
                     .await.map_err(anyhow::Error::from).and_then(|result| result);
                     match prepared {
@@ -2367,7 +2733,7 @@ async fn worker_loop(
                         Err(detail) => {
                             state.emit(KarBridgeEvent::ChatCreateFailed {
                             plan_request_id: initial_plan.as_ref().map(|p| p.0),
-                                goal_draft: initial_goal.map(|s| (workspace.clone(), s)),
+                                goal_draft: initial_goal.map(|edit| (workspace.clone(), edit.command())),
                                 cause: ChatCreateFailure::Worktree,
                                 detail: detail.to_string(),
                             });
@@ -2381,6 +2747,7 @@ async fn worker_loop(
                 let _ = std::fs::create_dir_all(&effective_ws);
                 let mut opts = SessionOptions::new(&effective_ws);
                 opts.approvals = approval_mode;
+                if aster_plan && crate::aster::is_aster(&runtime_id) { opts.settings.acp_mode = Some("plan".into()); }
                 opts.model = model.filter(|m| !m.trim().is_empty());
                 opts.prompt_suggestions = Some(state.prompt_suggestions.source(source_id));
                 configure_runtime_path(&runtime_id, &mut opts);
@@ -2397,8 +2764,8 @@ async fn worker_loop(
                 }
                 state.attach_office_mcp(&runtime_id, &mut opts);
 
-                match store
-                    .create(&runtime_id, program.as_deref(), opts)
+                match state
+                    .create_native_chat(&store, &runtime_id, program.as_deref(), opts)
                     .await
                 {
                     Ok(session) => {
@@ -2467,7 +2834,7 @@ async fn worker_loop(
                         state.selected_chat_id = None;
                         state.emit(KarBridgeEvent::ChatCreateFailed {
                             plan_request_id: initial_plan.as_ref().map(|p| p.0),
-                            goal_draft: initial_goal.map(|s| (workspace.clone(), s)),
+                            goal_draft: initial_goal.map(|edit| (workspace.clone(), edit.command())),
                             cause: ChatCreateFailure::Runtime(runtime_id),
                             detail,
                         });
@@ -2489,6 +2856,22 @@ async fn worker_loop(
                 state.stop_feed();
                 state.close_controller(false).await;
 
+                let archived = match state.engine.as_ref() {
+                    Some(engine) => match sidebar::archived(engine,chat_id).await {
+                        Ok(value) => value,
+                        Err(err) => { state.emit(KarBridgeEvent::ToastMessage { text:format!("无法核对归档状态：{err}"),warning:true }); true }
+                    },
+                    None => false,
+                };
+                if archived {
+                    state.emit(KarBridgeEvent::AccessModeChanged(ChatAccessMode::ArchivedReadOnly {
+                        chat_id, reason: "这段对话已归档。取消归档后可继续回复。".into()
+                    }));
+                    if let Ok(history) = store.history(chat_id) {
+                        state.emit(KarBridgeEvent::ChatStateUpdated(state_from_history(history,None,Vec::new())));
+                    }
+                    continue;
+                }
                 if prefer_read_only {
                     state.emit(KarBridgeEvent::AccessModeChanged(
                         ChatAccessMode::LocalReadOnlySubscriber {
@@ -2507,6 +2890,17 @@ async fn worker_loop(
                 }
 
                 let initial_history = read_chat_history_resilient(&store, &state.store_dir, chat_id);
+                if initial_history.as_ref().is_ok_and(|h| h.handoffs.iter().any(|r| r.status == kar::chat::HandoffStatus::Ready)) {
+                    let result = async {
+                        let host = hosted::Hosted::new(&state,chat_id).await?;
+                        host.bind(&mut state).await
+                    }.await;
+                    if let Err(e) = result {
+                        state.emit(KarBridgeEvent::AccessModeChanged(ChatAccessMode::LocalReadOnlySubscriber{chat_id,reason:e.to_string()}));
+                        state.feed_cancel = Some(spawn_local_follower(store,state.store_dir.clone(),chat_id,None,state.evt_tx.clone()));
+                    }
+                    continue;
+                }
                 let rt_id = initial_history
                     .as_ref()
                     .ok()
@@ -2553,14 +2947,25 @@ async fn worker_loop(
                 let rt_for_path = rt_id.clone();
                 let sugg_source = state.prompt_suggestions.source(chat_id);
 
-                let configure = |opts: &mut SessionOptions| {
+                let mode_key = format!("aster-mode-{chat_id}");
+                let saved_mode = crate::aster::is_aster(&rt_id)
+                    .then(|| crate::client_store::desktop_preference(&state.store_dir, &mode_key)).flatten()
+                    .filter(|v| matches!(v.as_str(), "plan" | "default"));
+                let configure = |opts: &mut SessionOptions, mode: Option<&str>| {
+                    if let Some(mode) = mode.or(saved_mode.as_deref()) { opts.settings.acp_mode = Some(mode.into()); }
                     configure_runtime_path(&rt_for_path, opts);
                     opts.prompt_suggestions = Some(sugg_source.clone());
                     if let Some((name, srv)) = &mcp_entry {
                         opts.mcp_servers.insert(name.clone(), srv.clone());
                     }
                 };
-                let mut resumed = store.resume_with(chat_id, &configure).await;
+                let mut applied_mode = requested_mode;
+                let mut resumed = store.resume_with(chat_id, |opts| configure(opts, requested_mode)).await;
+                if let (Some(_), Err(error)) = (requested_mode, &resumed) {
+                    state.emit(KarBridgeEvent::AsterModeReady { chat_id, result: Err(format!("Aster 模式切换失败：{error}")) });
+                    applied_mode = None;
+                    resumed = store.resume_with(chat_id, |opts| configure(opts, None)).await;
+                }
                 // Codex can still be releasing its native thread after the desktop
                 // has closed. Retry the same thread, without sending a turn.
                 for delay in [200, 500, 1000, 2000, 3500] {
@@ -2572,10 +2977,18 @@ async fn worker_loop(
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(delay)).await;
-                    resumed = store.resume_with(chat_id, &configure).await;
+                    resumed = store.resume_with(chat_id, |opts| configure(opts, None)).await;
                 }
                 match resumed {
                     Ok(session) => {
+                        let aster_mode = crate::aster::is_aster(&rt_id).then(|| {
+                            applied_mode.or(saved_mode.as_deref()).or(session.info().settings.acp_mode.as_deref()) == Some("plan")
+                        });
+                        if let Some(mode) = applied_mode
+                            && let Err(e) = crate::client_store::write_desktop_preference(&state.store_dir, &mode_key, mode)
+                        {
+                            state.emit(KarBridgeEvent::ToastMessage { text: format!("模式已切换，但无法保存：{e}"), warning: true });
+                        }
                         state.suggestion_watcher = Some(spawn_prompt_suggestion_watcher(
                             state.prompt_suggestions.clone(),
                             chat_id,
@@ -2587,6 +3000,7 @@ async fn worker_loop(
                         state.emit(KarBridgeEvent::AccessModeChanged(
                             ChatAccessMode::WriteController { chat_id },
                         ));
+                        if let Some(plan) = aster_mode { state.emit(KarBridgeEvent::AsterModeReady { chat_id, result: Ok(plan) }); }
                         state.feed_cancel = Some(spawn_local_follower(
                             store,
                             state.store_dir.clone(),
@@ -2678,8 +3092,16 @@ async fn worker_loop(
                         &state.store_dir,
                     )));
                 }
+                if let (Some(host),Some(store)) = (&state.hosted_chat,&state.store) {
+                    match persist_attachment_paths(store,host.chat,&attachments) {
+                        Ok(ids) => host.action("queue".into(),serde_json::json!({"id":request_id,"text":payload,"attachments":ids}),state.evt_tx.clone()),
+                        Err(e) => state.emit(KarBridgeEvent::ToastMessage{text:format!("附件保存失败：{e}"),warning:true}),
+                    }
+                    continue;
+                }
                 let Some(session) = state.active_controller.clone() else {
                     let _ = state.dispatch_remote_envelope(RemoteCommandEnvelope {
+                        expected_chat_id: None,
                         request_id,
                         expected_revision: None,
                         action: RemoteAction::SteerOrQueue {
@@ -2810,6 +3232,7 @@ async fn worker_loop(
                 };
                 if !copy_to_draft {
                     state.dispatch_remote_envelope(RemoteCommandEnvelope {
+                        expected_chat_id: None,
                         request_id: Uuid::new_v4(),
                         expected_revision: None,
                         action: RemoteAction::WithdrawQueued {
@@ -2920,6 +3343,12 @@ async fn worker_loop(
                 }
             }
             KarCommand::AbortTurn => {
+                if let (Some(host),Some(store)) = (&state.hosted_chat,&state.store) {
+                    if let Ok(h)=store.history(host.chat) && let Some(turn)=h.turns.last().filter(|t|t.status==TurnStatus::Running) {
+                        host.action(format!("turns/{}/interrupt",turn.id),serde_json::json!({}),state.evt_tx.clone());
+                    }
+                    continue;
+                }
                 if let Some(session) = state.active_controller.clone() {
                     let evt_tx = state.evt_tx.clone();
                     tokio::spawn(async move {
@@ -2933,6 +3362,7 @@ async fn worker_loop(
                     });
                 } else {
                     let _ = state.dispatch_remote_envelope(RemoteCommandEnvelope {
+                        expected_chat_id: None,
                         request_id: Uuid::new_v4(),
                         expected_revision: None,
                         action: RemoteAction::AbortTurn,
@@ -2940,6 +3370,10 @@ async fn worker_loop(
                 }
             }
             KarCommand::DecidePermission { request, decision } => {
+                if let Some(host) = &state.hosted_chat {
+                    host.action("requests/respond".into(),serde_json::json!({"cursor":request.cursor,"id":request.id,"action":"decide","decision":decision}),state.evt_tx.clone());
+                    continue;
+                }
                 if let Some(session) = state.active_controller.clone() {
                     let chat_id = session.info().id;
                     let store_opt = state.store.clone();
@@ -2968,6 +3402,7 @@ async fn worker_loop(
                             | kar::PermissionDecision::AllowAlways
                     );
                     let _ = state.dispatch_remote_envelope(RemoteCommandEnvelope {
+                        expected_chat_id: None,
                         request_id: Uuid::new_v4(),
                         expected_revision: None,
                         action: RemoteAction::DecidePermission {
@@ -2978,6 +3413,10 @@ async fn worker_loop(
                 }
             }
             KarCommand::SelectPolicy { request, choice } => {
+                if let Some(host) = &state.hosted_chat {
+                    host.action("requests/respond".into(),serde_json::json!({"cursor":request.cursor,"id":request.id,"action":"policy","choice":choice}),state.evt_tx.clone());
+                    continue;
+                }
                 if let Some(session) = state.active_controller.clone() {
                     let chat_id = session.info().id;
                     let store_opt = state.store.clone();
@@ -3000,6 +3439,10 @@ async fn worker_loop(
                 }
             }
             KarCommand::AnswerQuestion { request, reply } => {
+                if let Some(host) = &state.hosted_chat {
+                    host.action("requests/respond".into(),serde_json::json!({"cursor":request.cursor,"id":request.id,"action":"question","reply":reply}),state.evt_tx.clone());
+                    continue;
+                }
                 if let Some(session) = state.active_controller.clone() {
                     let chat_id = session.info().id;
                     let store_opt = state.store.clone();
@@ -3141,6 +3584,12 @@ async fn worker_loop(
                 }
             }
             KarCommand::RollbackToTurn { chat_id, turn_id, before } => {
+                if let Some(host) = state.hosted_chat.as_ref().filter(|h| h.chat==chat_id) {
+                    if let Err(e) = host.rollback(turn_id,before,&state).await {
+                        state.emit(KarBridgeEvent::ToastMessage{text:format!("未能恢复文件：{e}"),warning:true});
+                    }
+                    continue;
+                }
                 let Some(session) = state.active_controller.clone().filter(|session| session.info().id == chat_id) else {
                     continue;
                 };
@@ -3153,7 +3602,16 @@ async fn worker_loop(
                         turn: turn_id,
                         before,
                     };
-                    match session.rollback(pt, false).await {
+                    let result = async {
+                        if crate::aster::is_aster(&session.info().runtime) {
+                            let preview = session.rollback(pt.clone(), true).await?;
+                            if preview.files.iter().any(|file| crate::aster::runtime_artifact(&file.path)) {
+                                return Err(KarError::Refused("恢复这个检查点会覆盖 Aster 的会话记录。请在文件差异中检查项目改动。".into()));
+                            }
+                        }
+                        session.rollback(pt, false).await
+                    }.await;
+                    match result {
                         Ok(report) => {
                             if let Ok(h) = session.history() {
                                 let queued = active_queued_inputs(store_opt.as_ref(), chat_id);
@@ -3388,6 +3846,22 @@ async fn worker_loop(
                 }
             }
             KarCommand::InstallAgent { runtime_id, line } => {
+                if runtime_id == crate::aster::ID {
+                    state.emit(KarBridgeEvent::ToastMessage { text: "正在安装 Aster ACP…".into(), warning: false });
+                    let cmd = state.cmd_tx.clone();
+                    let events = state.evt_tx.clone();
+                    tokio::spawn(async move {
+                        let result = tokio::task::spawn_blocking(crate::aster::install).await;
+                        let (text, warning) = match result {
+                            Ok(Ok(())) => ("Aster ACP 安装完成".into(), false),
+                            Ok(Err(e)) => (format!("Aster 安装失败：{e}"), true),
+                            Err(e) => (format!("Aster 安装中断：{e}"), true),
+                        };
+                        let _ = events.send(KarBridgeEvent::ToastMessage { text, warning }).await;
+                        let _ = cmd.send(KarCommand::ProbeProvidersOnly).await;
+                    });
+                    continue;
+                }
                 let Ok(rt) = kar::runtime(&runtime_id) else {
                     state.emit(KarBridgeEvent::ToastMessage {
                         text: format!("未知智能体：{runtime_id}"),
@@ -3451,6 +3925,14 @@ async fn worker_loop(
             } => {
                 if let Some(prev) = state.http_server.take() {
                     prev.stop().await;
+                    {
+                        let mut host = state.remote_link.lock().unwrap_or_else(|e| e.into_inner());
+                        host.listen_url = None;
+                        host.lan_url = None;
+                        host.chat_id = None;
+                        host.clear_ticket();
+                    }
+                    state.emit_remote_telemetry();
                 }
                 match tokio::net::TcpListener::bind(&listen_addr).await {
                     Ok(listener) => {
@@ -3466,11 +3948,18 @@ async fn worker_loop(
                             }
                         };
                         let url = format!("http://{local_addr}");
+                        let lan_url = if local_addr.ip().is_unspecified() {
+                            crate::forge_devices_voice::detect_primary_lan_ipv4()
+                                .map(|ip| format!("http://{ip}:{}", local_addr.port()))
+                        } else {
+                            None
+                        };
                         {
                             let now = now_epoch_ms();
                             let mut guard =
                                 state.remote_link.lock().unwrap_or_else(|e| e.into_inner());
-                            guard.listen_url = Some(url.clone());
+                            guard.listen_url = Some(lan_url.clone().unwrap_or_else(|| url.clone()));
+                            guard.lan_url = lan_url;
                             guard.chat_id = (!chat_id.is_nil()).then_some(chat_id);
                             if guard.extended_snapshot.chat_id != guard.chat_id {
                                 guard.extended_snapshot = RemoteExtendedSnapshot {
@@ -3486,6 +3975,7 @@ async fn worker_loop(
                         let events = state.evt_tx.clone();
                         let link_router = remote_link_router_with_updates(
                             state.remote_link.clone(),
+                            state.engine.clone(),
                             state
                                 .store
                                 .clone()
@@ -3496,18 +3986,23 @@ async fn worker_loop(
                                     .try_send(KarBridgeEvent::RemoteTelemetryUpdated(snapshot));
                             },
                         );
+                        let (stop_tx, mut stop_rx) = watch::channel(false);
                         let router = if let Some(ref store) = state.store
                             && !chat_id.is_nil()
                         {
-                            event_router(store.clone(), chat_id).merge(link_router)
+                            crate::remote_link::shared_feed_routes(
+                                event_router(store.clone(), chat_id),
+                                state.remote_link.clone(),
+                                !local_addr.ip().is_loopback(),
+                                stop_rx.clone(),
+                            ).merge(link_router)
                         } else {
                             link_router
                         };
-                        let (stop_tx, stop_rx) = oneshot::channel::<()>();
                         let join = tokio::spawn(async move {
                             let _ = axum::serve(listener, router)
                                 .with_graceful_shutdown(async move {
-                                    let _ = stop_rx.await;
+                                    let _ = stop_rx.wait_for(|stopped| *stopped).await;
                                 })
                                 .await;
                         });
@@ -3539,6 +4034,8 @@ async fn worker_loop(
                     {
                         let mut guard = state.remote_link.lock().unwrap_or_else(|e| e.into_inner());
                         guard.listen_url = None;
+                        guard.lan_url = None;
+                        guard.chat_id = None;
                         guard.clear_ticket();
                     }
                     state.emit(KarBridgeEvent::HttpServerState {
@@ -3570,6 +4067,8 @@ async fn worker_loop(
                     if guard.chat_id != snapshot.chat_id {
                         continue;
                     }
+                    snapshot.turn_captures.retain(|_,capture| capture.chat_id==snapshot.chat_id);
+                    snapshot.briefs.retain(|brief| brief.chat_id==snapshot.chat_id);
                     snapshot.host_name = guard.host_name.clone();
                     snapshot.revision = guard.extended_snapshot.revision.saturating_add(1);
                     guard.extended_snapshot = snapshot;
@@ -3628,246 +4127,15 @@ async fn worker_loop(
                     }),
                 }
             }
-            KarCommand::HandleRemoteCommand { peer_id: _, env } => {
-                state.emit_remote_telemetry();
-                match env.action {
-                    RemoteAction::SendPrompt { text, target } => {
-                        let payload = match &target {
-                            Some(tgt) => tgt.compose_prompt(&text),
-                            None => text.clone(),
-                        };
-                        if state.in_demo {
-                            let _ = state
-                                .cmd_tx
-                                .send(KarCommand::SendDemoPrompt {
-                                    request_id: env.request_id,
-                                    raw_user_text: text,
-                                    target,
-                                })
-                                .await;
-                        } else if state.turn_appears_busy() {
-                            let _ = state
-                                .cmd_tx
-                                .send(KarCommand::SteerOrQueuePrompt {
-                                    request_id: env.request_id,
-                                    raw_user_text: text,
-                                    payload,
-                                    target,
-                                    attachments: Vec::new(),
-                                })
-                                .await;
-                        } else {
-                            let _ = state
-                                .cmd_tx
-                                .send(KarCommand::SendPrompt {
-                                    request_id: env.request_id,
-                                    raw_user_text: text,
-                                    payload,
-                                    target,
-                                    attachments: Vec::new(),
-                                })
-                                .await;
-                        }
-                    }
-                    RemoteAction::SteerOrQueue { text, target } => {
-                        let payload = match &target {
-                            Some(tgt) => tgt.compose_prompt(&text),
-                            None => text.clone(),
-                        };
-                        let _ = state
-                            .cmd_tx
-                            .send(KarCommand::SteerOrQueuePrompt {
-                                request_id: env.request_id,
-                                raw_user_text: text,
-                                payload,
-                                target,
-                                attachments: Vec::new(),
-                            })
-                            .await;
-                    }
-                    RemoteAction::WithdrawQueued {
-                        input_id,
-                        chat_id: expected,
-                    } => {
-                        if let Some(chat_id) = state
-                            .http_server
-                            .as_ref()
-                            .map(|srv| srv.chat_id)
-                            .filter(|id| {
-                                !id.is_nil() && expected.is_none_or(|expected| expected == *id)
-                            })
-                        {
-                            let _ = state
-                                .cmd_tx
-                                .send(KarCommand::WithdrawQueued {
-                                    chat_id,
-                                    input_id,
-                                    edit: false,
-                                })
-                                .await;
-                        }
-                    }
-                    RemoteAction::AbortTurn => {
-                        let _ = state.cmd_tx.send(KarCommand::AbortTurn).await;
-                    }
-                    RemoteAction::DecidePermission { pending_id, allow } => {
-                        if let Some(ref session) = state.active_controller
-                            && let Ok(h) = session.history()
-                            && let Some(req) = h
-                                .pending_requests
-                                .into_iter()
-                                .find(|r| r.id == pending_id)
-                        {
-                            let decision = if allow {
-                                kar::PermissionDecision::AllowOnce
-                            } else {
-                                kar::PermissionDecision::Deny
-                            };
-                            let _ = state
-                                .cmd_tx
-                                .send(KarCommand::DecidePermission { request: req, decision })
-                                .await;
-                        }
-                    }
-                    RemoteAction::SubmitBriefFeedback {
-                        brief_id,
-                        revision,
-                        formatted_reply,
-                    } => {
-                        state.emit(KarBridgeEvent::RemoteBriefFeedbackReceived {
-                            brief_id,
-                            revision,
-                            summary_markdown: formatted_reply,
-                        });
-                    }
-                    RemoteAction::Ping { .. } => {}
-                }
-            }
-            KarCommand::CreateScheduledChat {
-                request_id,
-                task,
-                workspace,
-            } => {
-                if state.in_demo {
-                    let fake_chat = Uuid::new_v4();
-                    state.emit(KarBridgeEvent::ScheduledChatCreated {
-                        request_id,
-                        task_id: task.id.clone(),
-                        chat_id: fake_chat,
-                    });
-                    state.emit(KarBridgeEvent::ScheduleRunFinished { request_id, outcome: ScheduleRunOutcome::Completed });
-                    let _ = state
-                        .cmd_tx
-                        .send(KarCommand::SendDemoPrompt {
-                            request_id,
-                            raw_user_text: format!("【定时任务：{}】{}", task.title, task.prompt),
-                            target: None,
-                        })
-                        .await;
-                    continue;
-                }
-                let Some(store) = state.store.clone() else {
-                    state.emit(KarBridgeEvent::ScheduleRunFinished { request_id, outcome: ScheduleRunOutcome::Failed });
-                    continue;
+            KarCommand::HandleRemoteCommand {..} => unreachable!("normalized before dispatch"),
+            KarCommand::Workflows { workspace, action, report_errors } => {
+                let saved = matches!(action, workflow::Action::Save {..});
+                let run_task = match &action { workflow::Action::Run{id,..}=>Some(*id), _=>None };
+                let result = match state.project_engine(&workspace) {
+                    Ok(engine) => workflow::apply(&engine, &workspace, &state.store_dir, &state.workspace, action).await,
+                    Err(error) => Err(error.into()),
                 };
-                if !workspace.is_dir()
-                    || task.office_template.as_ref().is_some_and(|p| !p.is_file())
-                {
-                    state.emit(KarBridgeEvent::ScheduleRunFinished {
-                        request_id,
-                        outcome: ScheduleRunOutcome::Failed,
-                    });
-                    state.emit(KarBridgeEvent::ToastMessage {
-                        text: "无法运行定时任务：工作目录或绑定的文档已移走。".into(),
-                        warning: true,
-                    });
-                    continue;
-                }
-                let mut opts = SessionOptions::new(&workspace);
-                opts.approvals = ApprovalMode::Host;
-                opts.model = task.model.clone().filter(|m| !m.trim().is_empty());
-                opts.settings.effort = task.effort.clone();
-                configure_runtime_path(&task.runtime_id, &mut opts);
-                state.attach_office_mcp(&task.runtime_id, &mut opts);
-                match store.create(&task.runtime_id, None, opts).await {
-                    Ok(session) => {
-                        let chat_id = session.info().id;
-                        save_persisted_title(
-                            &state.store_dir,
-                            chat_id,
-                            Some(&format!("⏱ {}", task.title)),
-                        );
-                        state.emit(KarBridgeEvent::ScheduledChatCreated {
-                            request_id,
-                            task_id: task.id.clone(),
-                            chat_id,
-                        });
-                        let attachments: Vec<PathBuf> = task
-                            .office_template
-                            .iter()
-                            .cloned()
-                            .collect();
-                        let session = Arc::new(session);
-                        let evt_tx = state.evt_tx.clone();
-                        let store_dir = state.store_dir.clone();
-                        let store_clone = store.clone();
-                        let prompt = task.prompt.clone();
-                        tokio::spawn(async move {
-                            let res = if attachments.is_empty() {
-                                session.send(request_id, prompt).await
-                            } else {
-                                match persist_attachment_paths(&store_clone, chat_id, &attachments) {
-                                    Ok(ids) => session.send_attached(request_id, prompt, ids).await,
-                                    Err(e) => Err(e),
-                                }
-                            };
-                            let outcome = match &res {
-                                Ok(turn) if turn.status == TurnStatus::Completed => ScheduleRunOutcome::Completed,
-                                _ => ScheduleRunOutcome::Failed,
-                            };
-                            let _ = evt_tx.send(KarBridgeEvent::ScheduleRunFinished { request_id, outcome }).await;
-                            if let Err(err) = res {
-                                let _ = evt_tx.send(KarBridgeEvent::ToastMessage {
-                                    text: format!("定时任务投递失败：{err}"),
-                                    warning: true,
-                                }).await;
-                            }
-                            if let Ok(infos) = store_clone.list() {
-                                let custom_titles = load_persisted_titles(&store_dir);
-                                let entries = infos
-                                    .into_iter()
-                                    .map(|info| {
-                                        let title_override =
-                                            custom_titles.get(&info.id).map(String::as_str);
-                                        let turns = read_chat_history_resilient(
-                                            &store_clone,
-                                            &store_dir,
-                                            info.id,
-                                        )
-                                        .map(|h| h.turns)
-                                        .unwrap_or_default();
-                                        ChatListEntry::from_info_and_turns_with_title(
-                                            info,
-                                            &turns,
-                                            title_override,
-                                        )
-                                    })
-                                    .collect();
-                                let _ = evt_tx.send(KarBridgeEvent::ChatsListed(entries)).await;
-                            }
-                            if let Ok(owned) = Arc::try_unwrap(session) {
-                                let _ = owned.close().await;
-                            }
-                        });
-                    }
-                    Err(err) => {
-                        state.emit(KarBridgeEvent::ScheduleRunFinished { request_id, outcome: ScheduleRunOutcome::Failed });
-                        state.emit(KarBridgeEvent::ToastMessage {
-                            text: format!("定时任务「{}」未能启动智能体：{err}", task.title),
-                            warning: true,
-                        });
-                    }
-                }
+                state.emit(KarBridgeEvent::WorkflowsLoaded { workspace, result: result.map_err(|e| format!("{e:#}")), saved, run_task, report_errors });
             }
             KarCommand::EnterDemoShowcase => {
                 state.stop_feed();
@@ -4069,6 +4337,9 @@ async fn worker_loop(
                 }
             }
             KarCommand::RefreshGitWorkspace { workspace } => {
+                if let Err(error) = state.project_engine(&workspace) {
+                    emit_diag_log(&state.evt_tx, DiagLevel::Warn, "workbench", Some("PROJECT"), error.to_string());
+                }
                 let evt_tx = state.evt_tx.clone();
                 let in_demo = state.in_demo;
                 tokio::task::spawn_blocking(move || {
@@ -4076,10 +4347,8 @@ async fn worker_loop(
                     if !snapshot.is_repo && in_demo {
                         snapshot = crate::studio_hub::demo_git_snapshot();
                     }
-                    let tree = scan_workspace_tree(&workspace, 180);
                     let _ = evt_tx.send_blocking(KarBridgeEvent::GitWorkspaceUpdated {
                         workspace: workspace.clone(), snapshot,
-                        tree,
                     });
                 });
             }
@@ -4098,10 +4367,8 @@ async fn worker_loop(
                                 format!("已暂存 {} 个工作区文件", paths.len()),
                             );
                             let snapshot = discover_git_workspace(&workspace);
-                            let tree = scan_workspace_tree(&workspace, 180);
                             let _ = evt_tx.send_blocking(KarBridgeEvent::GitWorkspaceUpdated {
                                 workspace: workspace.clone(), snapshot,
-                                tree,
                             });
                         }
                         Err(err) => {
@@ -4125,10 +4392,8 @@ async fn worker_loop(
                             format!("已取消暂存 {} 个文件", paths.len()),
                         );
                         let snapshot = discover_git_workspace(&workspace);
-                        let tree = scan_workspace_tree(&workspace, 180);
                         let _ = evt_tx.send_blocking(KarBridgeEvent::GitWorkspaceUpdated {
                             workspace: workspace.clone(), snapshot,
-                            tree,
                         });
                     }
                     Err(err) => {
@@ -4144,9 +4409,15 @@ async fn worker_loop(
                 branch,
                 create,
             } => {
+                let engine = state.project_engine(&workspace);
                 let evt_tx = state.evt_tx.clone();
                 tokio::task::spawn_blocking(move || {
-                    match switch_or_create_git_branch(&workspace, &branch, create) {
+                    let action = if create {
+                        serde_json::json!({"op": "create_branch", "branch": branch, "switch": true})
+                    } else {
+                        serde_json::json!({"op": "switch_branch", "branch": branch})
+                    };
+                    match engine.and_then(|e| futures::executor::block_on(e.git_action(action)).map(|_| &branch)) {
                         Ok(target) => {
                             emit_diag_log(
                                 &evt_tx,
@@ -4159,10 +4430,8 @@ async fn worker_loop(
                                 ),
                             );
                             let snapshot = discover_git_workspace(&workspace);
-                            let tree = scan_workspace_tree(&workspace, 180);
                             let _ = evt_tx.send_blocking(KarBridgeEvent::GitWorkspaceUpdated {
                                 workspace: workspace.clone(), snapshot,
-                                tree,
                             });
                             let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
                                 text: format!("当前分支：{target}"),
@@ -4185,12 +4454,20 @@ async fn worker_loop(
                 is_demo,
             } => {
                 let evt_tx = state.evt_tx.clone();
+                let store_dir = state.store_dir.clone();
                 tokio::task::spawn_blocking(move || {
+                    let prefs = crate::prefs::DesktopPreferences::load(&store_dir);
                     let root = kar::workbench_git::Repository::open(&workspace)
                         .map(|repo| repo.root().to_path_buf())
                         .unwrap_or_else(|_| workspace.clone());
                     let side = if staged { GitDiffSide::Staged } else { GitDiffSide::WorkingTree };
-                    let hunks = read_diff_side(&root, &rel_path, is_demo, side);
+                    let hunks = crate::studio_hub::read_diff_side_with_options(
+                        &root,
+                        &rel_path,
+                        is_demo,
+                        side,
+                        prefs.diff_ignore_whitespace,
+                    );
                     let _ = evt_tx.send_blocking(KarBridgeEvent::GitFileDiffLoaded {
                         staged,
                         workspace,
@@ -4204,9 +4481,14 @@ async fn worker_loop(
                 show_hidden,
             } => {
                 let evt_tx = state.evt_tx.clone();
-                tokio::task::spawn_blocking(move || {
-                    let tree = scan_workspace_tree_with_options(&workspace, 220, show_hidden);
-                    let _ = evt_tx.send_blocking(KarBridgeEvent::WorkspaceTreeUpdated { workspace, show_hidden, tree });
+                let engine = state.project_engine(&workspace);
+                tokio::spawn(async move {
+                    let result = async { engine?.file_tree(show_hidden).await }.await;
+                    let event = match result {
+                        Ok(tree) => KarBridgeEvent::WorkspaceTreeUpdated { workspace, show_hidden, tree },
+                        Err(error) => KarBridgeEvent::ToastMessage { text: format!("无法读取工作区文件：{error}"), warning: true },
+                    };
+                    let _ = evt_tx.send(event).await;
                 });
             }
             KarCommand::RunWorkspaceCommand { id, cwd, command } => {
@@ -4328,10 +4610,8 @@ async fn worker_loop(
                                 format!("已全部暂存 {n} 个变更文件"),
                             );
                             let snapshot = discover_git_workspace(&workspace);
-                            let tree = scan_workspace_tree(&workspace, 180);
                             let _ = evt_tx.send_blocking(KarBridgeEvent::GitWorkspaceUpdated {
                                 workspace: workspace.clone(), snapshot,
-                                tree,
                             });
                             let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
                                 text: format!("已暂存 {n} 个变更文件"),
@@ -4371,10 +4651,8 @@ async fn worker_loop(
                                 format!("已创建提交 {short}: {message}"),
                             );
                             let snapshot = discover_git_workspace(&workspace);
-                            let tree = scan_workspace_tree(&workspace, 180);
                             let _ = evt_tx.send_blocking(KarBridgeEvent::GitWorkspaceUpdated {
                                 workspace: workspace.clone(), snapshot,
-                                tree,
                             });
                             let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
                                 text: format!("提交成功（{short}）"),
@@ -4398,9 +4676,11 @@ async fn worker_loop(
                 });
             }
             KarCommand::GitPull { workspace } => {
+                let engine = state.project_engine(&workspace);
                 let evt_tx = state.evt_tx.clone();
                 tokio::task::spawn_blocking(move || {
-                    match kar::workbench_git::Repository::open(&workspace).and_then(|r| r.pull()) {
+                    match engine.and_then(|e| futures::executor::block_on(e.git_action(serde_json::json!({"op": "pull"}))))
+                        .and_then(|v| v["commit"].as_str().map(str::to_owned).ok_or_else(|| anyhow::anyhow!("Kar 未返回提交号"))) {
                         Ok(head) => {
                             let short = &head[..head.len().min(7)];
                             emit_diag_log(
@@ -4411,10 +4691,8 @@ async fn worker_loop(
                                 format!("快进拉取完成，HEAD={short}"),
                             );
                             let snapshot = discover_git_workspace(&workspace);
-                            let tree = scan_workspace_tree(&workspace, 180);
                             let _ = evt_tx.send_blocking(KarBridgeEvent::GitWorkspaceUpdated {
                                 workspace: workspace.clone(), snapshot,
-                                tree,
                             });
                             let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
                                 text: format!("已同步上游分支（{short}）"),
@@ -4431,10 +4709,11 @@ async fn worker_loop(
                 });
             }
             KarCommand::GitPush { workspace } => {
+                let engine = state.project_engine(&workspace);
                 let evt_tx = state.evt_tx.clone();
                 tokio::task::spawn_blocking(move || {
-                    match kar::workbench_git::Repository::open(&workspace).and_then(|r| r.push()) {
-                        Ok(()) => {
+                    match engine.and_then(|e| futures::executor::block_on(e.git_action(serde_json::json!({"op": "push"})))) {
+                        Ok(_) => {
                             emit_diag_log(
                                 &evt_tx,
                                 DiagLevel::Info,
@@ -4443,10 +4722,8 @@ async fn worker_loop(
                                 "当前分支已推送至远端 origin",
                             );
                             let snapshot = discover_git_workspace(&workspace);
-                            let tree = scan_workspace_tree(&workspace, 180);
                             let _ = evt_tx.send_blocking(KarBridgeEvent::GitWorkspaceUpdated {
                                 workspace: workspace.clone(), snapshot,
-                                tree,
                             });
                             let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
                                 text: "分支已推送到远端 origin".into(),
@@ -4462,24 +4739,19 @@ async fn worker_loop(
                     }
                 });
             }
-            KarCommand::ReadWorkspaceFile {
-                workspace,
-                rel_path,
-            } => {
+            KarCommand::ReadWorkspaceFile { workspace, rel_path } => {
                 let evt_tx = state.evt_tx.clone();
-                tokio::task::spawn_blocking(move || {
-                    match read_workspace_file_preview(&workspace, &rel_path) {
-                        Ok(preview) => {
-                            let _ = evt_tx
-                                .send_blocking(KarBridgeEvent::WorkspaceFileLoaded { workspace, preview });
-                        }
-                        Err(err) => {
-                            let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
-                                text: format!("无法打开文件：{err}"),
-                                warning: true,
-                            });
-                        }
-                    }
+                let engine = state.project_engine(&workspace);
+                tokio::spawn(async move {
+                    let result = match engine {
+                        Ok(engine) => engine.read_file(&rel_path).await,
+                        Err(error) => Err(error),
+                    };
+                    let event = match result {
+                        Ok(preview) => KarBridgeEvent::WorkspaceFileLoaded { workspace, preview },
+                        Err(error) => KarBridgeEvent::ToastMessage { text: format!("无法打开文件：{error}"), warning: true },
+                    };
+                    let _ = evt_tx.send(event).await;
                 });
             }
             KarCommand::ProbeWorkspaceInventory {
@@ -4514,16 +4786,24 @@ async fn worker_loop(
                 inventory_probes.insert(scope, probe);
             }
             KarCommand::GlobalSearch { workspace, query } => {
+                let engine = state.project_engine(&workspace);
                 let evt_tx = state.evt_tx.clone();
-                let store_dir = state.store_dir.clone();
-                tokio::task::spawn_blocking(move || {
-                    let store = ChatStore::open(&store_dir).ok();
-                    let hits = run_global_search(&workspace, store.as_ref(), &query, 16);
-                    let _ = evt_tx.send_blocking(KarBridgeEvent::GlobalSearchResults {
-                        workspace,
-                        query,
-                        hits,
-                    });
+                let titles = state.chat_list_cache.iter().map(|(id, (_, _, entry))| (*id, entry.title.clone())).collect();
+                tokio::spawn(async move {
+                    let result = match engine {
+                        Ok(engine) => engine.search(&query, &titles).await,
+                        Err(error) => Err(error),
+                    };
+                    let hits = match result {
+                        Ok(hits) => hits,
+                        Err(error) => {
+                            let _ = evt_tx.send(KarBridgeEvent::ToastMessage {
+                                text: format!("搜索失败：{error}"), warning: true,
+                            }).await;
+                            Vec::new()
+                        }
+                    };
+                    let _ = evt_tx.send(KarBridgeEvent::GlobalSearchResults { workspace, query, hits }).await;
                 });
             }
             KarCommand::RefreshUsageAnalytics {
@@ -4545,30 +4825,17 @@ async fn worker_loop(
                 target_model,
                 user_note,
                 budget_bytes,
-                workspace,
             } => {
-                let history;
-                let (source_runtime, turns) = if state.in_demo && source_chat.is_none() {
-                    ("codex".to_owned(), state.demo_turns.as_slice())
-                } else if let Some(session) = &state.active_controller
-                    && !state.in_demo
-                    && Some(session.info().id) == source_chat
-                    && state.selected_chat_id == source_chat
-                    && let Ok(snapshot) = session.history()
-                    && snapshot
-                        .turns
-                        .last()
-                        .is_some_and(|turn| turn.status != TurnStatus::Running)
-                {
-                    history = snapshot;
-                    (session.info().runtime.clone(), history.turns.as_slice())
-                } else {
-                    state.emit(KarBridgeEvent::ToastMessage {
-                        text: "原对话已切换或正在执行任务，请重新打开交接。".into(),
-                        warning: true,
-                    });
+                if !state.in_demo {
+                    let result = match source_chat {
+                        Some(id) => hosted::transfer(&mut state,id,target_runtime,target_model,user_note,budget_bytes).await,
+                        None => Err(anyhow::anyhow!("请先打开要交接的对话")),
+                    };
+                    if let Err(e)=result { state.emit(KarBridgeEvent::ToastMessage {text:format!("未完成交接：{e}"),warning:true}); }
                     continue;
-                };
+                }
+                let source_runtime = "demo".to_owned();
+                let turns = state.demo_turns.as_slice();
                 let mut turn_pairs = Vec::new();
                 for turn in turns {
                     let (mut user, mut assistant) = (String::new(), String::new());
@@ -4628,139 +4895,568 @@ async fn worker_loop(
                         .await;
                     continue;
                 }
-
+            }
+            KarCommand::AskSideQuestion {request_id, chat_id, question} => {
+                let can_ask=state.selected_chat_id==Some(chat_id) && (state.active_controller.as_ref().is_some_and(|s|s.info().id==chat_id) || state.hosted_chat.as_ref().is_some_and(|h|h.chat==chat_id));
+                let store=state.store.clone();
+                let sender=state.evt_tx.clone();
+                tokio::spawn(async move {
+                    let result=async {
+                        anyhow::ensure!(can_ask,"请打开支持旁路提问的本机对话");
+                        let store=store.context("对话存储不可用")?;
+                        let history=store.history(chat_id)?;
+                        anyhow::ensure!(!history.turns.is_empty() && history.chat.protocol==kar::Protocol::Claude,"此对话不支持原生旁路提问");
+                        Ok::<_,anyhow::Error>(store.side_question(chat_id,&question).await?)
+                    }.await.map_err(|e|e.to_string());
+                    let _=sender.send(KarBridgeEvent::SideQuestionAnswered{request_id,question,result}).await;
+                });
+            }
+            KarCommand::IssueGuestShare { chat_id: expected, label: _, ttl_minutes } => {
+                let result = async {
+                    let engine = state.engine.as_ref().context("工作台引擎不可用")?;
+                    let chat_id = state.http_server.as_ref().map(|s| s.chat_id)
+                        .filter(|id| !id.is_nil()).context("请先共享一个本地对话")?;
+                    anyhow::ensure!(chat_id == expected, "共享的对话已切换，请重新选择");
+                    crate::remote_link::GuestShareLink::issue(engine, chat_id, ttl_minutes).await
+                }.await;
+                match result {
+                    Ok(share) => {
+                        state.remote_link.lock().unwrap_or_else(|e| e.into_inner()).remember_guest_share(share);
+                        state.emit_remote_telemetry();
+                        state.emit(KarBridgeEvent::ToastMessage { text: "已生成本会话的只读访客链接".into(), warning: false });
+                    }
+                    Err(error) => state.emit(KarBridgeEvent::ToastMessage { text: format!("无法创建访客链接：{error}"), warning: true }),
+                }
+            }
+            KarCommand::RevokeGuestShare { share_id } => {
+                let result = async {
+                    state.engine.as_ref().context("工作台引擎不可用")?
+                        .request(axum::http::Method::DELETE, &format!("/access/shares/{share_id}"), None).await
+                }.await;
+                match result {
+                    Ok(_) => {
+                        state.remote_link.lock().unwrap_or_else(|e| e.into_inner()).revoke_guest_share(share_id);
+                        state.emit_remote_telemetry();
+                    }
+                    Err(error) => state.emit(KarBridgeEvent::ToastMessage { text: format!("无法撤销访客链接：{error}"), warning: true }),
+                }
+            }
+            KarCommand::RewindChat {
+                chat_id,
+                turn_id,
+                restore_files,
+            } => {
                 let Some(store) = state.store.clone() else {
+                    continue;
+                };
+                let req = kar::chat::RewindRequest {
+                    id: Uuid::new_v4(),
+                    turn: turn_id,
+                    expected_head: None,
+                    policy: kar::chat::ForkPolicy::PreferNative,
+                    restore_files,
+                };
+                if let Some(host)=state.hosted_chat.as_ref().filter(|h|h.chat==chat_id) {
+                    match host.post("rewinds",serde_json::json!(req)).await {
+                        Ok(_) => { let _=state.cmd_tx.send(KarCommand::SelectLocalChat{chat_id,prefer_read_only:false}).await; }
+                        Err(e) => state.emit(KarBridgeEvent::ToastMessage{text:format!("未能回退对话：{e}"),warning:true}),
+                    }
+                    continue;
+                }
+                if state.selected_chat_id == Some(chat_id) {
+                    state.stop_feed();
+                    state.close_controller(false).await;
+                }
+                match store.rewind(chat_id, req).await {
+                    Ok(receipt) => {
+                        let msg = if restore_files {
+                            format!(
+                                "已将对话记录与 {} 个工作区文件同时回滚到此步",
+                                receipt.files.len()
+                            )
+                        } else {
+                            format!(
+                                "已撤回后续 {} 轮对话记录（本地文件改动已完整保留）",
+                                receipt.removed_turns.len()
+                            )
+                        };
+                        state.emit(KarBridgeEvent::ToastMessage {
+                            text: msg,
+                            warning: false,
+                        });
+                        let _ = state
+                            .cmd_tx
+                            .send(KarCommand::SelectLocalChat {
+                                chat_id,
+                                prefer_read_only: false,
+                            })
+                            .await;
+                    }
+                    Err(err) => {
+                        state.emit(KarBridgeEvent::ToastMessage {
+                            text: format!("撤回对话失败：{err}"),
+                            warning: true,
+                        });
+                        let _ = state
+                            .cmd_tx
+                            .send(KarCommand::SelectLocalChat {
+                                chat_id,
+                                prefer_read_only: false,
+                            })
+                            .await;
+                    }
+                }
+            }
+            KarCommand::LoginProvider {
+                runtime_id,
+                sub_provider,
+                api_key,
+            } => {
+                let Ok(rt) = kar::runtime(&runtime_id) else {
                     state.emit(KarBridgeEvent::ToastMessage {
-                        text: "无法访问本地对话存储。".into(),
+                        text: format!("未知智能体：{runtime_id}"),
                         warning: true,
                     });
                     continue;
                 };
+                let evt_tx = state.evt_tx.clone();
+                let cmd_tx = state.cmd_tx.clone();
+                let name = runtime_display_name(&runtime_id);
+                tokio::spawn(async move {
+                    if let Some(key) = api_key.map(|k| k.trim().to_owned()).filter(|k| !k.is_empty()) {
+                        let target_sub = sub_provider.unwrap_or_else(|| "openai".into());
+                        let res: Result<(), String> = match runtime_id.as_str() {
+                            "opencode" => match rt
+                                .opencode_provider_auth(kar::providers::ProviderAuthOptions::default())
+                                .await
+                            {
+                                Ok(auth) => auth
+                                    .set_api_key(&target_sub, &key)
+                                    .await
+                                    .map_err(|e| e.to_string()),
+                                Err(e) => Err(e.to_string()),
+                            },
+                            "pi" => match rt
+                                .pi_provider_auth(kar::providers::ProviderAuthOptions::default())
+                                .await
+                            {
+                                Ok(auth) => auth
+                                    .set_api_key(&target_sub, &key)
+                                    .await
+                                    .map_err(|e| e.to_string()),
+                                Err(e) => Err(e.to_string()),
+                            },
+                            "qwen" => match rt
+                                .qwen_provider_auth(kar::providers::ProviderAuthOptions::default())
+                                .await
+                            {
+                                Ok(auth) => auth
+                                    .connect(&kar::providers::QwenConnect {
+                                        provider_id: target_sub,
+                                        api_key: Some(key),
+                                        ..Default::default()
+                                    })
+                                    .await
+                                    .map(|_| ())
+                                    .map_err(|e| e.to_string()),
+                                Err(e) => Err(e.to_string()),
+                            },
+                            _ => Ok(()),
+                        };
+                        match res {
+                            Ok(()) => {
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                    text: format!("{name} API 密钥已保存并生效"),
+                                    warning: false,
+                                });
+                                let _ = cmd_tx.send(KarCommand::ProbeProvidersOnly).await;
+                            }
+                            Err(err) => {
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                    text: format!("{name} 密钥保存未通过：{err}"),
+                                    warning: true,
+                                });
+                            }
+                        }
+                        return;
+                    }
 
+                    if !rt.supports_login() {
+                        let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                            text: format!(
+                                "{name} 需在其客户端或通过填写 API Key 完成授权"
+                            ),
+                            warning: true,
+                        });
+                        return;
+                    }
+
+                    let mut opts = kar::account::LoginOptions::default();
+                    opts.open_browser = Some(false);
+                    let evt_for_cb = evt_tx.clone();
+                    let rt_for_cb = runtime_id.clone();
+                    let mut on_event = move |ev: kar::account::LoginEvent| -> kar::Result<()> {
+                        match ev {
+                            kar::account::LoginEvent::AuthUrl { url, instructions } => {
+                                let _ = std::process::Command::new("open").arg(&url).status();
+                                let _ = evt_for_cb.send_blocking(
+                                    KarBridgeEvent::LoginInteractionPrompt {
+                                        runtime_id: rt_for_cb.clone(),
+                                        auth_url: Some(url),
+                                        device_code: None,
+                                        message: instructions.unwrap_or_else(|| {
+                                            "已在浏览器打开登录页面，请在网页中完成授权".into()
+                                        }),
+                                    },
+                                );
+                            }
+                            kar::account::LoginEvent::DeviceCode {
+                                user_code,
+                                verification_uri,
+                            } => {
+                                let _ = std::process::Command::new("open")
+                                    .arg(&verification_uri)
+                                    .status();
+                                let _ = evt_for_cb.send_blocking(
+                                    KarBridgeEvent::LoginInteractionPrompt {
+                                        runtime_id: rt_for_cb.clone(),
+                                        auth_url: Some(verification_uri),
+                                        device_code: Some(user_code),
+                                        message: "请在打开的验证页面输入上方设备验证码".into(),
+                                    },
+                                );
+                            }
+                            kar::account::LoginEvent::Info { message } => {
+                                let _ = evt_for_cb.send_blocking(
+                                    KarBridgeEvent::LoginInteractionPrompt {
+                                        runtime_id: rt_for_cb.clone(),
+                                        auth_url: None,
+                                        device_code: None,
+                                        message,
+                                    },
+                                );
+                            }
+                        }
+                        Ok(())
+                    };
+                    match rt.login(&opts, &mut on_event).await {
+                        Ok(kar::account::LoginResult::LoggedIn { .. }) => {
+                            let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                text: format!("{name} 登录成功！"),
+                                warning: false,
+                            });
+                            let _ = cmd_tx.send(KarCommand::ProbeProvidersOnly).await;
+                        }
+                        Ok(other) => {
+                            let detail = match other {
+                                kar::account::LoginResult::Cancelled => "已取消登录".into(),
+                                kar::account::LoginResult::Failed { detail, .. } => detail,
+                                kar::account::LoginResult::Unsupported { detail, .. } => detail,
+                                kar::account::LoginResult::LoggedIn { .. } => String::new(),
+                            };
+                            let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                text: format!("{name} 登录未完成：{detail}"),
+                                warning: true,
+                            });
+                        }
+                        Err(err) => {
+                            let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                text: format!("{name} 登录失败：{err}"),
+                                warning: true,
+                            });
+                        }
+                    }
+                });
+            }
+            KarCommand::LogoutProvider { runtime_id } => {
+                let Ok(rt) = kar::runtime(&runtime_id) else {
+                    continue;
+                };
+                let evt_tx = state.evt_tx.clone();
+                let cmd_tx = state.cmd_tx.clone();
+                let name = runtime_display_name(&runtime_id);
+                tokio::spawn(async move {
+                    if !rt.supports_logout() {
+                        let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                            text: format!("{name} 暂不支持应用内一键退出"),
+                            warning: true,
+                        });
+                        return;
+                    }
+                    let opts = kar::account::LogoutOptions::default();
+                    match rt.logout(&opts).await {
+                        Ok(kar::account::LogoutResult::LoggedOut) => {
+                            let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                text: format!("已退出 {name} 账号"),
+                                warning: false,
+                            });
+                            let _ = cmd_tx.send(KarCommand::ProbeProvidersOnly).await;
+                        }
+                        Ok(kar::account::LogoutResult::Failed { detail, .. })
+                        | Ok(kar::account::LogoutResult::Unsupported { detail, .. }) => {
+                            let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                text: format!("退出 {name} 未完成：{detail}"),
+                                warning: true,
+                            });
+                        }
+                        Err(err) => {
+                            let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                text: format!("退出 {name} 失败：{err}"),
+                                warning: true,
+                            });
+                        }
+                    }
+                });
+            }
+            KarCommand::CheckOrUpgradeAgent {
+                runtime_id,
+                apply_upgrade,
+            } => {
+                let Ok(rt) = kar::runtime(&runtime_id) else {
+                    continue;
+                };
+                let evt_tx = state.evt_tx.clone();
+                let cmd_tx = state.cmd_tx.clone();
+                let name = runtime_display_name(&runtime_id);
+                tokio::spawn(async move {
+                    if apply_upgrade {
+                        let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                            text: format!("正在升级 {name}，请稍候…"),
+                            warning: false,
+                        });
+                        match rt
+                            .upgrade_receipt(Duration::from_secs(180), &InstallationOptions::default())
+                            .await
+                        {
+                            Ok(kar::UpgradeResult::Upgraded { from, to, .. }) => {
+                                kar::clear_installation_cache();
+                                let msg = format!("{name} 已从 v{from} 升级至 v{to}");
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::AgentUpdateStatus {
+                                    runtime_id,
+                                    summary: msg.clone(),
+                                    update_available: false,
+                                });
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                    text: msg,
+                                    warning: false,
+                                });
+                                let _ = cmd_tx.send(KarCommand::ProbeProvidersOnly).await;
+                            }
+                            Ok(kar::UpgradeResult::Current { version, .. }) => {
+                                let msg = format!("{name} 当前已是最新版本 (v{version})");
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::AgentUpdateStatus {
+                                    runtime_id,
+                                    summary: msg.clone(),
+                                    update_available: false,
+                                });
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                    text: msg,
+                                    warning: false,
+                                });
+                            }
+                            Ok(other) => {
+                                let msg = format!("{name} 升级结果：{other:?}");
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                    text: msg,
+                                    warning: true,
+                                });
+                            }
+                            Err(err) => {
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                    text: format!("{name} 升级失败：{err}"),
+                                    warning: true,
+                                });
+                            }
+                        }
+                    } else {
+                        match rt.check_update(Duration::from_secs(20)).await {
+                            Ok(kar::UpdateCheck::Ok {
+                                installed,
+                                latest,
+                                update_available,
+                                ..
+                            }) => {
+                                let summary = if update_available {
+                                    format!("发现新版本 v{latest}（当前 v{installed}）")
+                                } else {
+                                    format!("已是最新 v{installed}")
+                                };
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::AgentUpdateStatus {
+                                    runtime_id,
+                                    summary: summary.clone(),
+                                    update_available,
+                                });
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                    text: format!("{name}：{summary}"),
+                                    warning: false,
+                                });
+                            }
+                            Ok(kar::UpdateCheck::Unavailable { reason, .. }) => {
+                                let summary = format!("暂不支持自动检查（{reason}）");
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::AgentUpdateStatus {
+                                    runtime_id,
+                                    summary,
+                                    update_available: false,
+                                });
+                            }
+                            Err(err) => {
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                    text: format!("{name} 检查更新失败：{err}"),
+                                    warning: true,
+                                });
+                            }
+                        }
+                    }
+                });
+            }
+            KarCommand::RefreshForgeData {workspace} => {
+                let engine=state.project_engine(&workspace);
+                let events=state.evt_tx.clone();
+                if let Some(read) = state.forge_read.take() {read.abort();}
+                state.forge_read=Some(tokio::spawn(async move {
+                    let (prs,issues,error)=match engine {
+                        Ok(engine)=>crate::engine::forge::read(&engine).await,
+                        Err(error)=>(Vec::new(),Vec::new(),Some(error.to_string())),
+                    };
+                    let _=events.send(KarBridgeEvent::ForgeDataUpdated{workspace,prs,issues,error}).await;
+                }));
+            }
+            KarCommand::CreatePullRequest{workspace,chat,operation,title,body,base,draft} => {
+                let engine=state.project_engine(&workspace);
+                let events=state.evt_tx.clone();
+                tokio::spawn(async move {
+                    let result=async {crate::engine::forge::create(&engine?,&workspace,operation,chat,&title,&body,&base,draft).await}.await;
+                    let _=events.send(KarBridgeEvent::ForgeMutationFinished{workspace,chat,operation,created:true,result:result.map_err(|e|format!("{e:#}"))}).await;
+                });
+            }
+            KarCommand::MergePullRequest{workspace,chat,operation,number,expected_head_sha,method} => {
+                let engine=state.project_engine(&workspace);
+                let events=state.evt_tx.clone();
+                tokio::spawn(async move {
+                    let result=async {
+                        let outcome=crate::engine::forge::merge(&engine?,operation,chat,number,&expected_head_sha,method).await?;
+                        let message = match outcome {
+                            crate::engine::forge::MergeOutcome::Merged => format!("已合并 PR #{number}"),
+                            crate::engine::forge::MergeOutcome::Submitted => format!("已向托管服务提交 PR #{number} 的合并请求，等待合并确认"),
+                        };
+                        Ok::<_,anyhow::Error>(message)
+                    }.await;
+                    let _=events.send(KarBridgeEvent::ForgeMutationFinished{workspace,chat,operation,created:false,result:result.map_err(|e|format!("{e:#}"))}).await;
+                });
+            }
+            KarCommand::GenerateAiCommitMessage { workspace, style, custom_instructions } => {
+                let events = state.evt_tx.clone();
+                let engine = state.project_engine(&workspace);
+                tokio::spawn(async move {
+                    let result: Result<String> = async {
+                        let engine = engine?;
+                        let root = engine.root().to_owned();
+                        let diff = tokio::task::spawn_blocking(move || crate::forge_devices_voice::commit_diff_summary(&root)).await??;
+                        let prefs = engine.request(axum::http::Method::GET, "/environment", None).await?;
+                        let mut writing = prefs.pointer("/preferences/source_control_writing_style").cloned().unwrap_or_else(|| serde_json::json!({}));
+                        writing["mode"] = serde_json::to_value(style)?;
+                        writing["custom_instructions"] = custom_instructions.into();
+                        engine.request(axum::http::Method::PUT, "/environment/preferences", Some(serde_json::json!({"source_control_writing_style":writing}))).await?;
+                        let receipt = engine.request(axum::http::Method::POST, "/text-generation/commit-message",
+                            Some(serde_json::json!({"project_id":engine.project_id(),"diff":diff}))).await?;
+                        Ok(receipt["commit_message"].as_str().filter(|s| !s.trim().is_empty())
+                            .ok_or_else(|| anyhow::anyhow!("模型未返回提交说明"))?.to_owned())
+                    }.await;
+                    let event = KarBridgeEvent::CommitMessageGenerated { workspace, result: result.map_err(|e|e.to_string()) };
+                    let _ = events.send(event).await;
+                });
+            }
+            KarCommand::CloneGitRepo { url, parent_dir } => {
+                let evt_tx = state.evt_tx.clone();
+                let store = state.store.clone();
+                tokio::spawn(async move {
+                    let result = async {
+                        let engine = crate::engine::Engine::open(store.ok_or_else(|| anyhow::anyhow!("对话存储未打开"))?, &parent_dir)?;
+                        engine.clone_repository(&url).await
+                    }.await;
+                    let event = match result {
+                        Ok(repo_path) => KarBridgeEvent::GitRepoCloned { repo_path },
+                        Err(error) => KarBridgeEvent::ToastMessage { text: format!("克隆仓库失败：{error}"), warning: true },
+                    };
+                    let _ = evt_tx.send(event).await;
+                });
+            }
+            KarCommand::ImportExternalTranscript {
+                source_agent,
+                path,
+                workspace,
+                target_runtime,
+            } => {
+                let Some(store) = state.store.clone() else {
+                    continue;
+                };
+                let (parsed_title, summary) =
+                    match crate::forge_devices_voice::summarize_external_transcript_for_handoff(&path) {
+                        Ok(pair) => pair,
+                        Err(err) => {
+                            state.emit(KarBridgeEvent::ToastMessage {
+                                text: format!("读取外部对话记录失败：{err}"),
+                                warning: true,
+                            });
+                            continue;
+                        }
+                    };
                 let mut opts = SessionOptions::new(&workspace);
                 opts.approvals = ApprovalMode::Host;
-                opts.model = target_model.filter(|m| !m.trim().is_empty());
                 configure_runtime_path(&target_runtime, &mut opts);
                 state.attach_office_mcp(&target_runtime, &mut opts);
-                match store.create(&target_runtime, None, opts).await {
+                match state.create_native_chat(&store, &target_runtime, None, opts).await {
                     Ok(session) => {
                         state.close_controller(false).await;
                         state.stop_feed();
                         let new_id = session.info().id;
-                        save_persisted_title(
-                            &state.store_dir,
-                            new_id,
-                            Some(&format!(
-                                "⇄ {} 接力对话",
-                                runtime_display_name(&target_runtime)
-                            )),
-                        );
+                        let fname = if !parsed_title.trim().is_empty() {
+                            parsed_title.trim()
+                        } else {
+                            path.file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("外部会话")
+                        };
+                        let title = format!("📥 导入：{fname}");
+                        if let Err(err) = sidebar::change(&state, new_id, Some(title.clone()), None).await {
+                            log::warn!("import title: {err}");
+                            save_persisted_title(&state.store_dir, new_id, Some(&title));
+                        }
                         state.selected_chat_id = Some(new_id);
                         state.active_controller = Some(Arc::new(session));
                         state.emit(KarBridgeEvent::AccessModeChanged(
                             ChatAccessMode::WriteController { chat_id: new_id },
                         ));
                         state.feed_cancel = Some(spawn_local_follower(
-                            store.clone(),
+                            store,
                             state.store_dir.clone(),
                             new_id,
                             state.active_controller.as_deref(),
                             state.evt_tx.clone(),
                         ));
                         state.refresh_chat_list();
-                        emit_diag_log(
-                            &state.evt_tx,
-                            DiagLevel::Info,
-                            "handoff",
-                            Some("RELAY"),
-                            format!(
-                                "已创建跨智能体接力会话 {new_id}（{} -> {}）",
-                                runtime_display_name(&source_runtime),
-                                runtime_display_name(&target_runtime)
-                            ),
+                        state.send_prompt(
+                            Uuid::new_v4(),
+                            format!("已从 {source_agent} 导入历史会话，请读取上下文准备后续协作"),
+                            summary,
+                            None,
+                            Vec::new(),
                         );
-                        state.emit(KarBridgeEvent::HandoffCompleted {
-                            chat_id: Some(new_id),
-                            target_runtime: target_runtime.clone(),
-                            summary_message: packed.clone(),
-                        });
-                        let title = if user_note.trim().is_empty() {
-                            format!(
-                                "接力自 {}，请继续当前工作",
-                                runtime_display_name(&source_runtime)
-                            )
-                        } else {
-                            user_note
-                        };
-                        state.send_prompt(Uuid::new_v4(), title, packed, None, Vec::new());
                     }
                     Err(err) => {
                         state.emit(KarBridgeEvent::ToastMessage {
-                            text: format!(
-                                "接力切换至 {} 失败：{err}",
-                                runtime_display_name(&target_runtime)
-                            ),
+                            text: format!("导入外部对话失败：{err}"),
                             warning: true,
                         });
                     }
                 }
             }
-            KarCommand::AskSideQuestion {
-                request_id,
-                runtime_id,
-                native_session_id,
-                workspace,
-                question,
-                context_excerpt,
-            } => {
+            KarCommand::CheckDesktopUpdate { channel, install } => {
                 let evt_tx = state.evt_tx.clone();
+                let engine = state.engine.clone();
                 tokio::spawn(async move {
-                    if runtime_id == "claude"
-                        && let Some(ref sid) = native_session_id
-                        && let Ok(rt) = kar::runtime("claude")
-                    {
-                        let mut sq_opts = kar::SideQuestionOptions::new(&workspace);
-                        sq_opts.timeout = Duration::from_secs(30);
-                        if let Ok(answer) = rt.side_question(sid, &question, &sq_opts).await {
-                            emit_diag_log(
-                                &evt_tx,
-                                DiagLevel::Info,
-                                "side_question",
-                                Some("FORK"),
-                                "通过 Claude 无工具临时分叉完成旁路快问（零主线程上下文污染）",
-                            );
-                            let _ = evt_tx
-                                .send(KarBridgeEvent::SideQuestionAnswered {
-                                    request_id,
-                                    question,
-                                    answer,
-                                    via_native_fork: true,
-                                })
-                                .await;
-                            return;
-                        }
-                    }
-
-                    // Clean read-only local context answer when runtime does not expose native Claude side-fork
-                    let fallback = if context_excerpt.trim().is_empty() {
-                        format!(
-                            "【旁路快问 · 零上下文污染模式】\n针对「{question}」：\n当前主对话尚未产生历史摘要（或当前智能体 `{}` 暂不支持原生 `--fork-session` 无工具旁路进程）。你可在不改动主对话记录的前提下在此核对上下文，或点击「转入主对话提问」直接发送。",
-                            runtime_display_name(&runtime_id)
-                        )
-                    } else {
-                        format!(
-                            "【旁路快问 · 基于当前会话只读摘要】\n问题：{question}\n\n当前会话关键线索：\n{}\n\n（注：此旁路面板不会向主会话追加任何回合或消耗上下文窗口；原生无工具进程分叉在 Claude Code 2.1.326+ 会话下自动激活。）",
-                            context_excerpt.trim()
-                        )
-                    };
-                    let _ = evt_tx
-                        .send(KarBridgeEvent::SideQuestionAnswered {
-                            request_id,
-                            question,
-                            answer: fallback,
-                            via_native_fork: false,
-                        })
-                        .await;
+                    let report = crate::forge_devices_voice::check_desktop_app_update(engine, channel, install).await;
+                    let _ = evt_tx.send(KarBridgeEvent::DesktopUpdateChecked(report)).await;
                 });
             }
             KarCommand::Shutdown => {
@@ -4790,6 +5486,28 @@ fn init_store_and_providers(
 
     match ChatStore::open(&store_dir) {
         Ok(store) => {
+            state.engine = match crate::engine::Engine::open(store.clone(), &workspace) {
+                Ok(engine) => Some(engine),
+                Err(err) => {
+                    state.emit(KarBridgeEvent::BannerNotice {
+                        title: "工作台引擎未连接".into(),
+                        detail: err.to_string(),
+                        is_error: true,
+                    });
+                    None
+                }
+            };
+            if let Some(engine) = state.engine.clone() {
+                let events = state.evt_tx.clone();
+                tokio::spawn(async move {
+                    let mut list: Vec<crate::forge_devices_voice::InstalledEditor> = match engine.request(axum::http::Method::GET, "/editors", None).await {
+                        Ok(json) => serde_json::from_value(json).unwrap_or_default(),
+                        Err(error) => { log::debug!("Kar editor discovery: {error}"); Vec::new() }
+                    };
+                    list.extend(crate::forge_devices_voice::probe_installed_editors());
+                    let _ = events.send(KarBridgeEvent::EditorsLoaded(list)).await;
+                });
+            }
             state.store = Some(store);
             state.emit(KarBridgeEvent::StoreReady {
                 store_dir: store_dir.clone(),
@@ -4801,6 +5519,8 @@ fn init_store_and_providers(
             state.refresh_chat_list();
         }
         Err(err) => {
+            state.engine = None;
+            state.store = None;
             state.emit(KarBridgeEvent::BannerNotice {
                 title: "打开对话目录失败".into(),
                 detail: format!("{}: {err}", store_dir.display()),
@@ -4809,6 +5529,10 @@ fn init_store_and_providers(
         }
     }
 
+    if let Some(handle) = state.sidebar_watcher.take() { handle.abort(); }
+    if let Some(engine) = state.engine.as_ref() {
+        state.sidebar_watcher = Some(sidebar::watch(engine.clone(), store_dir.clone(), state.evt_tx.clone()));
+    }
     let fast_providers = fast_seed_providers_from_path();
     let any_fast_ready = fast_providers.iter().any(ProviderStatusInfo::is_ready);
     state.mcp_supported_runtimes = fast_providers
@@ -4838,7 +5562,7 @@ fn init_store_and_providers(
         let _ = cmd_tx
             .send(KarCommand::ProbeWorkspaceInventory {
                 workspace: ws,
-                runtime_id: "codex".into(),
+                runtime_id: crate::aster::ID.into(),
             })
             .await;
     });

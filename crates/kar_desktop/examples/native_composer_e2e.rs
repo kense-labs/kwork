@@ -34,8 +34,9 @@ fn main() -> Result<()> {
         );
         return review_workflow::launch(root, phase.to_owned());
     }
+    let aster = args.first().and_then(|s| s.to_str()) == Some("aster-plan");
     let parent = std::env::args_os()
-        .nth(1)
+        .nth(if aster { 2 } else { 1 })
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
     let root = tempfile::Builder::new()
@@ -67,7 +68,11 @@ fn main() -> Result<()> {
             })
             .expect("open native Kar window");
             cx.spawn(async move |cx| {
-                let result = run_composer_test(window, &wb, &root, &chat_dir, cx).await;
+                let result = if aster {
+                    run_aster_plan_test(window, &wb, &root, cx).await
+                } else {
+                    run_composer_test(window, &wb, &root, &chat_dir, cx).await
+                };
                 let _ = window.update(cx, |_, _, cx| wb.read(cx).bridge.send(KarCommand::Shutdown));
                 if let Err(err) = result {
                     eprintln!("Native composer E2E failed: {err:#}");
@@ -132,10 +137,7 @@ async fn run_composer_test(
     let marker = format!("kar{}", uuid::Uuid::new_v4().simple());
     let prompt = format!("reply with only {marker}");
     window.update(cx, |_, window, cx| -> Result<()> {
-        ensure!(
-            wb.read(cx).selected_runtime == "codex",
-            "unexpected default runtime"
-        );
+        wb.update(cx, |wb, cx| wb.select_runtime_by_id("codex", cx));
         let shortcut = if cfg!(target_os = "macos") {
             "cmd-n"
         } else {
@@ -201,4 +203,46 @@ async fn run_composer_test(
             .timer(Duration::from_millis(150))
             .await;
     }
+}
+
+/// Launch with `aster-plan EVIDENCE_DIR` and the official Aster executable installed.
+/// Copy the review harness's locate-text utility to EVIDENCE_DIR for the native button click.
+async fn run_aster_plan_test(handle: AnyWindowHandle, wb: &Entity<KarWorkbench>, root: &Path, cx: &mut AsyncApp) -> Result<()> {
+    use review_workflow::{wait_for, type_and_send, click_text};
+    wait_for(handle, wb, cx, "first-launch Aster", |wb| {
+        wb.selected_runtime.starts_with("acp-profile:kwork-aster:") && wb.providers.iter().any(|p| p.id == wb.selected_runtime && p.is_ready())
+    }).await?;
+    handle.update(cx, |_, win, cx| {
+        win.dispatch_keystroke(Keystroke::parse(if cfg!(target_os="macos") { "cmd-n" } else { "ctrl-n" }).unwrap(), cx);
+        win.refresh();
+        win.draw(cx).clear(cx);
+    })?;
+    type_and_send(handle, cx, "/plan")?;
+    capture(handle, cx, &root.join("aster-plan-draft.png")).await?;
+    type_and_send(handle, cx, "Outline a check for this workspace.")?;
+    wait_for(handle, wb, cx, "Aster native plan response", |wb| {
+        wb.projected.info.as_ref().is_some_and(|i| i.settings.acp_mode.as_deref() == Some("plan"))
+        && wb.projected.turns.last().is_some_and(|t| t.status == TurnStatus::Completed)
+    }).await?;
+    let native = handle.update(cx, |_, _, cx| wb.read(cx).projected.info.as_ref().unwrap().native_id.clone())?;
+    let screenshot = root.join("aster-plan-completed.png");
+    capture(handle, cx, &screenshot).await?;
+    click_text(root.parent().context("evidence directory")?, &screenshot, "退出计划模式", handle, cx)?;
+    let (store, id) = handle.update(cx, |_, _, cx| {
+        let wb = wb.read(cx);
+        (wb.config.chat_dir.clone(),wb.projected.chat_id.unwrap())
+    })?;
+    wait_for(handle, wb, cx, "native switch to default mode", |_| {
+        fs::read_to_string(store.join(format!("aster-mode-{id}"))).is_ok_and(|mode| mode == "default")
+    }).await?;
+    review_workflow::click_position(handle, cx, |size| point(size.width * 0.56, size.height - px(80.)))?;
+    type_and_send(handle, cx, "/goal status")?;
+    wait_for(handle, wb, cx, "Aster native goal status", |wb| {
+        wb.projected.turns.len() == 2 && wb.projected.turns.last().is_some_and(|t| t.status == TurnStatus::Completed
+            && t.items.iter().any(|i| matches!(&i.item, Item::Message {role: Role::Assistant, text, ..} if text.contains("No goal is set"))))
+    }).await?;
+    ensure!(ChatStore::open(store)?.history(id)?.chat.native_id == native, "native conversation changed on mode switch");
+    capture(handle, cx, &root.join("aster-native-goal.png")).await?;
+    println!("Fresh Aster default, native plan, click to switch on same chat, native goal status and two saved turns verified.");
+    Ok(())
 }

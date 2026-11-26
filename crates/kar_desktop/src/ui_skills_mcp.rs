@@ -14,8 +14,8 @@ use crate::{
     studio_hub::InventoryTab,
     ui_motion::{Tactile, icon_button, pulse_beacon, soft_button},
     ui_primitives::{
-        FS_CONTROL, FS_META, FS_TAG, FS_UI, ICON_XS, R_CARD, R_CTRL, R_PILL, SkillCardGlyph, StudioPalette,
-        mono_font,
+        CTRL_H, FS_CONTROL, FS_META, FS_TAG, FS_UI, R_PILL, SkillCardGlyph,
+        StudioPalette, card_box, mono_font, search_input_box, settings_page_shell,
     },
     workbench::KarWorkbench,
 };
@@ -97,28 +97,16 @@ impl KarWorkbench {
             .flex_wrap()
             .child(tabs_row)
             .child(
-                div()
-                    .flex_1()
-                    .min_w(px(130.))
-                    .max_w(px(196.))
-                    .h(px(30.))
-                    .px(px(8.))
-                    .rounded(px(R_CTRL))
-                    .bg(s.tray)
-                    .border_1()
-                    .border_color(s.line_soft)
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(pro_icon(ProIcon::Search, ICON_XS, s.muted))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h(px(20.))
-                            .text_size(px(FS_META))
-                            .child(self.skills_search_editor.clone()),
-                    ),
+                search_input_box(
+                    "skills-search-box",
+                    self.skills_search_editor.clone(),
+                    self.skills_search_editor.read(cx).focus.is_focused(window),
+                    true,
+                    s,
+                )
+                .flex_1()
+                .min_w(px(140.))
+                .max_w(px(216.)),
             );
 
         let show_skills = matches!(
@@ -187,7 +175,7 @@ impl KarWorkbench {
             );
 
         let mut matched = 0usize;
-        let mut body = div().p(px(18.)).flex().flex_col().gap(px(18.));
+        let mut body = settings_page_shell();
 
         // ── Section 1: MCP Servers (`integrations.rs` Sculpted Cards) ────────
         if show_mcp {
@@ -213,13 +201,8 @@ impl KarWorkbench {
                 for (m_ix, srv) in mcps.into_iter().enumerate() {
                     let accent = skill_accent_for(m_ix + 2, s);
                     sec = sec.child(
-                        div()
-                            .w_full()
+                        card_box(s)
                             .p(px(12.))
-                            .rounded(px(R_CARD))
-                            .bg(s.surface)
-                            .border_1()
-                            .border_color(s.line_soft)
                             .flex()
                             .items_center()
                             .justify_between()
@@ -359,21 +342,19 @@ impl KarWorkbench {
                     let can_use = sk.enabled && can_inject;
 
                     row = row.child(
-                        div()
+                        card_box(s)
                             .id(("skill-sculpted-card", ix))
                             .flex_1()
                             .min_w_0()
                             .p(px(12.))
-                            .rounded(px(R_CARD))
-                            .bg(s.surface)
-                            .border_1()
                             .border_color(if is_sel {
-                                s.ink.opacity(0.38)
+                                s.ink.opacity(0.42)
                             } else {
                                 s.line_soft
                             })
                             .cursor_pointer()
-                            .hover(|st| st.border_color(s.line_strong))
+                            .hover(|st| st.bg(s.hover).border_color(s.line_strong))
+                            .active(|st| st.bg(s.active))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.selected_skill_inspector = Some(sk_key_click.clone());
                                 cx.notify();
@@ -495,14 +476,9 @@ impl KarWorkbench {
                 for (ix, cmd) in cmds.into_iter().enumerate() {
                     let token = format!("{} ", cmd.name);
                     sec = sec.child(
-                        div()
-                            .w_full()
+                        card_box(s)
                             .px(px(12.))
                             .py(px(8.5))
-                            .rounded(px(R_CTRL + 2.))
-                            .bg(s.surface)
-                            .border_1()
-                            .border_color(s.line_soft)
                             .flex()
                             .items_center()
                             .justify_between()
@@ -566,20 +542,17 @@ impl KarWorkbench {
                 let is_sel = active_inspector_key.as_deref() == Some(tkey.as_str());
                 let tkey_click = tkey.clone();
                 sec = sec.child(
-                    div()
+                    card_box(s)
                         .id(("tool-schema-card", ix))
-                        .w_full()
                         .p(px(10.))
-                        .rounded(px(R_CARD))
-                        .bg(s.surface)
-                        .border_1()
                         .border_color(if is_sel {
-                            s.ink.opacity(0.38)
+                            s.ink.opacity(0.42)
                         } else {
                             s.line_soft
                         })
                         .cursor_pointer()
-                        .hover(|st| st.border_color(s.line_strong))
+                        .hover(|st| st.bg(s.hover).border_color(s.line_strong))
+                        .active(|st| st.bg(s.active))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.selected_skill_inspector = Some(tkey_click.clone());
                             cx.notify();
@@ -768,7 +741,7 @@ impl KarWorkbench {
                             Tactile::primary("skill-ins-inject", s)
                                 .disabled(!can_use)
                                 .w_full()
-                                .h(px(31.))
+                                .h(px(CTRL_H))
                                 .px(px(10.))
                                 .justify_center()
                                 .gap(px(6.))

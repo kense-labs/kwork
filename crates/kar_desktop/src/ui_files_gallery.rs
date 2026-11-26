@@ -8,7 +8,7 @@ use crate::{
     types::OfficeKind,
     ui_motion::{Tactile, text_button},
     ui_primitives::{
-        FS_META, FS_UI, MiniDocPreviewKind, R_CTRL, StudioPalette, clean_display_doc_name,
+        FS_META, FS_UI, MiniDocPreviewKind, R_CARD, StudioPalette, clean_display_doc_name,
         render_doc_outline_icon, render_mini_doc_artwork, section_heading, workspace_page,
     },
     workbench::KarWorkbench,
@@ -148,23 +148,30 @@ impl KarWorkbench {
                 MiniDocPreviewKind::Presentation,
                 0xb45535,
             ),
+            (
+                OfficeKind::Pdf,
+                loc.pick("PDF 阅读与签章", "PDF Viewer & Sign"),
+                MiniDocPreviewKind::Pdf,
+                0xc23b3b,
+            ),
         ];
         let mut cards = div()
             .flex()
             .gap(px(12.))
-            .when(avail_w < 640., |d| d.flex_col());
+            .when(avail_w < 680., |d| d.flex_col());
         for (i, (kind, label, preview, color)) in formats.into_iter().enumerate() {
-            let compact = avail_w < 640.;
+            let compact = avail_w < 680.;
+            let is_pdf = kind == OfficeKind::Pdf;
             cards = cards.child(
                 Tactile::ghost(("new-document", i), &s)
+                    .fills(s.card, kui::components::pro_chrome::pro_mix_color(s.card, s.ink, 0.045))
+                    .outlined(s.line_soft, s.line_strong)
                     .flex_1()
                     .min_w_0()
                     .h(px(if compact { 52. } else { 112. }))
                     .px(px(16.))
                     .gap(px(12.))
-                    .radius(R_CTRL)
-                    .border_1()
-                    .border_color(s.line)
+                    .radius(R_CARD)
                     .when(!compact, |b| {
                         b.child(render_mini_doc_artwork(
                             kind.short_tag(),
@@ -183,11 +190,20 @@ impl KarWorkbench {
                             .truncate()
                             .text_size(px(FS_UI))
                             .font_weight(FontWeight::MEDIUM)
+                            .text_color(s.ink)
                             .child(label),
                     )
-                    .child(pro_icon(ProIcon::Plus, 14., s.muted))
+                    .child(pro_icon(
+                        if is_pdf { ProIcon::Folder } else { ProIcon::Plus },
+                        14.,
+                        s.muted,
+                    ))
                     .on_press(cx, move |this, win, cx| {
-                        this.open_blank_office_tab(kind, win, cx)
+                        if is_pdf {
+                            this.pick_documents(win, cx);
+                        } else {
+                            this.open_blank_office_tab(kind, win, cx);
+                        }
                     }),
             );
         }

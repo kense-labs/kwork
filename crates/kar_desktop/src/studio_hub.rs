@@ -493,23 +493,24 @@ pub fn read_workspace_file_preview(workspace: &Path, rel_path: &Path) -> Result<
         &bytes[..]
     };
     let content = String::from_utf8_lossy(slice).into_owned();
-    let total_lines = content.lines().count().max(1);
-    let clean_rel = canonical_file
-        .strip_prefix(&canonical_ws)
-        .unwrap_or(rel_path)
-        .to_path_buf();
-    let language = detect_language(&clean_rel);
-    let diff_hunks = read_file_git_hunks(&canonical_ws, &clean_rel);
+    let clean_rel = canonical_file.strip_prefix(&canonical_ws)?.to_path_buf();
+    Ok(workspace_preview(&canonical_ws, clean_rel, content, truncated))
+}
 
-    Ok(WorkspaceFilePreview {
+pub(crate) fn workspace_preview(root: &Path, clean_rel: PathBuf, content: String, truncated: bool) -> WorkspaceFilePreview {
+    let total_lines = content.lines().count().max(1);
+    let language = detect_language(&clean_rel);
+    let diff_hunks = read_file_git_hunks(root, &clean_rel);
+
+    WorkspaceFilePreview {
+        abs_path: root.join(&clean_rel),
         rel_path: clean_rel,
-        abs_path: canonical_file,
         language,
         content,
         total_lines,
         truncated,
         diff_hunks,
-    })
+    }
 }
 
 fn detect_language(path: &Path) -> String {
@@ -610,6 +611,16 @@ pub fn read_diff_side(
     is_demo: bool,
     side: GitDiffSide,
 ) -> Vec<DiffHunkData> {
+    read_diff_side_with_options(workspace, rel_path, is_demo, side, false)
+}
+
+pub fn read_diff_side_with_options(
+    workspace: &Path,
+    rel_path: &Path,
+    is_demo: bool,
+    side: GitDiffSide,
+    ignore_whitespace: bool,
+) -> Vec<DiffHunkData> {
     let git_file = |args: &[&str]| {
         Command::new("git")
             .current_dir(workspace)
@@ -620,6 +631,9 @@ pub fn read_diff_side(
             .output()
     };
     let mut args = vec!["diff", "--no-ext-diff", "--no-textconv", "-U0"];
+    if ignore_whitespace {
+        args.push("-w");
+    }
     match side {
         GitDiffSide::Combined => args.push("HEAD"),
         GitDiffSide::Staged => args.push("--cached"),
@@ -747,7 +761,7 @@ pub fn scan_workspace_tree_with_options(
     scan_dir_children(workspace, workspace, 0, &mut budget, show_hidden)
 }
 
-fn should_skip_dir(name: &str) -> bool {
+pub(crate) fn should_skip_dir(name: &str) -> bool {
     matches!(
         name,
         ".git"
@@ -1358,7 +1372,7 @@ fn walk_workspace_files_for_search(
     }
 }
 
-fn extract_match_line(text: &str, needle: &str) -> String {
+pub(crate) fn extract_match_line(text: &str, needle: &str) -> String {
     let line = text
         .lines()
         .find(|l| l.to_lowercase().contains(needle))
@@ -1901,6 +1915,31 @@ impl ProjectRegistry {
         proj
     }
 
+    pub fn remove_project(&mut self, project_id: &str) -> bool {
+        if self.projects.len() <= 1 {
+            return false;
+        }
+        let before = self.projects.len();
+        self.projects.retain(|p| p.id != project_id);
+        self.collapsed_projects.remove(project_id);
+        self.projects.len() < before
+    }
+
+    pub fn move_project(&mut self, project_id: &str, up: bool) -> bool {
+        let Some(idx) = self.projects.iter().position(|p| p.id == project_id) else {
+            return false;
+        };
+        if up && idx > 0 {
+            self.projects.swap(idx, idx - 1);
+            true
+        } else if !up && idx + 1 < self.projects.len() {
+            self.projects.swap(idx, idx + 1);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn is_pinned(&self, chat_id: Uuid) -> bool {
         self.pinned_chats.contains(&chat_id)
     }
@@ -1953,6 +1992,16 @@ pub fn create_isolated_worktree_for_chat(
     store_dir: &Path,
     worktree_id: Uuid,
 ) -> Result<ChatWorktreeMeta> {
+    create_isolated_worktree_for_chat_with_options(workspace, store_dir, worktree_id, "kar/wt-", false)
+}
+
+pub fn create_isolated_worktree_for_chat_with_options(
+    workspace: &Path,
+    store_dir: &Path,
+    worktree_id: Uuid,
+    branch_prefix: &str,
+    from_origin_default: bool,
+) -> Result<ChatWorktreeMeta> {
     let repo = Repository::open(workspace)?;
     let repo_root = repo.root().to_path_buf();
     let canon_repo = normalize_project_path(&repo_root);
@@ -1984,9 +2033,34 @@ pub fn create_isolated_worktree_for_chat(
     };
     std::fs::create_dir_all(&base_dir)?;
     let dest = base_dir.join(format!("{slug}-{short_id}"));
-    let branch = format!("kar/wt-{short_id}");
+    let clean_prefix = {
+        let p = branch_prefix.trim();
+        if p.is_empty() { "kar/wt-" } else { p }
+    };
+    let branch = format!("{clean_prefix}{short_id}");
 
-    let managed = repo.create_worktree(worktree_id, &dest, &branch, "HEAD")?;
+    let start_ref = if from_origin_default {
+        let _ = Command::new("git")
+            .current_dir(&repo_root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args(["fetch", "--quiet", "origin"])
+            .status();
+        let origin_head = Command::new("git")
+            .current_dir(&repo_root)
+            .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .filter(|s| !s.is_empty());
+        origin_head.unwrap_or_else(|| "HEAD".to_owned())
+    } else {
+        "HEAD".to_owned()
+    };
+
+    let managed = repo
+        .create_worktree(worktree_id, &dest, &branch, &start_ref)
+        .or_else(|_| repo.create_worktree(worktree_id, &dest, &branch, "HEAD"))?;
     Ok(ChatWorktreeMeta {
         worktree_id: managed.id,
         repo_root: canon_repo,

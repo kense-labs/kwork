@@ -175,6 +175,7 @@ impl KarWorkbench {
         let show_commit = *commit_open.read(cx);
 
         let is_changes = self.git_sub_mode == GitSubMode::Changes;
+        let ws_for_forge = ws.clone();
         let sub_mode_pill = SelectionStrip::options(
             "git-views",
             loc.pick("Git 视图", "Git views"),
@@ -187,18 +188,25 @@ impl KarWorkbench {
                 (
                     GitSubMode::Graph,
                     if snap.is_demo {
-                        loc.pick("拓扑演示", "Demo history")
+                        loc.pick("拓扑", "Demo")
                     } else {
                         loc.pick("历史", "History")
                     }
                     .to_owned(),
                 ),
+                (GitSubMode::PullRequests, "PR".to_owned()),
+                (GitSubMode::Issues, loc.pick("议题", "Issues").to_owned()),
             ],
             self.git_sub_mode,
             s,
             cx,
-            |wb, mode, _, cx| {
+            move |wb, mode, _, cx| {
                 wb.git_sub_mode = mode;
+                if matches!(mode, GitSubMode::PullRequests | GitSubMode::Issues) {
+                    wb.bridge.send(KarCommand::RefreshForgeData {
+                        workspace: ws_for_forge.clone(),
+                    });
+                }
                 cx.notify();
             },
         );
@@ -297,6 +305,18 @@ impl KarWorkbench {
                     cx.notify();
                 })
                 .into_any_element(),
+            menu_divider(s).into_any_element(),
+            menu_icon_item(
+                "git-open-external-editor",
+                ProIcon::ExternalArrow,
+                loc.pick("在外部编辑器中打开仓库", "Open in external editor"),
+                s,
+            )
+            .on_press(cx, |this, _, cx| {
+                this.open_menu = None;
+                this.open_workspace_in_preferred_editor(None, cx);
+            })
+            .into_any_element(),
         ];
         if compact_toolbar {
             let workspace = ws.clone();
@@ -433,8 +453,8 @@ impl KarWorkbench {
                     ),
             );
 
-        let body = if is_changes {
-            self.render_git_changes_section(
+        let body = match self.git_sub_mode {
+            GitSubMode::Changes => self.render_git_changes_section(
                 &snap,
                 &ws,
                 staged_count,
@@ -442,9 +462,10 @@ impl KarWorkbench {
                 show_commit,
                 s,
                 cx,
-            )
-        } else {
-            self.render_git_graph_section(&snap, s, cx)
+            ),
+            GitSubMode::Graph => self.render_git_graph_section(&snap, s, cx),
+            GitSubMode::PullRequests => self.render_git_prs_section(&snap, &ws, s, window, cx),
+            GitSubMode::Issues => self.render_git_issues_section(&ws, s, window, cx),
         };
 
         div()
@@ -568,7 +589,8 @@ impl KarWorkbench {
             loc.pick("提交", "Commit").to_owned()
         };
 
-        // ── 1. Top Commit Composer Box (zero scrolling required) ────────────
+        // ── 1. Top Commit Composer Box (with ✨ AI Commit Writer) ───────────
+        let ws_ai_msg = ws.to_path_buf();
         let commit_card = div()
             .w_full()
             .pb(px(12.))
@@ -576,12 +598,31 @@ impl KarWorkbench {
             .border_color(s.line_soft)
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(px(6.))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .child(self.git_commit_input.clone()),
+            )
+            .child(
+                crate::ui_motion::icon_button(
+                    "git-ai-commit-msg",
+                    ProIcon::Sparkles,
+                    loc.pick("根据当前改动自动生成提交说明", "Generate commit message from diff"),
+                    s,
+                )
+                .disabled(dirty_count == 0 || snap.is_demo || self.generating_commits.contains_key(&ws_ai_msg))
+                .on_press(cx, move |this, _, cx| {
+                    let draft = this.git_commit_input.read(cx).value(cx).to_string();
+                    this.generating_commits.insert(ws_ai_msg.clone(), draft);
+                    cx.notify();
+                    this.bridge.send(KarCommand::GenerateAiCommitMessage {
+                        workspace: ws_ai_msg.clone(),
+                        style: this.prefs.commit_writing_style,
+                        custom_instructions: this.prefs.commit_custom_instructions.clone(),
+                    });
+                }),
             )
             .child(
                 primary_button("git-commit-submit", commit_label, s)
@@ -883,6 +924,8 @@ impl KarWorkbench {
                             .child("无可显示的文本行差异（可能为二进制文件或仅权限变更）。")
                             .into_any_element(),
                     )
+                } else if self.prefs.diff_layout == crate::prefs::DiffLayoutMode::Split {
+                    Some(render_split_diff_hunks(&hunks_data, s, cx).into_any_element())
                 } else {
                     let pr = self
                         .patch_review_cache
@@ -1484,4 +1527,529 @@ impl KarWorkbench {
         }
         cx.notify();
     }
+
+    fn render_git_prs_section(
+        &mut self,
+        snap: &GitWorkspaceSnapshot,
+        ws: &Path,
+        s: &StudioPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let loc = self.ui_locale;
+        let current_workspace = self.forge_workspace.as_deref() == Some(ws);
+        let prs = if current_workspace { self.forge_prs.as_slice() } else { &[] };
+        let chat = match self.access_mode {
+            crate::types::ChatAccessMode::WriteController {chat_id} => Some(chat_id),
+            _ => None,
+        };
+        let can_create=chat.is_some() && self.forge_pending.is_none() && !snap.is_demo && snap.current_branch.is_some();
+        let field_key = |field: &str| (SharedString::from(format!("git-pr/{field}/{chat:?}/{}",ws.display())),self.forge_draft_epoch);
+        let pr_title_inp = window.use_keyed_state(field_key("title"), cx, |win, cx| {
+            kui::components::input::Input::new(
+                "git-pr-title-inp",
+                loc.pick("PR 标题", "Pull Request title"),
+                win,
+                cx,
+            )
+            .with_placeholder("feat: ...", cx)
+        });
+        let pr_body_inp = window.use_keyed_state(field_key("body"), cx, |win, cx| {
+            kui::components::input::Input::new(
+                "git-pr-body-inp",
+                loc.pick("变更摘要", "Summary"),
+                win,
+                cx,
+            )
+            .with_placeholder(loc.pick("描述主要改动与验证结果…", "Summary & test plan…"), cx)
+        });
+        let pr_draft_state = window.use_keyed_state(field_key("draft"), cx, |_, _| false);
+        let is_draft = *pr_draft_state.read(cx);
+
+        let ws_refresh = ws.to_path_buf();
+        let head_for_create=snap.current_branch.clone().unwrap_or_default();
+        let mut col = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .text_size(px(FS_META))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(s.muted)
+                            .child(format!(
+                                "{} ({})",
+                                loc.pick("开启中的 Pull Requests", "Open Pull Requests"),
+                                prs.len()
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                crate::ui_motion::soft_button_sm(
+                                    "git-pr-refresh",
+                                    loc.pick("刷新", "Refresh"),
+                                    s,
+                                )
+                                .on_press(cx, move |wb, _, _| {
+                                    wb.bridge.send(KarCommand::RefreshForgeData {
+                                        workspace: ws_refresh.clone(),
+                                    });
+                                }),
+                            )
+                            .child(
+                                crate::ui_motion::primary_button_sm(
+                                    "git-pr-toggle-create",
+                                    if self.forge_create_pr_open {
+                                        loc.pick("取消创建", "Cancel")
+                                    } else {
+                                        loc.pick("新建 PR", "New PR")
+                                    },
+                                    s,
+                                )
+                                .disabled(!can_create)
+                                .on_press(cx, |wb, _, cx| {
+                                    wb.forge_create_pr_open = !wb.forge_create_pr_open;
+                                    cx.notify();
+                                }),
+                            ),
+                    ),
+            );
+
+        if self.forge_create_pr_open {
+            let t_inp = pr_title_inp.clone();
+            let b_inp = pr_body_inp.clone();
+            let d_st = pr_draft_state.clone();
+            let ws_create = ws.to_path_buf();
+            let base_br = snap.default_branch.clone();
+            col = col.child(
+                crate::ui_primitives::card_box(s)
+                    .p(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(pr_title_inp)
+                    .child(pr_body_inp)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                crate::ui_motion::soft_button_sm(
+                                    "git-pr-draft-toggle",
+                                    if is_draft {
+                                        loc.pick("✓ 草稿 PR (Draft)", "✓ Draft PR")
+                                    } else {
+                                        loc.pick("设为草稿 PR", "Mark as draft")
+                                    },
+                                    s,
+                                )
+                                .lit(is_draft)
+                                .on_press(cx, move |_, _, cx| {
+                                    d_st.update(cx, |v, _| *v = !*v);
+                                    cx.notify();
+                                }),
+                            )
+                            .child(
+                                crate::ui_motion::primary_button_sm(
+                                    "git-pr-submit",
+                                    format!("推送并创建 PR → {base_br}"),
+                                    s,
+                                )
+                                .disabled(!can_create)
+                                .on_press(cx, move |wb, _, cx| {
+                                    let Some(chat)=chat else{return;};
+                                    let title = t_inp.read(cx).value(cx).trim().to_owned();
+                                    let body = b_inp.read(cx).value(cx).trim().to_owned();
+                                    if title.is_empty() {
+                                        wb.notify_warning("请填写 PR 标题", cx);
+                                        return;
+                                    }
+                                    let key=serde_json::json!(["create", chat, ws_create, base_br, head_for_create, title, body, is_draft]).to_string();
+                                    let operation=wb.forge_operation(&key);
+                                    wb.bridge.send(KarCommand::CreatePullRequest {workspace:ws_create.clone(),chat,operation,title,body,base:base_br.clone(),draft:is_draft});
+                                    cx.notify();
+                                }),
+                            ),
+                    ),
+            );
+        }
+
+        if let Some(ref err) = self.forge_error
+            && current_workspace
+        {
+            col = col.child(
+                crate::ui_primitives::card_box(s)
+                    .p(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .text_size(px(FS_META))
+                            .text_color(s.muted)
+                            .child(err.clone()),
+                    )
+                    .child(
+                        div().flex().justify_end().child(
+                            crate::ui_motion::soft_button_sm(
+                                "git-pr-cfg-token",
+                                loc.pick("前往设置配置 GitHub / GitLab 令牌", "Configure Token"),
+                                s,
+                            )
+                            .on_press(cx, |wb, _, cx| {
+                                wb.open_settings(crate::ui_settings::SettingsTab::ProjectsGit, cx)
+                            }),
+                        ),
+                    ),
+            );
+        }
+
+        for (ix, pr) in prs.iter().enumerate() {
+            let pr_url = pr.url.clone();
+            let pr_num = pr.number;
+            let sha=pr.head_sha.clone();
+            let pr_title = pr.title.clone();
+            let pr_head = pr.head_branch.clone();
+            let ws_merge = ws.to_path_buf();
+            col = col.child(
+                crate::ui_primitives::card_box(s)
+                    .p(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .truncate()
+                                    .text_size(px(FS_UI))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(s.ink)
+                                    .child(format!("#{} {}", pr.number, pr.title)),
+                            )
+                            .when(!pr.checks_summary.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .px(px(6.))
+                                        .rounded(px(R_PILL))
+                                        .bg(s.tray)
+                                        .text_size(px(FS_TAG))
+                                        .text_color(s.muted)
+                                        .child(pr.checks_summary.clone()),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(FS_META))
+                            .text_color(s.muted)
+                            .child(format!("{} → {} · @{}", pr.head_branch, pr.base_branch, pr.author)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(6.))
+                            .child(
+                                crate::ui_motion::soft_button_sm(
+                                    ("pr-ai-review", ix),
+                                    loc.pick("交给智能体审查", "AI Review"),
+                                    s,
+                                )
+                                .on_press(cx, move |wb, win, cx| {
+                                    let prompt = format!(
+                                        "请审查 Pull Request #{pr_num}「{pr_title}」（分支 `{pr_head}`），检查代码风险与测试覆盖。"
+                                    );
+                                    wb.fill_starter_prompt(&prompt, win, cx);
+                                }),
+                            )
+                            .when(url::Url::parse(&pr_url).is_ok_and(|u| matches!(u.scheme(), "https" | "http")), |row| {
+                                row.child(
+                                    crate::ui_motion::soft_button_sm(
+                                        ("pr-open-web", ix),
+                                        loc.pick("网页查看 ↗", "Open ↗"),
+                                        s,
+                                    )
+                                    .on_press(cx, move |_, _, cx| cx.open_url(&pr_url)),
+                                )
+                            })
+                            .child(
+                                crate::ui_motion::primary_button_sm(
+                                    ("pr-merge", ix),
+                                    loc.pick("合并 PR", "Merge"),
+                                    s,
+                                )
+                                .disabled(chat.is_none() || self.forge_pending.is_some() || sha.is_empty() || pr.is_draft)
+                                .on_press(cx, move |wb, _, cx| {
+                                    let Some(chat)=chat else{return;};
+                                    let key=format!("merge/{chat}/{}/{pr_num}/{sha}/{:?}",ws_merge.display(),wb.prefs.pr_default_merge_method);
+                                    wb.confirm_or_run(key.clone(),true,format!("再次点击以合并 PR #{pr_num}"),cx,|wb,cx| {
+                                        let operation=wb.forge_operation(&key);
+                                        wb.bridge.send(KarCommand::MergePullRequest{workspace:ws_merge.clone(),chat,operation,number:pr_num,method:wb.prefs.pr_default_merge_method,expected_head_sha:sha.clone()});
+                                        cx.notify();
+                                    });
+                                }),
+                            ),
+                    ),
+            );
+        }
+
+        col.into_any_element()
+    }
+
+    fn render_git_issues_section(
+        &mut self,
+        ws: &Path,
+        s: &StudioPalette,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let loc = self.ui_locale;
+        let issues = if self.forge_workspace.as_deref() == Some(ws) { self.forge_issues.as_slice() } else { &[] };
+        let ws_refresh = ws.to_path_buf();
+        let mut col = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(FS_META))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(s.muted)
+                            .child(format!(
+                                "{} ({})",
+                                loc.pick("待处理议题 (GitHub / GitLab / Linear)", "Open Issues"),
+                                issues.len()
+                            )),
+                    )
+                    .child(
+                        crate::ui_motion::soft_button_sm(
+                            "git-issues-refresh",
+                            loc.pick("刷新议题", "Refresh"),
+                            s,
+                        )
+                        .on_press(cx, move |wb, _, _| {
+                            wb.bridge.send(KarCommand::RefreshForgeData {
+                                workspace: ws_refresh.clone(),
+                            });
+                        }),
+                    ),
+            );
+
+        if let Some(error)=self.forge_error.as_ref().filter(|_|self.forge_workspace.as_deref()==Some(ws)) {
+            col=col.child(div().text_size(px(FS_META)).text_color(s.muted).child(error.clone()));
+        }
+        if issues.is_empty() {
+            col = col.child(
+                crate::ui_primitives::card_box(s)
+                    .p(px(14.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .text_size(px(FS_META))
+                            .text_color(s.muted)
+                            .child(loc.pick(
+                                "暂无待办议题（可在「设置 → 项目与代码托管」中配置 GitHub / GitLab / Linear 令牌同步团队任务）。",
+                                "No open issues found. Configure GitHub / GitLab / Linear tokens in Settings.",
+                            )),
+                    )
+                    .child(
+                        div().flex().justify_end().child(
+                            crate::ui_motion::soft_button_sm(
+                                "git-issue-cfg-btn",
+                                loc.pick("配置 Linear / GitHub", "Configure"),
+                                s,
+                            )
+                            .on_press(cx, |wb, _, cx| {
+                                wb.open_settings(crate::ui_settings::SettingsTab::ProjectsGit, cx)
+                            }),
+                        ),
+                    ),
+            );
+        }
+
+        for (ix, issue) in issues.iter().enumerate() {
+            let i_url = issue.url.clone();
+            let i_num = issue.number_label.clone();
+            let i_title = issue.title.clone();
+            let i_body = issue.body.clone();
+            col = col.child(
+                crate::ui_primitives::card_box(s)
+                    .p(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .truncate()
+                                    .text_size(px(FS_UI))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(s.ink)
+                                    .child(format!("{} {}", issue.number_label, issue.title)),
+                            )
+                            .child(
+                                div()
+                                    .px(px(6.))
+                                    .rounded(px(R_PILL))
+                                    .bg(s.tray)
+                                    .text_size(px(FS_TAG))
+                                    .text_color(s.muted)
+                                    .child(issue.source.clone()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(6.))
+                            .when(url::Url::parse(&i_url).is_ok_and(|u| matches!(u.scheme(), "https" | "http")), |row| {
+                                row.child(
+                                    crate::ui_motion::soft_button_sm(
+                                        ("issue-open-web", ix),
+                                        loc.pick("网页打开 ↗", "Open ↗"),
+                                        s,
+                                    )
+                                    .on_press(cx, move |_, _, cx| cx.open_url(&i_url)),
+                                )
+                            })
+                            .child(
+                                crate::ui_motion::primary_button_sm(
+                                    ("issue-to-chat", ix),
+                                    loc.pick("转为新对话处理", "Start thread"),
+                                    s,
+                                )
+                                .on_press(cx, move |wb, win, cx| {
+                                    wb.start_new_chat(win, cx);
+                                    let excerpt: String = i_body.chars().take(600).collect();
+                                    let prompt = if excerpt.trim().is_empty() {
+                                        format!("请帮我分析并实现议题 {i_num}：{i_title}")
+                                    } else {
+                                        format!("请帮我分析并实现议题 {i_num}：{i_title}\n\n背景描述：\n{excerpt}")
+                                    };
+                                    wb.fill_starter_prompt(&prompt, win, cx);
+                                }),
+                            ),
+                    ),
+            );
+        }
+
+        col.into_any_element()
+    }
+}
+
+pub(crate) fn render_split_diff_hunks(
+    hunks: &[crate::studio_hub::DiffHunkData],
+    s: &StudioPalette,
+    cx: &App,
+) -> Div {
+    let mono = mono_font(cx);
+    let mut box_col = div()
+        .mt(px(6.))
+        .w_full()
+        .rounded(px(crate::ui_primitives::R_CTRL))
+        .bg(s.card)
+        .border_1()
+        .border_color(s.line_soft)
+        .overflow_hidden()
+        .font_family(mono)
+        .text_size(px(12.))
+        .flex()
+        .flex_col();
+
+    for (hix, hunk) in hunks.iter().enumerate() {
+        if hix > 0 {
+            box_col = box_col.child(div().h(px(1.)).w_full().bg(s.line_soft));
+        }
+        box_col = box_col.child(
+            div()
+                .px(px(8.))
+                .py(px(3.))
+                .bg(s.tray)
+                .text_size(px(FS_TAG))
+                .text_color(s.muted)
+                .child(format!("@@ +{} @@", hunk.start_line)),
+        );
+        let max_rows = hunk.before.len().max(hunk.after.len());
+        for r in 0..max_rows {
+            let left = hunk.before.get(r);
+            let right = hunk.after.get(r);
+            box_col = box_col.child(
+                div()
+                    .w_full()
+                    .grid()
+                    .grid_cols(2)
+                    .border_t_1()
+                    .border_color(s.line_soft.opacity(0.45))
+                    .child(
+                        div()
+                            .px(px(8.))
+                            .py(px(2.))
+                            .min_w_0()
+                            .truncate()
+                            .bg(if left.is_some() {
+                                s.pro.red_soft.opacity(0.55)
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .text_color(s.pro.red_ink)
+                            .child(left.map_or_else(String::new, |l| format!("− {l}"))),
+                    )
+                    .child(
+                        div()
+                            .px(px(8.))
+                            .py(px(2.))
+                            .min_w_0()
+                            .truncate()
+                            .border_l_1()
+                            .border_color(s.line_soft)
+                            .bg(if right.is_some() {
+                                s.pro.green_soft.opacity(0.55)
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .text_color(s.pro.green_ink)
+                            .child(right.map_or_else(String::new, |l| format!("+ {l}"))),
+                    ),
+            );
+        }
+    }
+    box_col
 }

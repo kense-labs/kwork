@@ -119,7 +119,7 @@ pub(super) fn launch(root: PathBuf, phase: String) -> Result<()> {
     Ok(())
 }
 
-async fn wait_for(
+pub(super) async fn wait_for(
     handle: AnyWindowHandle,
     wb: &Entity<KarWorkbench>,
     cx: &mut AsyncApp,
@@ -149,7 +149,7 @@ async fn wait_for(
     }
 }
 
-fn type_and_send(handle: AnyWindowHandle, cx: &mut AsyncApp, text: &str) -> Result<()> {
+pub(super) fn type_and_send(handle: AnyWindowHandle, cx: &mut AsyncApp, text: &str) -> Result<()> {
     handle.update(cx, |_, window, cx| -> Result<()> {
         for c in text.chars() {
             let key = if c == ' ' {
@@ -188,7 +188,7 @@ fn locate(root: &Path, image: &Path, text: &str) -> Result<(f32, f32)> {
     Ok((x.parse()?, y.parse()?))
 }
 
-fn click_text(
+pub(super) fn click_text(
     root: &Path,
     image: &Path,
     text: &str,
@@ -206,7 +206,7 @@ fn click_footer_icon(handle: AnyWindowHandle, cx: &mut AsyncApp, x: f32) -> Resu
     click_position(handle, cx, |size| point(px(x), size.height - px(24.)))
 }
 
-fn click_position(handle: AnyWindowHandle, cx: &mut AsyncApp, target: impl FnOnce(Size<Pixels>) -> Point<Pixels>) -> Result<()> {
+pub(super) fn click_position(handle: AnyWindowHandle, cx: &mut AsyncApp, target: impl FnOnce(Size<Pixels>) -> Point<Pixels>) -> Result<()> {
     handle.update(cx, |_, window, cx| {
         let size = window.viewport_size();
         let position = target(size);

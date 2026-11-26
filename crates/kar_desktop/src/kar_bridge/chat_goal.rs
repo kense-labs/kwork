@@ -2,9 +2,26 @@ use super::{ChatSession, GoalSetOptions, GoalSnapshot, KarBridgeEvent, WorkerSta
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GoalEdit {
+    pub objective: String,
+    pub token_budget: Option<u64>,
+}
+
+impl GoalEdit {
+    pub(crate) fn command(&self) -> String {
+        if let Some(tokens) = self.token_budget {
+            format!("/goal --budget {tokens} {}", self.objective)
+        } else {
+            format!("/goal set {}", self.objective)
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GoalAction {
     Inspect,
-    Set(String),
+    Set(GoalEdit),
+    Budget(u64),
     Pause,
     Resume,
     Complete,
@@ -22,7 +39,7 @@ impl GoalAction {
                 status,
                 "paused" | "blocked" | "usageLimited" | "budgetLimited"
             ),
-            Self::Complete => status != "complete",
+            Self::Complete | Self::Budget(_) => status != "complete",
             _ => true,
         }
     }
@@ -36,23 +53,33 @@ async fn execute(
     if matches!(action, GoalAction::Inspect) {
         return Ok(current);
     }
-    let (objective, status) = match action {
-        GoalAction::Set(objective) => {
-            if current.as_ref().is_some_and(|g| g.objective == *objective) {
+    let (objective, status, token_budget) = match action {
+        GoalAction::Set(edit) => {
+            if current.as_ref().is_some_and(|g| {
+                g.objective == edit.objective
+                    && edit
+                        .token_budget
+                        .is_none_or(|budget| g.token_budget.flatten() == Some(budget))
+            }) {
                 return Ok(current);
             }
             let new_goal = current.as_ref().is_none_or(|g| g.status == "complete");
-            (objective.clone(), new_goal.then(|| "active".to_string()))
+            (
+                edit.objective.clone(),
+                new_goal.then(|| "active".to_string()),
+                edit.token_budget,
+            )
         }
         _ => {
             let goal = current.ok_or_else(|| "当前会话没有目标".to_owned())?;
             if !action.available(&goal.status) {
                 return Err(format!("目标状态已变更（{}），请重新查看目标", goal.status));
             }
-            let status = match action {
-                GoalAction::Pause => "paused",
-                GoalAction::Resume => "active",
-                GoalAction::Complete => "complete",
+            let (status, budget) = match action {
+                GoalAction::Pause => (Some("paused"), None),
+                GoalAction::Resume => (Some("active"), None),
+                GoalAction::Complete => (Some("complete"), None),
+                GoalAction::Budget(tokens) => (None, Some(*tokens)),
                 GoalAction::Clear => {
                     session.clear_goal().await.map_err(|e| e.to_string())?;
                     if session
@@ -67,7 +94,7 @@ async fn execute(
                 }
                 _ => unreachable!(),
             };
-            (goal.objective, Some(status.to_owned()))
+            (goal.objective, status.map(str::to_owned), budget)
         }
     };
     // Omit a status on edits so that a paused goal stays paused; omit budget
@@ -76,7 +103,7 @@ async fn execute(
         .set_goal(GoalSetOptions {
             objective,
             status,
-            token_budget: None,
+            token_budget,
         })
         .await
         .map(Some)
