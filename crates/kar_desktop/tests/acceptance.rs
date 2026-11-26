@@ -456,10 +456,10 @@ async fn real_codex_send_second_client_mid_tool_disconnect_reconnect_and_history
                     let _ = tx.send(replica.cursor());
                 }
 
-                // Finish once the turn reaches Completed AND checkpoint is captured!
+                // The initial checkpoint exists before the final Git tree reaches the feed.
                 if let Some(t) = replica.turns().first()
                     && t.status == TurnStatus::Completed
-                    && t.checkpoint.is_some()
+                    && t.checkpoint.as_ref().is_some_and(|cp| cp.after_tree.is_some())
                 {
                     // Also test cursor-gap recovery (`InvalidCursor`) before returning!
                     let bogus_gap = ChatEvent {
