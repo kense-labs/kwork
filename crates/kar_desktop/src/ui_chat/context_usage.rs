@@ -2,7 +2,7 @@
 use gpui::{prelude::*, *};
 use kar::{CompactionStatus, ContextUsage, ManualCompactionReport};
 
-use crate::ui_primitives::{FS_META, FS_TITLE, LH_META, StudioPalette, UiLocale, tnum_features};
+use crate::ui_primitives::{FS_CONTROL, FS_META, LH_CONTROL, LH_META, StudioPalette, UiLocale, tnum_features};
 
 pub(super) fn fraction(usage: &ContextUsage) -> Option<f32> {
     let percent = usage.percent.filter(|value| value.is_finite());
@@ -20,21 +20,21 @@ fn count_row(label: &'static str, value: u64, s: &StudioPalette) -> Div {
         group_end -= 3;
         number.insert(group_end, ',');
     }
+    detail_row(label, number, s)
+}
+
+pub(super) fn detail_row(label: &'static str, value: String, s: &StudioPalette) -> Div {
     div()
         .w_full()
+        .min_w_0()
         .flex()
         .items_center()
         .justify_between()
         .gap(px(12.))
-        .text_size(px(FS_META))
-        .line_height(px(LH_META))
-        .child(div().text_color(s.muted).child(label))
-        .child(
-            div()
-                .text_color(s.ink)
-                .font_features(tnum_features())
-                .child(number),
-        )
+        .text_size(px(FS_CONTROL))
+        .line_height(px(LH_CONTROL))
+        .child(div().flex_none().text_color(s.muted).child(label))
+        .child(div().min_w_0().truncate().font_features(tnum_features()).text_color(s.ink).child(value))
 }
 
 pub(super) fn inspector(
@@ -50,7 +50,7 @@ pub(super) fn inspector(
     let mut panel = div()
         .min_w_0()
         .w_full()
-        .px(px(10.))
+        .px(px(8.))
         .py(px(8.))
         .flex()
         .flex_col()
@@ -61,15 +61,16 @@ pub(super) fn inspector(
                 .items_center()
                 .justify_between()
                 .gap(px(8.))
-                .text_size(px(FS_META))
+                .text_size(px(FS_CONTROL))
+                .line_height(px(LH_CONTROL))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(s.text)
                 .child(heading)
                 .when_some(ratio, |row, r| {
                     row.child(
                         div()
-                            .text_size(px(FS_TITLE))
-                            .line_height(px(24.))
+                            .text_size(px(FS_CONTROL))
+                            .line_height(px(LH_CONTROL))
                             .font_features(tnum_features())
                             .text_color(s.ink)
                             .child(format!("{:.0}%", r * 100.)),
@@ -77,8 +78,6 @@ pub(super) fn inspector(
                 }),
         );
     if let Some(ratio) = ratio {
-        // Paint partial cells, so small changes are visible below one full cell.
-        const CELLS: usize = 20;
         let ink = if ratio >= 0.9 {
             s.pro.amber_ink
         } else {
@@ -92,20 +91,12 @@ pub(super) fn inspector(
             .aria_max_numeric_value(100.)
             .aria_numeric_value((ratio * 100.) as f64)
             .w_full()
-            .h(px(9.))
-            .flex()
-            .gap(px(2.))
-            .children((0..CELLS).map(|i| {
-                let filled = (ratio * CELLS as f32 - i as f32).clamp(0., 1.);
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .rounded(px(2.))
-                    .overflow_hidden()
-                    .bg(s.line_soft)
-                    .child(div().h_full().w(relative(filled)).bg(ink))
-            }));
+            .h(px(4.))
+            .mb(px(4.))
+            .rounded_full()
+            .overflow_hidden()
+            .bg(s.line_soft)
+            .child(div().h_full().w(relative(ratio)).rounded_full().bg(ink));
         panel = panel.child(meter);
     }
     panel

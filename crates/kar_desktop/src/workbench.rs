@@ -186,6 +186,7 @@ pub enum Menu {
     GitMore,
     SidebarFilter,
     SidebarMore,
+    ThreadActions(Uuid),
     DetailsOpenIn,
     DetailsScripts,
     ChatMore,
@@ -209,6 +210,7 @@ impl Menu {
             Self::GitMore => "menu-git-more",
             Self::SidebarFilter => "menu-sidebar-filter",
             Self::SidebarMore => "menu-sidebar-more",
+            Self::ThreadActions(_) => "menu-sidebar-thread-actions",
             Self::DetailsOpenIn => "menu-details-open-in",
             Self::DetailsScripts => "menu-details-scripts",
             Self::ChatMore => "menu-chat-more",
@@ -838,7 +840,7 @@ impl KarWorkbench {
             let editor = cx.new(|cx| {
                 let mut ed = Editor::new(label, InputMode::Search, window, cx);
                 ed.set_placeholder(label);
-                ed.font_size = 14.;
+                ed.font_size = FS_UI;
                 ed
             });
             cx.subscribe(&editor, |_, _, event: &EditEvent, cx| {
@@ -854,7 +856,7 @@ impl KarWorkbench {
         let cmd_query_editor = cx.new(|cx| {
             let mut ed = Editor::new("命令面板搜索", InputMode::Search, window, cx);
             ed.set_placeholder(ui_locale.pick("搜索命令、文件和对话…", "Search commands, files, and threads…"));
-            ed.font_size = 14.;
+            ed.font_size = FS_UI;
             ed
         });
         cx.subscribe_in(

@@ -8,7 +8,7 @@ use kui::{
     components::pro_chrome::{
         pro_fold, pro_mark_selected, pro_pill_indicator, pro_progress_ring, pro_selection_sensor,
     },
-    primitives::pro_icons::{ProIcon, pro_app_artwork, pro_icon},
+    primitives::pro_icons::{ProIcon, pro_icon},
 };
 
 use crate::{
@@ -17,17 +17,17 @@ use crate::{
         ChatAccessMode, ChatListEntry, localized_relative_age, runtime_display_name,
     },
     ui_motion::{
-        MenuPlacement, MenuSize, Tactile, close_button, icon_button, menu_caption, menu_check, menu_divider, menu_hint,
+        MenuPlacement, Tactile, close_button, icon_button, menu_caption, menu_check, menu_divider, menu_hint,
         menu_host, menu_icon_item, menu_item, soft_button,
     },
     ui_primitives::{
-        FS_META, FS_TAG, FS_UI, ICON, ICON_SM, R_CTRL, R_PILL, StudioPalette,
+        CTRL_H, CTRL_SM_H, FS_META, FS_TAG, FS_UI, ICON, ICON_SM, LH_UI, R_CTRL, R_PILL, StudioPalette,
         clean_display_doc_name, macos_traffic_pad, render_approval_hand,
         render_circle_check_icon,
         render_folder_icon,
         sidebar_texture, render_office_chip, render_project_mark,
         render_radar_link_icon, render_runtime_mark, render_sample_tag,
-        render_schedule_repeat_icon, render_square_pen_icon,
+        render_schedule_repeat_icon,
         tnum_features,
     },
     ui_settings::SettingsTab,
@@ -35,7 +35,7 @@ use crate::{
 };
 
 const DELETE_CONFIRM_TTL: Duration = Duration::from_secs(3);
-const THREAD_ROW_H: f32 = 54.;
+const THREAD_ROW_H: f32 = CTRL_H;
 
 impl KarWorkbench {
     pub(crate) fn workspace_toolbar(
@@ -162,40 +162,14 @@ impl KarWorkbench {
                 ChatAccessMode::NoneSelected | ChatAccessMode::WriteController { .. }
             );
 
+        let git_selected = in_conv && docs_shown && self.right_surface == RightPaneSurface::GitWorkbench;
+        let show_chat_selection = in_conv && !on_start_screen && !git_selected && !self.settings_open;
         let nav_sensor = pro_selection_sensor();
-        let active_nav_key: SharedString = match self.main_stage_view {
-            MainStageView::TasksInbox => "nav-tasks-inbox".into(),
-            MainStageView::OfficeGallery => "nav-office-gallery".into(),
-            MainStageView::Conversation => {
-                if on_start_screen {
-                    "nav-new-chat".into()
-                } else {
-                    match &self.access_mode {
-                        ChatAccessMode::DemoShowcase => "nav-sample".into(),
-                        ChatAccessMode::HttpReadOnly { .. }
-                        | ChatAccessMode::RemoteController { .. } => "nav-shared".into(),
-                        ChatAccessMode::NoneSelected => "nav-new-chat".into(),
-                        _ => active_chat_id
-                            .map(|id| format!("chat-{id}").into())
-                            .unwrap_or_else(|| "nav-new-chat".into()),
-                    }
-                }
-            }
-        };
-
-        let toolbar_width = width - 8. - 1.; // Right inset and sidebar border.
-        let traffic_pad = macos_traffic_pad(window);
-        let left_inset = if cfg!(target_os = "macos") && !window.is_fullscreen() {
-            (toolbar_width - 4. * 28.).clamp(traffic_pad, 91.)
-        } else {
-            12.
-        };
-        let button_width = ((toolbar_width - left_inset) / 4.).clamp(24., 28.);
+        let left_inset = macos_traffic_pad(window);
         let chrome_ink = s.ink;
         let toolbar_button = |id, label, icon, size| {
             Tactile::ghost(id, &s)
-                .w(px(button_width))
-                .h(px(28.))
+                .size(px(CTRL_SM_H))
                 .flex_none()
                 .radius(6.)
                 .justify_center()
@@ -223,19 +197,6 @@ impl KarWorkbench {
                     this.focus_handle.focus(window, cx);
                     this.set_sidebar_open(false, cx);
                 }),
-            )
-            .child(
-                Tactile::ghost("side-home", &s)
-                    .w(px(button_width))
-                    .flex_none()
-                    .h(px(28.))
-                    .radius(6.)
-                    .justify_center()
-                    .fills(transparent_black(), chrome_ink.opacity(0.14))
-                    .aria(loc.pick("Kwrok 主页", "Kwrok home"))
-                    .tip(loc.pick("主页", "Home"))
-                    .when_some(pro_app_artwork("kense", 17., cx), |d, mark| d.child(mark))
-                    .on_press(cx, |this, win, cx| this.start_new_chat(win, cx)),
             )
             .child(
                 toolbar_button(
@@ -267,7 +228,7 @@ impl KarWorkbench {
                     self.open_menu == Some(Menu::SidebarFilter)
                         || self.sidebar_project_filter.is_some(),
                 )
-                .tip(loc.pick("项目", "Projects"))
+                .tip(loc.pick("按项目筛选对话", "Filter chats by project"))
                 .child(render_folder_icon(16., s.muted))
                 .on_press(cx, |this, _, cx| this.toggle_menu(Menu::SidebarFilter, cx)),
             self.render_sidebar_filter_menu(&s, cx),
@@ -332,30 +293,26 @@ impl KarWorkbench {
                         }),
                 )
             });
-        let thread_header = div()
+        let search_bar = div()
             .w_full()
-            .p(px(8.))
             .flex_none()
             .flex()
+            .px(px(8.))
+            .pb(px(4.))
+            .child(search);
+        let thread_header = div()
+            .w_full()
+            .h(px(CTRL_H))
+            .mt(px(if has_query { 2. } else { 12. }))
+            .pl(px(9.))
+            .flex()
             .items_center()
-            .gap(px(4.))
-            .child(search)
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .child(projects)
-                    .child(
-                        Tactile::ghost("side-new-thread-btn", &s)
-                            .size(px(28.))
-                            .radius(6.)
-                            .justify_center()
-                            .tip(loc.pick("新建对话  ⌘N", "New thread  ⌘N"))
-                            .child(render_square_pen_icon(16., s.muted))
-                            .on_press(cx, |this, win, cx| this.start_new_chat(win, cx)),
-                    ),
-            );
+            .justify_between()
+            .text_size(px(FS_META))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(s.muted)
+            .child(if has_query { loc.pick("搜索结果", "Search results") } else { loc.pick("对话", "Chats") })
+            .child(projects);
 
         // Active project filter pill if user filtered to a single repo
         let active_proj_chip = self.sidebar_project_filter.clone().map(|proj_path| {
@@ -479,36 +436,23 @@ impl KarWorkbench {
         });
 
         let inbox_attention_count = self.projected.pending_requests.len();
-        let mut list_col =
-            div()
-                .relative()
-                .flex()
-                .flex_col()
-                .gap(px(1.))
-                .child(pro_pill_indicator(
-                    "kar-sidebar-nav-pill",
-                    active_nav_key,
-                    nav_sensor.clone(),
-                    R_CTRL,
-                    if in_conv { s.soft_hover } else { s.sidebar_selected },
-                    (!in_conv).then_some(s.line_soft),
-                    false,
-                ));
+        let mut list_col = div().relative().flex().flex_col().gap(px(1.)).when(
+            show_chat_selection,
+            |list| {
+                let active_key: SharedString = match &self.access_mode {
+                    ChatAccessMode::DemoShowcase => "nav-sample".into(),
+                    ChatAccessMode::HttpReadOnly { .. } | ChatAccessMode::RemoteController { .. } => "nav-shared".into(),
+                    _ => active_chat_id.map(|id| format!("chat-{id}").into()).unwrap_or_default(),
+                };
+                list.child(pro_pill_indicator(
+                    "kar-sidebar-nav-pill", active_key, nav_sensor.clone(), R_CTRL, s.sidebar_selected, None, false,
+                ))
+            },
+        );
 
         // ── Special active Demo / Shared / Remote thread cards ──────────────
         if matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
-            list_col = list_col
-                .child(
-                    div()
-                        .px(px(6.))
-                        .pt(px(4.))
-                        .pb(px(2.))
-                        .text_size(px(FS_TAG))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(s.faint)
-                        .child(loc.pick("最近对话", "Recent chats")),
-                )
-                .child(self.render_demo_showcase_cards(in_conv.then_some(&nav_sensor), &s, cx));
+            list_col = list_col.child(self.render_demo_showcase_cards(in_conv.then_some(&nav_sensor), &s, cx));
         } else if let ChatAccessMode::RemoteController { ref host_name, .. } = self.access_mode {
             list_col = list_col.child(
                 div()
@@ -602,7 +546,7 @@ impl KarWorkbench {
                     .text_size(px(FS_TAG))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(s.pro.accent_info)
-                    .child(loc.pick("运行中", "WORKING"))
+                    .child(loc.pick("运行中", "Working"))
                     .child(format!("{}", working_entries.len())),
             );
             for entry in working_entries {
@@ -746,7 +690,7 @@ impl KarWorkbench {
                     .text_color(s.faint)
                     .child(format!(
                         "{} ({})",
-                        loc.pick("稍后提醒", "SNOOZED"),
+                        loc.pick("稍后提醒", "Snoozed"),
                         snoozed_entries.len()
                     )),
             );
@@ -811,7 +755,7 @@ impl KarWorkbench {
                         .text_size(px(FS_TAG))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(s.faint)
-                        .child(loc.pick("打开的文档", "OPEN DOCS")),
+                        .child(loc.pick("打开的文档", "Open documents")),
                 );
             for (idx, tab) in self.office_tabs.iter().enumerate() {
                 let name = clean_display_doc_name(&tab.doc_name(cx));
@@ -886,9 +830,9 @@ impl KarWorkbench {
             list_col = list_col.child(docs_col);
         }
 
-        // ── 5. Bottom `Settled  N >` Shelf (ONLY rendered when settled_count > 0!) ─
+        // Settled threads share the conversation scroll area.
         let settled_count = settled_entries.len();
-        let settled_shelf = (settled_count > 0 || !active_entries.is_empty()).then(|| {
+        let settled_shelf = (settled_count > 0).then(|| {
             let settled_open = self.settled_shelf_open && settled_count > 0;
             let shelf_height = (settled_count as f32 * (THREAD_ROW_H + 2.) + 4.)
                 .min(f32::from(window.viewport_size().height) * 0.4);
@@ -964,149 +908,143 @@ impl KarWorkbench {
                 ))
         });
 
-        let more_open = self.open_menu == Some(Menu::SidebarMore);
-        const FOOTER_BUTTON_W: f32 = 28.;
-        const FOOTER_INSET: f32 = 8.;
-        // Six buttons and the flexible spacer share the rail inside its border.
-        let footer_gap = ((width - 1. - 2. * FOOTER_INSET - 6. * FOOTER_BUTTON_W) / 6.)
-            .clamp(0., 8.);
-        let footer_button = |id, icon, label| {
+        let nav_row = |id, icon, label: &'static str, selected| {
             Tactile::ghost(id, &s)
-                .w(px(FOOTER_BUTTON_W))
-                .h(px(32.))
+                .w_full()
+                .h(px(CTRL_H))
+                .px(px(9.))
+                .gap(px(10.))
                 .flex_none()
-                .radius(6.)
-                .justify_center()
                 .aria(label)
-                .when(!more_open, |button| button.tip(label))
-                .child(pro_icon(icon, 18., s.text))
+                .lit(selected)
+                .lit_fill(s.sidebar_selected)
+                .radius(R_CTRL)
+                .child(pro_icon(icon, ICON, s.text))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(FS_UI))
+                        .line_height(px(LH_UI))
+                        .text_color(s.ink)
+                        .child(label),
+                )
         };
-        let more_btn = menu_host(
-            footer_button(
+        let more = menu_host(
+            nav_row(
                 "side-more",
                 ProIcon::MoreHorizontal,
                 loc.pick("更多操作", "More actions"),
+                self.open_menu == Some(Menu::SidebarMore),
             )
-            .lit(more_open)
             .on_press(cx, |this, _, cx| this.toggle_menu(Menu::SidebarMore, cx)),
-            self.render_sidebar_more_menu(&s, window, cx),
+            self.render_sidebar_more_menu(&s, cx),
         );
-        let footer = div()
+        let navigation = div()
             .w_full()
-            .flex_none()
-            .px(px(FOOTER_INSET))
-            .pt(px(4.))
-            .pb(px(8.))
             .flex()
-            .items_center()
-            .gap(px(footer_gap))
-            .when(in_conv, |row| {
-                row.child(
-                    footer_button(
-                        "side-footer-settings",
-                        ProIcon::Settings,
-                        loc.pick("设置  ⌘,", "Settings  ⌘,"),
-                    )
-                    .lit(self.settings_open)
-                    .on_press(cx, |this, _, cx| {
-                        this.toggle_settings(SettingsTab::General, cx)
-                    }),
-                )
-                .child(
-                    footer_button(
-                        "side-nav-git-changes",
-                        ProIcon::GitBranch,
-                        loc.pick("Git 变更", "Git changes"),
-                    )
-                    .lit(
-                        in_conv
-                            && docs_shown
-                            && self.right_surface == RightPaneSurface::GitWorkbench,
-                    )
-                    .on_press(cx, |this, _, cx| this.open_git_workbench_tab(cx)),
-                )
-                .child(
-                    footer_button(
-                        "side-nav-office-docs",
-                        ProIcon::PageDoc,
-                        loc.pick("文档", "Documents"),
-                    )
-                    .lit(self.main_stage_view == MainStageView::OfficeGallery)
-                    .on_press(cx, |this, _, cx| this.open_office_gallery_stage(cx)),
-                )
-                .child(
-                    div()
-                        .relative()
-                        .flex_none()
-                        .child(
-                            footer_button(
-                                "side-nav-tasks-inbox",
-                                ProIcon::Inbox,
-                                loc.pick("收件箱", "Inbox"),
-                            )
-                            .lit(self.main_stage_view == MainStageView::TasksInbox)
-                            .on_press(cx, |this, _, cx| this.open_tasks_inbox_stage(cx)),
-                        )
-                        .when(inbox_attention_count > 0, |row| {
-                            row.child(
-                                div()
-                                    .absolute()
-                                    .right(px(5.))
-                                    .top(px(5.))
-                                    .size(px(5.))
-                                    .rounded_full()
-                                    .bg(s.pro.amber),
-                            )
-                        }),
-                )
-                .child(div().flex_1())
-            })
-            .when(!in_conv, |row| {
-                row.child(
-                    Tactile::ghost("side-return", &s)
-                        .h(px(32.))
-                        .flex_1()
-                        .px(px(8.))
-                        .gap(px(8.))
-                        .tip(loc.pick("返回上个界面", "Go back"))
-                        .child(pro_icon(ProIcon::ArrowLeft, 16., s.muted))
-                        .child(
-                            div()
-                                .text_size(px(FS_UI))
-                                .text_color(s.muted)
-                                .child(loc.pick("返回", "Back")),
-                        )
-                        .on_press(cx, |this, win, cx| {
-                            if this.can_navigate(false) {
-                                this.navigate_history(false, win, cx);
-                            } else {
-                                this.start_new_chat(win, cx);
-                            }
-                        }),
-                )
-            })
+            .flex_col()
+            .gap(px(1.))
             .child(
-                footer_button(
+                nav_row(
+                    "side-new-thread-btn",
+                    ProIcon::Plus,
+                    loc.pick("新建对话", "New chat"),
+                    on_start_screen && !git_selected && !self.settings_open,
+                )
+                .on_press(cx, |this, win, cx| this.start_new_chat(win, cx)),
+            )
+            .child(
+                nav_row(
+                    "side-nav-tasks-inbox",
+                    ProIcon::Inbox,
+                    loc.pick("收件箱", "Inbox"),
+                    self.main_stage_view == MainStageView::TasksInbox,
+                )
+                .when(inbox_attention_count > 0, |row| {
+                    row.child(
+                        div()
+                            .text_size(px(FS_META))
+                            .font_features(tnum_features())
+                            .text_color(s.pro.amber_ink)
+                            .child(inbox_attention_count.to_string()),
+                    )
+                })
+                .on_press(cx, |this, _, cx| this.open_tasks_inbox_stage(cx)),
+            )
+            .child(
+                nav_row(
+                    "side-nav-office-docs",
+                    ProIcon::PageDoc,
+                    loc.pick("文档", "Documents"),
+                    self.main_stage_view == MainStageView::OfficeGallery,
+                )
+                .on_press(cx, |this, _, cx| this.open_office_gallery_stage(cx)),
+            )
+            .child(
+                nav_row(
+                    "side-nav-git-changes",
+                    ProIcon::GitBranch,
+                    loc.pick("Git 变更", "Git changes"),
+                    git_selected && !self.settings_open,
+                )
+                .on_press(cx, |this, _, cx| this.open_git_workbench_tab(cx)),
+            )
+            .child(
+                nav_row(
+                    "side-footer-settings",
+                    ProIcon::Settings,
+                    loc.pick("设置", "Settings"),
+                    self.settings_open,
+                )
+                .on_press(cx, |this, _, cx| {
+                    this.toggle_settings(SettingsTab::General, cx)
+                }),
+            )
+            .child(
+                nav_row(
                     "side-toggle-theme",
                     if s.dark { ProIcon::Sun } else { ProIcon::Moon },
                     if s.dark {
-                        loc.pick("切换到浅色主题", "Switch to light appearance")
+                        loc.pick("切换到浅色主题", "Switch to light theme")
                     } else {
-                        loc.pick("切换到深色主题", "Switch to dark appearance")
+                        loc.pick("切换到深色主题", "Switch to dark theme")
                     },
+                    false,
                 )
-                .on_press(cx, |this, _, cx| this.select_appearance(this.theme_mode.toggle(), cx)),
+                .on_press(cx, |this, _, cx| {
+                    this.select_appearance(this.theme_mode.toggle(), cx)
+                }),
             )
-            .child(more_btn);
+            .child(more);
 
+        // Keep search pinned. On short windows scrolling reaches both navigation and history;
+        // a search brings matching threads directly beneath the field.
+        let scroll = window.use_keyed_state("sidebar-query-scroll", cx, |_, _| {
+            (String::new(), ScrollHandle::new())
+        });
+        let scroll = scroll.update(cx, |(previous, scroll), _| {
+            if previous != &query {
+                previous.clone_from(&query);
+                scroll.set_offset(point(px(0.), px(0.)));
+            }
+            scroll.clone()
+        });
         let body_scroll = div()
             .id("kar-sidebar-scroll")
+            .track_scroll(&scroll)
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
             .px(px(8.))
             .pb(px(8.))
-            .child(list_col);
+            .when(!has_query, |d| d.child(navigation))
+            .child(thread_header)
+            .when_some(active_proj_chip, |d, chip| d.child(chip))
+            .when_some(undo_banner, |d, b| d.child(b))
+            .child(list_col)
+            .when_some(settled_shelf, |d, sh| d.child(sh));
 
         let has_running_task = self.sidebar_open && self.has_running_task();
         div()
@@ -1120,12 +1058,8 @@ impl KarWorkbench {
             .border_color(s.line)
             .child(sidebar_texture(&s, width, has_running_task, window))
             .child(top_bar)
-            .child(thread_header)
-            .when_some(active_proj_chip, |d, chip| d.child(chip))
-            .when_some(undo_banner, |d, b| d.child(b))
+            .child(search_bar)
             .child(body_scroll)
-            .when_some(settled_shelf, |d, sh| d.child(sh))
-            .child(footer)
             .into_any_element()
     }
 
@@ -1154,9 +1088,6 @@ impl KarWorkbench {
         let running = entry.last_status == Some(TurnStatus::Running);
         let needs_approval = selected && !self.projected.pending_requests.is_empty();
         let pinned = self.project_registry.is_pinned(chat_id);
-        let confirming_del = self
-            .pending_delete_chat
-            .is_some_and(|(id, at)| id == chat_id && at.elapsed() < DELETE_CONFIRM_TTL);
         let has_assoc = self.client_reducer.association_for(&chat_id).is_some();
 
         let proj_name = self
@@ -1173,139 +1104,101 @@ impl KarWorkbench {
             entry.title.clone()
         };
         let age_txt = localized_relative_age(entry.last_activity_ms, now_ms, loc);
-        let title_for_rename = entry.title.clone();
-        let title_for_del = display_title.clone();
         let row_id = SharedString::from(format!("thread-{prefix}-{chat_id}"));
         let row_focus = window.use_keyed_state(row_id.clone(), cx, |_, cx| cx.focus_handle());
         let row_focus = row_focus.read(cx).clone();
         let keyboard = window.last_input_was_keyboard() && row_focus.contains_focused(window, cx);
-        let keep_actions = !running && (keyboard || confirming_del);
-
-        let status_right: AnyElement = if needs_approval {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(3.5))
-                .text_size(px(FS_META))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(s.pro.amber_ink)
-                .child(render_approval_hand(12., s.pro.amber_ink))
-                .child(loc.pick("待确认", "Approval"))
-                .into_any_element()
-        } else if running {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(4.))
-                .text_size(px(FS_META))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(s.pro.accent_info)
-                .child(status_dot(s.pro.accent_info))
-                .child(loc.pick("运行中", "Working"))
-                .into_any_element()
-        } else {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(4.))
-                .font_features(tnum_features())
-                .text_size(px(FS_META))
-                .text_color(s.muted)
-                .when(pinned, |d| d.child(pro_icon(ProIcon::Pin, 10., s.muted)))
-                .when(has_assoc, |d| {
-                    d.child(render_schedule_repeat_icon(10.5, s.pro.accent_info))
-                })
-                .child(age_txt)
-                .into_any_element()
-        };
-
-        let action = |id: &str, label: &'static str, icon: AnyElement| {
-            Tactile::ghost(
-                SharedString::from(format!("chat-{id}-{prefix}-{chat_id}")),
-                s,
-            )
-            .size(px(26.))
-            .radius(5.)
-            .justify_center()
-            .tip(label)
-            .child(icon)
-        };
+        let menu = Menu::ThreadActions(chat_id);
+        let menu_open = self.open_menu == Some(menu);
+        let show_actions = keyboard || menu_open || window.last_input_was_touch();
         let in_conv = self.main_stage_view == MainStageView::Conversation;
-        let archived = self.sidebar_metadata.get(&chat_id).is_some_and(|meta| meta.archived);
-        let location = if archived { loc.pick("已归档", "Archived") } else if entry.info.worktree_id.is_some() {
+        let archived = self
+            .sidebar_metadata
+            .get(&chat_id)
+            .is_some_and(|meta| meta.archived);
+        let location = if archived {
+            loc.pick("已归档", "Archived")
+        } else if entry.info.worktree_id.is_some() {
             loc.pick("工作树", "Worktree")
         } else {
             loc.pick("本机", "Local")
         };
+        let context = format!(
+            "{proj_name} · {location} · {}",
+            runtime_display_name(&entry.info.runtime)
+        );
+        let marker = div()
+            .size(px(ICON))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(if needs_approval {
+                render_approval_hand(ICON_SM, s.pro.amber_ink)
+            } else if pinned {
+                pro_icon(ProIcon::Pin, ICON_SM, s.muted)
+            } else if has_assoc {
+                render_schedule_repeat_icon(ICON_SM, s.muted).into_any_element()
+            } else {
+                div()
+                    .size(px(6.))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(if running { s.pro.accent_info } else { s.faint })
+                    .when(running, |d| d.bg(s.pro.accent_info))
+                    .into_any_element()
+            });
         let main = Tactile::ghost(
             SharedString::from(format!("chat-card-{prefix}-{chat_id}")),
             s,
         )
-        .aria(format!("{display_title} · {proj_name} · {location}"))
+        .aria(format!("{display_title} · {context}"))
         .lit(in_conv && selected && is_settled)
-        .lit_fill(s.soft_hover)
-        .fills(
-            transparent_black(),
-            if in_conv && selected {
-                transparent_black()
-            } else {
-                s.hover
-            },
-        )
+        .lit_fill(s.sidebar_selected)
         .w_full()
         .h(px(THREAD_ROW_H))
         .px(px(9.))
-        .py(px(5.))
-        .radius(R_CTRL)
-        .flex_col()
-        .items_start()
+        .gap(px(10.))
+        .child(marker)
         .child(
             div()
-                .w_full()
-                .h(px(20.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(px(FS_UI))
-                        .line_height(px(20.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(s.ink)
-                        .child(display_title),
-                )
-                .child(div().flex_none().child(status_right)),
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(px(FS_UI))
+                .line_height(px(LH_UI))
+                .text_color(s.ink)
+                .child(display_title.clone()),
         )
-        .when(!keep_actions, |button| {
-            button.child(
-                div()
-                    .flex()
-                    .w_full()
-                    .h(px(24.))
-                    .items_center()
-                    .gap(px(5.))
-                    .when(!running, |meta| {
-                        meta.group_hover(row_id.clone(), |st| st.invisible())
-                    })
-                    .text_size(px(FS_META))
-                    .text_color(s.muted)
-                    .child(render_project_mark(&proj_name, 14., s, cx))
-                    .child(div().min_w_0().truncate().child(proj_name))
-                    .child(div().flex_none().text_color(s.faint).child("·"))
-                    .child(div().flex_none().child(location))
-                    .child(div().flex_1())
-                    .child(render_runtime_mark(&entry.info.runtime, 14., s, cx)),
-            )
-        })
-        .on_press(cx, move |this, window, cx| {
+        .child(
+            div()
+                .flex_none()
+                .min_w(px(20.))
+                .text_right()
+                .text_size(px(FS_META))
+                .font_features(tnum_features())
+                .text_color(s.muted)
+                .when(needs_approval, |d| d.text_color(s.pro.amber_ink))
+                .when(!running, |d| {
+                    if show_actions {
+                        d.invisible()
+                    } else {
+                        d.group_hover(row_id.clone(), |st| st.invisible())
+                    }
+                })
+                .child(if needs_approval {
+                    loc.pick("待确认", "Approval").to_owned()
+                } else if running {
+                    loc.pick("运行中", "Working").to_owned()
+                } else {
+                    age_txt
+                }),
+        )
+        .on_press(cx, move |this, win, cx| {
             this.pending_delete_chat = None;
-            this.open_chat(chat_id, window, cx);
+            this.open_chat(chat_id, win, cx);
         });
-        div()
+        let mut row = div()
             .id(row_id.clone())
             .group(row_id.clone())
             .track_focus(&row_focus)
@@ -1315,178 +1208,227 @@ impl KarWorkbench {
             .when(in_conv && selected && !is_settled, |d| {
                 d.child(pro_mark_selected(nav_sensor))
             })
-            .child(main)
-            .when(!running, |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .bottom(px(2.))
-                        .right(px(6.))
-                        .flex()
-                        .items_center()
-                        .gap(px(2.))
-                        .when(!keep_actions, |bar| {
-                            bar.invisible().group_hover(row_id, |st| st.visible())
-                        })
-                        .when(!confirming_del, |bar| {
-                            let is_snoozed = self
-                                .prefs
-                                .snoozed_chats
-                                .get(&chat_id)
-                                .is_some_and(|&w| w > now_ms);
-                            bar.child(
-                                action(
-                                    "snooze",
-                                    if is_snoozed {
-                                        loc.pick("取消稍后提醒", "Wake thread")
-                                    } else {
-                                        loc.pick("稍后提醒（2 小时后回到顶部）", "Snooze for 2h")
-                                    },
-                                    render_schedule_repeat_icon(
-                                        14.,
-                                        if is_snoozed { s.pro.accent_info } else { s.text },
-                                    )
-                                    .into_any_element(),
-                                )
-                                .on_press(cx, move |wb, _, cx| {
-                                    cx.stop_propagation();
-                                    let cur = crate::remote_link::now_epoch_ms();
-                                    if wb.prefs.snoozed_chats.remove(&chat_id).is_some() {
-                                        wb.notify_toast("已取消稍后提醒", cx);
-                                    } else {
-                                        wb.prefs
-                                            .snoozed_chats
-                                            .insert(chat_id, cur + 2 * 3_600_000);
-                                        wb.notify_toast("已设为 2 小时后提醒", cx);
-                                    }
-                                    wb.save_prefs();
-                                    cx.notify();
-                                }),
-                            )
-                            .when(!archived, |row| row.child(
-                                action(
-                                    "settle",
-                                    if is_settled {
-                                        loc.pick("移回活跃列表", "Unsettle")
-                                    } else {
-                                        loc.pick("标记为已结项", "Mark settled")
-                                    },
-                                    render_circle_check_icon(
-                                        16.,
-                                        if is_settled { s.pro.green } else { s.text },
-                                    ),
-                                )
-                                .on_press(cx, move |wb, _, cx| {
-                                    cx.stop_propagation();
-                                    let req = !is_settled && wb.prefs.confirm_archive;
-                                    wb.confirm_or_run(
-                                        format!("settle-{chat_id}"),
-                                        req,
-                                        "再次点击确认将对话标记为已结项",
-                                        cx,
-                                        move |wb, cx| wb.toggle_settle_chat(chat_id, cx),
-                                    );
-                                }),
-                            ))
-                            .child({
-                                action("archive-thread", if archived { loc.pick("取消归档", "Unarchive") } else { loc.pick("归档对话", "Archive") },
-                                    pro_icon(ProIcon::Inbox, 16., s.text))
-                                    .on_press(cx, move |wb, _, cx| {
-                                        let confirm = !archived && wb.prefs.confirm_archive;
-                                        wb.confirm_or_run(format!("archive-thread-{chat_id}"), confirm, "再次点击归档对话", cx, move |wb, _| {
-                                            wb.bridge.send(crate::kar_bridge::KarCommand::UpdateSidebar {chat_id, action: crate::kar_bridge::SidebarAction::Archive(!archived)});
-                                        });
-                                    })
-                            })
-                            .when(!archived, |row| row.child(
-                                action(
-                                    "pin",
-                                    if pinned {
-                                        loc.pick("取消置顶", "Unpin")
-                                    } else {
-                                        loc.pick("置顶对话", "Pin")
-                                    },
-                                    pro_icon(
-                                        ProIcon::Pin,
-                                        16.,
-                                        if pinned { s.ink } else { s.text },
-                                    ),
-                                )
-                                .on_press(cx, move |wb, _, cx| {
-                                    cx.stop_propagation();
-                                    let req = pinned && wb.prefs.confirm_unpin;
-                                    wb.confirm_or_run(
-                                        format!("unpin-{chat_id}"),
-                                        req,
-                                        "再次点击确认取消置顶",
-                                        cx,
-                                        move |wb, cx| wb.toggle_pin_chat(chat_id, cx),
-                                    );
-                                }),
-                            ))
-                            .child(
-                                action(
-                                    "ren",
-                                    loc.pick("重命名对话", "Rename"),
-                                    render_square_pen_icon(16., s.text),
-                                )
-                                .on_press(
-                                    cx,
-                                    move |wb, win, cx| {
-                                        cx.stop_propagation();
-                                        wb.open_rename_chat_dialog(
-                                            chat_id,
-                                            &title_for_rename,
-                                            win,
-                                            cx,
-                                        )
-                                    },
-                                ),
-                            )
-                        })
-                        .child(if confirming_del {
-                            Tactile::soft(
-                                SharedString::from(format!("chat-del-confirm-{prefix}-{chat_id}")),
-                                s,
-                            )
-                            .fills(s.pro.red_soft, s.pro.red.opacity(0.18))
-                            .h(px(26.))
-                            .px(px(8.))
-                            .radius(5.)
-                            .text_size(px(FS_TAG))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(s.pro.red_ink)
-                            .child(loc.pick("删除", "Delete"))
-                            .on_press(cx, move |this, _, cx| {
-                                cx.stop_propagation();
-                                this.stage_deferred_chat_delete(chat_id, title_for_del.clone(), cx);
-                            })
-                            .into_any_element()
-                        } else {
-                            let direct_title = title_for_del.clone();
-                            action(
-                                "del",
-                                loc.pick("删除对话", "Delete"),
-                                pro_icon(ProIcon::Trash, 16., s.text),
-                            )
-                            .on_press(cx, move |this, _, cx| {
-                                cx.stop_propagation();
-                                if this.prefs.confirm_delete {
-                                    this.pending_delete_chat =
-                                        Some((chat_id, std::time::Instant::now()));
-                                    cx.notify();
-                                } else {
-                                    this.stage_deferred_chat_delete(
-                                        chat_id,
-                                        direct_title.clone(),
-                                        cx,
-                                    );
-                                }
-                            })
-                            .into_any_element()
-                        }),
+            .child(main);
+        if !running {
+            let trigger =
+                Tactile::ghost(SharedString::from(format!("thread-actions-{chat_id}")), s)
+                    .size(px(CTRL_SM_H))
+                    .justify_center()
+                    .radius(R_CTRL)
+                    .aria(format!(
+                        "{} · {display_title}",
+                        loc.pick("对话操作", "Chat actions")
+                    ))
+                    .lit(menu_open)
+                    .child(pro_icon(ProIcon::MoreHorizontal, ICON, s.text))
+                    .on_press(cx, move |this, _, cx| {
+                        cx.stop_propagation();
+                        this.pending_delete_chat = None;
+                        this.toggle_menu(menu, cx);
+                    });
+            let mut actions = div()
+                .absolute()
+                .right(px(3.))
+                .top(px((THREAD_ROW_H - CTRL_SM_H) / 2.))
+                .when(!show_actions, |d| {
+                    d.opacity(0.).group_hover(row_id, |st| st.opacity(1.))
+                })
+                .child(trigger);
+            if menu_open {
+                actions = actions.child(self.render_thread_action_menu(
+                    &entry,
+                    display_title,
+                    context,
+                    is_settled,
+                    archived,
+                    pinned,
+                    s,
+                    cx,
+                ));
+            }
+            row = row.child(actions);
+        }
+        row
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_thread_action_menu(
+        &self,
+        entry: &ChatListEntry,
+        display_title: String,
+        context: String,
+        is_settled: bool,
+        archived: bool,
+        pinned: bool,
+        s: &StudioPalette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let chat_id = entry.info.id;
+        let title = entry.title.clone();
+        let loc = self.ui_locale;
+        let now_ms = now_epoch_ms();
+        let confirming_del = self
+            .pending_delete_chat
+            .is_some_and(|(id, at)| id == chat_id && at.elapsed() < DELETE_CONFIRM_TTL);
+        let action = |id: &'static str, icon: ProIcon, label: &'static str| {
+            menu_icon_item(
+                SharedString::from(format!("thread-{id}-{chat_id}")),
+                icon,
+                label,
+                s,
+            )
+        };
+        let is_snoozed = self
+            .prefs
+            .snoozed_chats
+            .get(&chat_id)
+            .is_some_and(|&wake| wake > now_ms);
+        let mut items = vec![menu_caption(context, s).into_any_element()];
+        if !archived {
+            items.push(
+                action(
+                    "pin",
+                    ProIcon::Pin,
+                    if pinned {
+                        loc.pick("取消置顶", "Unpin")
+                    } else {
+                        loc.pick("置顶对话", "Pin")
+                    },
                 )
+                .on_press(cx, move |wb, _, cx| {
+                    wb.confirm_or_run(
+                        format!("unpin-{chat_id}"),
+                        pinned && wb.prefs.confirm_unpin,
+                        loc.pick("再次点击确认取消置顶", "Click again to unpin"),
+                        cx,
+                        move |wb, cx| {
+                            wb.close_menu(cx);
+                            wb.toggle_pin_chat(chat_id, cx);
+                        },
+                    );
+                })
+                .into_any_element(),
+            );
+        }
+        items.push(
+            action("rename", ProIcon::NewChat, loc.pick("重命名", "Rename"))
+                .on_press(cx, move |wb, win, cx| {
+                    wb.open_rename_chat_dialog(chat_id, &title, win, cx)
+                })
+                .into_any_element(),
+        );
+        items.push(
+            action(
+                "snooze",
+                ProIcon::Clock,
+                if is_snoozed {
+                    loc.pick("取消稍后提醒", "Wake thread")
+                } else {
+                    loc.pick("稍后提醒 · 2 小时", "Snooze for 2 hours")
+                },
+            )
+            .on_press(cx, move |wb, _, cx| {
+                wb.close_menu(cx);
+                if wb.prefs.snoozed_chats.remove(&chat_id).is_some() {
+                    wb.notify_toast(loc.pick("已取消稍后提醒", "Reminder cleared"), cx);
+                } else {
+                    wb.prefs
+                        .snoozed_chats
+                        .insert(chat_id, now_epoch_ms() + 2 * 3_600_000);
+                    wb.notify_toast(loc.pick("已设为 2 小时后提醒", "Snoozed for 2 hours"), cx);
+                }
+                wb.save_prefs();
             })
+            .into_any_element(),
+        );
+        if !archived {
+            items.push(
+                action(
+                    "settle",
+                    ProIcon::Check,
+                    if is_settled {
+                        loc.pick("移回活跃列表", "Move to active")
+                    } else {
+                        loc.pick("标记为已结项", "Mark settled")
+                    },
+                )
+                .on_press(cx, move |wb, _, cx| {
+                    wb.confirm_or_run(
+                        format!("settle-{chat_id}"),
+                        !is_settled && wb.prefs.confirm_archive,
+                        loc.pick(
+                            "再次点击确认将对话标记为已结项",
+                            "Click again to mark settled",
+                        ),
+                        cx,
+                        move |wb, cx| {
+                            wb.close_menu(cx);
+                            wb.toggle_settle_chat(chat_id, cx);
+                        },
+                    );
+                })
+                .into_any_element(),
+            );
+        }
+        items.push(
+            action(
+                "archive",
+                ProIcon::Inbox,
+                if archived {
+                    loc.pick("取消归档", "Unarchive")
+                } else {
+                    loc.pick("归档对话", "Archive")
+                },
+            )
+            .on_press(cx, move |wb, _, cx| {
+                wb.confirm_or_run(
+                    format!("archive-thread-{chat_id}"),
+                    !archived && wb.prefs.confirm_archive,
+                    loc.pick("再次点击归档对话", "Click again to archive"),
+                    cx,
+                    move |wb, cx| {
+                        wb.close_menu(cx);
+                        wb.bridge
+                            .send(crate::kar_bridge::KarCommand::UpdateSidebar {
+                                chat_id,
+                                action: crate::kar_bridge::SidebarAction::Archive(!archived),
+                            });
+                    },
+                );
+            })
+            .into_any_element(),
+        );
+        items.push(menu_divider(s).into_any_element());
+        items.push(
+            action(
+                "delete",
+                ProIcon::Trash,
+                if confirming_del {
+                    loc.pick("确认删除对话", "Confirm deletion")
+                } else {
+                    loc.pick("删除对话", "Delete chat")
+                },
+            )
+            .text_color(s.pro.red_ink)
+            .on_press(cx, move |wb, _, cx| {
+                if wb.prefs.confirm_delete && !wb.pending_delete_chat.is_some_and(|(id, at)| id == chat_id && at.elapsed() < DELETE_CONFIRM_TTL) {
+                    wb.pending_delete_chat = Some((chat_id, std::time::Instant::now()));
+                    cx.notify();
+                } else {
+                    wb.close_menu(cx);
+                    wb.stage_deferred_chat_delete(chat_id, display_title.clone(), cx);
+                }
+            })
+            .into_any_element(),
+        );
+        self.render_menu(
+            Menu::ThreadActions(chat_id),
+            MenuPlacement::BelowEnd,
+            220.,
+            items,
+            s,
+            cx,
+        )
     }
 
     /// Example threads shown only in explicit demo mode.
@@ -1701,41 +1643,10 @@ impl KarWorkbench {
     fn render_sidebar_more_menu(
         &self,
         s: &StudioPalette,
-        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let loc = self.ui_locale;
-        let mut rows = Vec::new();
-        if self.main_stage_view != MainStageView::Conversation {
-            rows.extend([
-                menu_icon_item(
-                    "side-more-inbox",
-                    ProIcon::Inbox,
-                    loc.pick("收件箱", "Inbox"),
-                    s,
-                )
-                .on_press(cx, |this, _, cx| this.open_tasks_inbox_stage(cx))
-                .into_any_element(),
-                menu_icon_item(
-                    "side-more-docs",
-                    ProIcon::PageDoc,
-                    loc.pick("文档", "Documents"),
-                    s,
-                )
-                .on_press(cx, |this, _, cx| this.open_office_gallery_stage(cx))
-                .into_any_element(),
-                menu_icon_item(
-                    "side-more-git",
-                    ProIcon::GitBranch,
-                    loc.pick("Git 变更", "Git changes"),
-                    s,
-                )
-                .on_press(cx, |this, _, cx| this.open_git_workbench_tab(cx))
-                .into_any_element(),
-                menu_divider(s).into_any_element(),
-            ]);
-        }
-        rows.extend([
+        let rows = vec![
             menu_icon_item(
                 "side-more-palette",
                 ProIcon::Search,
@@ -1792,15 +1703,11 @@ impl KarWorkbench {
                 this.enter_coedit_demo_workshop(window, cx)
             })
             .into_any_element(),
-        ]);
+        ];
         self.render_menu(
             Menu::SidebarMore,
-            MenuPlacement::AboveEnd,
-            MenuSize {
-                width: 236.,
-                // 40px above the bottom edge for the trigger, 6px gap, 10px top margin.
-                max_height: (f32::from(window.viewport_size().height) - 56.).max(36.),
-            },
+            MenuPlacement::BelowStart,
+            236.,
             rows,
             s,
             cx,

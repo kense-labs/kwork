@@ -282,9 +282,7 @@ impl KarWorkbench {
 
             let scroll_remaining =
                 f32::from(self.chat_scroll.max_offset().y) + f32::from(self.chat_scroll.offset().y);
-            let show_jump_bottom = scroll_remaining > 120.
-                && !self.projected.turns.is_empty()
-                && self.projected.pending_requests.is_empty();
+            let show_jump_bottom = scroll_remaining > CTRL_H && !self.projected.turns.is_empty();
 
             let card = decision.map(|request| {
                 let compact = center_w < 460.;
@@ -305,37 +303,6 @@ impl KarWorkbench {
                 .pt(px(8.))
                 .pb(px(20.))
                 .flex_none()
-                .when(show_jump_bottom, |d| {
-                    d.child(
-                        div()
-                            .mb(px(4.))
-                            .left_0()
-                            .right_0()
-                            .flex()
-                            .justify_center()
-                            .child(
-                                Tactile::soft("chat-jump-bottom", &s)
-                                    .fills(s.card, s.hover)
-                                    .radius(R_PILL)
-                                    .h(px(CTRL_SM_H))
-                                    .px(px(12.))
-                                    .gap(px(5.))
-                                    .border_1()
-                                    .border_color(s.line)
-                                    .text_size(px(FS_META))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(s.ink)
-                                    .child(self.ui_locale.pick("跳至最新", "Jump to latest"))
-                                    .child(pro_icon(ProIcon::ChevronDown, ICON_XS, s.muted))
-                                    .on_press(cx, |this, _, cx| {
-                                        this.turn_navigation.cancel_jump();
-                                        this.chat_follow_paused = false;
-                                        this.chat_scroll.scroll_to_bottom();
-                                        cx.notify();
-                                    }),
-                            ),
-                    )
-                })
                 .child(if view_only {
                     div()
                         .children(activity_row)
@@ -429,7 +396,8 @@ impl KarWorkbench {
                             |_, _, _, _| {},
                         ).absolute().size_0()))
                         .child(scroll)
-                        .children(rail),
+                        .children(rail)
+                        .when(show_jump_bottom, |lane| lane.child(self.jump_to_latest(&s, cx))),
                 )
                 .child(foot);
 
@@ -500,6 +468,43 @@ impl KarWorkbench {
         (pane, show_review_rail || show_details_rail)
     }
 
+    fn jump_to_latest(&self, s: &StudioPalette, cx: &Context<Self>) -> Div {
+        let palette = *s;
+        let label = self.ui_locale.pick("回到最新消息", "Jump to latest message");
+        div()
+            .absolute()
+            .left(relative(0.5))
+            .ml(px(-20.))
+            .bottom(px(4.))
+            .child(
+                Tactile::ghost("chat-jump-bottom", s)
+                    .w(px(40.)).h(px(36.)).justify_center().radius(R_PILL)
+                    .fills(transparent_black(), white().opacity(0.))
+                    .aria(label)
+                    .hover_glyph(move |reveal| {
+                        let glyph = |icon, alpha: f32, color| {
+                            div().absolute().inset_0().flex().items_center().justify_center()
+                                .opacity(alpha).child(pro_icon(icon, 18., color))
+                        };
+                        div().relative().w(px(40. - 8. * reveal)).h(px(CTRL_H)).rounded_full()
+                            .bg(palette.card).border_1().border_color(palette.line)
+                            .child(glyph(ProIcon::MoreHorizontal, 1. - reveal, palette.muted))
+                            .child(glyph(ProIcon::ArrowDown, reveal, palette.ink))
+                            .into_any_element()
+                    })
+                    .on_press(cx, |this, window, cx| {
+                        this.turn_navigation.cancel_jump();
+                        this.chat_follow_paused = false;
+                        this.chat_scroll.scroll_to_bottom();
+                        let view = cx.entity().downgrade();
+                        window.on_next_frame(move |_, cx| {
+                            let _ = view.update(cx, |_, cx| cx.notify());
+                        });
+                        cx.notify();
+                    }),
+            )
+    }
+
     fn render_chat_header(
         &self,
         pane_w: f32,
@@ -559,7 +564,7 @@ impl KarWorkbench {
         let base_pad = 20.0;
         let traffic_extra = (macos_traffic_pad(window) - base_pad).max(0.0);
         let left_pad = base_pad + traffic_extra * rail_hidden;
-        let collapsed_slot_w = 60.0 * rail_hidden;
+        let collapsed_slot_w = (2. * CTRL_H + 2.) * rail_hidden;
         // Leave room for the thread title and the panel controls when the sidebar tools move here.
         let title_lane = pane_w - left_pad - collapsed_slot_w;
         let compact_crumb = title_lane < if on_start_screen { 232. } else { 272. };
@@ -578,8 +583,8 @@ impl KarWorkbench {
 
         let new_in_project = loc.pick("在此项目中新建对话", "New thread in this project");
         let project_crumb = Tactile::ghost("chat-project-crumb", s)
-            .h(px(28.))
-            .min_w_0()
+            .h(px(CTRL_SM_H))
+            .flex_none()
             .when(compact_crumb, |b| {
                 b.w(px(24.)).flex_none().justify_center().child(render_folder_icon(16., s.muted))
             })
@@ -603,7 +608,7 @@ impl KarWorkbench {
         let title_for_rename = title.clone();
         let title_el: AnyElement = if let Some(cid) = chat_id.filter(|_| has_own_chat) {
             Tactile::ghost("chat-header-rename", s)
-                .h(px(26.))
+                .h(px(CTRL_SM_H))
                 .px(px(5.))
                 .mx(px(-5.))
                 .min_w_0()
@@ -692,8 +697,8 @@ impl KarWorkbench {
                     .when(!on_start_screen, |d| {
                         d.child(menu_host(
                             Tactile::ghost("chat-more", s)
-                                .size(px(24.))
-                                .radius(5.)
+                                .size(px(CTRL_SM_H))
+                                .radius(crate::ui_primitives::R_SM)
                                 .justify_center()
                                 .lit(self.open_menu == Some(Menu::ChatMore))
                                 .tip(loc.pick("对话与接力选项", "Thread actions"))
@@ -1657,7 +1662,7 @@ impl KarWorkbench {
             if let Some(id) = owner {
                 if let Some((action, icon, label)) = control {
                     row = row.child(icon_button("goal-toggle", icon, label, s)
-                        .size(px(26.)).disabled(self.goal_request_pending(id))
+                        .size(px(CTRL_SM_H)).disabled(self.goal_request_pending(id))
                         .on_press(cx, move |this, _, cx| { this.request_chat_goal(id, action.clone(), cx); }));
                 }
                 row = row.child(text_button("goal-edit", loc.pick("管理", "Manage"), s)
@@ -2210,20 +2215,19 @@ impl KarWorkbench {
             && let Some(info) = self.projected.info.as_ref().filter(|info| Some(info.id) == self.current_chat_id())
         {
             let default = loc.pick("运行时默认", "Runtime default");
-            let mut metadata = div().px(px(8.)).py(px(5.)).flex().flex_col().gap(px(4.));
+            let mut metadata = div().px(px(8.)).py(px(6.)).flex().flex_col().gap(px(6.));
             for (label, value) in [
                 (loc.pick("智能体", "Agent"), runtime_display_name(&info.runtime)),
                 (loc.pick("模型", "Model"), info.model.as_deref().unwrap_or(default).to_owned()),
                 (loc.pick("推理档位", "Reasoning"), info.settings.effort.as_deref().map(|level| effort_label(level, loc)).unwrap_or(default).to_owned()),
             ] {
-                metadata = metadata.child(div().flex().gap(px(8.)).justify_between()
-                    .text_size(px(FS_META)).child(div().flex_none().text_color(s.muted).child(label))
-                    .child(div().min_w_0().text_color(s.ink).child(value)));
+                metadata = metadata.child(context_usage::detail_row(label, value, s));
             }
             context_rows.push(metadata.into_any_element());
             let id = info.id.to_string();
             context_rows.push(menu_icon_item("copy-session-id", ProIcon::Copy,
-                format!("{} · {}", loc.pick("复制会话 ID", "Copy chat ID"), &id[..8]), s)
+                loc.pick("复制会话 ID", "Copy chat ID"), s)
+                .child(menu_hint(id[..8].to_owned(), s).font_features(tnum_features()))
                 .on_press(cx, move |this, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(id.clone()));
                     this.close_menu(cx);
@@ -2276,7 +2280,7 @@ impl KarWorkbench {
                     })
                     .child(ctx_label)
                     .on_press(cx, |this, _, cx| this.toggle_menu(Menu::ContextUsage, cx)),
-                self.render_menu(Menu::ContextUsage, start, 250., context_rows, s, cx),
+                self.render_menu(Menu::ContextUsage, start, 272., context_rows, s, cx),
             )
         });
 
@@ -2355,8 +2359,8 @@ impl KarWorkbench {
             .h(px(CTRL_H))
             .px(px(8.))
             .radius(R_CTRL)
-            .gap(px(5.5))
-            .text_size(px(FS_UI))
+            .gap(px(6.))
+            .text_size(px(FS_CONTROL))
             .child(render_runtime_mark(&runtime_id, 16., s, cx))
             .aria(display_agent.clone())
             .when(card_width >= 312., |b| b.child(
@@ -4256,13 +4260,13 @@ impl KarWorkbench {
             };
             let is_subagent = turn_steps.is_child(turn, ix);
             match item {
-                Item::Message { role: role @ (KarRole::User | KarRole::Reasoning), text, .. } => {
+                Item::Message { role: role @ (KarRole::User | KarRole::Reasoning), text, complete, .. } => {
                     let (icon, label) = match (role, is_subagent) {
                         (KarRole::User, _) => (ProIcon::Users, loc.pick("子任务指令", "Delegated task")),
                         (_, true) => (ProIcon::Sparkles, loc.pick("子智能体思考过程", "Subagent reasoning")),
                         _ => (ProIcon::Sparkles, loc.pick("思考过程", "Reasoning")),
                     };
-                    rows.push(self.render_step_text((turn_id, ix), text.trim(), icon, label, s, cx)
+                    rows.push(self.render_step_text((turn_id, ix), text.trim(), icon, label, running && !*complete, s, window, cx)
                         .into_any_element());
                 }
                 Item::Message {
@@ -4355,9 +4359,9 @@ impl KarWorkbench {
                     {
                         calls.push((ix, activity));
                         ix += 1;
-                        if !running {
-                            break;
-                        }
+                    }
+                    if is_step {
+                        work_items_count += calls.len().saturating_sub(1);
                     }
                     rows.push(
                         self.render_tool_run(turn_id, &calls, running, is_subagent, s, window, cx)
@@ -4739,11 +4743,12 @@ impl KarWorkbench {
                 div()
                     .w_full()
                     .min_w_0()
-                    .min_h(px(28.))
+                    .min_h(px(CTRL_SM_H))
+                    .mt(px(4.))
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(px(2.))
+                    .gap(px(4.))
                     .when(
                         !window.last_input_was_keyboard()
                             && !window.last_input_was_touch()
@@ -4876,7 +4881,7 @@ impl KarWorkbench {
         div()
             .w_full()
             .min_w_0()
-            .text_size(px(FS_UI))
+            .text_size(px(FS_READ))
             .line_height(px(LH_READ))
             .text_color(s.ink)
             .child(reply_stream::ReplyMarkdown {
@@ -4900,11 +4905,12 @@ impl KarWorkbench {
         text: &str,
         icon: ProIcon,
         label: &'static str,
+        active: bool,
         s: &StudioPalette,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let open = self.part_is_open(key, false);
-        let lead = pro_icon(icon, ICON_SM, s.muted);
         let body = div()
             .text_size(px(FS_UI))
             .line_height(px(LH_UI))
@@ -4919,12 +4925,15 @@ impl KarWorkbench {
             .flex_col()
             .items_start()
             .child(
-                disclosure_line(
+                activity::activity_line(
                     SharedString::from(format!("think-{}-{}", key.0, key.1)),
-                    lead,
-                    label,
+                    icon,
+                    label.to_owned(),
+                    if active { activity::Phase::Running } else { activity::Phase::Ended },
                     open,
                     s,
+                    window,
+                    cx,
                 )
                 .on_press(cx, move |this, _, cx| {
                     this.part_open.insert(key, !open);
@@ -5800,8 +5809,9 @@ fn user_bubble(
     s: &StudioPalette,
     window: &mut Window,
     cx: &mut App,
-) -> Div {
+) -> Stateful<Div> {
     let group = SharedString::from(format!("user-message-{key}"));
+    let hovered = window.use_keyed_state(group.clone(), cx, |_, _| false);
     let focus =
         window.use_keyed_state(SharedString::from(format!("{group}-focus")), cx, |_, cx| {
             cx.focus_handle()
@@ -5816,21 +5826,19 @@ fn user_bubble(
         .py(px(7.))
         .rounded(px(12.))
         .bg(s.message_surface)
-        .text_size(px(FS_UI))
-        .line_height(px(LH_UI))
+        .text_size(px(FS_READ))
+        .line_height(px(LH_READ))
         .text_color(s.ink)
         .child(text.clone());
     let actions = div()
         .id(SharedString::from(format!("user-message-actions-{key}")))
         .track_focus(&focus)
-        .h(px(28.))
+        .h(px(CTRL_SM_H))
         .flex_none()
         .flex()
         .items_center()
-        .gap(px(4.))
-        .when(!keyboard_focus && !window.last_input_was_touch(), |d| {
-            d.opacity(0.).group_hover(group.clone(), |d| d.opacity(1.))
-        })
+        .gap(px(6.))
+        .when(!keyboard_focus && !window.last_input_was_touch() && !*hovered.read(cx), |d| d.opacity(0.))
         .when_some(sent_at.and_then(message_time::local), |row, time| {
             row.child(message_time::label(
                 SharedString::from(format!("user-time-{key}")),
@@ -5849,10 +5857,19 @@ fn user_bubble(
     div()
         .min_w_0()
         .max_w(relative(0.85))
-        .group(group)
+        .id(group)
+        .on_hover(move |inside, _, cx| {
+            hovered.update(cx, |hovered, cx| {
+                if *hovered != *inside {
+                    *hovered = *inside;
+                    cx.notify();
+                }
+            });
+        })
         .flex()
         .flex_col()
         .items_end()
+        .gap(px(6.))
         .child(bubble)
         .child(actions)
 }
@@ -6073,7 +6090,7 @@ impl ModelPickerSearch {
     fn new(bench: WeakEntity<KarWorkbench>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
             let mut editor = Editor::new("Search models", InputMode::Combobox, window, cx);
-            editor.font_size = 13.;
+            editor.font_size = FS_CONTROL;
             editor
         });
         let events = cx.subscribe_in(

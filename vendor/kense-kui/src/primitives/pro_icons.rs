@@ -93,6 +93,7 @@ pub enum ProIcon {
     FolderPlus,
     Sun,
     Moon,
+    ArrowDown,
 }
 
 // Navigation controls share one frame; only the position of the divider changes.
@@ -231,6 +232,9 @@ impl ProIcon {
             }
             Self::Mic => {
                 r##"<path d="M7 6.5C7 4.01472 9.01472 2 11.5 2C13.9853 2 16 4.01472 16 6.5V11.5C16 13.9853 13.9853 16 11.5 16C9.01472 16 7 13.9853 7 11.5V6.5Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path><path d="M11.5 19H11.0828C7.57267 19 4.57706 16.4623 4 13M11.5 19H11.9172C15.4273 19 18.4229 16.4623 19 13M11.5 19V22" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>"##
+            }
+            Self::ArrowDown => {
+                r##"<path d="M12 3v17m-8-8 8 8 8-8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"##
             }
             Self::ArrowUp => {
                 r##"<path d="M12 5.5V19" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path><path d="M18 11C18 11 13.5811 5.00001 12 5C10.4188 4.99999 6 11 6 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>"##

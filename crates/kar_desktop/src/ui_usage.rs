@@ -13,7 +13,7 @@ use crate::{
     studio_hub::{RuntimeTokenRow, UsageAnalyticsSnapshot},
     types::{ChatAccessMode, format_tokens_compact},
     ui_primitives::{
-        FS_HERO, FS_META, FS_TAG, FS_UI, LH_META, R_PILL, StudioPalette, UiLocale, card_box,
+        FS_METRIC, FS_META, FS_TAG, FS_UI, LH_METRIC, LH_META, R_PILL, StudioPalette, UiLocale, card_box,
         render_provider_color_tile, render_tray_folder_artwork, settings_page_shell, tnum_features,
     },
     workbench::KarWorkbench,
@@ -160,9 +160,9 @@ impl KarWorkbench {
                                         .child(
                                             div()
                                                 .font_features(tnum_features())
-                                                .text_size(px(FS_HERO))
-                                                .line_height(px(32.))
-                                                .font_weight(FontWeight::BOLD)
+                                                .text_size(px(FS_METRIC))
+                                                .line_height(px(LH_METRIC))
+                                                .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(s.ink)
                                                 .child(if snap.has_usage {
                                                     tokens(total_combined)
@@ -639,8 +639,8 @@ impl KarWorkbench {
                         .gap(px(5.))
                         .child(
                             div()
-                                .text_size(px(FS_HERO))
-                                .line_height(px(35.))
+                                .text_size(px(FS_METRIC))
+                                .line_height(px(LH_METRIC))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .font_features(tnum_features())
                                 .text_color(s.ink)

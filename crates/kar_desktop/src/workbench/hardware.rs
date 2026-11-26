@@ -132,6 +132,10 @@ impl KarWorkbench {
                     );
                 }
             }
+            Ok(Outcome::VoiceSetupRequired(issue)) => {
+                self.open_settings(crate::ui_settings::SettingsTab::Voice, cx);
+                self.notify_warning(issue.message(self.ui_locale), cx);
+            }
             Ok(Outcome::TranscriptionFailed(_, err)) | Err(err) => self.notify_warning(err, cx),
             Ok(Outcome::Screenshot(path)) => {
                 if let Some(owner) = owner {

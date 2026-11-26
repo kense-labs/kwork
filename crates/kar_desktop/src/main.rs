@@ -39,7 +39,7 @@ OPTIONS:
   --switch-tab <INDEX>         Switch active Office tab (0-based) after binding selection
   --select-runtime <ID>        Pre-select runtime (e.g. codex, grok, claude)
   --open-cmd-palette           Open the ⌘K KUI CommandDesk overlay after launch
-  --open-settings <TAB>        Open the unified KUI Settings Center (general | agents | skills | usage | schedules | remote | logs)
+  --open-settings <TAB>        Open the unified KUI Settings Center (general | agents | skills | usage | voice | schedules | remote | logs)
   --open-provider-health       Open Settings -> Agents & Accounts tab
   --open-remote-sheet          Open Settings -> Remote Pairing tab
   --open-schedules-sheet       Open Settings -> Scheduled Tasks tab
@@ -243,6 +243,7 @@ fn parse_cli() -> CliOptions {
                         "remote" | "pair" => SettingsTab::Remote,
                         "logs" | "diag" => SettingsTab::Logs,
                         "agents" | "providers" => SettingsTab::Agents,
+                        "voice" => SettingsTab::Voice,
                         _ => SettingsTab::General,
                     });
                 } else {
@@ -415,6 +416,8 @@ fn parse_cli() -> CliOptions {
 }
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    kar_desktop::hardware::use_bundled_speech_engine();
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("warn,kar_desktop=info"),
     )

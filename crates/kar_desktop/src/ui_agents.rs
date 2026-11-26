@@ -20,7 +20,7 @@ use crate::{
         primary_button_sm, soft_button, soft_button_sm, spinner, text_button_sm,
     },
     ui_primitives::{
-        DotTone, FS_HERO, FS_META, FS_TAG, FS_UI, ICON_SM, ICON_XS, LH_META, LH_UI,
+        DotTone, FS_METRIC, FS_META, FS_TAG, FS_UI, ICON_SM, ICON_XS, LH_META, LH_UI,
         R_PILL, R_SM, StudioPalette, card_box, mono_font, render_provider_color_tile,
         render_status, search_input_box, settings_divider, settings_page_shell, settings_row_item,
         settings_section_title, sub_card_box, tnum_features,
@@ -137,7 +137,7 @@ impl KarWorkbench {
                                 div()
                                     .font_family(mono_font(cx))
                                     .font_features(tnum_features())
-                                    .text_size(px(FS_HERO))
+                                    .text_size(px(FS_METRIC))
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(s.ink)
                                     .child(user_code),
@@ -697,7 +697,7 @@ impl KarWorkbench {
                                         .size(px(20.))
                                         .justify_center()
                                         .tip(loc.pick("收藏置顶模型", "Favorite model"))
-                                        .text_size(px(12.))
+                                        .text_size(px(FS_META))
                                         .text_color(if is_fav { s.pro.amber } else { s.faint })
                                         .child(if is_fav { "★" } else { "☆" })
                                         .on_press(cx, move |wb, _, cx| {

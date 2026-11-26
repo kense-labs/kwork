@@ -14,6 +14,7 @@ version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' "$root/Cargo.toml" | head -1)
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 install -m755 "$binary" "$app/Contents/MacOS/Kwrok"
 install -m644 "$root/assets/icons/Kwork.icns" "$app/Contents/Resources/Kwork.icns"
+"$root/scripts/macos-dictation.sh" "$app"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

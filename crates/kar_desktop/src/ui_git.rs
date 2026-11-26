@@ -145,22 +145,18 @@ impl KarWorkbench {
 
         let snap = self.git_snapshot.clone();
         let ws = self.effective_workspace_dir();
-        if !snap.is_repo && !snap.is_demo || snap.error.is_some() {
-            let detail = snap.error.clone().unwrap_or_else(|| {
-                "选择包含 Git 仓库的项目，即可查看分支、暂存文件和提交更改。".to_owned()
-            });
-            return crate::ui_primitives::pane_empty(
-                render_git_branch_icon(20., s.muted),
-                if snap.is_repo {
-                    "无法读取仓库状态"
-                } else {
-                    "当前文件夹没有 Git 仓库"
-                },
-                &detail,
-                s,
-            )
+        let loc = self.ui_locale;
+        if (!snap.is_repo && !snap.is_demo) || snap.error.is_some() {
+            let (title, detail) = match snap.error.as_deref() {
+                Some(error) => (loc.pick("无法读取 Git 仓库", "Couldn’t read Git repository"), error),
+                None => (
+                    loc.pick("当前文件夹没有 Git 仓库", "No Git repository in this folder"),
+                    loc.pick("选择已有仓库，查看分支和文件更改。", "Choose a repository to see its branches and changes."),
+                ),
+            };
+            return crate::ui_primitives::pane_empty(render_git_branch_icon(20., s.muted), title, detail, s)
             .child(
-                soft_button("git-pick-project", "选择项目文件夹…", s)
+                soft_button("git-pick-project", loc.pick("选择项目文件夹…", "Choose project folder…"), s)
                     .mt(px(16.))
                     .on_press(cx, |this, win, cx| this.pick_workspace(win, cx)),
             )
@@ -170,7 +166,6 @@ impl KarWorkbench {
         let dirty_count = snap.dirty_count();
         let staged_count = snap.staged_count();
 
-        let loc = self.ui_locale;
         let commit_open = window.use_keyed_state("git-show-commit-form", cx, |_, _| false);
         let show_commit = *commit_open.read(cx);
 
@@ -1009,7 +1004,7 @@ impl KarWorkbench {
                                     .items_center()
                                     .justify_center()
                                     .font_family(mono_font(cx))
-                                    .text_size(px(10.))
+                                    .text_size(px(FS_TAG))
                                     .line_height(px(12.))
                                     .text_color(badge_color)
                                     .child(match badge {
@@ -1990,7 +1985,7 @@ pub(crate) fn render_split_diff_hunks(
         .border_color(s.line_soft)
         .overflow_hidden()
         .font_family(mono)
-        .text_size(px(12.))
+        .text_size(px(FS_META))
         .flex()
         .flex_col();
 

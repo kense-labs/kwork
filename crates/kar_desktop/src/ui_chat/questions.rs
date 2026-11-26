@@ -44,7 +44,7 @@ impl QuestionDraft {
                 };
                 let handle = cx.new(|cx| {
                     let mut e = Editor::new(field.label.clone(), mode, window, cx);
-                    e.font_size = 14.;
+                    e.font_size = FS_UI;
                     let placeholder = match field.kind {
                         FieldKind::Select => loc.pick("其他回答", "Other answer"),
                         FieldKind::MultiSelect => {

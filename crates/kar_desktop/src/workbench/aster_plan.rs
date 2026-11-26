@@ -172,7 +172,7 @@ impl KarWorkbench {
                 .items_center()
                 .justify_between()
                 .pb(px(6.))
-                .text_size(px(12.))
+                .text_size(px(FS_META))
                 .text_color(s.muted)
                 .child(label)
                 .when(can_leave, |d| {

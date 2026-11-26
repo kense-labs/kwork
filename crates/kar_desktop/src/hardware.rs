@@ -15,6 +15,122 @@ use uuid::Uuid;
 const RATE: usize = 16_000;
 const MAX_FRAMES: usize = RATE * 300;
 
+#[cfg(target_os = "macos")]
+fn bundle_contents() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    (macos.ends_with("MacOS") && contents.ends_with("Contents")).then(|| contents.to_owned())
+}
+
+/// Kar discovers its host-provided speech executable from the process environment.
+/// Relaunch before GPUI or Tokio starts, preserving Finder's arguments and the app's identity.
+#[cfg(target_os = "macos")]
+pub fn use_bundled_speech_engine() {
+    use std::os::unix::process::CommandExt;
+    if std::env::var_os("KAR_VOICE_ENGINE").is_some() {
+        return;
+    }
+    let Some(contents) = bundle_contents() else {
+        return;
+    };
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x86_64"
+    };
+    let program = contents.join("Helpers").join(format!("transcribe-{arch}"));
+    if program.is_file()
+        && let Ok(exe) = std::env::current_exe()
+    {
+        let error = std::process::Command::new(exe)
+            .args(std::env::args_os().skip(1))
+            .env("KAR_VOICE_ENGINE", program)
+            .exec();
+        eprintln!("Could not initialize bundled dictation: {error}");
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum LocalVoiceIssue {
+    Engine,
+    Device,
+    Model,
+}
+
+impl LocalVoiceIssue {
+    pub fn from_status(status: &Value) -> Option<Self> {
+        if status["supported"] == false {
+            return Some(
+                if status["reason"]
+                    .as_str()
+                    .is_some_and(|r| r.contains("Install transcribe-cli"))
+                {
+                    Self::Engine
+                } else {
+                    Self::Device
+                },
+            );
+        }
+        (status["state"] == "missing-model").then_some(Self::Model)
+    }
+
+    pub(crate) fn message(self, loc: crate::ui_primitives::UiLocale) -> &'static str {
+        match self {
+            Self::Engine => loc.pick(
+                "本地听写引擎不可用。请使用完整版应用，或在语音设置中选择云端识别。",
+                "Local dictation is unavailable. Use the packaged app or choose a cloud service in Voice settings.",
+            ),
+            Self::Device => loc.pick(
+                "此设备无法启动本地语音引擎。可在语音设置中选择云端识别。",
+                "This device could not start local dictation. Choose a cloud service in Voice settings.",
+            ),
+            Self::Model => loc.pick(
+                "请在语音设置中下载并选择一个本地模型。",
+                "Download and select a local model in Voice settings.",
+            ),
+        }
+    }
+}
+
+async fn local_voice_status(engine: &Engine) -> Result<Value> {
+    let status = engine
+        .request(Method::GET, "/api/voice/status", None)
+        .await?;
+    #[cfg(target_os = "macos")]
+    if status["state"] == "missing-model"
+        && let Some(contents) = bundle_contents()
+    {
+        let model = contents.join("Resources/Dictation/whisper-base-Q8_0.gguf");
+        if model.is_file() {
+            // Concurrent settings and dictation requests may both see a fresh store.
+            static LINK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+            let _link = LINK.lock().await;
+            let status = engine
+                .request(Method::GET, "/api/voice/status", None)
+                .await?;
+            if status["state"] != "missing-model" {
+                return Ok(status);
+            }
+            // Kar verifies the pinned model. If the bundle is damaged the catalog
+            // must still open so the user can download a working local model.
+            if let Err(error) = engine
+                .request(
+                    Method::POST,
+                    "/api/voice/models/link",
+                    Some(json!({"path": model})),
+                )
+                .await
+            {
+                log::warn!("Could not link bundled speech model: {error}");
+                return Ok(status);
+            }
+            return engine.request(Method::GET, "/api/voice/status", None).await;
+        }
+    }
+    Ok(status)
+}
+
 pub struct Recording {
     stream: cpal::Stream,
     audio: Arc<Mutex<Capture>>,
@@ -239,6 +355,7 @@ pub enum Outcome {
     KeySaved(VoiceProviderKind),
     Transcript(Uuid, String),
     TranscriptionFailed(Uuid, String),
+    VoiceSetupRequired(LocalVoiceIssue),
     Devices(DeviceState),
     Screenshot(PathBuf),
 }
@@ -249,6 +366,12 @@ fn target(device: &Device) -> Value {
 pub(crate) async fn run(engine: Engine, cmd: Command) -> Result<Outcome> {
     match cmd {
         Command::Transcribe(id, audio) => {
+            if audio.provider == VoiceProviderKind::Local
+                && let Some(issue) =
+                    LocalVoiceIssue::from_status(&local_voice_status(&engine).await?)
+            {
+                return Ok(Outcome::VoiceSetupRequired(issue));
+            }
             let result = async {
                 let data = audio.packet()?;
                 let path = if audio.provider == VoiceProviderKind::Local {
@@ -402,20 +525,19 @@ async fn device_snapshot(engine: &Engine) -> Result<Outcome> {
     Ok(Outcome::Devices(serde_json::from_value(snapshot)?))
 }
 async fn voice(engine: &Engine, cloud: bool) -> Result<Outcome> {
-    let status = engine
-        .request(Method::GET, "/api/voice/status", None)
-        .await?;
+    let status = local_voice_status(engine).await?;
     let keys = serde_json::from_value(
         engine
             .request(Method::GET, "/api/voice/cloud/keys", None)
             .await?,
     )?;
-    let models = engine
+    let mut models = engine
         .request(Method::GET, "/api/voice/models", None)
         .await?["models"]
         .as_array()
         .context("无法读取语音模型目录")?
         .clone();
+    models.sort_by_key(|m| (m["state"] != "installed", m["active"] != true));
     let (cloud_models, cloud_model_error) = if cloud {
         match engine
             .request(Method::GET, "/api/voice/cloud/openrouter/models", None)
@@ -535,37 +657,42 @@ mod tests {
         assert!(!cleared.keys["openai"]);
         Ok(())
     }
+    // In the packaged test host, omit the engine and model overrides to cover first use.
     #[tokio::test]
-    #[ignore = "requires transcribe-cli, the pinned whisper-tiny.en GGUF and a 16 kHz mono f32 fixture"]
+    #[ignore = "requires a packaged speech runtime or a host engine/model and a 16 kHz f32 fixture"]
     async fn local_speech_reaches_native_kar_inference() -> Result<()> {
+        #[cfg(target_os = "macos")]
+        use_bundled_speech_engine();
         let (_dir, host) = test_host()?;
-        let bytes = std::fs::read(std::env::var("KWORK_TEST_UTTERANCE")?)?;
-        let samples = bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|v| f32::from_le_bytes(*v))
-            .collect();
-        let model = std::env::var("KWORK_TEST_VOICE_MODEL")?;
-        host.request(
-            Method::POST,
-            "/api/voice/models/link",
-            Some(json!({"path":model})),
-        )
-        .await?;
-        host.request(
-            Method::POST,
-            "/api/voice/models/select",
-            Some(json!({"modelId":"handy-computer/whisper-tiny.en-gguf"})),
-        )
-        .await?;
-        let Outcome::Transcript(_, text) =
-            run(host, Command::Transcribe(Uuid::new_v4(), audio(samples))).await?
-        else {
-            bail!("real transcription failed")
-        };
-        assert!(text.to_lowercase().contains("country"), "{text}");
-        eprintln!("Native Kar transcription: {text}");
+        if let Some(model) = std::env::var_os("KWORK_TEST_VOICE_MODEL") {
+            host.request(
+                Method::POST,
+                "/api/voice/models/link",
+                Some(json!({"path": PathBuf::from(model)})),
+            )
+            .await?;
+        }
+        let mut cases = vec![(std::env::var("KWORK_TEST_UTTERANCE")?, "en", "country")];
+        if let Ok(path) = std::env::var("KWORK_TEST_ZH_UTTERANCE") {
+            cases.push((path, "zh", "星期五"));
+        }
+        for (path, language, expected) in cases {
+            let bytes = std::fs::read(path)?;
+            let samples = bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|v| f32::from_le_bytes(*v))
+                .collect();
+            let mut input = audio(samples);
+            input.language = crate::prefs::DesktopPreferences::default().voice_language;
+            let outcome = run(host.clone(), Command::Transcribe(Uuid::new_v4(), input)).await?;
+            let Outcome::Transcript(_, text) = outcome else {
+                bail!("real transcription failed: {outcome:?}")
+            };
+            assert!(text.to_lowercase().contains(expected), "{text}");
+            eprintln!("Native Kar transcription ({language}): {text}");
+        }
         Ok(())
     }
 }

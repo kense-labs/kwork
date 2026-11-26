@@ -31,7 +31,7 @@ use crate::{
         soft_button, soft_button_sm, text_button_sm,
     },
     ui_primitives::{
-        FS_HERO, FS_META, FS_TAG, FS_UI, ICON_XS, R_CTRL, R_PILL, R_SM, R_XS,
+        FS_TITLE, FS_META, FS_TAG, FS_UI, ICON_XS, R_CTRL, R_PILL, R_SM, R_XS,
         StudioPalette, card_box, mono_font, render_kar_brand_lockup, render_kbd, search_input_box,
         settings_divider, settings_page_shell, settings_row_item, settings_section_title,
         sub_card_box, tnum_features,
@@ -233,7 +233,7 @@ impl KarWorkbench {
                                             .bg(rgb(bg_hex))
                                             .border_1()
                                             .border_color(s.line_soft)
-                                            .text_size(px(10.))
+                                            .text_size(px(FS_TAG))
                                             .font_weight(FontWeight::BOLD)
                                             .text_color(rgb(fg_hex))
                                             .child("Aa"),
@@ -999,25 +999,26 @@ impl KarWorkbench {
 
         let is_recording = self.active_voice_rec.is_some();
         let status = &self.voice_env.status;
-        let env_summary = if status["supported"] == true {
-            format!(
-                "{} · {}",
-                status["model"].as_str().unwrap_or(""),
-                status["state"].as_str().unwrap_or("")
-            )
+        let env_summary = if let Some(issue) = crate::hardware::LocalVoiceIssue::from_status(status) {
+            issue.message(loc).to_owned()
+        } else if status["supported"] == true {
+            let state = if status["state"] == "transcribing" {
+                loc.pick("正在转写", "Transcribing")
+            } else {
+                loc.pick("已就绪", "Ready")
+            };
+            format!("{} · {state}", status["model"].as_str().unwrap_or(""))
         } else {
-            status["reason"]
-                .as_str()
-                .unwrap_or(loc.pick("正在检查本机语音引擎…", "Checking local speech engine…"))
-                .to_owned()
+            loc.pick("正在检查本机语音引擎…", "Checking local speech engine…").to_owned()
         };
 
         let mut engine_box = card_box(s).flex().flex_col().child(settings_row_item(
             loc.pick("识别服务提供商", "Transcription provider"),
-            loc.pick(
-                "支持本机离线 Whisper 或 OpenAI / Grok / OpenRouter 云端高精识别。",
-                "Use local offline Whisper or cloud Whisper APIs.",
-            ),
+            if provider == VoiceProviderKind::Local {
+                env_summary.as_str()
+            } else {
+                loc.pick("语音会发送至所选服务转写。", "Audio is sent to the selected provider.")
+            },
             provider_strip.into_any_element(),
             stacked,
             s,
@@ -1160,12 +1161,8 @@ impl KarWorkbench {
             .child(settings_divider(s))
             .child(settings_row_item(
                 loc.pick("麦克风检测与试音", "Microphone & live test"),
-                format!(
-                    "{} · {env_summary}",
-                    self.microphone_name
-                        .clone()
-                        .unwrap_or_else(|| loc.pick("无输入设备", "No input device").into())
-                ),
+                self.microphone_name.clone()
+                    .unwrap_or_else(|| loc.pick("无输入设备", "No input device").into()),
                 primary_button(
                     "voice-test-record",
                     if is_recording {
@@ -2422,7 +2419,7 @@ impl KarWorkbench {
                                     .child(
                                         div()
                                             .font_features(tnum_features())
-                                            .text_size(px(FS_HERO))
+                                            .text_size(px(FS_TITLE))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(s.ink)
                                             .child(format!("v{}", env!("CARGO_PKG_VERSION"))),

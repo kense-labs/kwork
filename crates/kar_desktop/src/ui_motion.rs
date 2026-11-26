@@ -79,6 +79,7 @@ pub struct Tactile {
     id: ElementId,
     style: StyleRefinement,
     children: Vec<AnyElement>,
+    hover_glyph: Option<Box<dyn FnOnce(f32) -> AnyElement>>,
     rest: Hsla,
     hover: Hsla,
     lit_fill: Hsla,
@@ -107,6 +108,7 @@ impl Tactile {
             id: id.into(),
             style: StyleRefinement::default(),
             children: Vec::new(),
+            hover_glyph: None,
             rest: transparent_black(),
             hover: s.hover,
             lit_fill: s.active,
@@ -245,6 +247,12 @@ impl Tactile {
 
     pub fn role(mut self, role: Role) -> Self {
         self.role = role;
+        self
+    }
+
+    /// Animate the glyph using the same hover spring as the button. Touch and keyboard show its action.
+    pub fn hover_glyph(mut self, render: impl FnOnce(f32) -> AnyElement + 'static) -> Self {
+        self.hover_glyph = Some(Box::new(render));
         self
     }
 
@@ -478,6 +486,10 @@ impl RenderOnce for Tactile {
             })
             .child(paint_face)
             .children(self.children)
+            .when_some(self.hover_glyph, |d, glyph| {
+                let reveal = if show_button_ring || window.last_input_was_touch() { 1. } else { hov };
+                d.child(glyph(reveal))
+            })
     }
 }
 
@@ -859,10 +871,11 @@ pub fn menu_item(
         .aria(label.clone())
         .w_full()
         .flex_none()
-        .h(px(ROW_H))
+        .h(px(CTRL_H))
         .px(px(8.))
         .gap(px(8.))
-        .text_size(px(FS_UI))
+        .text_size(px(FS_CONTROL))
+        .line_height(px(LH_CONTROL))
         .text_color(s.ink)
         .when_some(lead, |row, el| {
             row.child(

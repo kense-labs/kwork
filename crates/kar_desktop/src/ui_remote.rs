@@ -26,7 +26,7 @@ use crate::{
         soft_button_sm, text_button,
     },
     ui_primitives::{
-        FS_HERO, FS_META, FS_TAG, FS_UI, ICON_XS, LH_META, R_CTRL, R_PILL, StudioPalette, UiLocale,
+        FS_METRIC, FS_META, FS_TAG, FS_TITLE, FS_UI, ICON_XS, LH_META, R_CTRL, R_PILL, StudioPalette, UiLocale,
         card_box, mono_font, settings_divider, settings_page_shell, settings_row_item,
         settings_section_title, tnum_features,
     },
@@ -329,7 +329,7 @@ impl KarWorkbench {
                         digits_row = digits_row.child(
                             div()
                                 .px(px(3.))
-                                .text_size(px(18.))
+                                .text_size(px(FS_TITLE))
                                 .text_color(s.faint)
                                 .child("·"),
                         );
@@ -347,7 +347,7 @@ impl KarWorkbench {
                             .justify_center()
                             .font_family(mono_font(cx))
                             .font_features(tnum_features())
-                            .text_size(px(FS_HERO))
+                            .text_size(px(FS_METRIC))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(s.ink)
                             .child(ch.to_string()),

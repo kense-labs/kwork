@@ -115,6 +115,20 @@ impl GitWorkspaceSnapshot {
     }
 }
 
+// Git reports an ordinary folder and some damaged checkouts with the same exit code.
+fn is_unversioned_folder(workspace: &Path, error: &kar::Error) -> bool {
+    let kar::Error::Refused(message) = error else { return false };
+    let Some((_, stderr)) = message.strip_prefix("git (").and_then(|text| text.split_once("): ")) else {
+        return false;
+    };
+    let no_repository = stderr == "fatal: not a git repository (or any of the parent directories): .git"
+        || stderr.starts_with("fatal: not a git repository (or any parent up to mount point ");
+    no_repository && workspace.ancestors().all(|dir| {
+        std::fs::symlink_metadata(dir.join(".git"))
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+    })
+}
+
 /// Discover real Git state via `kar::workbench_git::Repository` + bounded `git log` commit graph.
 pub fn discover_git_workspace(workspace: &Path) -> GitWorkspaceSnapshot {
     let repo = match Repository::open(workspace) {
@@ -123,7 +137,7 @@ pub fn discover_git_workspace(workspace: &Path) -> GitWorkspaceSnapshot {
             return GitWorkspaceSnapshot {
                 is_repo: false,
                 default_branch: "main".into(),
-                error: Some(err.to_string()),
+                error: (!is_unversioned_folder(workspace, &err)).then(|| err.to_string()),
                 ..Default::default()
             };
         }
@@ -2518,5 +2532,23 @@ mod context_pack_limits {
             assert!(packed.len() <= size);
             assert!(packed.ends_with('…'));
         }
+    }
+}
+
+
+#[cfg(test)]
+mod git_discovery_tests {
+    use super::discover_git_workspace;
+
+    #[test]
+    fn plain_folder_is_empty_but_a_damaged_checkout_keeps_its_error() {
+        let folder = tempfile::tempdir().unwrap();
+        let plain = discover_git_workspace(folder.path());
+        assert!(!plain.is_repo && plain.error.is_none(), "{plain:?}");
+        std::fs::create_dir(folder.path().join(".git")).unwrap();
+        let damaged = discover_git_workspace(folder.path());
+        assert!(!damaged.is_repo && damaged.error.is_some(), "{damaged:?}");
+        let missing = discover_git_workspace(&folder.path().join("missing"));
+        assert!(missing.error.is_some());
     }
 }
