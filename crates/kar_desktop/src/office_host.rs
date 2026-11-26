@@ -128,6 +128,36 @@ impl OfficeTab {
         }
     }
 
+    pub fn is_busy(&self, cx: &App) -> bool {
+        match &self.view {
+            OfficeEditorView::Excel(e) => e.read(cx).is_busy(),
+            OfficeEditorView::Word(_) | OfficeEditorView::Ppt(_) => false,
+        }
+    }
+
+    pub fn needs_save_as(&self, cx: &App) -> bool {
+        match &self.view {
+            OfficeEditorView::Word(e) => e.read(cx).agent_read(|doc, _| doc.needs_save_as()),
+            OfficeEditorView::Excel(e) => e.read(cx).agent_read(cx, |book, _| book.path().is_none()),
+            OfficeEditorView::Ppt(e) => e.read(cx).agent_read(|pres, _| pres.needs_save_as()),
+        }
+    }
+
+    pub fn default_save_filename(&self, cx: &App) -> String {
+        let raw = self.doc_name(cx);
+        let ext = match self.kind {
+            OfficeKind::Word => "docx",
+            OfficeKind::Excel => "xlsx",
+            OfficeKind::Ppt => "pptx",
+        };
+        let stem = std::path::Path::new(&raw)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("未命名文档");
+        format!("{stem}.{ext}")
+    }
+
     pub fn status(&self, cx: &App) -> SharedString {
         match &self.view {
             OfficeEditorView::Word(e) => e.read(cx).status(),
@@ -555,7 +585,7 @@ pub fn materialize_coedit_demo_files(demo_dir: &Path) -> Result<(PathBuf, PathBu
     ]);
     doc.save_as(&word_path)?;
 
-    // 2. Excel demo: Q4 budget with formula dependent on B3.
+    // 2. Excel demo: Q4 budget with formula dependent on B3 and comfortable column widths.
     let excel_path = demo_dir.join("demo_coedit_budget.xlsx");
     let mut book = Workbook::new_empty()?;
     book.set_inputs(
@@ -571,9 +601,10 @@ pub fn materialize_coedit_demo_files(demo_dir: &Path) -> Result<(PathBuf, PathBu
             (3, 1, "=B2+B3".into()),
         ],
     )?;
+    let _ = book.set_column_widths(0, &[(0, 224.0), (1, 124.0)]);
     book.save_as(&excel_path)?;
 
-    // 3. PPT demo: slide with movable & editable headline text box.
+    // 3. PPT demo: slide with symmetric centered headline & subtitle text boxes.
     let ppt_path = demo_dir.join("demo_coedit_launch.pptx");
     let mut pres = Presentation::new();
     if !pres.slide(0).shapes.is_empty() {
@@ -587,7 +618,8 @@ pub fn materialize_coedit_demo_files(demo_dir: &Path) -> Result<(PathBuf, PathBu
         {
             xfrm.x = (2.0 * EMU_PER_CM) as i64;
             xfrm.y = (3.0 * EMU_PER_CM) as i64;
-            xfrm.cy = (3.6 * EMU_PER_CM) as i64;
+            xfrm.cx = (29.8 * EMU_PER_CM) as i64;
+            xfrm.cy = (4.8 * EMU_PER_CM) as i64;
             let _ = pres.set_xfrm((0, 0), xfrm, false);
         }
     }
@@ -600,8 +632,10 @@ pub fn materialize_coedit_demo_files(demo_dir: &Path) -> Result<(PathBuf, PathBu
             .and_then(|s| s.xfrm)
             .or_else(|| pres.placed((0, 1)).map(|p| p.xfrm))
         {
-            xfrm.x = (6.5 * EMU_PER_CM) as i64;
-            xfrm.y = (11.2 * EMU_PER_CM) as i64;
+            xfrm.x = (2.0 * EMU_PER_CM) as i64;
+            xfrm.y = (9.2 * EMU_PER_CM) as i64;
+            xfrm.cx = (29.8 * EMU_PER_CM) as i64;
+            xfrm.cy = (2.8 * EMU_PER_CM) as i64;
             let _ = pres.set_xfrm((0, 1), xfrm, false);
         }
     }

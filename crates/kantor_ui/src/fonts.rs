@@ -85,10 +85,20 @@ pub fn automatic_ui_font(cx: &App) -> Option<String> {
 /// Apply `ui_font` (or the automatic choice) and the best monospace font to the theme.
 pub fn apply(ui_font: Option<&str>, cx: &mut App) {
     let fonts = installed(cx);
+    // On macOS, Core Text's `.SystemUIFont` / `.AppleSystemUIFont` is the native San Francisco +
+    // PingFang SC pair (identical to KUI's UI font), whereas `SF Pro Text` is omitted from
+    // `all_font_names()` unless manually installed. Keep `.SystemUIFont` unless an explicit font
+    // was requested.
     let ui = ui_font
         .filter(|f| fonts.iter().any(|i| i == f))
         .map(str::to_owned)
-        .or_else(|| automatic_ui_font(cx));
+        .or_else(|| {
+            if cfg!(target_os = "macos") {
+                Some(".SystemUIFont".to_owned())
+            } else {
+                automatic_ui_font(cx)
+            }
+        });
     let mono = first_installed(fonts, MONO_FONTS);
     Theme::update(cx, |theme| {
         if let Some(ui) = ui {

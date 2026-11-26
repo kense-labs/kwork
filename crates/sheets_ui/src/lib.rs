@@ -182,6 +182,8 @@ const MIN_ROWS: u32 = 1000;
 const MIN_COLS: u32 = 26;
 /// Below this pane width the formula bar drops its labels.
 const COMPACT_WIDTH: Pixels = px(560.);
+/// Below this pane width the formatting toolbar folds secondary tools into `…`.
+const TOOLBAR_COMPACT_WIDTH: Pixels = px(780.);
 
 /// The selected cell, for the inspector.
 pub struct CellInfo {
@@ -1713,9 +1715,15 @@ impl SheetsView {
         match path {
             Some(path) => {
                 this.start_open(path, window, cx);
-                window.focus(&this.busy_focus, cx);
+                if !kantor_ui::is_embedded_host() {
+                    window.focus(&this.busy_focus, cx);
+                }
             }
-            None => this.focus_grid(window, cx),
+            None => {
+                if !kantor_ui::is_embedded_host() {
+                    this.focus_grid(window, cx);
+                }
+            }
         }
         this
     }
@@ -2711,6 +2719,9 @@ impl SheetsView {
     }
 
     fn update_title(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if kantor_ui::is_embedded_host() {
+            return;
+        }
         let title = self.title(cx);
         window.set_window_title(&title);
     }
@@ -3017,14 +3028,18 @@ impl Render for SheetsView {
         let editing = self.editing.is_some();
         let width = self.width.get();
         let compact = width > px(0.) && width < COMPACT_WIDTH;
-        // Measure our width after layout; re-render when crossing the threshold.
+        let toolbar_compact = width > px(0.) && width < TOOLBAR_COMPACT_WIDTH;
+        // Measure our width after layout; re-render when crossing either threshold.
         let measure = {
             let cell = self.width.clone();
             let view = cx.entity().downgrade();
             canvas(
                 move |bounds, _, cx| {
                     let old = cell.replace(bounds.size.width);
-                    if (old < COMPACT_WIDTH) != (bounds.size.width < COMPACT_WIDTH) {
+                    let crossed_bar = (old < COMPACT_WIDTH) != (bounds.size.width < COMPACT_WIDTH);
+                    let crossed_tools = (old < TOOLBAR_COMPACT_WIDTH)
+                        != (bounds.size.width < TOOLBAR_COMPACT_WIDTH);
+                    if crossed_bar || crossed_tools {
                         let _ = view.update(cx, |_, cx| cx.notify());
                     }
                 },
@@ -3105,7 +3120,7 @@ impl Render for SheetsView {
                             style: &style,
                             merged,
                         },
-                        compact,
+                        toolbar_compact,
                         cx,
                     )
                 })

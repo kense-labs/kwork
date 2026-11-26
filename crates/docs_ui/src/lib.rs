@@ -538,6 +538,7 @@ pub struct DocsView {
     engine: Rc<RefCell<Engine>>,
     bridge: Rc<RefCell<FontBridge>>,
     zoom: f32,
+    user_zoomed: bool,
     /// Scroll offset in document space.
     scroll: Point<f32>,
     /// Canvas bounds from the last paint.
@@ -671,6 +672,7 @@ impl DocsView {
             engine,
             bridge,
             zoom: 1.0,
+            user_zoomed: false,
             scroll: point(0., 0.),
             viewport: Rc::default(),
             reveal_caret: Rc::default(),
@@ -762,16 +764,34 @@ impl DocsView {
         });
     }
 
+    fn effective_zoom(&self, vw_px: f32) -> f32 {
+        if self.user_zoomed {
+            return self.zoom;
+        }
+        let page_w = self.laid.boxes.max_w;
+        if vw_px > 64.0 && page_w > 1.0 {
+            let markup = if self.markup_visible() {
+                review::MARKUP_W
+            } else {
+                0.0
+            };
+            fit_page_zoom(vw_px, page_w, markup)
+        } else {
+            self.zoom
+        }
+    }
+
     fn geometry(&self) -> Geometry {
         let b = self.viewport.get();
+        let z = self.effective_zoom(f32::from(b.size.width));
         Geometry {
             origin: b.origin,
             size: b.size,
-            zoom: self.zoom,
+            zoom: z,
             scroll: self.scroll,
             boxes: self.laid.boxes.clone(),
             markup: if self.markup_visible() {
-                review::MARKUP_W / self.zoom
+                review::MARKUP_W / z
             } else {
                 0.0
             },
@@ -1220,7 +1240,8 @@ impl DocsView {
     }
 
     pub fn zoom_by(&mut self, factor: f32, cx: &mut Context<Self>) {
-        self.set_zoom(self.zoom * factor, cx);
+        let cur = self.zoom();
+        self.set_zoom(cur * factor, cx);
     }
 
     pub fn set_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
@@ -1228,6 +1249,7 @@ impl DocsView {
         // Keep the middle of the view where it is.
         let g = self.geometry();
         let mid = self.scroll.y + g.view_h() / 2.0;
+        self.user_zoomed = true;
         self.zoom = zoom;
         let g = self.geometry();
         self.scroll.y = mid - g.view_h() / 2.0;
@@ -1235,8 +1257,19 @@ impl DocsView {
         cx.notify();
     }
 
+    pub fn reset_zoom_auto(&mut self, cx: &mut Context<Self>) {
+        let g = self.geometry();
+        let mid = self.scroll.y + g.view_h() / 2.0;
+        self.user_zoomed = false;
+        self.zoom = 1.0;
+        let g = self.geometry();
+        self.scroll.y = mid - g.view_h() / 2.0;
+        self.clamp_scroll();
+        cx.notify();
+    }
+
     pub fn zoom(&self) -> f32 {
-        self.zoom
+        self.effective_zoom(f32::from(self.viewport.get().size.width))
     }
 
     // ── shell API (tabs, status bar, inspector, close prompt) ──────────────
@@ -1324,6 +1357,9 @@ impl DocsView {
     }
 
     fn update_title(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if kantor_ui::is_embedded_host() {
+            return;
+        }
         let title = self.title(cx);
         window.set_window_title(&title);
     }
@@ -1807,13 +1843,14 @@ impl DocsView {
             }
             return;
         }
+        let z = self.zoom();
         let (mut dx, dy) = (f32::from(delta.x), f32::from(delta.y));
         if ev.modifiers.shift && dx == 0.0 {
             dx = dy;
-            self.scroll.x -= dx / self.zoom;
+            self.scroll.x -= dx / z;
         } else {
-            self.scroll.x -= dx / self.zoom;
-            self.scroll.y -= dy / self.zoom;
+            self.scroll.x -= dx / z;
+            self.scroll.y -= dy / z;
         }
         self.clamp_scroll();
         cx.notify();
@@ -2158,6 +2195,7 @@ struct Frame {
     /// The text box being edited: page and box (outlined, as in Word).
     editing_box: Option<(usize, [f32; 4])>,
     zoom: f32,
+    auto_fit: bool,
     scroll: Point<f32>,
     focused: bool,
     /// A ruler drag's guide line (page x).
@@ -2271,15 +2309,25 @@ fn paint_misspelled(
     }
 }
 
+// The page scales with zoom, while comment cards retain their screen width.
+fn fit_page_zoom(viewport: f32, page: f32, markup: f32) -> f32 {
+    ((viewport - markup) / (page + 2.0 * PAGE_GAP)).clamp(ZOOM_MIN, 1.0)
+}
+
 fn paint_frame(f: &Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
     let paged = &f.laid.paged;
+    let z = if f.auto_fit && f.laid.boxes.max_w > 1.0 && f32::from(bounds.size.width) > 64.0 {
+        fit_page_zoom(f32::from(bounds.size.width), f.laid.boxes.max_w, f.markup)
+    } else {
+        f.zoom
+    };
     let g = Geometry {
         origin: bounds.origin,
         size: bounds.size,
-        zoom: f.zoom,
+        zoom: z,
         scroll: f.scroll,
         boxes: f.laid.boxes.clone(),
-        markup: f.markup / f.zoom,
+        markup: f.markup / z,
     };
     window.paint_quad(fill(bounds, f.t.desk));
     let (start, end) = f.sel.ordered();
@@ -2309,10 +2357,9 @@ fn paint_frame(f: &Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut 
         let p = f.sel.head.para;
         laid.selection_rects((p, m.start), (p, m.end))
     });
-    let shadow = f.t.shadow(Elevation::Popover);
-    let ts = window.text_system().clone();
-    let z = f.zoom;
-    let rect = |page: usize, r: [f32; 4]| {
+        let shadow = f.t.shadow(Elevation::Popover);
+        let ts = window.text_system().clone();
+        let rect = |page: usize, r: [f32; 4]| {
         Bounds::from_corners(
             g.page_to_screen(page, r[0], r[1]),
             g.page_to_screen(page, r[0] + r[2], r[1] + r[3]),
@@ -2742,7 +2789,8 @@ impl Render for DocsView {
                 }
                 _ => None,
             },
-            zoom: self.zoom,
+            zoom: self.zoom(),
+            auto_fit: !self.user_zoomed,
             scroll: self.scroll,
             focused: self.focus.is_focused(window),
             guide: self.ruler_drag.filter(|d| !d.off).map(|d| d.x),
@@ -2766,13 +2814,22 @@ impl Render for DocsView {
         };
         let viewport = self.viewport.clone();
         let reveal = self.reveal_caret.clone();
+        let auto_fit = !self.user_zoomed;
         let entity = cx.entity().downgrade();
         let page = canvas(
             move |bounds, _, cx| {
                 let old = viewport.replace(bounds);
+                let crossed_compact = (old.size.width < px(840.)) != (bounds.size.width < px(840.))
+                    || (old.size.width < px(750.)) != (bounds.size.width < px(750.));
+                let width_changed_auto = auto_fit && old.size.width != bounds.size.width;
                 // First paint (or a resize): re-render once the size is known
-                // so scrolling to the caret and clamping use real numbers.
-                if old.size != bounds.size && (reveal.get() || old.size.height <= px(0.)) {
+                // so scrolling to the caret, ruler scale, and clamping use real numbers.
+                if old.size != bounds.size
+                    && (reveal.get()
+                        || old.size.height <= px(0.)
+                        || crossed_compact
+                        || width_changed_auto)
+                {
                     let _ = entity.update(cx, |_, cx| cx.notify());
                 }
             },
@@ -2958,7 +3015,13 @@ impl Render for DocsView {
             Redo => |this, w, cx| this.redo_doc(w, cx),
             ZoomIn => |this, _w, cx| this.zoom_by(ZOOM_STEP, cx),
             ZoomOut => |this, _w, cx| this.zoom_by(1.0 / ZOOM_STEP, cx),
-            ZoomReset => |this, _w, cx| this.set_zoom(1.0, cx),
+            ZoomReset => |this, _w, cx| {
+                if this.user_zoomed {
+                    this.reset_zoom_auto(cx);
+                } else {
+                    this.set_zoom(1.0, cx);
+                }
+            },
         ]);
         use kantor_ui::find_bar as fb;
         root.on_action(cx.listener(Self::save))

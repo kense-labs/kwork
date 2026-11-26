@@ -805,15 +805,22 @@ impl EntityInputHandler for Editor {
     fn bounds_for_range(
         &mut self,
         r: Range<usize>,
-        _: Bounds<Pixels>,
+        element_bounds: Bounds<Pixels>,
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        self.layout
-            .as_ref()?
-            .rects(self.bytes(r))
-            .into_iter()
-            .next()
+        let Some(layout) = self.layout.as_ref() else {
+            let h = element_bounds.size.height.min(px(22.)).max(px(16.));
+            return Some(Bounds::new(element_bounds.origin, size(px(1.), h)));
+        };
+        let mut rect = layout.rects(self.bytes(r)).into_iter().next()?;
+        let max_y = (element_bounds.bottom() - rect.size.height).max(element_bounds.top());
+        rect.origin.y = rect.origin.y.clamp(element_bounds.top(), max_y);
+        rect.origin.x = rect
+            .origin
+            .x
+            .clamp(element_bounds.left(), element_bounds.right());
+        Some(rect)
     }
     fn selection_bounds_for_range(
         &mut self,

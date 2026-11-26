@@ -48,6 +48,11 @@ pub enum CoEditStatus {
         seen_revision: u64,
         latest_revision: u64,
     },
+    /// Transport or host timeout left the mutation outcome unconfirmed; never auto-replayed.
+    OutcomeUnknown {
+        reason: String,
+        last_known_revision: u64,
+    },
     /// Completed with recorded outcome.
     Resolved { summary: String },
 }
@@ -375,7 +380,7 @@ impl CoEditService for DemoCoEditEngine {
                     && live.current_value != prop.proposed_value
                 {
                     prop.conflict_reason = Some(format!(
-                        "单元格 Sheet1!B3 原值为 `{}`，人工已改为 `{}`（{}），而 AI 基于 {} 提议改为 `{}`。",
+                        "单元格 Sheet1!B3 原值为「{}」，人工已改为「{}」（{}），而 AI 基于 {} 提议改为「{}」。",
                         prop.base_value,
                         live.current_value,
                         live.current_aux,
@@ -510,7 +515,7 @@ impl CoEditService for DemoCoEditEngine {
             }
             (ScenarioKey::ExcelSameCellConflict, UserResolutionChoice::KeepCurrent) => (
                 format!(
-                    "已保留 Sheet1!B3 当前值 `{}`（原值 `{}`，AI 提议 `{}` 已拒绝）",
+                    "已保留 Sheet1!B3 当前值「{}」（原值「{}」，AI 提议「{}」已拒绝）",
                     live.current_value, prop.base_value, prop.proposed_value
                 ),
                 DemoEditorMutation::None,
@@ -520,7 +525,7 @@ impl CoEditService for DemoCoEditEngine {
                 UserResolutionChoice::AdoptProposal | UserResolutionChoice::ApplyDualKeep,
             ) => (
                 format!(
-                    "已采用 AI 提议将 Sheet1!B3 更新为 `{}`（原值 `{}`，覆盖前当前值 `{}`）",
+                    "已采用 AI 提议将 Sheet1!B3 更新为「{}」（原值「{}」，覆盖前当前值「{}」）",
                     prop.proposed_value, prop.base_value, live.current_value
                 ),
                 DemoEditorMutation::WriteExcelCell {
@@ -538,7 +543,7 @@ impl CoEditService for DemoCoEditEngine {
                     bail!("请输入手工合并后的单元格数值或公式（如 142000 或 =(135000+148000)/2）");
                 }
                 (
-                    format!("已将手工合并值 `{trimmed}` 写入 Sheet1!B3 并重算关联公式"),
+                    format!("已将手工合并值「{trimmed}」写入 Sheet1!B3 并重算关联公式"),
                     DemoEditorMutation::WriteExcelCell {
                         sheet: 0,
                         cell_a1: "B3".into(),
@@ -585,5 +590,345 @@ impl CoEditService for DemoCoEditEngine {
             proposal: Box::new(prop.clone()),
             mutation,
         })
+    }
+}
+
+// ── Kar Phase 2: Durable Revision-Fenced Live Office Ledger (`RevisionFenceLedger`) ──────────
+
+use std::collections::BTreeMap;
+use std::path::Path;
+use ring::digest::{SHA256, digest};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum FenceOutcome {
+    Applied { new_revision: u64 },
+    FencedConflict {
+        expected_revision: u64,
+        live_revision: u64,
+        target_desc: String,
+        proposed_summary: String,
+    },
+    OutcomeUnknown {
+        reason: String,
+        last_known_revision: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FenceReceipt {
+    pub operation_id: Uuid,
+    pub doc_key: String,
+    pub kind: OfficeKind,
+    pub base_revision: u64,
+    pub snapshot_digest: String,
+    pub outcome: FenceOutcome,
+    pub recorded_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveFencedConflict {
+    pub operation_id: Uuid,
+    pub doc_key: String,
+    pub kind: OfficeKind,
+    pub expected_revision: u64,
+    pub live_revision: u64,
+    pub target_desc: String,
+    pub current_summary: String,
+    pub proposed_summary: String,
+    pub pending_mutation: Option<FenceMutationPayload>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FenceMutationPayload {
+    WordParagraph { paragraph_1based: usize, text: String },
+    ExcelCell { sheet_idx: u32, cell_a1: String, value: String },
+    PptShapeText { slide_1based: usize, shape_id: u32, text: String },
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RevisionFenceLedger {
+    /// Monotonic revision per open/tracked document key (`canonical path or tab name -> rev`).
+    pub revisions: BTreeMap<String, u64>,
+    /// Immutable SHA-256 content/state fingerprint per `(doc_key, rev)`.
+    pub digests: BTreeMap<String, String>,
+    /// Idempotent operation receipts (`operation_id -> receipt`).
+    pub receipts: BTreeMap<Uuid, FenceReceipt>,
+    /// Active fenced conflicts awaiting explicit human choice in the Office sheet.
+    pub conflicts: Vec<LiveFencedConflict>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FenceAdmission {
+    Proceed { operation_id: Uuid, base_revision: u64 },
+    Duplicate(FenceReceipt),
+    BlockedConflict(LiveFencedConflict),
+}
+
+impl RevisionFenceLedger {
+    pub fn load(docs_dir: &Path) -> Self {
+        let path = docs_dir.join(".coedit-fence-ledger.json");
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self, docs_dir: &Path) {
+        let _ = std::fs::create_dir_all(docs_dir);
+        if let Ok(bytes) = serde_json::to_vec_pretty(self) {
+            let tmp = docs_dir.join(".coedit-fence-ledger.json.tmp");
+            if std::fs::write(&tmp, bytes).is_ok() {
+                let _ = std::fs::rename(tmp, docs_dir.join(".coedit-fence-ledger.json"));
+            }
+        }
+    }
+
+    pub fn current_revision(&mut self, doc_key: &str) -> u64 {
+        *self.revisions.entry(doc_key.to_owned()).or_insert(1)
+    }
+
+    pub fn bump_human_edit(&mut self, doc_key: &str, state_fingerprint: &str) -> u64 {
+        let rev = self.revisions.entry(doc_key.to_owned()).or_insert(1);
+        *rev = rev.saturating_add(1);
+        let next = *rev;
+        let hex = sha256_hex(state_fingerprint.as_bytes());
+        self.digests.insert(format!("{doc_key}#{next}"), hex);
+        next
+    }
+
+    /// Check `operation_id` idempotency and `expected_revision` fence before mutating an Office tab.
+    #[allow(clippy::too_many_arguments)]
+    pub fn check_admission(
+        &mut self,
+        doc_key: &str,
+        kind: OfficeKind,
+        operation_id: Option<Uuid>,
+        expected_revision: Option<u64>,
+        target_desc: String,
+        current_summary: String,
+        proposed_summary: String,
+        mutation: Option<FenceMutationPayload>,
+        now_ms: u64,
+    ) -> FenceAdmission {
+        let op_id = operation_id.unwrap_or_else(Uuid::new_v4);
+        if let Some(existing) = self.receipts.get(&op_id) {
+            return FenceAdmission::Duplicate(existing.clone());
+        }
+        let live_rev = self.current_revision(doc_key);
+        if let Some(exp) = expected_revision
+            && exp != live_rev
+        {
+            let conflict = LiveFencedConflict {
+                operation_id: op_id,
+                doc_key: doc_key.to_owned(),
+                kind,
+                expected_revision: exp,
+                live_revision: live_rev,
+                target_desc: target_desc.clone(),
+                current_summary,
+                proposed_summary: proposed_summary.clone(),
+                pending_mutation: mutation,
+            };
+            self.conflicts.retain(|c| c.operation_id != op_id);
+            self.conflicts.push(conflict.clone());
+            let snap_digest = self
+                .digests
+                .get(&format!("{doc_key}#{live_rev}"))
+                .cloned()
+                .unwrap_or_else(|| sha256_hex(doc_key.as_bytes()));
+            self.receipts.insert(
+                op_id,
+                FenceReceipt {
+                    operation_id: op_id,
+                    doc_key: doc_key.to_owned(),
+                    kind,
+                    base_revision: exp,
+                    snapshot_digest: snap_digest,
+                    outcome: FenceOutcome::FencedConflict {
+                        expected_revision: exp,
+                        live_revision: live_rev,
+                        target_desc,
+                        proposed_summary,
+                    },
+                    recorded_ms: now_ms,
+                },
+            );
+            return FenceAdmission::BlockedConflict(conflict);
+        }
+        FenceAdmission::Proceed {
+            operation_id: op_id,
+            base_revision: live_rev,
+        }
+    }
+
+    pub fn commit_applied(
+        &mut self,
+        doc_key: &str,
+        kind: OfficeKind,
+        operation_id: Uuid,
+        base_revision: u64,
+        state_fingerprint: &str,
+        now_ms: u64,
+    ) -> u64 {
+        let next = base_revision.saturating_add(1);
+        self.revisions.insert(doc_key.to_owned(), next);
+        let hex = sha256_hex(state_fingerprint.as_bytes());
+        self.digests.insert(format!("{doc_key}#{next}"), hex.clone());
+        self.receipts.insert(
+            operation_id,
+            FenceReceipt {
+                operation_id,
+                doc_key: doc_key.to_owned(),
+                kind,
+                base_revision,
+                snapshot_digest: hex,
+                outcome: FenceOutcome::Applied { new_revision: next },
+                recorded_ms: now_ms,
+            },
+        );
+        next
+    }
+
+    pub fn record_outcome_unknown(
+        &mut self,
+        doc_key: &str,
+        kind: OfficeKind,
+        operation_id: Uuid,
+        reason: impl Into<String>,
+        now_ms: u64,
+    ) -> FenceReceipt {
+        let live_rev = self.current_revision(doc_key);
+        let hex = self
+            .digests
+            .get(&format!("{doc_key}#{live_rev}"))
+            .cloned()
+            .unwrap_or_else(|| sha256_hex(doc_key.as_bytes()));
+        let rec = FenceReceipt {
+            operation_id,
+            doc_key: doc_key.to_owned(),
+            kind,
+            base_revision: live_rev,
+            snapshot_digest: hex,
+            outcome: FenceOutcome::OutcomeUnknown {
+                reason: reason.into(),
+                last_known_revision: live_rev,
+            },
+            recorded_ms: now_ms,
+        };
+        self.receipts.insert(operation_id, rec.clone());
+        rec
+    }
+
+    pub fn resolve_fenced_conflict(&mut self, operation_id: Uuid) -> Option<LiveFencedConflict> {
+        let pos = self
+            .conflicts
+            .iter()
+            .position(|c| c.operation_id == operation_id)?;
+        Some(self.conflicts.remove(pos))
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let d = digest(&SHA256, bytes);
+    let mut out = String::with_capacity(64);
+    for b in d.as_ref() {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+#[cfg(test)]
+mod fence_tests {
+    use super::*;
+
+    #[test]
+    fn revision_fence_deduplicates_id_catches_stale_revision_and_records_outcome_unknown() {
+        let mut ledger = RevisionFenceLedger::default();
+        assert_eq!(ledger.current_revision("budget.xlsx"), 1);
+
+        let op1 = Uuid::new_v4();
+        match ledger.check_admission(
+            "budget.xlsx",
+            OfficeKind::Excel,
+            Some(op1),
+            Some(1),
+            "Sheet1!B3".into(),
+            "120000".into(),
+            "148000".into(),
+            None,
+            1_000,
+        ) {
+            FenceAdmission::Proceed { base_revision, .. } => {
+                let r = ledger.commit_applied(
+                    "budget.xlsx",
+                    OfficeKind::Excel,
+                    op1,
+                    base_revision,
+                    "B3=148000",
+                    1_010,
+                );
+                assert_eq!(r, 2);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        // Retrying same op1 returns Duplicate receipt at rev #2 without re-applying!
+        assert!(matches!(
+            ledger.check_admission(
+                "budget.xlsx",
+                OfficeKind::Excel,
+                Some(op1),
+                Some(1),
+                "Sheet1!B3".into(),
+                "148000".into(),
+                "148000".into(),
+                None,
+                1_020,
+            ),
+            FenceAdmission::Duplicate(_)
+        ));
+
+        // Human edits tab -> rev becomes #3; stale AI edit against rev #2 is fenced!
+        assert_eq!(ledger.bump_human_edit("budget.xlsx", "B3=155000"), 3);
+        let op2 = Uuid::new_v4();
+        assert!(matches!(
+            ledger.check_admission(
+                "budget.xlsx",
+                OfficeKind::Excel,
+                Some(op2),
+                Some(2),
+                "Sheet1!B3".into(),
+                "155000".into(),
+                "160000".into(),
+                Some(FenceMutationPayload::ExcelCell {
+                    sheet_idx: 0,
+                    cell_a1: "B3".into(),
+                    value: "160000".into(),
+                }),
+                2_000,
+            ),
+            FenceAdmission::BlockedConflict(_)
+        ));
+        assert_eq!(ledger.conflicts.len(), 1);
+
+        // Honest uncertainty recorded cleanly
+        let op3 = Uuid::new_v4();
+        let unk = ledger.record_outcome_unknown(
+            "budget.xlsx",
+            OfficeKind::Excel,
+            op3,
+            "等待桌面响应超时",
+            3_000,
+        );
+        assert!(matches!(
+            unk.outcome,
+            FenceOutcome::OutcomeUnknown {
+                last_known_revision: 3,
+                ..
+            }
+        ));
     }
 }

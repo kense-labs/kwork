@@ -28,3 +28,15 @@ pub mod widget_strings;
 pub use assets::KantorAssets;
 pub use cached::CachedView;
 pub use tokens::{Tokens, tokens};
+
+static EMBEDDED_HOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Mark Kantor Office views as embedded inside a host workbench (such as `KarWorkbench`)
+/// so document views do not overwrite the host window title or steal focus on background load.
+pub fn set_embedded_host(embedded: bool) {
+    EMBEDDED_HOST.store(embedded, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn is_embedded_host() -> bool {
+    EMBEDDED_HOST.load(std::sync::atomic::Ordering::Relaxed)
+}

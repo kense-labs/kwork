@@ -88,6 +88,7 @@ pub struct PatchReview {
     phase_clock: PhaseClock,
     generation: u64,
     interactive: bool,
+    preview_font: Option<SharedString>,
     tokens: HashMap<String, Tokens>,
     width: Rc<Cell<Pixels>>,
     code_height: Pixels,
@@ -120,6 +121,7 @@ impl PatchReview {
             phase_clock: PhaseClock::default(),
             generation: 0,
             interactive: false,
+            preview_font: None,
             tokens: HashMap::new(),
             width: Rc::new(Cell::new(px(0.))),
             code_height: px(374.),
@@ -129,6 +131,12 @@ impl PatchReview {
             focus: cx.focus_handle().tab_stop(true),
             accept_focus: Vec::new(),
         }
+    }
+
+    /// Present a recorded diff without offering to accept or reject already applied changes.
+    pub fn read_only(mut self, code_font: SharedString) -> Self {
+        self.preview_font = Some(code_font);
+        self
     }
 
     /// Name the host-selected model in the review header.
@@ -231,7 +239,7 @@ impl PatchReview {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.phase != PatchPhase::Ready {
+        if self.preview_font.is_some() || self.phase != PatchPhase::Ready {
             return;
         }
         let ordered = self.ordered_hunks();
@@ -320,7 +328,6 @@ impl PatchReview {
             .flex_none()
             .text_size(px(if narrow { 12. } else { 13. }))
             .line_height(px(LINE_HEIGHT))
-            .font_family("Fira Code")
             .when(strength > 0., |line| {
                 line.bg(accent.opacity(0.10 * strength))
             })
@@ -471,6 +478,7 @@ impl Render for PatchReview {
         };
         let mut body = column()
             .id("patch-code")
+            .font_family(self.preview_font.clone().unwrap_or_else(|| "Fira Code".into()))
             .role(Role::Region)
             .aria_label(self.file.clone())
             .track_focus(&self.focus)
@@ -578,7 +586,7 @@ impl Render for PatchReview {
             }
             let actions = Fold::get(
                 format!("{base_key}-actions"),
-                ready && !settled,
+                self.preview_font.is_none() && ready && !settled,
                 34.,
                 if settled { 0.26 } else { 0.24 },
                 w,
@@ -807,7 +815,7 @@ impl Render for PatchReview {
             .gap(px(9.))
             .on_key_down(cx.listener(|s, e: &KeyDownEvent, w, cx| {
                 let key = e.keystroke.key.as_str();
-                let changed = if !e.is_held
+                let changed = if s.preview_font.is_none() && !e.is_held
                     && (e.keystroke.modifiers.platform || e.keystroke.modifiers.control)
                 {
                     match key {
@@ -835,7 +843,7 @@ impl Render for PatchReview {
                     cx.stop_propagation();
                 }
             }))
-            .child(
+            .when(self.preview_font.is_none(), |card| card.child(
                 row()
                     .items_start()
                     .gap(px(8.))
@@ -854,7 +862,7 @@ impl Render for PatchReview {
                                 head.child(note(model, cx))
                             }),
                     ),
-            )
+            ))
             .child(
                 column()
                     .gap_0()
@@ -907,7 +915,7 @@ impl Render for PatchReview {
                     )
                     .child(body),
             )
-            .child(footer);
+            .when(self.preview_font.is_none(), |card| card.child(footer));
         div()
             .w_full()
             .max_w(px(720.))

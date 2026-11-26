@@ -78,7 +78,8 @@ slides_pdf = { path = "crates/slides_pdf" }
 slides_scene = { path = "crates/slides_scene" }
 slides_ui = { path = "crates/slides_ui" }
 kui = { package = "kense-kui", path = "vendor/kense-kui", default-features = false }
-kar = { path = "../deps/kar-snapshot" }
+kar = { path = "../kar" }
+kar-documents = { path = "../kar/crates/kar-documents" }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 axum = { version = "0.8", default-features = false, features = ["json", "http1", "tokio", "query"] }
@@ -89,13 +90,38 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 dbg_macro = "warn"
 
-# Keep debug builds light: GPUI's dependency tree with full debuginfo is huge.
+# Keep frequently edited application crates unoptimized during development while
+# optimizing GPUI, layout, spreadsheet, and KUI rendering hot paths (borrowed from ToWork).
 [profile.dev]
+opt-level = 0
 debug = "line-tables-only"
+split-debuginfo = "unpacked"
+incremental = true
 
 [profile.dev.package."*"]
-opt-level = 1
+opt-level = 2
 debug = false
+
+[profile.dev.package.kar_desktop]
+opt-level = 0
+debug = false
+
+[profile.dev.package.kar]
+opt-level = 0
+debug = false
+
+[profile.dev.package.kar-documents]
+opt-level = 0
+debug = false
+
+[profile.dev.package.gpui-base]
+opt-level = 3
+
+[profile.dev.package.gpui-component]
+opt-level = 3
+
+[profile.dev.package.kense-kui]
+opt-level = 2
 
 [profile.release]
 # Fat LTO + one codegen unit: 60.3 MB -> 51.0 MB on x86_64 Linux (2026-11-08),
@@ -117,6 +143,13 @@ gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
 ironcalc_base = { path = "vendor/ironcalc_base" }
 # IronCalc's xlsx reader/writer with fidelity fixes (see vendor/ironcalc/KANTOR_PATCHES.md).
 ironcalc = { path = "vendor/ironcalc" }
+
+[patch."https://github.com/kense-labs/kantor"]
+docs_engine = { path = "crates/docs_engine" }
+sheets_engine = { path = "crates/sheets_engine" }
+slides_engine = { path = "crates/slides_engine" }
+ironcalc = { path = "vendor/ironcalc" }
+ironcalc_base = { path = "vendor/ironcalc_base" }
 
 # Key derivation (100,000 SHA-512 rounds, Argon2) is slow unoptimised: keep
 # opening password-protected files quick in debug builds and tests.

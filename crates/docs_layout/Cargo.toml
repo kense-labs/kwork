@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-parley = "0.12"
+parley = { version = "0.12", features = ["complex-scripts"] }
 log.workspace = true
 # Static instances of variable fonts (instance.rs): reading, and cutting
 # outlines at a location (the same crates krilla uses).

@@ -234,8 +234,13 @@ impl SheetGrid {
                     .left_0()
                     .size_0()
                     .child(
-                        deferred(anchored().offset(point(px(0.), SPACE_1)).child(list))
-                            .with_priority(2),
+                        deferred(
+                            anchored()
+                                .snap_to_window()
+                                .offset(point(px(0.), SPACE_1))
+                                .child(list),
+                        )
+                        .with_priority(2),
                     )
                     .into_any_element(),
             );

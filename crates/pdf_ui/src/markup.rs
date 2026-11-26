@@ -2113,6 +2113,7 @@ pub(crate) fn today() -> String {
     match i18n::lang() {
         i18n::Lang::Id => format!("{day}/{m}/{y}"),
         i18n::Lang::En => format!("{m}/{day}/{y}"),
+        i18n::Lang::Zh => format!("{y}年{m}月{day}日"),
     }
 }
 

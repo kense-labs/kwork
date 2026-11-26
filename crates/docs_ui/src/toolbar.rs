@@ -48,8 +48,11 @@ fn separator(cx: &App) -> Div {
         .bg(tokens(cx).border)
 }
 
-pub(crate) fn render(view: &DocsView, cx: &mut Context<DocsView>) -> Div {
+pub(crate) fn render(view: &DocsView, cx: &mut Context<DocsView>) -> Stateful<Div> {
     let t = tokens(cx);
+    let vw = f32::from(view.viewport.get().size.width);
+    let compact = vw > 0. && vw < 840.;
+    let very_compact = vw > 0. && vw < 750.;
     let style = view.current_style();
     let align = view.current_align();
     let is_style = |s: Option<&str>| style.as_deref() == s;
@@ -63,6 +66,76 @@ pub(crate) fn render(view: &DocsView, cx: &mut Context<DocsView>) -> Div {
             .on_click(move |ev, _, cx| {
                 let at = ev.position();
                 let _ = v.update(cx, |v, cx| v.toggle_table_picker(at, cx));
+            })
+    };
+    let more_format_button = {
+        let weak = cx.entity().downgrade();
+        let cur_h2 = is_style(Some("Heading2"));
+        let cur_h3 = is_style(Some("Heading3"));
+        let cur_right = align == Align::Right;
+        let cur_justify = align == Align::Justify;
+        Button::new("docs-fmt-more")
+            .ghost()
+            .xsmall()
+            .icon(gpui_kit::component::IconName::Ellipsis)
+            .tooltip(i18n::t("More formatting"))
+            .dropdown_menu(move |mut menu, _, _| {
+                if very_compact {
+                    let v = weak.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(i18n::t("Heading 2 · Ctrl+Alt+2"))
+                            .icon(Lucide::Heading2)
+                            .checked(cur_h2)
+                            .on_click(move |_, w, cx| {
+                                let _ = v.update(cx, |v, cx| v.set_style_doc(Some("Heading2"), w, cx));
+                            }),
+                    );
+                }
+                let v_h3 = weak.clone();
+                let v_right = weak.clone();
+                let v_just = weak.clone();
+                let v_out = weak.clone();
+                let v_in = weak.clone();
+                menu.item(
+                    PopupMenuItem::new(i18n::t("Heading 3 · Ctrl+Alt+3"))
+                        .icon(Lucide::Heading3)
+                        .checked(cur_h3)
+                        .on_click(move |_, w, cx| {
+                            let _ = v_h3.update(cx, |v, cx| v.set_style_doc(Some("Heading3"), w, cx));
+                        }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new(i18n::t("Align right · Ctrl+R"))
+                        .icon(Lucide::TextAlignEnd)
+                        .checked(cur_right)
+                        .on_click(move |_, w, cx| {
+                            let _ = v_right.update(cx, |v, cx| v.set_align_doc(Align::Right, w, cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(i18n::t("Justify · Ctrl+J"))
+                        .icon(Lucide::TextAlignJustify)
+                        .checked(cur_justify)
+                        .on_click(move |_, w, cx| {
+                            let _ = v_just.update(cx, |v, cx| v.set_align_doc(Align::Justify, w, cx));
+                        }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new(i18n::t("Decrease list level · Shift+Tab"))
+                        .icon(Lucide::ListIndentDecrease)
+                        .on_click(move |_, w, cx| {
+                            let _ = v_out.update(cx, |v, cx| v.list_level_doc(-1, w, cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(i18n::t("Increase list level · Tab"))
+                        .icon(Lucide::ListIndentIncrease)
+                        .on_click(move |_, w, cx| {
+                            let _ = v_in.update(cx, |v, cx| v.list_level_doc(1, w, cx));
+                        }),
+                )
             })
     };
     let reset = {
@@ -79,13 +152,20 @@ pub(crate) fn render(view: &DocsView, cx: &mut Context<DocsView>) -> Div {
             .label(zoom_label)
             .on_click(move |_, window, cx| {
                 let _ = view.update(cx, |v, cx| {
-                    v.set_zoom(1.0, cx);
+                    if (v.zoom() - 1.0).abs() < 0.005 {
+                        v.reset_zoom_auto(cx);
+                    } else {
+                        v.set_zoom(1.0, cx);
+                    }
                     v.focus(window, cx);
                 });
             })
     };
     h_flex()
+        .id("docs-toolbar-strip")
         .flex_none()
+        .w_full()
+        .overflow_x_scroll()
         .h(CONTROL_LG + SPACE_3)
         .px(SPACE_4)
         .gap(SPACE_1)
@@ -133,22 +213,26 @@ pub(crate) fn render(view: &DocsView, cx: &mut Context<DocsView>) -> Div {
             |v, w, cx| v.set_style_doc(Some("Heading1"), w, cx),
             cx,
         ))
-        .child(tool(
-            "docs-h2",
-            Lucide::Heading2,
-            i18n::t("Heading 2 · Ctrl+Alt+2"),
-            is_style(Some("Heading2")),
-            |v, w, cx| v.set_style_doc(Some("Heading2"), w, cx),
-            cx,
-        ))
-        .child(tool(
-            "docs-h3",
-            Lucide::Heading3,
-            i18n::t("Heading 3 · Ctrl+Alt+3"),
-            is_style(Some("Heading3")),
-            |v, w, cx| v.set_style_doc(Some("Heading3"), w, cx),
-            cx,
-        ))
+        .when(!very_compact, |bar| {
+            bar.child(tool(
+                "docs-h2",
+                Lucide::Heading2,
+                i18n::t("Heading 2 · Ctrl+Alt+2"),
+                is_style(Some("Heading2")),
+                |v, w, cx| v.set_style_doc(Some("Heading2"), w, cx),
+                cx,
+            ))
+        })
+        .when(!compact, |bar| {
+            bar.child(tool(
+                "docs-h3",
+                Lucide::Heading3,
+                i18n::t("Heading 3 · Ctrl+Alt+3"),
+                is_style(Some("Heading3")),
+                |v, w, cx| v.set_style_doc(Some("Heading3"), w, cx),
+                cx,
+            ))
+        })
         .child(separator(cx))
         .child(tool(
             "docs-left",
@@ -166,22 +250,24 @@ pub(crate) fn render(view: &DocsView, cx: &mut Context<DocsView>) -> Div {
             |v, w, cx| v.set_align_doc(Align::Center, w, cx),
             cx,
         ))
-        .child(tool(
-            "docs-right",
-            Lucide::TextAlignEnd,
-            i18n::t("Align right · Ctrl+R"),
-            align == Align::Right,
-            |v, w, cx| v.set_align_doc(Align::Right, w, cx),
-            cx,
-        ))
-        .child(tool(
-            "docs-justify",
-            Lucide::TextAlignJustify,
-            i18n::t("Justify · Ctrl+J"),
-            align == Align::Justify,
-            |v, w, cx| v.set_align_doc(Align::Justify, w, cx),
-            cx,
-        ))
+        .when(!compact, |bar| {
+            bar.child(tool(
+                "docs-right",
+                Lucide::TextAlignEnd,
+                i18n::t("Align right · Ctrl+R"),
+                align == Align::Right,
+                |v, w, cx| v.set_align_doc(Align::Right, w, cx),
+                cx,
+            ))
+            .child(tool(
+                "docs-justify",
+                Lucide::TextAlignJustify,
+                i18n::t("Justify · Ctrl+J"),
+                align == Align::Justify,
+                |v, w, cx| v.set_align_doc(Align::Justify, w, cx),
+                cx,
+            ))
+        })
         .child(separator(cx))
         .child(tool(
             "docs-bullets",
@@ -199,22 +285,25 @@ pub(crate) fn render(view: &DocsView, cx: &mut Context<DocsView>) -> Div {
             |v, w, cx| v.toggle_list_doc(ListKind::Numbered, w, cx),
             cx,
         ))
-        .child(tool(
-            "docs-outdent",
-            Lucide::ListIndentDecrease,
-            i18n::t("Decrease list level · Shift+Tab"),
-            false,
-            |v, w, cx| v.list_level_doc(-1, w, cx),
-            cx,
-        ))
-        .child(tool(
-            "docs-indent",
-            Lucide::ListIndentIncrease,
-            i18n::t("Increase list level · Tab"),
-            false,
-            |v, w, cx| v.list_level_doc(1, w, cx),
-            cx,
-        ))
+        .when(!compact, |bar| {
+            bar.child(tool(
+                "docs-outdent",
+                Lucide::ListIndentDecrease,
+                i18n::t("Decrease list level · Shift+Tab"),
+                false,
+                |v, w, cx| v.list_level_doc(-1, w, cx),
+                cx,
+            ))
+            .child(tool(
+                "docs-indent",
+                Lucide::ListIndentIncrease,
+                i18n::t("Increase list level · Tab"),
+                false,
+                |v, w, cx| v.list_level_doc(1, w, cx),
+                cx,
+            ))
+        })
+        .when(compact, |bar| bar.child(more_format_button))
         .child(separator(cx))
         .child(table_button)
         .child(tool(
@@ -321,10 +410,14 @@ pub(crate) fn render(view: &DocsView, cx: &mut Context<DocsView>) -> Div {
         ))
         .child(separator(cx))
         .child(crate::page_menu::page_button(view, cx))
-        .child(crate::columns_menu::columns_button(view, cx))
-        .child(crate::hf_menu::hf_button(view, cx))
-        .child(crate::mailings::mailings_button(view, cx))
-        .child(crate::review::review_button(view, cx))
+        .when(!very_compact, |bar| {
+            bar.child(crate::columns_menu::columns_button(view, cx))
+                .child(crate::hf_menu::hf_button(view, cx))
+        })
+        .when(!compact, |bar| {
+            bar.child(crate::mailings::mailings_button(view, cx))
+                .child(crate::review::review_button(view, cx))
+        })
         .child(print_button(cx))
 }
 

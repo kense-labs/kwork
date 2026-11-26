@@ -199,7 +199,12 @@ mod tests {
 
     #[std::prelude::v1::test]
     fn tip_text_adds_the_shortcut_when_there_is_one() {
-        assert_eq!(tip_text("Bold", Some("Ctrl+B")), "Bold · Ctrl+B");
+        let expected = if cfg!(target_os = "macos") {
+            "Bold · ⌘B"
+        } else {
+            "Bold · Ctrl+B"
+        };
+        assert_eq!(tip_text("Bold", Some("Ctrl+B")), expected);
         assert_eq!(tip_text("Insert table", None), "Insert table");
         assert_eq!(tip_text("Strikethrough", Some("")), "Strikethrough");
     }

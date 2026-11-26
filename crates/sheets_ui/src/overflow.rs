@@ -292,8 +292,10 @@ impl SheetGrid {
             run.font.style = FontStyle::Italic;
         }
         let shape = |w: &mut Window, s: String| {
+            let mut r = run.clone();
+            r.len = s.len();
             w.text_system()
-                .shape_line(s.into(), size, std::slice::from_ref(&run), None)
+                .shape_line(s.into(), size, std::slice::from_ref(&r), None)
                 .width
         };
         if f32::from(shape(window, text.to_owned())) <= room {

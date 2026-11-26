@@ -39,6 +39,8 @@ pub struct TreeView {
     appearance: BranchRows<Entry>,
     opened: Option<SharedString>,
     settled_once: bool,
+    full_width: bool,
+    embedded: bool,
     entrances: std::collections::BTreeMap<SharedString, RowEntrance>,
     chevrons: std::collections::BTreeMap<SharedString, Slide>,
 }
@@ -61,6 +63,8 @@ impl TreeView {
             appearance: Default::default(),
             opened: None,
             settled_once: false,
+            full_width: false,
+            embedded: false,
             entrances: Default::default(),
             chevrons: Default::default(),
             focus: cx.focus_handle().tab_stop(true),
@@ -70,6 +74,17 @@ impl TreeView {
         self.expanded.extend(ids);
         self
     }
+    pub fn full_width(mut self) -> Self {
+        self.full_width = true;
+        self
+    }
+    /// Render directly inside a host pane with its own edges and scrolling.
+    pub fn embedded(mut self) -> Self {
+        self.full_width = true;
+        self.embedded = true;
+        self
+    }
+
     fn visible(&self) -> Vec<Entry> {
         fn walk(
             nodes: &[TreeNode],
@@ -149,14 +164,19 @@ impl TreeView {
 impl Render for TreeView {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Paint::get(cx);
-        let mut root = panel(cx)
+        let full_w = self.full_width;
+        let container = if self.embedded {
+            div().w_full().flex().flex_col().text_color(p.ink)
+        } else {
+            panel(cx).p_2()
+        };
+        let mut root = container
             .id("tree")
             .role(Role::Tree)
             .relative()
             .track_focus(&self.focus)
             .tab_stop(true)
-            .w(fit(w, 390.))
-            .p_2()
+            .map(|d| if full_w { d.w_full() } else { d.w(fit(w, 390.)) })
             .on_key_down(cx.listener(|s, e, _, cx| s.key(e, cx)));
         let visible = self.visible();
         let opened = visible
@@ -239,6 +259,7 @@ impl Render for TreeView {
                     .overflow_hidden()
                     .child(
                         button(id.clone(), entry.name.clone(), cx)
+                            .when(full_w, |b| b.w_full())
                             .relative()
                             .left(px(offset))
                             .tab_index(-1)

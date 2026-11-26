@@ -1759,6 +1759,9 @@ impl SlidesView {
     }
 
     fn update_title(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if kantor_ui::is_embedded_host() {
+            return;
+        }
         let title = self.title(cx);
         window.set_window_title(&title);
     }

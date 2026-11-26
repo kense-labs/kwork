@@ -872,6 +872,7 @@ impl Workspace {
         let word = match lang() {
             Lang::Id => "konflik",
             Lang::En => "conflict",
+            Lang::Zh => "冲突",
         };
         let copy = conflict_copy_name(&name, word, &cd.account.user, &today());
         let panel = cx.new(|cx| ConflictPanel::new(pane, name, copy, cx));
@@ -896,6 +897,7 @@ impl Workspace {
                 let word = match lang() {
                     Lang::Id => "konflik",
                     Lang::En => "conflict",
+                    Lang::Zh => "冲突",
                 };
                 let copy =
                     conflict_copy_name(cd.sync.entry.name(), word, &cd.account.user, &today());

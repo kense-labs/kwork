@@ -15,19 +15,23 @@ path = "src/main.rs"
 anyhow.workspace = true
 async-channel = "2"
 axum.workspace = true
+base64.workspace = true
 chrono = { workspace = true, features = ["clock"] }
 docs_engine.workspace = true
 docs_ui.workspace = true
 env_logger.workspace = true
 futures.workspace = true
+gix-quote = "0.6"
 gpui-kit.workspace = true
 image = { workspace = true, features = ["png"] }
 kar.workspace = true
+kar-documents.workspace = true
 kantor_core.workspace = true
 kantor_theme.workspace = true
 kantor_ui.workspace = true
 kui.workspace = true
 log.workspace = true
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sheets_engine.workspace = true
@@ -35,6 +39,7 @@ sheets_ui.workspace = true
 slides_engine.workspace = true
 slides_ui.workspace = true
 tokio.workspace = true
+ureq.workspace = true
 uuid.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
