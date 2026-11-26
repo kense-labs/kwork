@@ -9,12 +9,18 @@ use gpui::{prelude::*, *};
 use kui::primitives::{family::Slide, pro_icons::pro_svg};
 
 use crate::{
-    ui_primitives::{FS_CONTROL, StudioPalette, UiLocale},
+    ui_primitives::{DIVIDER_HIT_WIDTH, FOLDED_GRIP_HIT_WIDTH, FS_CONTROL, StudioPalette, UiLocale},
     workbench::KarWorkbench,
 };
 
 const PITCH: f32 = 10.;
-const HIT_WIDTH: f32 = 24.;
+const HIT_WIDTH: f32 = 32.;
+pub(super) const CONTENT_CLEARANCE: f32 = HIT_WIDTH + 6.;
+
+pub(super) fn leading_inset(sidebar_open: bool) -> f32 {
+    let grip = if sidebar_open { (DIVIDER_HIT_WIDTH / 2.).ceil() } else { FOLDED_GRIP_HIT_WIDTH };
+    grip + 12.
+}
 
 #[derive(Clone)]
 pub(crate) struct TurnRailEntry {

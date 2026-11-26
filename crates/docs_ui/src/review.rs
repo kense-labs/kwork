@@ -17,6 +17,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use kantor_ui::components::icon_button;
 use kantor_ui::i18n::{self, t, t_dyn, tf, tk};
 use kantor_ui::tokens::Elevation;
 use kantor_ui::{metrics::*, tokens};
@@ -1081,15 +1082,13 @@ pub(crate) fn review_button(view: &DocsView, cx: &mut Context<DocsView>) -> impl
     } else {
         tip
     };
-    Button::new("docs-review")
-        .ghost()
-        .xsmall()
-        .icon(if track {
-            Lucide::FileDiff
-        } else {
-            Lucide::MessageSquare
-        })
-        .dropdown_caret(true)
+    let icon = if track {
+        Lucide::FileDiff
+    } else {
+        Lucide::MessageSquare
+    };
+    icon_button("docs-review", icon, track, cx)
+        .tab_stop(true)
         .tooltip(tip)
         .dropdown_menu(move |menu, _, cx| {
             let on = kantor_ui::spelling::enabled(cx);

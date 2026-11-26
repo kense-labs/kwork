@@ -484,9 +484,10 @@ pub struct KarWorkbench {
     /// Rail width in px, sprung so collapsing and expanding glide.
     pub(crate) sidebar_anim: Slide,
     sidebar_width: f32,
-    /// The conversation's share of the work area; 1.0 when no document is shown.
+    /// Conversation share of an open split, including animated divider adjustments.
     pub(crate) split_anim: Slide,
-    /// The share the document pane last settled beside.
+    /// Fraction of the open document pane currently revealed.
+    dock_reveal: Slide,
     /// How much of the rail is showing this frame, 0 to 1.
     pub(crate) sidebar_reveal: f32,
 
@@ -1486,11 +1487,8 @@ impl KarWorkbench {
             doc_divider_focus: cx.focus_handle().tab_stop(true),
             sidebar_anim: Slide::new(if initial_sidebar_open { sidebar_width } else { 0. }),
             sidebar_width,
-            split_anim: Slide::new(if initial_layout == WorkspaceLayoutMode::ChatFocus {
-                1.0
-            } else {
-                split_ratio
-            }),
+            split_anim: Slide::new(split_ratio),
+            dock_reveal: Slide::new(if initial_layout == WorkspaceLayoutMode::ChatFocus { 0. } else { 1. }),
             sidebar_reveal: if initial_sidebar_open { 1.0 } else { 0.0 },
             open_menu: config.open_context_popover.then_some(Menu::ContextUsage),
             palette_return_focus: None,
@@ -1830,9 +1828,17 @@ impl KarWorkbench {
             } else if mode == WorkspaceLayoutMode::Split && narrow {
                 self.set_sidebar_open(false, cx);
             }
+            if mode != WorkspaceLayoutMode::ChatFocus {
+                let target = self.split_target(mode);
+                if self.dock_reveal.value(cx) <= 0.001 {
+                    self.split_anim.reset(target);
+                } else {
+                    self.split_anim.duration(target, SHELL_SETTLE, cx);
+                }
+            }
             self.layout_mode = mode;
-            let target = self.split_target(mode);
-            self.split_anim.duration(target, SHELL_SETTLE, cx);
+            let visible = mode != WorkspaceLayoutMode::ChatFocus;
+            self.dock_reveal.duration(f32::from(visible), SHELL_SETTLE, cx);
             cx.notify();
         }
     }
@@ -6833,10 +6839,13 @@ impl Render for KarWorkbench {
             }
             .focus(window, cx);
         }
+        let dock_closed = self.layout_mode == WorkspaceLayoutMode::ChatFocus;
+        let dock_reveal = self.dock_reveal.get(window, cx).clamp(0., 1.);
         let sidebar_limit = if compact {
             SIDEBAR_W
         } else {
-            resize::sidebar_max(window_w, self.layout_mode != WorkspaceLayoutMode::ChatFocus)
+            let wide = resize::sidebar_max(window_w, false);
+            wide + (resize::sidebar_max(window_w, true) - wide) * dock_reveal
         };
         let rail_width = if compact {
             SIDEBAR_W
@@ -6846,11 +6855,10 @@ impl Render for KarWorkbench {
         self.sidebar_reveal =
             (self.sidebar_anim.get(window, cx) / self.sidebar_width).clamp(0., 1.);
         let sidebar_w = self.sidebar_reveal * rail_width;
-        let chat_frac = self.split_anim.get(window, cx).clamp(SPLIT_MIN, 1.0);
         let in_conversation_stage = self.main_stage_view == MainStageView::Conversation;
         let show_doc = in_conversation_stage
             && (self.layout_mode != WorkspaceLayoutMode::ChatFocus
-                || (!compact && chat_frac < 0.997));
+                || (!compact && dock_reveal > 0.001));
         let single_dock = compact && show_doc;
         if in_conversation_stage && !single_dock && !drawer_active && !overlay_open
             && !self.command_palette_open && !self.any_dialog_open(cx)
@@ -6873,29 +6881,18 @@ impl Render for KarWorkbench {
             0.
         };
 
-        let split_gutter = if show_doc && !single_dock {
-            SHEET_GUTTER
-        } else {
-            0.0
-        };
-
         let rail_space = if compact { 0. } else { sidebar_w };
-        let usable = (window_w - rail_space - split_gutter).max(1.);
-        let split_span = resize::chat_span(usable, chat_frac);
-        let chat_w = if self.layout_mode == WorkspaceLayoutMode::ChatFocus {
-            // Interpolate through the readable minimum on exit, so the dock can slide away.
-            split_span.value.max(usable * chat_frac)
-        } else {
-            split_span.value
-        };
-        let pane_w = if show_doc && !single_dock {
-            chat_w
-        } else {
-            usable
-        };
+        let usable = (window_w - rail_space).max(1.);
+        let split_span = resize::chat_span((usable - SHEET_GUTTER).max(1.), self.split_anim.get(window, cx));
+        // Constrain the open layout once, then reveal it from zero. Applying the document
+        // minimum to the animated width would jump the divider by up to DOC_MIN_W at click.
+        let dock_w = if single_dock { usable } else { split_span.extent - split_span.value };
+        let revealed_width = if show_doc && !single_dock { (dock_w + SHEET_GUTTER) * dock_reveal } else { 0. };
+        let chat_w = usable - revealed_width;
         let (stage_key, inner_stage, chat_rail) = match self.main_stage_view {
+            MainStageView::Conversation if single_dock => ("stage-conversation", div().into_any_element(), None),
             MainStageView::Conversation => {
-                let (chat, rail) = self.render_chat_pane(pane_w, window, cx);
+                let (chat, rail) = self.render_chat_pane(chat_w, revealed_width, window, cx);
                 ("stage-conversation", chat, rail)
             }
             MainStageView::TasksInbox => {
@@ -6908,11 +6905,14 @@ impl Render for KarWorkbench {
         let chat_view = pro_view_transition_fill("kar-main-stage-vtx", stage_key, inner_stage);
         let term_drawer =
             (term_drawer_h > 0.5).then(|| self.render_bottom_terminal_drawer(&s, window, cx));
-        let dock_w = if single_dock { usable } else { usable - chat_w };
         let doc_view = show_doc.then(|| self.render_office_pane(dock_w, single_dock, window, cx));
         let sidebar_view = (sidebar_w > 0.5).then(|| self.render_sidebar(rail_width, window, cx));
 
-        let left_handle = (!compact || !self.sidebar_open).then(|| {
+        // An in-flight split is narrower than its draggable minimum. Until the visible
+        // boundary reaches that minimum, a drag would snap to a different width.
+        let dividers_ready = compact || !in_conversation_stage ||
+            (dock_reveal - f32::from(!dock_closed)).abs() * (dock_w + SHEET_GUTTER) <= 1.;
+        let left_handle = (dividers_ready && (!compact || !self.sidebar_open)).then(|| {
             let span = Span {
                 value: rail_width,
                 min: resize::SIDEBAR_MIN,
@@ -6920,21 +6920,16 @@ impl Render for KarWorkbench {
                 extent: window_w,
             };
             let document_width = (show_doc && self.layout_mode != WorkspaceLayoutMode::ChatFocus)
-                .then_some(usable - chat_w);
+                .then_some(dock_w);
             let x = if self.sidebar_open { sidebar_w } else { 0. };
             self.workspace_divider(
                 Divider::Sidebar, x, span, !self.sidebar_open, document_width, &s, window, cx,
             )
         });
-        let dock_closed = self.layout_mode == WorkspaceLayoutMode::ChatFocus;
-        let show_right_handle = in_conversation_stage && chat_rail.is_none() && !drawer_active
+        let show_right_handle = dividers_ready && in_conversation_stage && chat_rail.is_none() && !drawer_active
             && (!compact || dock_closed);
         let right_handle = show_right_handle.then(|| {
-            let x = if dock_closed {
-                window_w
-            } else {
-                rail_space + chat_w + SHEET_GUTTER * 0.5
-            };
+            let x = if show_doc { rail_space + chat_w + SHEET_GUTTER * 0.5 * dock_reveal } else { window_w };
             self.workspace_divider(
                 Divider::Document, x, split_span, dock_closed, None, &s, window, cx,
             )
@@ -7019,7 +7014,7 @@ impl Render for KarWorkbench {
             .flex()
             .flex_row()
             .when(!single_dock, |d| d.child(chat_column))
-            .when(show_doc && !single_dock, |d| d.child(div().flex_none().h_full().w(px(SHEET_GUTTER)).bg(s.line)))
+            .when(show_doc && !single_dock, |d| d.child(div().flex_none().h_full().w(px(SHEET_GUTTER * dock_reveal)).bg(s.line)))
             .when_some(doc_view, |d, doc| {
                 d.child(
                     div()
@@ -7030,7 +7025,7 @@ impl Render for KarWorkbench {
                         .flex()
                         .flex_col()
                         .overflow_hidden()
-                        .child(div().flex_1().min_h_0().overflow_hidden().child(doc)),
+                        .child(div().w(px(dock_w)).h_full().flex_none().overflow_hidden().child(doc)),
                 )
             });
 

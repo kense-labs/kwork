@@ -388,10 +388,8 @@ pub(crate) fn render(active: &Active, compact: bool, cx: &mut Context<SheetsView
         let style = style.clone();
         let merged = active.merged;
         row = row.child(separator(cx)).child(
-            Button::new("fmt-more")
-                .ghost()
-                .xsmall()
-                .icon(IconName::Ellipsis)
+            icon_button("fmt-more", IconName::Ellipsis, false, cx)
+                .tab_stop(true)
                 .tooltip(i18n::t("More formatting"))
                 .dropdown_menu(move |mut menu, _, _| {
                     let active = Active {
@@ -431,11 +429,8 @@ pub(crate) fn render(active: &Active, compact: bool, cx: &mut Context<SheetsView
             .child(color_button(Paint::Text, style.font_color.map(hsla), cx))
             .children(SIZE_TOOLS.iter().map(|tool| tool_button(tool, active, cx)))
             .child(
-                Button::new("fmt-borders")
-                    .ghost()
-                    .xsmall()
-                    .icon(Lucide::Grid3x3)
-                    .dropdown_caret(true)
+                icon_button("fmt-borders", Lucide::Grid3x3, false, cx)
+                    .tab_stop(true)
                     .tooltip(i18n::t("Borders"))
                     .dropdown_menu(move |menu, _, _| border_items(menu, &border_view)),
             )
@@ -454,11 +449,8 @@ pub(crate) fn render(active: &Active, compact: bool, cx: &mut Context<SheetsView
     // View: frozen panes, hidden rows and columns.
     let view_view = cx.entity().downgrade();
     row = row.child(separator(cx)).child(
-        Button::new("view-menu")
-            .ghost()
-            .xsmall()
-            .icon(Lucide::Snowflake)
-            .dropdown_caret(true)
+        icon_button("view-menu", Lucide::Snowflake, false, cx)
+            .tab_stop(true)
             .tooltip(i18n::t(
                 "Page Break Preview, freeze panes, hide rows and columns",
             ))
@@ -472,11 +464,8 @@ pub(crate) fn render(active: &Active, compact: bool, cx: &mut Context<SheetsView
     // Conditional formatting.
     let cf_view = cx.entity().downgrade();
     row = row.child(separator(cx)).child(
-        Button::new("cf-menu")
-            .ghost()
-            .xsmall()
-            .icon(Lucide::Highlighter)
-            .dropdown_caret(true)
+        icon_button("cf-menu", Lucide::Highlighter, false, cx)
+            .tab_stop(true)
             .tooltip(i18n::t("Conditional Formatting"))
             .dropdown_menu(move |menu, window, cx| {
                 crate::cf_ui::cf_menu(menu, &cf_view, window, cx)
@@ -485,11 +474,8 @@ pub(crate) fn render(active: &Active, compact: bool, cx: &mut Context<SheetsView
     // Data validation.
     let dv_view = cx.entity().downgrade();
     row = row.child(
-        Button::new("dv-menu")
-            .ghost()
-            .xsmall()
-            .icon(Lucide::ListChecks)
-            .dropdown_caret(true)
+        icon_button("dv-menu", Lucide::ListChecks, false, cx)
+            .tab_stop(true)
             .tooltip(i18n::t("Data Validation"))
             .dropdown_menu(move |menu, _, _| {
                 let (a, b, c) = (dv_view.clone(), dv_view.clone(), dv_view.clone());
@@ -515,54 +501,40 @@ pub(crate) fn render(active: &Active, compact: bool, cx: &mut Context<SheetsView
     // Tables.
     let table_view = cx.entity().downgrade();
     row = row.child(separator(cx)).child(
-        Button::new("table-menu")
-            .ghost()
-            .xsmall()
-            .icon(Lucide::Table)
-            .dropdown_caret(true)
+        icon_button("table-menu", Lucide::Table, false, cx)
+            .tab_stop(true)
             .tooltip(i18n::t("Table"))
             .dropdown_menu(move |menu, _, _| table_items(menu, &table_view)),
     );
     // Charts.
     let chart_view = cx.entity().downgrade();
     row = row.child(
-        Button::new("chart-menu")
-            .ghost()
-            .xsmall()
-            .icon(Lucide::ChartColumn)
-            .dropdown_caret(true)
+        icon_button("chart-menu", Lucide::ChartColumn, false, cx)
+            .tab_stop(true)
             .tooltip(i18n::t("Insert Chart"))
             .dropdown_menu(move |menu, _, _| crate::chart_ui::chart_menu(menu, &chart_view)),
     );
     // Text box and shapes.
     let shape_view = cx.entity().downgrade();
     row = row.child(
-        Button::new("shape-menu")
-            .ghost()
-            .xsmall()
-            .icon(Lucide::Shapes)
-            .dropdown_caret(true)
+        icon_button("shape-menu", Lucide::Shapes, false, cx)
+            .tab_stop(true)
             .tooltip(i18n::t("Shapes"))
             .dropdown_menu(move |menu, _, _| crate::shape_ui::shape_menu(menu, &shape_view)),
     );
     // PivotTables.
     let pivot_view = cx.entity().downgrade();
     row = row.child(separator(cx)).child(
-        Button::new("pivot-menu")
-            .ghost()
-            .xsmall()
-            .icon(Lucide::TableProperties)
-            .dropdown_caret(true)
+        icon_button("pivot-menu", Lucide::TableProperties, false, cx)
+            .tab_stop(true)
             .tooltip(i18n::t("PivotTable"))
             .dropdown_menu(move |menu, _, _| pivot_items(menu, &pivot_view)),
     );
     // Review > Spelling.
     let spell_view = cx.entity().downgrade();
     row = row.child(separator(cx)).child(
-        Button::new("spelling")
-            .ghost()
-            .xsmall()
-            .icon(Lucide::SpellCheck)
+        icon_button("spelling", Lucide::SpellCheck, false, cx)
+            .tab_stop(true)
             .tooltip(i18n::t("Spelling (F7)"))
             .on_click(move |_, w, cx| {
                 let _ = spell_view.update(cx, |v, cx| v.spelling_doc(w, cx));
@@ -571,11 +543,8 @@ pub(crate) fn render(active: &Active, compact: bool, cx: &mut Context<SheetsView
     // Review > Notes.
     let notes_view = cx.entity().downgrade();
     row = row.child(
-        Button::new("notes-menu")
-            .ghost()
-            .xsmall()
-            .icon(Lucide::MessageSquare)
-            .dropdown_caret(true)
+        icon_button("notes-menu", Lucide::MessageSquare, false, cx)
+            .tab_stop(true)
             .tooltip(i18n::t("Notes"))
             .dropdown_menu(move |menu, _, cx| {
                 let (has_note, show_all) = notes_view
@@ -588,11 +557,8 @@ pub(crate) fn render(active: &Active, compact: bool, cx: &mut Context<SheetsView
     // Export as PDF and Print.
     let print_view = cx.entity().downgrade();
     row = row.child(separator(cx)).child(
-        Button::new("file-print")
-            .ghost()
-            .xsmall()
-            .icon(Lucide::Printer)
-            .dropdown_caret(true)
+        icon_button("file-print", Lucide::Printer, false, cx)
+            .tab_stop(true)
             .tooltip(i18n::t("Print and export"))
             .dropdown_menu(move |menu, _, _| {
                 let export = print_view.clone();

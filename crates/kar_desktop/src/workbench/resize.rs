@@ -1,5 +1,6 @@
 //! Pointer and keyboard interaction for the two horizontal workspace dividers.
 use super::*;
+use crate::ui_primitives::{DIVIDER_HIT_WIDTH, FOLDED_GRIP_HIT_WIDTH};
 
 pub(super) const SIDEBAR_MIN: f32 = 192.;
 const SIDEBAR_MAX: f32 = 480.;
@@ -139,12 +140,14 @@ impl KarWorkbench {
                     self.split_ratio = chat.value / usable;
                     self.layout_mode = WorkspaceLayoutMode::Split;
                     animate(&mut self.split_anim, self.split_ratio);
+                    animate(&mut self.dock_reveal, 1.);
                 }
             }
             Divider::Document => {
                 self.split_ratio = value / span.extent;
                 self.layout_mode = WorkspaceLayoutMode::Split;
                 animate(&mut self.split_anim, self.split_ratio);
+                animate(&mut self.dock_reveal, 1.);
             }
         }
         cx.notify();
@@ -229,8 +232,9 @@ impl KarWorkbench {
                 SHELL_SETTLE,
                 cx,
             );
-            self.split_anim
-                .duration(self.split_target(self.layout_mode), SHELL_SETTLE, cx);
+            let open = self.layout_mode != WorkspaceLayoutMode::ChatFocus;
+            self.split_anim.duration(if open { self.split_target(self.layout_mode) } else { self.split_ratio }, SHELL_SETTLE, cx);
+            self.dock_reveal.duration(if open { 1. } else { 0. }, SHELL_SETTLE, cx);
             if collapse && !cancel {
                 self.toggle_divider(drag.divider, cx);
             }
@@ -275,7 +279,7 @@ impl KarWorkbench {
                 "Drag or use arrow keys to resize. Shift moves faster. Enter collapses the pane. Double-click to reset.")
         };
         let width = f32::from(window.viewport_size().width);
-        let hit = if collapsed { 28. } else { 13. };
+        let hit = if collapsed { FOLDED_GRIP_HIT_WIDTH } else { DIVIDER_HIT_WIDTH };
         let left = (boundary - hit / 2.).clamp(0., (width - hit).max(0.));
         let highlight = if s.dark { white() } else { s.ink };
         let motion = window.use_keyed_state((id, 0usize), cx, |_, _| Slide::new(0.));

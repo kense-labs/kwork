@@ -53,11 +53,13 @@ impl UiLocale {
 pub const HEADER_H: f32 = 52.0;
 pub const TITLEBAR_EDGE_INSET: f32 = 14.0;
 pub const TITLEBAR_BUTTON_GAP: f32 = 4.0;
-// AppKit's window-sharing control is centered 16 pt from the top of the window.
-pub(crate) const MACOS_TITLEBAR_CENTER_Y: f32 = 16.;
+// Keep a 6 pt top inset above the 28 pt toolbar buttons.
+pub(crate) const MACOS_TITLEBAR_CENTER_Y: f32 = 20.;
 // The system controls end at 72 pt; 12 more to the button slot equalizes the visible icon gaps.
 pub const MACOS_TRAFFIC_LIGHT_PAD: f32 = 84.;
 pub const SIDEBAR_W: f32 = 257.0;
+pub(crate) const DIVIDER_HIT_WIDTH: f32 = 13.;
+pub(crate) const FOLDED_GRIP_HIT_WIDTH: f32 = 28.;
 pub const SHEET_GUTTER: f32 = 1.0;
 pub const DOC_MIN_W: f32 = 380.0;
 pub const THREAD_W: f32 = 736.0;

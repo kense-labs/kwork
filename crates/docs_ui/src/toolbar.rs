@@ -74,10 +74,8 @@ pub(crate) fn render(view: &DocsView, cx: &mut Context<DocsView>) -> Stateful<Di
         let cur_h3 = is_style(Some("Heading3"));
         let cur_right = align == Align::Right;
         let cur_justify = align == Align::Justify;
-        Button::new("docs-fmt-more")
-            .ghost()
-            .xsmall()
-            .icon(gpui_kit::component::IconName::Ellipsis)
+        icon_button("docs-fmt-more", gpui_kit::component::IconName::Ellipsis, false, cx)
+            .tab_stop(true)
             .tooltip(i18n::t("More formatting"))
             .dropdown_menu(move |mut menu, _, _| {
                 if very_compact {
@@ -424,11 +422,8 @@ pub(crate) fn render(view: &DocsView, cx: &mut Context<DocsView>) -> Stateful<Di
 /// Export as PDF and Print, as in Sheets' toolbar.
 fn print_button(cx: &mut Context<DocsView>) -> impl IntoElement {
     let view = cx.entity().downgrade();
-    Button::new("docs-print")
-        .ghost()
-        .xsmall()
-        .icon(Lucide::Printer)
-        .dropdown_caret(true)
+    icon_button("docs-print", Lucide::Printer, false, cx)
+        .tab_stop(true)
         .tooltip(i18n::t("Print and export"))
         .dropdown_menu(move |menu, _, _| {
             let export = view.clone();

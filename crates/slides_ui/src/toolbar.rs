@@ -5,8 +5,7 @@
 use docs_engine::Toggle;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::Button,
     h_flex,
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
 };
@@ -195,11 +194,8 @@ pub(crate) fn render(view: &SlidesView, cx: &mut Context<SlidesView>) -> Div {
 /// Export as PDF and the print layouts (slides, notes pages, handouts).
 fn print_button(cx: &mut Context<SlidesView>) -> impl IntoElement {
     let view = cx.entity().downgrade();
-    Button::new("slides-print")
-        .ghost()
-        .xsmall()
-        .icon(Lucide::Printer)
-        .dropdown_caret(true)
+    icon_button("slides-print", Lucide::Printer, false, cx)
+        .tab_stop(true)
         .tooltip(i18n::t("Print and export"))
         .dropdown_menu(move |menu, _, _| print_items(menu, &view))
 }

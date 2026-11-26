@@ -374,9 +374,11 @@ impl KarWorkbench {
                 active_entries.push(entry.clone());
             }
         }
-        // Pinned threads float smoothly to the top of the active feed
+        let running_threads = self.running_thread_ids();
+        let has_active_entries = !active_entries.is_empty();
         active_entries.sort_by_key(|e| {
             (
+                self.prefs.sidebar_working_section && !running_threads.contains(&e.info.id),
                 !self.project_registry.is_pinned(e.info.id),
                 std::cmp::Reverse(e.last_activity_ms.unwrap_or(0)),
             )
@@ -479,51 +481,9 @@ impl KarWorkbench {
             );
         }
 
-        let running_threads = self.running_thread_ids();
-        let (working_entries, rest_entries): (Vec<ChatListEntry>, Vec<ChatListEntry>) =
-            if self.prefs.sidebar_working_section {
-                active_entries
-                    .iter()
-                    .cloned()
-                    .partition(|e| running_threads.contains(&e.info.id))
-            } else {
-                (Vec::new(), active_entries.clone())
-            };
-
-        if !working_entries.is_empty() {
-            list_col = list_col.child(
-                div()
-                    .px(px(6.))
-                    .pt(px(6.))
-                    .pb(px(2.))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .text_size(px(FS_TAG))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(s.pro.accent_info)
-                    .child(loc.pick("运行中", "Working"))
-                    .child(format!("{}", working_entries.len())),
-            );
-            for entry in working_entries {
-                list_col = list_col.child(self.render_sidebar_thread_card(
-                    running_threads.contains(&entry.info.id),
-                    entry,
-                    "wrk",
-                    active_chat_id,
-                    now_ms,
-                    false,
-                    &nav_sensor,
-                    &s,
-                    window,
-                    cx,
-                ));
-            }
-        }
-
-        if self.prefs.sidebar_group_by_project && self.sidebar_project_filter.is_none() && !rest_entries.is_empty() {
+        if self.prefs.sidebar_group_by_project && self.sidebar_project_filter.is_none() && has_active_entries {
             let mut by_proj: Vec<(String, String, u64, Vec<ChatListEntry>)> = Vec::new();
-            for entry in rest_entries {
+            for entry in active_entries {
                 let (pid, pname) = self
                     .project_registry
                     .project_for_chat(&entry.info.workspace, entry.info.id)
@@ -622,10 +582,10 @@ impl KarWorkbench {
                 }
             }
         } else {
-            for entry in &rest_entries {
+            for entry in active_entries {
                 list_col = list_col.child(self.render_sidebar_thread_card(
                     running_threads.contains(&entry.info.id),
-                    entry.clone(),
+                    entry,
                     "act",
                     active_chat_id,
                     now_ms,
@@ -669,7 +629,7 @@ impl KarWorkbench {
             }
         }
 
-        if active_entries.is_empty() && !matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
+        if !has_active_entries && !matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
             let message = if has_query {
                 loc.pick("没有匹配的对话", "No matching threads")
             } else if !self.chat_list.is_empty() && self.sidebar_project_filter.is_some() {

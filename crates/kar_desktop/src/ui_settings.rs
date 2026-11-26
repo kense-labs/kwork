@@ -136,8 +136,8 @@ const SETTINGS_DEEP_INDEX: &[DeepSettingItem] = &[
     },
     DeepSettingItem {
         tab: SettingsTab::General,
-        title_zh: "侧边栏项目分组、排序与运行中专区",
-        title_en: "Sidebar project grouping, order & Working section",
+        title_zh: "侧边栏分组与排序",
+        title_en: "Sidebar grouping and order",
         keywords: "sidebar group project sort working 侧栏 分组 排序 运行中 隐藏文件",
     },
     DeepSettingItem {
@@ -529,9 +529,9 @@ impl KarWorkbench {
             window,
             cx,
         );
-        let working_sec_sw = Self::settings_switch(
+        let running_first_switch = Self::settings_switch(
             "general-working-section",
-            loc.pick("顶部独立「运行中」专区", "Working section"),
+            loc.pick("优先显示进行中的对话", "Show working chats first"),
             self.prefs.sidebar_working_section,
             |wb, cx| {
                 wb.prefs.sidebar_working_section = !wb.prefs.sidebar_working_section;
@@ -587,9 +587,9 @@ impl KarWorkbench {
             ))
             .child(settings_divider(s))
             .child(settings_row_item(
-                loc.pick("运行中对话置顶专区", "Working section"),
-                loc.pick("将正在执行或等待审批的对话聚合在列表顶部，随时掌握多任务进展。", "Pin active and waiting threads into a dedicated top section."),
-                working_sec_sw,
+                loc.pick("优先显示进行中的对话", "Show working chats first"),
+                loc.pick("启用后，进行中的对话排在各自列表的最前面。", "Move working chats to the top of their list or project group."),
+                running_first_switch,
                 stacked,
                 s,
             ))

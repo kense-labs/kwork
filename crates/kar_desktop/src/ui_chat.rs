@@ -99,6 +99,7 @@ impl KarWorkbench {
     pub(crate) fn render_chat_pane(
         &mut self,
         pane_w: f32,
+        revealed_dock_width: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> (AnyElement, Option<ChatRail>) {
@@ -156,6 +157,7 @@ impl KarWorkbench {
         let thread_w = self.prefs.chat_width_mode.max_width_px();
         let header = self.render_chat_header(
             pane_w,
+            revealed_dock_width,
             on_start_screen,
             show_details_rail,
             show_review_rail,
@@ -330,10 +332,12 @@ impl KarWorkbench {
 
             // Each turn is a direct scroll child so its anchor follows live Markdown layout,
             // expanded tool details, window resizing and variable-height attachments.
-            // The collapsed sidebar handle owns the first 28 pt at mid-height.
-            let rail_inset = if self.sidebar_open { 2. } else { 30. };
+            let rail_inset = turn_rail::leading_inset(self.sidebar_open);
             let rail = self.render_turn_navigation(center_w, rail_inset, &s, window, cx);
             let show_rail = rail.is_some();
+            let gutter = chat_lane_gutter(center_w, window);
+            let lane_margin = ((center_w - thread_w) / 2. - gutter).max(0.);
+            let rail_padding = (rail_inset + turn_rail::CONTENT_CLEARANCE - lane_margin).max(gutter);
             // Markdown can gain a line after the final feed event has been delivered.
             // Read the previous layout immediately before the scroll view measures its new height.
             let tail = self.projected.turns.last().map(|turn| turn.id);
@@ -375,9 +379,7 @@ impl KarWorkbench {
                         .flex_none()
                         .pt(px(if index == 0 { 24. } else { 32. }))
                         .when(index + 1 == count, |d| d.pb(px(32.)))
-                        .when(show_rail, |d| {
-                            d.pl(px(chat_lane_gutter(center_w, window).max(rail_inset + 25.)))
-                        })
+                        .when(show_rail, |d| d.pl(px(rail_padding)))
                         .child(row)
                 }))
                 .children(card);
@@ -538,6 +540,7 @@ impl KarWorkbench {
     fn render_chat_header(
         &self,
         pane_w: f32,
+        revealed_dock_width: f32,
         on_start_screen: bool,
         show_details_rail: bool,
         show_review_rail: bool,
@@ -668,9 +671,7 @@ impl KarWorkbench {
 
         crate::ui_primitives::titlebar_row(window)
             .pl(px(left_pad))
-            .pr(px(TITLEBAR_EDGE_INSET + if self.layout_mode == WorkspaceLayoutMode::ChatFocus {
-                CTRL_SM_H + TITLEBAR_BUTTON_GAP
-            } else { 0. }))
+            .pr(px(TITLEBAR_EDGE_INSET + (CTRL_SM_H + TITLEBAR_BUTTON_GAP - revealed_dock_width).max(0.)))
             .justify_between()
             .gap(px(12.))
             .child(

@@ -428,6 +428,7 @@ pub struct DesktopPreferences {
     // 3. Sidebar grouping & order
     pub sidebar_group_by_project: bool,
     pub sidebar_project_order: ProjectSortOrder,
+    /// Prioritize working chats within the current list or project.
     #[serde(default = "default_true")]
     pub sidebar_working_section: bool,
 
