@@ -2,7 +2,7 @@
 //! Artwork provenance: docs/BRAND-MARKS.md. Marks identify the named providers only.
 use crate::{
     foundation::{Theme, ThemeMode},
-    primitives::kense_mark,
+    primitives::{kense_mark, pro_icons::pro_artwork},
 };
 use gpui::{prelude::*, *};
 use std::sync::{Arc, OnceLock};
@@ -109,12 +109,7 @@ pub(crate) fn brand_mark(name: &str, side: f32, cx: &App) -> Option<AnyElement> 
             ))
         }
     });
-    Some(
-        img(image.clone())
-            .size(px(side))
-            .flex_none()
-            .into_any_element(),
-    )
+    Some(pro_artwork(image.clone(), side).into_any_element())
 }
 
 fn svg(mark: Mark) -> &'static str {

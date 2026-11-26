@@ -3,7 +3,10 @@
 //! Line icon geometry from Hugeicons Free (MIT); provider marks documented in `docs/BRAND-MARKS.md`.
 
 use crate::primitives::brand_mark::brand_mark;
-use gpui::{AnyElement, App, Hsla, Image, ImageFormat, Rgba, img, prelude::*, px, svg};
+use gpui::{
+    AnyElement, App, Asset, DevicePixels, Hsla, Image, ImageCacheError, ImageFormat, ImageSource,
+    Img, ObjectFit, RenderImage, Rgba, SvgSize, img, prelude::*, px, size, svg,
+};
 use std::{
     collections::HashMap,
     sync::{Arc, LazyLock, Mutex, OnceLock},
@@ -338,6 +341,41 @@ static SYMBOL_CACHE: LazyLock<Mutex<SymbolCache>> = LazyLock::new(|| Mutex::new(
 
 static RAW_CACHE: LazyLock<Mutex<RawCacheMap>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+struct ColorSvg;
+
+impl Asset for ColorSvg {
+    type Source = (Arc<Image>, DevicePixels);
+    type Output = Result<Arc<RenderImage>, ImageCacheError>;
+
+    fn load(
+        (image, width): Self::Source,
+        cx: &mut App,
+    ) -> impl Future<Output = Self::Output> + Send + 'static {
+        let renderer = cx.svg_renderer();
+        async move {
+            let document = renderer.parse_svg(image.bytes())?;
+            Ok(renderer.render_parsed(&document, SvgSize::Size(size(width, width)))?)
+        }
+    }
+}
+
+/// Preserve full-color artwork at its displayed pixel size. GPUI caches SVGs
+/// separately for each source and device width, including after a display change.
+pub fn pro_artwork(image: Arc<Image>, side: f32) -> Img {
+    let source = if image.format() == ImageFormat::Svg {
+        ImageSource::Custom(Arc::new(move |window, cx| {
+            let width = DevicePixels((side * window.scale_factor()).round().max(1.) as i32);
+            window.use_asset::<ColorSvg>(&(image.clone(), width), cx)
+        }))
+    } else {
+        ImageSource::Image(image)
+    };
+    img(source)
+        .size(px(side))
+        .flex_none()
+        .object_fit(ObjectFit::Contain)
+}
+
 /// Paint a line icon at its layout size and the window's current device scale.
 pub fn pro_icon(icon: ProIcon, side: f32, color: Hsla) -> AnyElement {
     pro_symbol("0 0 24 24", icon.inner_svg(), side, color)
@@ -382,9 +420,7 @@ pub fn pro_svg(view_box: &'static str, inner: &'static str, side: f32, color: Hs
             })
             .clone()
     };
-    img(image)
-        .size(px(side))
-        .flex_none()
+    pro_artwork(image, side)
         .opacity(alpha)
         .into_any_element()
 }
@@ -429,7 +465,7 @@ pub fn pro_app_artwork(name: &str, side: f32, cx: &App) -> Option<AnyElement> {
                 ))
             })
             .clone();
-        return Some(img(image).size(px(side)).flex_none().into_any_element());
+        return Some(pro_artwork(image, side).into_any_element());
     }
     brand_mark(name, side, cx)
 }

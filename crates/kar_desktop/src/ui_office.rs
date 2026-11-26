@@ -12,7 +12,7 @@ use crate::{
     coedit::{CoEditProposal, CoEditStatus, ScenarioKey, UserResolutionChoice},
     kar_bridge::KarCommand,
     ui_motion::{
-        MenuPlacement, Tactile, icon_button, menu_divider, menu_hint, menu_host, menu_icon_item,
+        MenuPlacement, Tactile, close_button, icon_button, menu_divider, menu_hint, menu_host, menu_icon_item,
         primary_button, soft_button, text_button,
     },
     ui_primitives::{
@@ -23,16 +23,6 @@ use crate::{
     },
     workbench::{KarWorkbench, Menu, RightPaneSurface, WorkspaceLayoutMode},
 };
-
-fn close_tab_button(id: String, label: String, s: &StudioPalette) -> Tactile {
-    Tactile::ghost(SharedString::from(id), s)
-        .size(px(20.))
-        .radius(5.)
-        .justify_center()
-        .aria(label.clone())
-        .tip(label)
-        .child(pro_icon(ProIcon::Close, 11., s.muted))
-}
 
 impl KarWorkbench {
     pub(crate) fn render_office_pane(
@@ -120,7 +110,7 @@ impl KarWorkbench {
                         .child(label),
                 )
                 .close(
-                    close_tab_button(format!("{key}-close"), close_label, &s)
+                    close_button(SharedString::from(format!("{key}-close")), close_label, &s)
                         .on_press(cx, move |wb, _, cx| wb.close_surface(&closed, cx)),
                 ),
             );
@@ -150,7 +140,7 @@ impl KarWorkbench {
                 )
                 .content(label)
                 .close(
-                    close_tab_button(format!("office-tab-close-{tab_id}"), close_label, &s)
+                    close_button(SharedString::from(format!("office-tab-close-{tab_id}")), close_label, &s)
                         .on_press(cx, move |wb, win, cx| wb.close_office_tab(tab_id, win, cx)),
                 ),
             );
@@ -186,7 +176,7 @@ impl KarWorkbench {
                         .child(div().max_w(px(name_max_w)).truncate().child(label)),
                 )
                 .close(
-                    close_tab_button(format!("{key}-close"), close_label, &s)
+                    close_button(SharedString::from(format!("{key}-close")), close_label, &s)
                         .on_press(cx, move |wb, _, cx| wb.close_workspace_code_tab(&close, cx)),
                 ),
             );
@@ -309,7 +299,7 @@ impl KarWorkbench {
             RightPaneSurface::GitWorkbench => self.render_git_workbench_body(pane_w, &s, window, cx),
             RightPaneSurface::Files => self.render_files_dock_body(&s, cx),
             RightPaneSurface::Terminal => self.render_terminal_dock_body(&s, window, cx),
-            RightPaneSurface::CodeFile(rel) => self.render_workspace_code_tab_body(&rel, &s, cx),
+            RightPaneSurface::CodeFile(rel) => self.render_workspace_code_tab_body(&rel, pane_w, &s, window, cx),
             RightPaneSurface::Office => match active_tab {
                 None => self.render_office_launcher(&s, cx),
                 Some(tab) => {

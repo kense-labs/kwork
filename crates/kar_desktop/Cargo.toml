@@ -31,6 +31,7 @@ kantor_theme.workspace = true
 kantor_ui.workspace = true
 kui.workspace = true
 log.workspace = true
+markdown = "1.0"
 ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true

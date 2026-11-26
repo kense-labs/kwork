@@ -20,7 +20,6 @@ use kar::{
 use kui::{
     ThemeMode,
     components::{
-        ai_spark::{AiSpark, SparkStatus, SparkTone},
         branch_graph::BranchGraph,
         code_block::CodeBlock,
         code_suggestion::PatchReview,
@@ -540,7 +539,6 @@ pub struct KarWorkbench {
     pub(crate) pending_attachments: Vec<PathBuf>,
 
     // ── The conversation on screen ──────────────────────────────────────────
-    pub(crate) turn_sparks: BTreeMap<Uuid, Entity<AiSpark>>,
     pub(crate) copy_buttons: BTreeMap<Uuid, Entity<CopyButton>>,
     /// Folded parts of the conversation the reader opened or closed by hand, by turn and
     /// item index.
@@ -649,7 +647,7 @@ pub struct KarWorkbench {
     pub start_dropzone_open: bool,
     pub(crate) file_dropzone: Entity<FileDropzone>,
     pub(crate) presence_stack: Option<Entity<PresenceStack>>,
-    pub(crate) rollback_hold_buttons: BTreeMap<Uuid, Entity<HoldToConfirm>>,
+    pub(crate) rollback_hold_buttons: BTreeMap<(Uuid, Uuid, bool), Entity<HoldToConfirm>>,
     /// Deferred reversible chat deletion `(chat_id, chat_title, started_at)`.
     pub(crate) deferred_delete_chat: Option<(Uuid, String, Instant)>,
     /// Live model-suggested follow-up prompt from `kar::PromptSuggestions`.
@@ -1454,7 +1452,6 @@ impl KarWorkbench {
             queued_prompt: None,
             slash: commands::SlashPicker::default(),
             pending_attachments: Vec::new(),
-            turn_sparks: BTreeMap::new(),
             copy_buttons: BTreeMap::new(),
             part_open: BTreeMap::new(),
             turn_review: None,
@@ -2987,46 +2984,14 @@ impl KarWorkbench {
 
     fn sync_timeline_entities(&mut self, turns: &[ChatTurn], cx: &mut Context<Self>) {
         for turn in turns {
-            let mut reply = String::new();
-            let mut writing = false;
-            for item in &turn.items {
-                if let Item::Message {
+            let reply = reply_markdown(turn.items.iter().filter_map(|item| match &item.item {
+                Item::Message {
                     role: ChatRole::Assistant,
                     text,
-                    complete,
                     ..
-                } = &item.item
-                {
-                    if !text.trim().is_empty() {
-                        if !reply.is_empty() {
-                            reply.push_str("\n\n");
-                        }
-                        reply.push_str(text.trim());
-                    }
-                    writing |= !*complete;
-                }
-            }
-
-            let status = match turn.status {
-                TurnStatus::Running if writing => SparkStatus::Writing,
-                TurnStatus::Running => SparkStatus::Thinking,
-                TurnStatus::Completed => SparkStatus::Done,
-                TurnStatus::Failed => SparkStatus::Error,
-                TurnStatus::Interrupted | TurnStatus::Aborted => SparkStatus::Idle,
-            };
-            if let Some(spark) = self.turn_sparks.get(&turn.id) {
-                spark.update(cx, |s, cx| s.set_status(status, cx));
-            } else {
-                let id = SharedString::from(format!("turn-spark-{}", turn.id));
-                let spark = cx.new(|_| {
-                    AiSpark::new(id)
-                        .with_size(14.)
-                        .with_tone(SparkTone::Foreground)
-                        .with_status(status)
-                        .decorative(true)
-                });
-                self.turn_sparks.insert(turn.id, spark);
-            }
+                } => Some(text.as_str()),
+                _ => None,
+            }));
 
             if !reply.is_empty() {
                 if let Some(button) = self.copy_buttons.get(&turn.id) {
@@ -3034,9 +2999,7 @@ impl KarWorkbench {
                 } else {
                     let id = format!("copy-{}", turn.id);
                     let button = cx.new(|_| {
-                        CopyButton::new(id, reply, "复制")
-                            .icon_only()
-                            .with_compact(true)
+                        CopyButton::new(id, reply, self.ui_locale.pick("复制本轮回复", "Copy entire response")).toolbar()
                     });
                     self.copy_buttons.insert(turn.id, button);
                 }
@@ -3044,8 +3007,9 @@ impl KarWorkbench {
         }
 
         let on_screen: BTreeSet<Uuid> = turns.iter().map(|t| t.id).collect();
-        self.turn_sparks.retain(|id, _| on_screen.contains(id));
         self.copy_buttons.retain(|id, _| on_screen.contains(id));
+        let chat = self.projected.chat_id;
+        self.rollback_hold_buttons.retain(|(owner, turn, _), _| Some(*owner) == chat && on_screen.contains(turn));
         self.part_open.retain(|(id, _), _| on_screen.contains(id));
         if self.tool_detail.is_some_and(|(id, _)| !on_screen.contains(&id)) {
             self.tool_detail = None;
@@ -7046,6 +7010,25 @@ fn build_saved_copy_path(original: &Path, fallback_dir: &Path) -> PathBuf {
     dir.join(format!("{clean_stem}.saved.{ext}"))
 }
 
+
+fn reply_markdown<'a>(messages: impl Iterator<Item = &'a str>) -> String {
+    messages
+        .filter(|message| !message.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+#[cfg(test)]
+mod reply_copy_tests {
+    #[test]
+    fn whole_reply_preserves_indentation_and_hard_breaks() {
+        let parts = ["    val = 2\n", " \n", "End  \nnext\n"];
+        assert_eq!(
+            super::reply_markdown(parts.into_iter()),
+            "    val = 2\n\n\nEnd  \nnext\n"
+        );
+    }
+}
 
 #[cfg(test)]
 mod composer_draft_tests {

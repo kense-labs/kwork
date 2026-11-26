@@ -17,7 +17,7 @@ use crate::{
         ChatAccessMode, ChatListEntry, localized_relative_age, runtime_display_name,
     },
     ui_motion::{
-        MenuPlacement, MenuSize, Tactile, icon_button, menu_caption, menu_check, menu_divider, menu_hint,
+        MenuPlacement, MenuSize, Tactile, close_button, icon_button, menu_caption, menu_check, menu_divider, menu_hint,
         menu_host, menu_icon_item, menu_item, soft_button,
     },
     ui_primitives::{
@@ -323,12 +323,7 @@ impl KarWorkbench {
             )
             .when(!self.sidebar_filter.is_empty(), |d| {
                 d.child(
-                    Tactile::ghost("side-search-clear", &s)
-                        .size(px(20.))
-                        .radius(5.)
-                        .justify_center()
-                        .tip(loc.pick("清空搜索", "Clear search"))
-                        .child(pro_icon(ProIcon::Close, 12., s.muted))
+                    close_button("side-search-clear", loc.pick("清空搜索", "Clear search"), &s)
                         .on_press(cx, |this, win, cx| {
                             this.sidebar_search.update(cx, |ed, cx| {
                                 ed.set_value("", win, cx);
@@ -396,15 +391,15 @@ impl KarWorkbench {
                             ),
                     )
                     .child(
-                        Tactile::ghost("side-clear-proj-filter", &s)
-                            .size(px(18.))
-                            .radius(9.)
-                            .justify_center()
-                            .child(pro_icon(ProIcon::Close, 10., s.muted))
-                            .on_press(cx, |this, _, cx| {
-                                this.sidebar_project_filter = None;
-                                cx.notify();
-                            }),
+                        close_button(
+                            "side-clear-proj-filter",
+                            loc.pick("清除项目筛选", "Clear project filter"),
+                            &s,
+                        )
+                        .on_press(cx, |this, _, cx| {
+                            this.sidebar_project_filter = None;
+                            cx.notify();
+                        }),
                     ),
             )
         });
@@ -650,12 +645,16 @@ impl KarWorkbench {
                 let dirty = tab.is_dirty(cx);
                 let tab_id = tab.id;
                 let grp = SharedString::from(format!("side-doc-grp-{tab_id}"));
+                let row_focus = window.use_keyed_state(grp.clone(), cx, |_, cx| cx.focus_handle());
+                let row_focus = row_focus.read(cx).clone();
+                let keyboard = window.last_input_was_keyboard() && row_focus.contains_focused(window, cx);
                 docs_col = docs_col.child(
                     div()
                         .relative()
                         .w_full()
                         .h(px(34.))
                         .group(grp.clone())
+                        .track_focus(&row_focus)
                         .flex()
                         .items_center()
                         .child(
@@ -666,7 +665,7 @@ impl KarWorkbench {
                                 .min_w_0()
                                 .h(px(34.))
                                 .pl(px(8.))
-                                .pr(px(24.))
+                                .pr(px(4.))
                                 .gap(px(7.))
                                 .child(render_office_chip(tab.kind, &s))
                                 .child(
@@ -689,19 +688,15 @@ impl KarWorkbench {
                         )
                         .child(
                             div()
-                                .absolute()
-                                .right(px(4.))
-                                .opacity(0.)
-                                .group_hover(grp, |st| st.opacity(1.))
+                                .flex_none()
+                                .mr(px(4.))
+                                .when(!keyboard, |d| d.opacity(0.).group_hover(grp, |st| st.opacity(1.)))
                                 .child(
-                                    Tactile::ghost(
+                                    close_button(
                                         SharedString::from(format!("side-doc-close-{tab_id}")),
+                                        loc.pick("关闭文档", "Close document"),
                                         &s,
                                     )
-                                    .size(px(19.))
-                                    .radius(4.)
-                                    .justify_center()
-                                    .child(pro_icon(ProIcon::Close, 10.5, s.muted))
                                     .on_press(cx, move |this, win, cx| {
                                         this.close_office_tab(tab_id, win, cx)
                                     }),

@@ -8,7 +8,7 @@ use std::{
 use gpui::{prelude::*, *};
 use kui::{
     components::pro_chrome::ProPalette,
-    primitives::pro_icons::{ProIcon, pro_app_artwork, pro_icon, pro_symbol},
+    primitives::pro_icons::{ProIcon, pro_app_artwork, pro_artwork, pro_icon, pro_symbol},
 };
 
 use crate::types::{OfficeKind, runtime_brand_svg, runtime_display_name};
@@ -365,7 +365,7 @@ pub fn render_tray_folder_artwork(side: f32) -> AnyElement {
             ))
         })
         .clone();
-    img(image).size(px(side)).flex_none().into_any_element()
+    pro_artwork(image, side).into_any_element()
 }
 
 /// Trio of sculpted Kantor Office vector marks (Word, Excel, PPT) for the two-tier composer tray.
@@ -664,7 +664,7 @@ pub fn render_runtime_mark(runtime_id: &str, side: f32, s: &StudioPalette, cx: &
                 Some(image)
             });
         if let Some(image) = cached {
-            return img(image).size(px(side)).flex_none().into_any_element();
+            return pro_artwork(image, side).into_any_element();
         }
     }
 
@@ -940,7 +940,7 @@ pub fn render_provider_color_tile(
                 ))
             })
             .clone();
-        img(image).size(px(glyph_side)).flex_none().into_any_element()
+        pro_artwork(image, glyph_side).into_any_element()
     } else {
         render_runtime_mark(runtime_id, glyph_side, s, cx)
     };

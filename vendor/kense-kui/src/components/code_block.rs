@@ -8,11 +8,15 @@ use crate::{
     },
 };
 use gpui::{prelude::*, *};
-pub struct CodeBlock {
+struct SourceHeader {
     filename: SharedString,
     language: SharedString,
-    source: SharedString,
     copy: Entity<CopyButton>,
+}
+
+pub struct CodeBlock {
+    header: Option<SourceHeader>,
+    source: SharedString,
     max_lines: usize,
     lines: usize,
     open: bool,
@@ -25,22 +29,34 @@ impl CodeBlock {
         source: impl Into<SharedString>,
         cx: &mut App,
     ) -> Self {
+        let mut block = Self::source_only(source);
+        let copy = cx.new(|cx| {
+            CopyButton::new("copy", block.source.clone(), tr(cx, "Copy code", "复制代码"))
+        });
+        block.header = Some(SourceHeader { filename: file.into(), language: language.into(), copy });
+        block
+    }
+
+    /// Embed the source in a pane that provides its own file title and actions.
+    pub fn source_only(source: impl Into<SharedString>) -> Self {
         let source = source.into();
         Self {
-            filename: file.into(),
-            language: language.into(),
-            copy: cx
-                .new(|cx| CopyButton::new("copy", source.clone(), tr(cx, "Copy code", "复制代码"))),
+            header: None,
             lines: source.split('\n').count(),
+            source,
             open: false,
             max_lines: 0,
             fold: Slide::new(0.),
-            source,
         }
     }
+
     pub fn max_lines(mut self, max: usize) -> Self {
         self.max_lines = max;
         self
+    }
+
+    pub fn source(&self) -> SharedString {
+        self.source.clone()
     }
 }
 impl Render for CodeBlock {
@@ -54,19 +70,23 @@ impl Render for CodeBlock {
             tr(cx, "Show all", "显示全部")
         };
         panel(cx)
-            .w(fit(w, 536.))
-            .child(
+            .w_full()
+            .when(self.header.is_some(), |block| block.max_w(px(536.)))
+            .flex_none()
+            .when_some(self.header.as_ref(), |block, header| block.child(
                 row()
                     .p_3()
                     .gap_2()
                     .child(icon(Glyph::FileText, 16., p.faint))
-                    .child(label(self.filename.clone(), 14., p.ink).flex_1())
-                    .child(label(self.language.clone(), 12., p.faint))
-                    .child(self.copy.clone()),
-            )
+                    .child(label(header.filename.clone(), 14., p.ink).flex_1().min_w_0().truncate())
+                    .child(label(header.language.clone(), 12., p.faint).max_w(relative(0.24)).truncate())
+                    .child(div().flex_none().child(header.copy.clone())),
+            ))
             .child(
                 div()
                     .id("source")
+                    .w_full()
+                    .min_w_0()
                     .tab_stop(true)
                     .overflow_x_scroll()
                     .overflow_y_hidden()
@@ -77,14 +97,14 @@ impl Render for CodeBlock {
                                     + (self.lines - self.max_lines) as f32 * a)))
                     })
                     .p_4()
-                    .border_t_1()
+                    .when(self.header.is_some(), |d| d.border_t_1())
                     .border_color(p.line)
                     .bg(p.stage)
                     .font_family("monospace")
                     .text_size(px(13.))
                     .line_height(px(20.))
-                    .whitespace_nowrap()
-                    .child(self.source.clone()),
+                    .flex()
+                    .child(div().flex_none().whitespace_nowrap().child(self.source.clone())),
             )
             .when(foldable, |b| {
                 b.child(

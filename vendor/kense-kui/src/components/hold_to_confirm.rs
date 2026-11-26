@@ -26,7 +26,7 @@ pub struct HoldToConfirm {
     timer: Option<Task<()>>,
     done_clock: PhaseClock,
     _activation: Subscription,
-    start: Option<(Instant, f32)>,
+    start: Option<Instant>,
     keyboard: bool,
     bounds: Rc<Cell<Bounds<Pixels>>>,
     fill: Slide,
@@ -34,6 +34,7 @@ pub struct HoldToConfirm {
     width: Option<Slide>,
     done: bool,
     danger: bool,
+    compact: bool,
     glyph: Glyph,
     contact: Contact,
 }
@@ -69,6 +70,7 @@ impl HoldToConfirm {
             width: None,
             done: false,
             danger: false,
+            compact: false,
             glyph: Glyph::Trash,
             contact: Default::default(),
         }
@@ -85,6 +87,11 @@ impl HoldToConfirm {
         self.glyph = glyph;
         self
     }
+    /// Keep the same hold gesture in a low-emphasis action row.
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
+    }
     pub fn danger(mut self) -> Self {
         self.danger = true;
         self
@@ -99,13 +106,12 @@ impl HoldToConfirm {
         cx.notify()
     }
     fn elapsed(&self, cx: &App) -> Option<f32> {
-        self.start.map(|(start, base)| {
-            (base
-                + cx.background_executor()
-                    .now()
-                    .saturating_duration_since(start)
-                    .as_secs_f32()
-                    / self.duration.as_secs_f32())
+        self.start.map(|start| {
+            (cx.background_executor()
+                .now()
+                .saturating_duration_since(start)
+                .as_secs_f32()
+                / self.duration.as_secs_f32())
             .min(1.)
         })
     }
@@ -115,10 +121,10 @@ impl HoldToConfirm {
         }
         self.keyboard = keyboard;
         self.focus.focus(w, cx);
-        let base = self.fill.value(cx).clamp(0., 1.);
-        self.start = Some((cx.background_executor().now(), base));
+        self.fill.reset(0.);
+        self.start = Some(cx.background_executor().now());
         self.scale.set(0.97, cx);
-        let wait = self.duration.mul_f32(1. - base);
+        let wait = self.duration;
         self.timer = Some(cx.spawn(async move |v, cx| {
             cx.background_executor().timer(wait).await;
             let _ = v.update(cx, |v, cx| v.finish(cx));
@@ -160,18 +166,29 @@ impl Render for HoldToConfirm {
             &self.label
         }
         .clone();
-        let width = measure(&label, 14., w) + 67.;
+        let (height, font, icon, gap, chrome) = if self.compact {
+            (28., 12., 16., 5., 35.)
+        } else {
+            (44., 14., 18., 8., 67.)
+        };
+        let width = measure(&label, font, w) + chrome;
         let width_anim = self.width.get_or_insert_with(|| Slide::new(width));
         width_anim.set(width, cx);
         let width = width_anim.get(w, cx);
         let scale = self.scale.get(w, cx);
         let sw = width * scale;
-        let h = 44. * scale;
+        let h = height * scale;
         let fill = self.elapsed(cx).unwrap_or_else(|| self.fill.get(w, cx));
         if self.start.is_some() {
             w.request_animation_frame()
         }
-        let fg = if self.danger { p.danger } else { p.ink };
+        let fg = if self.compact {
+            p.secondary
+        } else if self.danger {
+            p.danger
+        } else {
+            p.ink
+        };
         let bg = if self.danger { p.danger } else { p.bright };
         let age = self.done_clock.time(0.48, w, cx);
         let old = if self.done {
@@ -179,7 +196,7 @@ impl Render for HoldToConfirm {
         } else {
             self.done_label.clone()
         };
-        let label_width = (width - 67.).max(1.);
+        let label_width = (width - chrome).max(1.);
         let contents = |ink: Hsla| {
             let mark = if self.done { Glyph::Check } else { self.glyph };
             let prev = if self.done { self.glyph } else { Glyph::Check };
@@ -190,23 +207,23 @@ impl Render for HoldToConfirm {
                 .flex()
                 .items_center()
                 .justify_center()
-                .gap(px(8.))
+                .gap(px(gap))
                 .child(
                     div()
                         .relative()
-                        .size(px(18.))
+                        .size(px(icon))
                         .when(age < 0.1, |e| {
                             e.child(
                                 div()
                                     .absolute()
                                     .inset_0()
                                     .opacity(1. - ease(age / 0.1))
-                                    .child(transformed(prev, 18., ink, 0., 1., (0., 0.), 1.)),
+                                    .child(transformed(prev, icon, ink, 0., 1., (0., 0.), 1.)),
                             )
                         })
                         .child(transformed(
                             mark,
-                            18.,
+                            icon,
                             ink.opacity(ease(age / 0.16)),
                             0.,
                             1.,
@@ -219,7 +236,7 @@ impl Render for HoldToConfirm {
                     label.clone(),
                     age,
                     false,
-                    14.,
+                    font,
                     ink,
                     label_width,
                 ))
@@ -230,7 +247,7 @@ impl Render for HoldToConfirm {
             .h(px(h))
             .rounded(r)
             .overflow_hidden()
-            .bg(p.panel)
+            .when(!self.compact, |e| e.bg(p.panel))
             .child(contents(fg))
             .child(
                 div()
@@ -250,14 +267,16 @@ impl Render for HoldToConfirm {
                         .bg(bg),
                     ),
             )
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .rounded(r)
-                    .border_1()
-                    .border_color(if self.done { bg } else { p.line }),
-            );
+            .when(!self.compact, |e| {
+                e.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(r)
+                        .border_1()
+                        .border_color(if self.done { bg } else { p.line }),
+                )
+            });
         let bounds = self.bounds.clone();
         let moved = cx.listener(|v, e: &MouseMoveEvent, _, cx| {
             if !v.keyboard
@@ -282,12 +301,13 @@ impl Render for HoldToConfirm {
         face(
             self.id.clone(),
             label.clone(),
-            44.,
+            height,
             r.into(),
             Tone::Clear,
             cx,
         )
         .relative()
+        .when(self.compact, |d| d.hover(|st| st.bg(p.hover)))
         .track_focus(&self.focus)
         .w(px(width))
         .child(shell)

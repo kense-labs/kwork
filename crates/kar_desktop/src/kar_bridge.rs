@@ -137,6 +137,7 @@ pub enum KarCommand {
         model_override: Option<String>,
     },
     RollbackToTurn {
+        chat_id: Uuid,
         turn_id: Uuid,
         before: bool,
     },
@@ -3125,11 +3126,10 @@ async fn worker_loop(
                     }
                 }
             }
-            KarCommand::RollbackToTurn { turn_id, before } => {
-                let Some(session) = state.active_controller.clone() else {
+            KarCommand::RollbackToTurn { chat_id, turn_id, before } => {
+                let Some(session) = state.active_controller.clone().filter(|session| session.info().id == chat_id) else {
                     continue;
                 };
-                let chat_id = session.info().id;
                 let workspace = session.info().workspace.clone();
                 let store_opt = state.store.clone();
                 let evt_tx = state.evt_tx.clone();

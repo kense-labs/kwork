@@ -10,7 +10,7 @@ use std::time::Duration;
 
 
 use gpui::{prelude::*, *};
-use gpui_kit::component::text::TextView;
+use gpui_kit::component::{text::{TextView, TextViewStyle}, tooltip::Tooltip};
 use kar::{
     ApprovalMode, ChangeKind as ToolChangeKind, PendingRequest, PermissionDecision, PolicyOption,
     RequestKind, TaskStatus,
@@ -22,6 +22,7 @@ use kar::{
 };
 use kui::{
     components::{
+        ai_mascot::{AiMascot, MascotStatus},
         code_suggestion::{Decision as PatchDecision, Hunk as PatchHunk, PatchReview},
         hold_to_confirm::{HoldEvent, HoldToConfirm},
         pro_chrome::{
@@ -30,6 +31,7 @@ use kui::{
     },
     primitives::{
         editor::{EditEvent, Editor, InputMode},
+        glyph::Glyph,
         ops_surface::{arrive, swap_label},
         pro_icons::{ProIcon, pro_icon},
     },
@@ -46,7 +48,8 @@ use crate::{
         unwrap_shell_command,
     },
     ui_motion::{
-        MenuPlacement, Tactile, disclosure_body, disclosure_line, icon_button, menu_caption,
+        copy_text_button, copy_with_hint,
+        MenuPlacement, Tactile, close_button, disclosure_body, disclosure_line, icon_button, menu_caption,
         menu_check, menu_divider, menu_hint, menu_host, menu_icon_item, menu_item,
         pulse_beacon, soft_button, spinner, text_button,
     },
@@ -2445,15 +2448,15 @@ impl KarWorkbench {
                                 }),
                             )
                             .child(
-                                Tactile::ghost(("bg-cmd-dismiss", ix), s)
-                                    .size(px(20.))
-                                    .justify_center()
-                                    .tip("收起后台命令条")
-                                    .child(pro_icon(ProIcon::Close, 10., s.muted))
-                                    .on_press(cx, move |this, _, cx| {
-                                        this.client_reducer.background_commands.remove(&cid_dismiss);
-                                        cx.notify();
-                                    }),
+                                close_button(
+                                    ("bg-cmd-dismiss", ix),
+                                    self.ui_locale.pick("收起后台命令条", "Dismiss background command"),
+                                    s,
+                                )
+                                .on_press(cx, move |this, _, cx| {
+                                    this.client_reducer.background_commands.remove(&cid_dismiss);
+                                    cx.notify();
+                                }),
                             ),
                     ),
             );
@@ -2486,7 +2489,9 @@ impl KarWorkbench {
             let is_img = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp");
             row = row.child(
                 div()
-                    .h(px(26.))
+                    .h(px(28.))
+                    .max_w_full()
+                    .min_w_0()
                     .pl(px(8.))
                     .pr(px(4.))
                     .rounded(px(R_CTRL))
@@ -2505,6 +2510,7 @@ impl KarWorkbench {
                     ))
                     .child(
                         div()
+                            .min_w_0()
                             .max_w(px(160.))
                             .truncate()
                             .text_size(px(FS_META))
@@ -2512,18 +2518,17 @@ impl KarWorkbench {
                             .child(name),
                     )
                     .child(
-                        Tactile::ghost(("cmp-att-rm", ix), s)
-                            .size(px(18.))
-                            .radius(4.)
-                            .justify_center()
-                            .tip(self.ui_locale.pick("移除附件", "Remove attachment"))
-                            .child(pro_icon(ProIcon::Close, 10., s.muted))
-                            .on_press(cx, move |this, _, cx| {
-                                if ix < this.pending_attachments.len() {
-                                    this.pending_attachments.remove(ix);
-                                    cx.notify();
-                                }
-                            }),
+                        close_button(
+                            ("cmp-att-rm", ix),
+                            self.ui_locale.pick("移除附件", "Remove attachment"),
+                            s,
+                        )
+                        .on_press(cx, move |this, _, cx| {
+                            if ix < this.pending_attachments.len() {
+                                this.pending_attachments.remove(ix);
+                                cx.notify();
+                            }
+                        }),
                     ),
             );
         }
@@ -3397,8 +3402,17 @@ impl KarWorkbench {
             .gap(px(16.))
             .child(asked)
             .child(working_line(
-                spinner(ICON_SM, s.muted, window, cx),
-                format!("正在启动 {agent}"),
+                assistant_mascot(
+                    "queued-mascot",
+                    MascotStatus::Listening,
+                    self.ui_locale,
+                    window,
+                    cx,
+                ),
+                match self.ui_locale {
+                    UiLocale::Zh => format!("正在启动 {agent}"),
+                    UiLocale::En => format!("Starting {agent}"),
+                },
                 "queued-status",
                 s,
                 window,
@@ -3752,6 +3766,17 @@ impl KarWorkbench {
             );
         }
 
+        let has_multiple_replies = turn
+            .items
+            .iter()
+            .filter(|i| {
+                matches!(&i.item,
+                    Item::Message { role: KarRole::Assistant, text, .. } if !text.trim().is_empty()
+                )
+            })
+            .take(2)
+            .count()
+            == 2;
         let mut ix = 0;
         while ix < turn.items.len() {
             let is_subagent = !turn.items[ix].source.path.is_empty();
@@ -3771,7 +3796,7 @@ impl KarWorkbench {
                         parts = parts.child(self.render_reasoning(
                             (turn_id, ix),
                             text.trim(),
-                            !*complete && running,
+                            !*complete && running && self.projected.pending_requests.is_empty(),
                             is_subagent,
                             s,
                             window,
@@ -3787,30 +3812,76 @@ impl KarWorkbench {
                 } => {
                     if !text.trim().is_empty() {
                         has_parts = true;
+                        let msg_group: SharedString =
+                            format!("reply-actions-{turn_id}-{ix}").into();
+                        let mut show_message_copy = *complete && has_multiple_replies;
+                        if show_message_copy && might_start_with_code(text) {
+                            let shape = window.use_keyed_state(
+                                SharedString::from(format!("reply-shape-{turn_id}-{ix}")),
+                                cx,
+                                |_, _| (text.clone(), is_single_code_message(text)),
+                            );
+                            if &shape.read(cx).0 != text {
+                                shape.update(cx, |shape, _| {
+                                    *shape = (text.clone(), is_single_code_message(text))
+                                });
+                            }
+                            show_message_copy = !shape.read(cx).1;
+                        }
+                        let message = div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.))
+                            .when(is_subagent, |d| {
+                                d.child(
+                                    div()
+                                        .text_size(px(FS_TAG))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(s.muted)
+                                        .child(loc.pick("子智能体回复", "Subagent")),
+                                )
+                            })
+                            .child(self.render_assistant_markdown_blocks(
+                                turn_id,
+                                ix,
+                                text,
+                                !*complete && running,
+                                s,
+                                cx,
+                            ));
                         parts = parts.child(
                             div()
                                 .w_full()
                                 .min_w_0()
                                 .flex()
-                                .flex_col()
-                                .gap(px(6.))
-                                .when(is_subagent, |d| {
-                                    d.child(
+                                .items_start()
+                                .group(msg_group.clone())
+                                .child(message)
+                                .when(show_message_copy, |row| {
+                                    row.child(
                                         div()
-                                            .text_size(px(FS_TAG))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(s.muted)
-                                            .child(loc.pick("子智能体回复", "Subagent")),
+                                            .flex_none()
+                                            .ml(px(4.))
+                                            .when(
+                                                !window.last_input_was_keyboard()
+                                                    && !window.last_input_was_touch(),
+                                                |d| {
+                                                    d.opacity(0.).group_hover(msg_group, |hover| {
+                                                        hover.opacity(1.)
+                                                    })
+                                                },
+                                            )
+                                            .child(copy_text_button(
+                                                format!("message-copy-{turn_id}-{ix}"),
+                                                loc.pick("复制这条消息", "Copy this message"),
+                                                text.clone().into(),
+                                                window,
+                                                cx,
+                                            )),
                                     )
-                                })
-                                .child(self.render_assistant_markdown_blocks(
-                                    turn_id,
-                                    ix,
-                                    text,
-                                    !*complete && running,
-                                    s,
-                                    cx,
-                                )),
+                                }),
                         );
                     }
                 }
@@ -4025,7 +4096,7 @@ impl KarWorkbench {
             );
         }
 
-        // ── While it works: KUI `TextShimmer` + animated `AiSpark` ───────────
+        // A visible tool or reasoning row already explains what is happening.
         let activity_is_visible = turn.items.iter().any(|item| match &item.item {
             Item::Tool { activity, .. } => activity::phase(activity, running) == activity::Phase::Running,
             Item::Message { role: KarRole::Reasoning, complete: false, text, .. } => !text.trim().is_empty(),
@@ -4033,14 +4104,19 @@ impl KarWorkbench {
         });
         if running && !activity_is_visible && self.projected.pending_requests.is_empty() {
             has_parts = true;
-            let lead = self
-                .turn_sparks
-                .get(&turn_id)
-                .cloned()
-                .map(IntoElement::into_any_element)
-                .unwrap_or_else(|| spinner(ICON_SM, s.muted, window, cx));
-            let reply = matches!(turn.items.last().map(|i| &i.item), Some(Item::Message { role: KarRole::Assistant, complete: false, .. }));
-            let activity_txt = if reply { loc.pick("正在回复", "Replying") } else { loc.pick("正在处理", "Working") };
+            let (pose, activity_txt) = match turn.items.last().map(|i| &i.item) {
+                Some(Item::Message { role: KarRole::Assistant, complete: false, .. }) => {
+                    (MascotStatus::Writing, loc.pick("正在回复", "Replying"))
+                }
+                _ => (MascotStatus::Thinking, loc.pick("正在处理", "Working")),
+            };
+            let lead = assistant_mascot(
+                SharedString::from(format!("turn-mascot-{turn_id}")),
+                pose,
+                loc,
+                window,
+                cx,
+            );
             self.working_shimmer
                 .update(cx, |sh, cx| sh.set_text(activity_txt, cx));
             parts = parts.child(
@@ -4055,7 +4131,7 @@ impl KarWorkbench {
             );
         }
 
-        // ── Subtle right-aligned Copy button + left turn actions (`hero.webp`) ─
+        // ── Actions for the completed turn ──────────────────────────────────────
         let stopped = match turn.status {
             TurnStatus::Interrupted | TurnStatus::Aborted => Some(loc.pick("已停止", "Stopped")),
             TurnStatus::Failed if turn.failure.is_none() => Some(loc.pick("未完成", "Incomplete")),
@@ -4082,143 +4158,124 @@ impl KarWorkbench {
         let show_hold_rollback = (can_rollback_after && has_checkpoint_changes) || can_undo_turn;
         let extra_actions_key = (turn_id, usize::MAX);
         let extra_actions_open = self.part_is_open(extra_actions_key, false);
-        let rollback_hold = if show_hold_rollback && extra_actions_open {
-            let before_flag = can_undo_turn && !(can_rollback_after && has_checkpoint_changes);
-            Some(
-                self.rollback_hold_buttons
-                    .entry(turn_id)
-                    .or_insert_with(|| {
-                        let btn = cx.new(|cx| {
-                            HoldToConfirm::new(
-                                SharedString::from(format!("hold-rb-{turn_id}")),
-                                if before_flag {
-                                    "按住撤销改动"
-                                } else {
-                                    "按住恢复本轮结束时的文件"
-                                },
-                                window,
-                                cx,
-                            )
-                            .with_duration(Duration::from_millis(950))
-                            .with_done_label("已回退")
-                            .danger()
-                        });
-                        cx.subscribe(&btn, move |this, btn_ent, ev: &HoldEvent, cx| {
-                            if *ev == HoldEvent::Confirmed {
-                                this.bridge.send(KarCommand::RollbackToTurn {
-                                    turn_id,
-                                    before: before_flag,
-                                });
-                                btn_ent.update(cx, |b, cx| b.reset(cx));
-                            }
-                        })
-                        .detach();
-                        btn
-                    })
-                    .clone(),
-            )
-        } else {
-            None
-        };
+        let rollback_hold = current_cid.filter(|_| show_hold_rollback && extra_actions_open).map(|chat_id| {
+            let before = can_undo_turn && !(can_rollback_after && has_checkpoint_changes);
+            let tip = if before {
+                loc.pick("按住约一秒，将文件恢复到本轮开始之前", "Hold for one second to restore files from before this turn")
+            } else {
+                loc.pick("按住约一秒，将文件恢复到本轮结束时", "Hold for one second to restore files to the end of this turn")
+            };
+            let label = if before { loc.pick("按住撤销改动", "Hold to undo") }
+                        else { loc.pick("按住恢复文件", "Hold to restore") };
+            let hold = self.rollback_hold_buttons.entry((chat_id, turn_id, before)).or_insert_with(|| {
+                let btn = cx.new(|cx| HoldToConfirm::new(format!("hold-rb-{chat_id}-{turn_id}"), label, window, cx)
+                    .with_duration(Duration::from_millis(950))
+                    .with_done_label(loc.pick("已确认", "Confirmed"))
+                    .with_icon(Glyph::Undo)
+                    .compact()
+                    .danger());
+                cx.subscribe(&btn, move |this, btn, event: &HoldEvent, cx| {
+                    if *event == HoldEvent::Confirmed {
+                        if matches!(this.access_mode, ChatAccessMode::WriteController { chat_id: id } if id == chat_id)
+                            && !this.turn_in_progress() && this.part_is_open(extra_actions_key, false) {
+                            this.bridge.send(KarCommand::RollbackToTurn { chat_id, turn_id, before });
+                        }
+                        btn.update(cx, |b, cx| b.reset(cx));
+                    }
+                }).detach();
+                btn
+            }).clone();
+            div().id(SharedString::from(format!("turn-restore-tip-{turn_id}")))
+                .aria_description(tip)
+                .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+                .child(hold)
+        });
 
-        if copy_button.is_some()
-            || stopped.is_some()
-            || can_retry
-            || can_fork
-            || show_hold_rollback
+        if copy_button.is_some() || stopped.is_some() || can_retry || can_fork || show_hold_rollback
         {
             has_parts = true;
             parts = parts.child(
                 div()
                     .w_full()
-                    .min_h(px(26.))
-                    .when(!window.last_input_was_keyboard() && !window.last_input_was_touch() && stopped.is_none() && !can_retry && !extra_actions_open, |row| {
-                        row.opacity(0.).group_hover(action_group.clone(), |hover| hover.opacity(1.))
-                    })
+                    .min_w_0()
+                    .min_h(px(28.))
                     .flex()
+                    .flex_wrap()
                     .items_center()
-                    .justify_between()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap(px(2.))
-                            .when_some(stopped, |d, note| {
-                                d.child(
-                                    div()
-                                        .px(px(4.))
-                                        .text_size(px(FS_META))
-                                        .text_color(s.muted)
-                                        .child(note),
-                                )
-                            })
-                            .when(can_retry, |d| {
-                                d.child(
-                                    text_button(
-                                        SharedString::from(format!("retry-{turn_id}")),
-                                        loc.pick("重试", "Retry"),
-                                        s,
-                                    )
-                                    .on_press(cx, move |this, _, cx| {
-                                        this.retry_turn_with_same_uuid(
-                                            turn_id,
-                                            first_ask.clone(),
-                                            cx,
-                                        )
-                                    }),
-                                )
-                            })
-                            .when_some(can_fork.then_some(current_cid).flatten(), |d, cid| {
-                                d.child(
-                                    Tactile::ghost(
-                                        SharedString::from(format!("fork-{turn_id}")),
-                                        s,
-                                    )
-                                    .h(px(26.))
-                                    .px(px(6.))
-                                    .gap(px(4.))
-                                    .text_size(px(FS_META))
-                                    .ink(s.muted, s.ink)
-                                    .tip(loc.pick("从此步状态分叉新对话", "Fork thread from here"))
-                                    .child(pro_icon(ProIcon::GitBranch, ICON_XS, s.muted))
-                                    .child(loc.pick("分叉", "Fork"))
-                                    .on_press(cx, move |this, _, _| {
-                                        this.bridge.send(KarCommand::ForkChatAt {
-                                            chat_id: cid,
-                                            turn_id,
-                                            model_override: None,
-                                        });
-                                    }),
-                                )
-                            })
-                            .when(show_hold_rollback, |d| {
-                                d.child(
-                                    icon_button(
-                                        SharedString::from(format!("turn-actions-{turn_id}")),
-                                        ProIcon::MoreHorizontal,
-                                        loc.pick("更多本轮操作", "More turn actions"),
-                                        s,
-                                    )
-                                    .lit(extra_actions_open)
-                                    .on_press(cx, move |this, _, cx| {
-                                        this.part_open
-                                            .insert(extra_actions_key, !extra_actions_open);
-                                        cx.notify();
-                                    }),
-                                )
-                            })
-                            .when_some(rollback_hold, |d, hold_btn| {
-                                d.child(div().ml(px(4.)).child(hold_btn))
-                            }),
+                    .gap(px(2.))
+                    .when(
+                        !window.last_input_was_keyboard()
+                            && !window.last_input_was_touch()
+                            && stopped.is_none()
+                            && !can_retry
+                            && !extra_actions_open,
+                        |row| {
+                            row.opacity(0.)
+                                .group_hover(action_group.clone(), |hover| hover.opacity(1.))
+                        },
                     )
-                    .child(
-                        div()
-                            .flex_none()
-                            .opacity(0.72)
-                            .when_some(copy_button, |d, button| d.child(button)),
-                    ),
+                    .when_some(stopped, |row, note| {
+                        row.child(
+                            div()
+                                .px(px(4.))
+                                .text_size(px(FS_META))
+                                .text_color(s.muted)
+                                .child(note),
+                        )
+                    })
+                    .when(can_retry, |row| {
+                        row.child(
+                            text_button(format!("retry-{turn_id}"), loc.pick("重试", "Retry"), s)
+                                .h(px(28.))
+                                .on_press(cx, move |this, _, cx| {
+                                    this.retry_turn_with_same_uuid(turn_id, first_ask.clone(), cx)
+                                }),
+                        )
+                    })
+                    .when_some(copy_button, |row, button| {
+                        row.child(copy_with_hint(
+                            format!("reply-copy-tip-{turn_id}"),
+                            loc.pick("复制本轮回复", "Copy entire response"),
+                            button,
+                        ))
+                    })
+                    .when_some(can_fork.then_some(current_cid).flatten(), |row, chat_id| {
+                        row.child(
+                            icon_button(
+                                format!("fork-{turn_id}"),
+                                ProIcon::GitBranch,
+                                loc.pick("从此处分叉新对话", "Fork thread from here"),
+                                s,
+                            )
+                            .size(px(28.))
+                            .on_press(cx, move |this, _, _| {
+                                this.bridge.send(KarCommand::ForkChatAt {
+                                    chat_id,
+                                    turn_id,
+                                    model_override: None,
+                                });
+                            }),
+                        )
+                    })
+                    .when(show_hold_rollback, |row| {
+                        row.child(
+                            icon_button(
+                                format!("turn-actions-{turn_id}"),
+                                ProIcon::MoreHorizontal,
+                                loc.pick("更多本轮操作", "More turn actions"),
+                                s,
+                            )
+                            .size(px(28.))
+                            .lit(extra_actions_open)
+                            .expanded(extra_actions_open)
+                            .on_press(cx, move |this, _, cx| {
+                                this.part_open
+                                    .insert(extra_actions_key, !extra_actions_open);
+                                cx.notify();
+                            }),
+                        )
+                    })
+                    .when_some(rollback_hold, |row, hold| row.child(hold)),
             );
         }
 
@@ -4245,8 +4302,7 @@ impl KarWorkbench {
             .when(has_parts, |d| d.child(parts))
     }
 
-    /// Render assistant Markdown with T3 Code's signature borderless horizontal-rule tables
-    /// (`Check | Result`).
+    /// Keep the document intact so table, code and selection share one Markdown parse.
     fn render_assistant_markdown_blocks(
         &self,
         turn_id: Uuid,
@@ -4256,89 +4312,63 @@ impl KarWorkbench {
         s: &StudioPalette,
         _cx: &mut Context<Self>,
     ) -> Div {
-        let segments = parse_markdown_segments(text);
-        let mut col = div().w_full().min_w_0().flex().flex_col().gap(px(14.));
-
-        for (seg_ix, seg) in segments.into_iter().enumerate() {
-            match seg {
-                MdSegment::Prose(prose) => {
-                    if prose.trim().is_empty() {
-                        continue;
-                    }
-                    col = col.child(
-                        div()
-                            .w_full()
-                            .min_w_0()
-                            .text_size(px(FS_UI))
-                            .line_height(px(LH_READ))
-                            .text_color(s.ink)
-                            .child(
-                                TextView::markdown(
-                                    ElementId::Name(
-                                        format!("reply-{turn_id}-{item_ix}-{seg_ix}").into(),
-                                    ),
-                                    prose,
-                                )
-                                .selectable(true)
-                                .stream_fade(streaming),
-                            ),
+        let copy_label = self.ui_locale.pick("复制代码", "Copy code");
+        let muted = s.muted;
+        let mut table = StyleRefinement::default()
+            .border(px(0.))
+            .bg(transparent_black())
+            .rounded(px(0.));
+        table.overflow.x = Some(Overflow::Scroll);
+        let style = TextViewStyle::default()
+            .code_block(StyleRefinement::default().pt(px(38.)))
+            .table(table)
+            .table_head(
+                StyleRefinement::default()
+                    .bg(transparent_black())
+                    .font_weight(FontWeight::SEMIBOLD),
+            )
+            .table_cell(
+                StyleRefinement::default()
+                    .py(px(8.))
+                    .px(px(8.))
+                    .border_color(transparent_black()),
+            );
+        div()
+            .w_full()
+            .min_w_0()
+            .text_size(px(FS_UI))
+            .line_height(px(LH_READ))
+            .text_color(s.ink)
+            .child(
+                TextView::markdown(
+                    ElementId::Name(format!("reply-{turn_id}-{item_ix}").into()),
+                    text.to_owned(),
+                )
+                .style(style)
+                .code_block_actions(move |code, window, cx| {
+                    let key = format!(
+                        "code-{turn_id}-{item_ix}-{}",
+                        code.span.map_or(0, |span| span.start)
                     );
-                }
-                MdSegment::Table { headers, rows } => {
-                    let mut tbl = div()
-                        .w_full()
-                        .my(px(4.))
-                        .flex()
-                        .flex_col();
-                    // Header row (`border-b`)
-                    let mut hrow = div()
-                        .w_full()
-                        .py(px(8.))
-                        .border_b_1()
-                        .border_color(s.line)
+                    div()
                         .flex()
                         .items_center()
-                        .gap(px(16.));
-                    for h in &headers {
-                        hrow = hrow.child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(px(FS_UI))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(s.ink)
-                                .child(h.clone()),
-                        );
-                    }
-                    tbl = tbl.child(hrow);
-                    // Data rows (`border-b` subtle)
-                    for r in rows {
-                        let mut drow = div()
-                            .w_full()
-                            .py(px(9.5))
-                            .border_b_1()
-                            .border_color(s.line_soft)
-                            .flex()
-                            .items_center()
-                            .gap(px(16.));
-                        for col_ix in 0..headers.len() {
-                            let cell = r.get(col_ix).cloned().unwrap_or_default();
-                            drow = drow.child(
+                        .gap(px(5.))
+                        .when_some(code.lang().filter(|lang| !lang.is_empty()), |row, lang| {
+                            row.child(
                                 div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_size(px(FS_UI))
-                                    .text_color(if col_ix == 0 { s.text } else { s.ink })
-                                    .child(cell),
-                            );
-                        }
-                        tbl = tbl.child(drow);
-                    }
-                    col = col.child(tbl);
-                }
-            }
-        }
-        col
+                                    .max_w(px(90.))
+                                    .truncate()
+                                    .text_size(px(FS_META))
+                                    .text_color(muted)
+                                    .child(lang),
+                            )
+                        })
+                        .child(copy_text_button(key, copy_label, code.code(), window, cx))
+                })
+                .selectable(true)
+                .stream_fade(streaming),
+            )
     }
 
     fn part_is_open(&self, key: (Uuid, usize), default_open: bool) -> bool {
@@ -4359,7 +4389,13 @@ impl KarWorkbench {
         let open = self.part_is_open(key, false);
         let loc = self.ui_locale;
         let lead = if live {
-            spinner(ICON_SM, s.muted, window, cx)
+            assistant_mascot(
+                SharedString::from(format!("reasoning-mascot-{}-{}", key.0, key.1)),
+                MascotStatus::Thinking,
+                loc,
+                window,
+                cx,
+            )
         } else {
             pro_icon(ProIcon::Sparkles, ICON_SM, s.muted)
         };
@@ -5204,80 +5240,58 @@ fn format_worked_header(
     }
 }
 
-enum MdSegment {
-    Prose(String),
-    Table {
-        headers: Vec<String>,
-        rows: Vec<Vec<String>>,
-    },
-}
-
-fn is_table_separator_line(line: &str) -> bool {
-    let t = line.trim();
-    if !t.contains('|') {
-        return false;
-    }
-    let cells: Vec<&str> = t
-        .trim_matches('|')
-        .split('|')
-        .map(str::trim)
-        .collect();
-    !cells.is_empty()
-        && cells.iter().all(|c| {
-            let core = c.trim_matches(':');
-            core.len() >= 3 && core.chars().all(|ch| ch == '-')
+// Only code-shaped replies need the extra parse for the optional message action.
+// The actual Markdown layout and code copy both use GPUI's complete GFM document.
+fn might_start_with_code(text: &str) -> bool {
+    text.lines()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| {
+            line.starts_with([' ', '\t']) || line.starts_with("```") || line.starts_with("~~~")
         })
 }
 
-fn split_pipe_row(line: &str) -> Vec<String> {
-    line.trim()
-        .trim_matches('|')
-        .split('|')
-        .map(|cell| cell.trim().replace("**", "").replace('`', ""))
-        .collect()
+fn is_single_code_message(text: &str) -> bool {
+    use markdown::{ParseOptions, mdast::Node, to_mdast};
+    matches!(to_mdast(text, &ParseOptions::gfm()), Ok(Node::Root(root)) if matches!(root.children.as_slice(), [Node::Code(_)]))
 }
 
-fn parse_markdown_segments(text: &str) -> Vec<MdSegment> {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut out = Vec::new();
-    let mut prose_buf = Vec::new();
-    let mut in_fence = false;
-    let mut i = 0;
+#[cfg(test)]
+mod reply_copy_tests {
+    use super::{is_single_code_message, might_start_with_code};
+    #[test]
+    fn single_code_messages_use_the_block_action_even_with_table_syntax() {
+        for message in [
+            "  ~~~markdown\n| 名 | 值 |\n| --- | --- |\n  ~~~",
+            "````markdown\n```text\n| a | b |\n| --- | --- |\n```\n````",
+            "\n    | a | b |\n    | --- | --- |\n",
+        ] {
+            assert!(might_start_with_code(message));
+            assert!(is_single_code_message(message), "{message}");
+        }
+        assert!(!is_single_code_message(
+            "~~~rs\nfn main() {}\n~~~\n\nMore context."
+        ));
+        assert!(!is_single_code_message("| a | b |\n| --- | --- |"));
+    }
+}
 
-    while i < lines.len() {
-        let trimmed = lines[i].trim();
-        if trimmed.starts_with("```") {
-            in_fence = !in_fence;
-            prose_buf.push(lines[i]);
-            i += 1;
-            continue;
-        }
-        if !in_fence
-            && i + 1 < lines.len()
-            && trimmed.contains('|')
-            && is_table_separator_line(lines[i + 1])
-        {
-            if !prose_buf.is_empty() {
-                out.push(MdSegment::Prose(prose_buf.join("\n")));
-                prose_buf.clear();
-            }
-            let headers = split_pipe_row(lines[i]);
-            i += 2;
-            let mut rows = Vec::new();
-            while i < lines.len() && lines[i].trim().contains('|') && !lines[i].trim().is_empty() {
-                rows.push(split_pipe_row(lines[i]));
-                i += 1;
-            }
-            out.push(MdSegment::Table { headers, rows });
-            continue;
-        }
-        prose_buf.push(lines[i]);
-        i += 1;
+fn assistant_mascot(
+    id: impl Into<ElementId>,
+    status: MascotStatus,
+    loc: UiLocale,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let mascot = window.use_keyed_state(id.into(), cx, |_, _| {
+        AiMascot::new(loc.pick("助手", "Assistant"))
+            .with_size(24.)
+            .with_status(status)
+            .follow_pointer(false)
+    });
+    if mascot.read(cx).status() != status {
+        mascot.update(cx, |view, cx| view.set_status(status, cx));
     }
-    if !prose_buf.is_empty() {
-        out.push(MdSegment::Prose(prose_buf.join("\n")));
-    }
-    out
+    mascot.into_any_element()
 }
 
 fn working_line(

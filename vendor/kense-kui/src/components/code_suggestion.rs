@@ -89,6 +89,7 @@ pub struct PatchReview {
     generation: u64,
     interactive: bool,
     preview_font: Option<SharedString>,
+    within_file_preview: bool,
     tokens: HashMap<String, Tokens>,
     width: Rc<Cell<Pixels>>,
     code_height: Pixels,
@@ -122,6 +123,7 @@ impl PatchReview {
             generation: 0,
             interactive: false,
             preview_font: None,
+            within_file_preview: false,
             tokens: HashMap::new(),
             width: Rc::new(Cell::new(px(0.))),
             code_height: px(374.),
@@ -136,6 +138,12 @@ impl PatchReview {
     /// Present a recorded diff without offering to accept or reject already applied changes.
     pub fn read_only(mut self, code_font: SharedString) -> Self {
         self.preview_font = Some(code_font);
+        self
+    }
+
+    /// The containing file toolbar already identifies the path.
+    pub fn within_file_preview(mut self) -> Self {
+        self.within_file_preview = true;
         self
     }
 
@@ -893,7 +901,11 @@ impl Render for PatchReview {
                                             .min_w_0()
                                             .truncate()
                                             .text_size(px(12.))
-                                            .child(self.file.clone()),
+                                            .child(if self.within_file_preview {
+                                                t("Uncommitted changes", "未提交的改动").to_owned()
+                                            } else {
+                                                self.file.clone()
+                                            }),
                                     ),
                             )
                             .child(

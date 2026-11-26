@@ -15,6 +15,7 @@ use std::{
 use gpui::{prelude::*, *};
 use gpui_kit::component::tooltip::Tooltip;
 use kui::{
+    components::copy_button::CopyButton,
     components::pro_chrome::{pro_ease, pro_eid, pro_fold, pro_mix_color, pro_presence},
     primitives::{
         family::{PhaseClock, Slide, disabled_motion},
@@ -26,6 +27,35 @@ use kui::{
 use crate::ui_primitives::{
     CTRL_H, FS_CONTROL, FS_META, FS_UI, LH_CONTROL, ICON, ICON_SM, ICON_XS, R_CARD, R_CTRL, R_PILL, ROW_H, StudioPalette,
 };
+pub(crate) fn copy_with_hint(
+    id: String,
+    label: impl Into<SharedString>,
+    button: Entity<CopyButton>,
+) -> Stateful<Div> {
+    let label = label.into();
+    div()
+        .id(SharedString::from(id))
+        .flex_none()
+        .child(button)
+        .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+}
+
+pub(crate) fn copy_text_button(
+    key: String,
+    label: impl Into<SharedString>,
+    text: SharedString,
+    window: &mut Window,
+    cx: &mut App,
+) -> Stateful<Div> {
+    let label = label.into();
+    let state_key = SharedString::from(format!("{key}-{label}"));
+    let button = window.use_keyed_state(state_key, cx, |_, _| {
+        CopyButton::new(key.clone(), text.clone(), label.clone()).toolbar()
+    });
+    button.update(cx, |b, _| b.set_text(text));
+    copy_with_hint(format!("{key}-tip"), label, button)
+}
+
 pub(crate) mod selection;
 
 type ClickFn = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -53,8 +83,6 @@ pub struct Tactile {
     lit_fill: Hsla,
     lit: bool,
     radius: f32,
-    lifts: bool,
-    dark: bool,
     disabled: bool,
     inert: bool,
     ink: Option<(Hsla, Hsla)>,
@@ -80,8 +108,6 @@ impl Tactile {
             lit_fill: s.active,
             lit: false,
             radius: R_CTRL,
-            lifts: false,
-            dark: s.dark,
             disabled: false,
             inert: false,
             ink: None,
@@ -113,7 +139,6 @@ impl Tactile {
             hover: pro_mix_color(s.primary, s.on_primary, 0.14),
             lit_fill: s.primary,
             ink: Some((s.on_primary, s.on_primary)),
-            lifts: true,
             ..Self::ghost(id, s)
         }
     }
@@ -249,7 +274,6 @@ impl RenderOnce for Tactile {
         let radius = self.radius;
         let reduce_motion = disabled_motion(cx);
         let down = if reduce_motion { 0. } else { down };
-        let lifts = self.lifts && !disabled && !self.dark && !reduce_motion;
         let focus_ring = StudioPalette::get(cx).pro.focus;
         let show_button_ring = window.last_input_was_keyboard()
             && button_focus
@@ -274,15 +298,6 @@ impl RenderOnce for Tactile {
                 let r = px(radius)
                     .min(rect.size.width / 2.)
                     .min(rect.size.height / 2.);
-                if lifts && hov > 0.02 && down < 0.7 {
-                    window.paint_quad(
-                        fill(
-                            Bounds::new(point(rect.origin.x, rect.origin.y + px(1.)), rect.size),
-                            black().opacity(0.05 * hov * (1. - down)),
-                        )
-                        .corner_radii(r),
-                    );
-                }
                 if face.a > 0.001 {
                     window.paint_quad(fill(rect, face).corner_radii(r));
                 }
@@ -411,6 +426,21 @@ pub fn icon_button(
         .justify_center()
         .tip(tip)
         .child(pro_icon(icon, ICON, s.text))
+}
+
+/// Compact close action shared by tabs, chips and search fields.
+pub fn close_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    s: &StudioPalette,
+) -> Tactile {
+    Tactile::ghost(id, s)
+        .size(px(24.))
+        .flex_none()
+        .radius(6.)
+        .justify_center()
+        .tip(label)
+        .child(pro_icon(ProIcon::Close, ICON_SM, s.muted))
 }
 
 /// A labelled button with no fill at rest, for secondary actions.

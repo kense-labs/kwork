@@ -7,6 +7,7 @@ use crate::primitives::{
         Paint, PhaseClock, Slide, Tone, face, lettering, measure, press, standard_ease as ease,
     },
     glyph::{Glyph, transformed},
+    pro_icons::{ProIcon, pro_icon},
 };
 use gpui::{prelude::*, *};
 use std::time::Duration;
@@ -18,6 +19,7 @@ pub struct CopyButton {
     label: SharedString,
     icon_only: bool,
     compact: bool,
+    toolbar: bool,
     result: Option<bool>,
     previous: Option<bool>,
     clock: PhaseClock,
@@ -39,6 +41,7 @@ impl CopyButton {
             label: label.into(),
             icon_only: false,
             compact: false,
+            toolbar: false,
             result: None,
             previous: None,
             clock: Default::default(),
@@ -54,6 +57,11 @@ impl CopyButton {
     }
     pub fn with_compact(mut self, compact: bool) -> Self {
         self.compact = compact;
+        self
+    }
+    /// A fixed-size, monochrome action for text and chat toolbars.
+    pub fn toolbar(mut self) -> Self {
+        self.toolbar = true;
         self
     }
     pub fn set_text(&mut self, text: impl Into<SharedString>) {
@@ -108,6 +116,53 @@ impl Render for CopyButton {
         let (g, label, ink) = phase(self.result);
         let (old, prev, old_ink) = phase(self.previous);
         let age = self.clock.time(0.26, w, cx);
+        if self.toolbar {
+            let symbol = |result| match result {
+                Some(true) => ProIcon::Check,
+                Some(false) => ProIcon::AlertTriangle,
+                None => ProIcon::Copy,
+            };
+            let tint = |result| match result {
+                Some(true) => p.success,
+                Some(false) => p.danger,
+                None => p.secondary,
+            };
+            let blend = ease(age / 0.16);
+            let mark = div()
+                .relative()
+                .size(px(16.))
+                .when(blend < 1., |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .opacity(1. - blend)
+                            .child(pro_icon(symbol(self.previous), 16., tint(self.previous))),
+                    )
+                })
+                .child(div().absolute().inset_0().opacity(blend).child(pro_icon(
+                    symbol(self.result),
+                    16.,
+                    tint(self.result),
+                )));
+            let field = face(
+                self.id.clone(),
+                self.label.clone(),
+                28.,
+                6.,
+                Tone::Clear,
+                cx,
+            )
+            .size(px(28.))
+            .px_0()
+            .hover(|style| style.bg(p.hover))
+            .aria_description(label)
+            .child(mark);
+            return activate(press(field, cx, |v| &mut v.pressed), cx, |v, _, cx| {
+                v.copy(cx)
+            })
+            .into_any_element();
+        }
         let fs = if self.compact { 12. } else { 14. };
         let btn_h = if self.compact { 26. } else { 36. };
         let natural = measure(&label, fs, w);
@@ -205,11 +260,16 @@ impl Render for CopyButton {
             .items_center()
             .justify_center()
             .h(px(btn_h))
-            .w(px(if self.icon_only { btn_h } else { pad_base + visible }))
+            .w(px(if self.icon_only {
+                btn_h
+            } else {
+                pad_base + visible
+            }))
             .child(activate(
                 press(f, cx, |v| &mut v.pressed),
                 cx,
                 |v, _, cx| v.copy(cx),
             ))
+            .into_any_element()
     }
 }

@@ -3,7 +3,7 @@ use super::*;
 use crate::types::office_mcp_summary;
 use kar::{OutputPart, ToolStatus};
 use kui::components::{
-    copy_button::CopyButton, json_viewer::JsonViewer, morph_loader::MorphLoader,
+    json_viewer::JsonViewer, morph_loader::MorphLoader,
 };
 use serde_json::Value;
 use std::borrow::Cow;
@@ -491,16 +491,7 @@ impl KarWorkbench {
                 box_el = box_el.child(viewer.clone());
                 continue;
             }
-            let copy_id = SharedString::from(format!("{id}-copy"));
-            let copy = window.use_keyed_state(copy_id.clone(), cx, |_, _| {
-                CopyButton::new(
-                    copy_id,
-                    text.clone(),
-                    format!("{} {label}", loc.pick("复制", "Copy")),
-                )
-                .icon_only()
-            });
-            copy.update(cx, |view, _| view.set_text(text.clone()));
+            let copy = copy_text_button(format!("{id}-copy"), format!("{} {label}", loc.pick("复制", "Copy")), text.clone().into(), window, cx);
             let view = div()
                 .id(SharedString::from(id))
                 .w_full()

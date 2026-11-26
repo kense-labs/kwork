@@ -289,9 +289,9 @@ impl Render for TreeView {
                                     1.,
                                 ))
                             })
-                            .when(!branch, |b| b.child(div().w(px(12.))))
+                            .when(!branch, |b| b.child(div().w(px(12.)).flex_none()))
                             .child(pro_icon(entry.icon, 16., p.secondary))
-                            .child(entry.name)
+                            .child(div().flex_1().min_w_0().truncate().child(entry.name))
                             .on_click(cx.listener(move |s, _, w, cx| {
                                 if !live {
                                     return;

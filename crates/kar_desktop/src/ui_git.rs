@@ -21,11 +21,11 @@ use crate::{
     studio_hub::{GitFileEntry, GitWorkspaceSnapshot, WorkspaceFilePreview},
     types::{OfficeKind, SelectionLocator, SelectionTarget},
     ui_motion::{
-        MenuPlacement, Tactile, menu_caption, menu_check, menu_divider, menu_host, menu_icon_item,
+        MenuPlacement, Tactile, copy_text_button, menu_caption, menu_check, menu_divider, menu_host, menu_icon_item,
         menu_item, primary_button, soft_button, text_button,
     },
     ui_primitives::{
-        CTRL_H, FS_CONTROL, FS_META, FS_TAG, FS_TITLE, FS_UI, ICON_SM, LH_CONTROL, LH_META, R_CARD, R_PILL,
+        FS_CONTROL, FS_META, FS_TAG, FS_TITLE, FS_UI, ICON_SM, LH_CONTROL, LH_META, R_CARD, R_PILL,
         StudioPalette, UiLocale, mono_font, render_git_branch_icon, render_sample_tag,
         tnum_features,
     },
@@ -1215,10 +1215,12 @@ impl KarWorkbench {
     pub(crate) fn render_workspace_code_tab_body(
         &mut self,
         rel_path: &PathBuf,
+        pane_width: f32,
         s: &StudioPalette,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(preview) = self.open_code_tabs.get(rel_path).cloned() else {
+        let Some(preview) = self.open_code_tabs.get(rel_path) else {
             return div()
                 .size_full()
                 .flex()
@@ -1235,14 +1237,7 @@ impl KarWorkbench {
             .code_block_cache
             .entry(key.clone())
             .or_insert_with(|| {
-                cx.new(|cx| {
-                    CodeBlock::new(
-                        preview.rel_path.display().to_string(),
-                        preview.language.clone(),
-                        preview.content.clone(),
-                        cx,
-                    )
-                })
+                cx.new(|_| CodeBlock::source_only(preview.content.clone()))
             })
             .clone();
 
@@ -1269,6 +1264,7 @@ impl KarWorkbench {
                                 cx,
                             )
                             .read_only(mono_font(cx))
+                            .within_file_preview()
                         })
                     })
                     .clone(),
@@ -1277,7 +1273,13 @@ impl KarWorkbench {
             None
         };
 
-        let preview_for_pin = preview.clone();
+        let file_to_pin = rel_path.clone();
+        let loc = self.ui_locale;
+        let pin_label = loc.pick("引用到对话", "Add to chat");
+        let copy = copy_text_button(
+            format!("file-preview-copy-{key}"), loc.pick("复制文件内容", "Copy file contents"),
+            code_entity.read(cx).source(), window, cx,
+        );
         let subbar = div()
             .h(px(36.))
             .px(px(14.))
@@ -1292,11 +1294,14 @@ impl KarWorkbench {
                 div()
                     .flex_1()
                     .min_w_0()
+                    .overflow_hidden()
                     .flex()
                     .items_center()
                     .gap(px(8.))
                     .child(
                         div()
+                            .max_w(relative(0.32))
+                            .truncate()
                             .px(px(6.))
                             .py(px(1.))
                             .rounded(px(4.))
@@ -1308,6 +1313,7 @@ impl KarWorkbench {
                     )
                     .child(
                         div()
+                            .flex_1()
                             .min_w_0()
                             .truncate()
                             .font_family(mono_font(cx))
@@ -1315,25 +1321,35 @@ impl KarWorkbench {
                             .text_color(s.ink)
                             .child(preview.rel_path.display().to_string()),
                     )
-                    .child(
+                    .when(pane_width >= 450., |row| row.child(
                         div()
+                            .flex_none()
+                            .whitespace_nowrap()
                             .font_features(tnum_features())
                             .text_size(px(FS_META))
                             .text_color(s.muted)
-                            .child(format!("{} 行", preview.total_lines)),
-                    ),
+                            .child(format!("{} {}", preview.total_lines, loc.pick(
+                                "行", if preview.total_lines == 1 { "line" } else { "lines" },
+                            ))),
+                    )),
             )
+            .child(copy)
             .child(
-                Tactile::soft("code-pin-to-chat", s)
-                    .h(px(CTRL_H - 2.))
-                    .px(px(9.))
+                Tactile::ghost("code-pin-to-chat", s)
+                    .flex_none()
+                    .h(px(28.))
+                    .map(|d| if pane_width >= 390. { d.px(px(6.)) } else { d.w(px(28.)) })
+                    .justify_center()
+                    .tip(pin_label)
                     .gap(px(5.))
                     .text_size(px(FS_META))
                     .text_color(s.ink)
                     .child(pro_icon(ProIcon::Pin, ICON_SM, s.muted))
-                    .child(self.ui_locale.pick("引用到对话", "Add to chat"))
+                    .when(pane_width >= 390., |d| d.child(pin_label))
                     .on_press(cx, move |this, win, cx| {
-                        this.pin_code_file_to_composer(&preview_for_pin, win, cx);
+                        if let Some(preview) = this.open_code_tabs.get(&file_to_pin).cloned() {
+                            this.pin_code_file_to_composer(&preview, win, cx);
+                        }
                     }),
             );
 
@@ -1345,6 +1361,8 @@ impl KarWorkbench {
             .child(
                 div()
                     .id("kar-code-preview-scroll")
+                    .w_full()
+                    .min_w_0()
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -1352,23 +1370,7 @@ impl KarWorkbench {
                     .flex()
                     .flex_col()
                     .gap(px(14.))
-                    .when_some(patch_entity, |col, pr| {
-                        col.child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .flex_col()
-                                .gap(px(6.))
-                                .child(
-                                    div()
-                                        .text_size(px(FS_META))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(s.ink)
-                                        .child("未提交的改动"),
-                                )
-                                .child(pr),
-                        )
-                    })
+                    .when_some(patch_entity, |col, patch| col.child(patch))
                     .child(code_entity),
             )
             .into_any_element()
