@@ -37,7 +37,7 @@ use crate::{
     mcp_office::{OfficeMcpCall, start_office_mcp_server},
     remote_link::{
         PeerRole, RemoteAction, RemoteCommandEnvelope, RemoteExtendedSnapshot, RemoteHostTelemetry,
-        RemoteLinkCore, RemoteOutcome, SharedRemoteLink, client_fetch_remote_state,
+        RemoteLinkCore, RemoteOutcome, SharedRemoteLink, QueueCopyError, client_fetch_remote_state,
         client_redeem_pair_code, client_send_remote_command, now_epoch_ms,
         remote_link_router_with_updates,
     },
@@ -103,6 +103,13 @@ pub enum KarCommand {
         payload: String,
         target: Option<SelectionTarget>,
         attachments: Vec<PathBuf>,
+    },
+    RemoteQueuedAction {
+        url: String,
+        peer_id: Uuid,
+        chat_id: Uuid,
+        input_id: Uuid,
+        copy_to_draft: bool,
     },
     WithdrawQueued {
         chat_id: Uuid,
@@ -381,7 +388,17 @@ pub enum KarBridgeEvent {
     RemotePairFailed {
         code_rejected: bool,
     },
-    RemoteExtendedStateUpdated(RemoteExtendedSnapshot),
+    RemoteExtendedStateUpdated {
+        url: String,
+        peer_id: Uuid,
+        snapshot: RemoteExtendedSnapshot,
+    },
+    RemoteQueueCopied {
+        url: String,
+        peer_id: Uuid,
+        chat_id: Uuid,
+        result: Result<String, QueueCopyError>,
+    },
     RemoteBriefFeedbackReceived {
         brief_id: String,
         revision: u64,
@@ -1780,7 +1797,11 @@ async fn run_http_subscriber_loop(
         if let Ok(Ok(ext)) =
             tokio::task::spawn_blocking(move || client_fetch_remote_state(&u, &tok)).await
         {
-            let _ = evt_tx.send_blocking(KarBridgeEvent::RemoteExtendedStateUpdated(ext));
+            let _ = evt_tx.send_blocking(KarBridgeEvent::RemoteExtendedStateUpdated {
+                url: url.clone(),
+                peer_id: rem.peer_id,
+                snapshot: ext,
+            });
         }
     }
 
@@ -1855,7 +1876,7 @@ async fn run_http_subscriber_loop(
                         let tok = rem.token.clone();
                         match tokio::task::spawn_blocking(move || client_fetch_remote_state(&u, &tok)).await {
                             Ok(Ok(ext)) => {
-                                let _ = evt_tx.send_blocking(KarBridgeEvent::RemoteExtendedStateUpdated(ext));
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::RemoteExtendedStateUpdated { url: url.clone(), peer_id: rem.peer_id, snapshot: ext });
                             }
                             Ok(Err(err)) => {
                                 let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
@@ -1949,7 +1970,7 @@ async fn run_http_subscriber_loop(
                                 client_fetch_remote_state(&u, &tok)
                             }).await {
                                 Ok(Ok(ext)) => {
-                                    let _ = evt_tx.send_blocking(KarBridgeEvent::RemoteExtendedStateUpdated(ext));
+                                    let _ = evt_tx.send_blocking(KarBridgeEvent::RemoteExtendedStateUpdated { url: url.clone(), peer_id: rem.peer_id, snapshot: ext });
                                 }
                                 Ok(Err(err)) if err.to_string().contains("403") => {
                                     let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
@@ -2703,20 +2724,64 @@ async fn worker_loop(
                     }
                 });
             }
+            KarCommand::RemoteQueuedAction {
+                url,
+                peer_id,
+                chat_id,
+                input_id,
+                copy_to_draft,
+            } => {
+                let Some(remote) = state.remote_session.as_ref().filter(|r| {
+                    r.url == url
+                        && r.peer_id == peer_id
+                        && r.chat_id == Some(chat_id)
+                        && r.role.can_mutate()
+                }) else {
+                    state.emit(KarBridgeEvent::RemoteQueueCopied {
+                        url,
+                        peer_id,
+                        chat_id,
+                        result: Err(QueueCopyError::Changed),
+                    });
+                    continue;
+                };
+                if !copy_to_draft {
+                    state.dispatch_remote_envelope(RemoteCommandEnvelope {
+                        request_id: Uuid::new_v4(),
+                        expected_revision: None,
+                        action: RemoteAction::WithdrawQueued {
+                            chat_id: Some(chat_id),
+                            input_id,
+                        },
+                    });
+                    continue;
+                }
+                let token = remote.token.clone();
+                let endpoint = url.clone();
+                let events = state.evt_tx.clone();
+                tokio::spawn(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        client_fetch_remote_state(&endpoint, &token)
+                            .map_err(|_| QueueCopyError::Unavailable)?
+                            .pending_text(chat_id, input_id)
+                    })
+                    .await
+                    .unwrap_or(Err(QueueCopyError::Unavailable));
+                    let _ = events
+                        .send(KarBridgeEvent::RemoteQueueCopied {
+                            url,
+                            peer_id,
+                            chat_id,
+                            result,
+                        })
+                        .await;
+                });
+            }
             KarCommand::WithdrawQueued {
                 chat_id,
                 input_id,
                 edit,
             } => {
-                if state.active_controller.is_none()
-                    && state.dispatch_remote_envelope(RemoteCommandEnvelope {
-                        request_id: Uuid::new_v4(),
-                        expected_revision: None,
-                        action: RemoteAction::WithdrawQueued { input_id },
-                    })
-                {
-                    continue;
-                }
                 let Some(store) = state.store.clone() else {
                     continue;
                 };
@@ -3404,7 +3469,13 @@ async fn worker_loop(
                                 state.remote_link.lock().unwrap_or_else(|e| e.into_inner());
                             guard.listen_url = Some(url.clone());
                             guard.chat_id = (!chat_id.is_nil()).then_some(chat_id);
-                            guard.extended_snapshot.chat_id = (!chat_id.is_nil()).then_some(chat_id);
+                            if guard.extended_snapshot.chat_id != guard.chat_id {
+                                guard.extended_snapshot = RemoteExtendedSnapshot {
+                                    chat_id: guard.chat_id,
+                                    host_name: guard.host_name.clone(),
+                                    ..Default::default()
+                                };
+                            }
                             if guard.ticket.as_ref().is_none_or(|t| now >= t.expires_ms) {
                                 guard.issue_pairing_ticket(now);
                             }
@@ -3412,6 +3483,11 @@ async fn worker_loop(
                         let events = state.evt_tx.clone();
                         let link_router = remote_link_router_with_updates(
                             state.remote_link.clone(),
+                            state
+                                .store
+                                .clone()
+                                .filter(|_| !chat_id.is_nil())
+                                .map(|store| (chat_id, store)),
                             move |snapshot| {
                                 let _ = events
                                     .try_send(KarBridgeEvent::RemoteTelemetryUpdated(snapshot));
@@ -3488,6 +3564,9 @@ async fn worker_loop(
             KarCommand::SyncHostExtendedSnapshot { mut snapshot } => {
                 {
                     let mut guard = state.remote_link.lock().unwrap_or_else(|e| e.into_inner());
+                    if guard.chat_id != snapshot.chat_id {
+                        continue;
+                    }
                     snapshot.host_name = guard.host_name.clone();
                     snapshot.revision = guard.extended_snapshot.revision.saturating_add(1);
                     guard.extended_snapshot = snapshot;
@@ -3603,8 +3682,18 @@ async fn worker_loop(
                             })
                             .await;
                     }
-                    RemoteAction::WithdrawQueued { input_id } => {
-                        if let Some(chat_id) = state.selected_chat_id {
+                    RemoteAction::WithdrawQueued {
+                        input_id,
+                        chat_id: expected,
+                    } => {
+                        if let Some(chat_id) = state
+                            .http_server
+                            .as_ref()
+                            .map(|srv| srv.chat_id)
+                            .filter(|id| {
+                                !id.is_nil() && expected.is_none_or(|expected| expected == *id)
+                            })
+                        {
                             let _ = state
                                 .cmd_tx
                                 .send(KarCommand::WithdrawQueued {

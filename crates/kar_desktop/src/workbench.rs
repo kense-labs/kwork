@@ -56,7 +56,7 @@ use crate::{
     },
     kar_bridge::{ChatCreateFailure, KarBridgeEvent, KarBridgeHandle, KarCommand, ProjectedChatState},
     office_host::{OfficeEditorView, OfficeTab, clean_doc_para_text, materialize_coedit_demo_files},
-    remote_link::{PeerRole, RemoteAction, RemoteExtendedSnapshot, RemoteHostTelemetry, now_epoch_ms},
+    remote_link::{PeerRole, QueueCopyError, RemoteAction, RemoteExtendedSnapshot, RemoteHostTelemetry, now_epoch_ms},
     schedules::{ScheduleCadence, ScheduleRegistry, ScheduleRunOutcome, ScheduledTask},
     studio_hub::{
         DiagLevel, DiagLogRing, DiffHunkData, GitWorkspaceSnapshot, GlobalSearchHit, InventoryTab,
@@ -2386,6 +2386,11 @@ impl KarWorkbench {
                     self.remote_connect_code_input
                         .update(cx, |input, cx| input.set_value("", window, cx));
                 }
+                if self.access_mode != mode
+                    && (self.access_mode.is_remote_paired() || mode.is_remote_paired())
+                {
+                    self.projected.queued_inputs.clear();
+                }
                 self.access_mode = mode;
                 let live = matches!(self.access_mode, ChatAccessMode::HttpReadOnly { .. } | ChatAccessMode::RemoteController { .. });
                 if (chat_changed || live) && self.main_stage_view == MainStageView::Conversation {
@@ -2452,7 +2457,7 @@ impl KarWorkbench {
                 }
                 self.connection_state = conn;
             }
-            KarBridgeEvent::ChatStateUpdated(proj) => {
+            KarBridgeEvent::ChatStateUpdated(mut proj) => {
                 // Ignore stale projections arriving from a previously deselected chat.
                 if let Some(proj_cid) = proj.chat_id
                     && !proj.is_demo
@@ -2487,6 +2492,10 @@ impl KarWorkbench {
                 self.sync_client_projection(&proj);
                 let workspace_changed = self.projected.info.as_ref().map(|i| &i.workspace)
                     != proj.info.as_ref().map(|i| &i.workspace);
+                if same_chat && self.access_mode.is_remote_paired() {
+                    // Kar's public event feed projects turns; the paired state endpoint owns its queue.
+                    proj.queued_inputs = std::mem::take(&mut self.projected.queued_inputs);
+                }
                 self.projected = proj;
                 if switched_chat || workspace_changed {
                     self.sync_workspace_panels(window, cx);
@@ -2665,8 +2674,42 @@ impl KarWorkbench {
                 }
                 self.remote_telemetry = telem;
             }
-            KarBridgeEvent::RemoteExtendedStateUpdated(ext) => {
-                if matches!(self.access_mode, ChatAccessMode::RemoteController { .. }) {
+            KarBridgeEvent::RemoteQueueCopied {
+                url,
+                peer_id,
+                chat_id,
+                result,
+            } => {
+                if !matches!(&self.access_mode, ChatAccessMode::RemoteController { url: current, peer_id: peer, chat_id: Some(chat), role, .. }
+                    if current == &url && *peer == peer_id && *chat == chat_id && role.can_mutate())
+                {
+                    return;
+                }
+                let loc = self.ui_locale;
+                match result {
+                    Ok(text) => {
+                        let location = DraftLocation::Remote(url, Some(chat_id));
+                        self.prepend_composer_draft(location.clone(), QueuedPrompt { text, ..Default::default() }, window, cx);
+                        if self.drafts.location == location {
+                            self.composer_editor.update(cx, |ed, cx| ed.focus(window, cx));
+                        }
+                        self.notify_toast(loc.pick("已复制到草稿，原消息仍保留在主机队列中", "Copied to draft. The original stays queued on the host."), cx);
+                    }
+                    Err(reason) => self.notify_warning(match reason {
+                        QueueCopyError::HostAttachments => loc.pick("这条消息含主机附件，请在主机上编辑。原消息仍在队列中。", "Edit this message on the host to keep its attachments. It remains queued."),
+                        QueueCopyError::Changed => loc.pick("该消息已离开此对话的待发队列，草稿已保留", "This message is no longer pending in this thread. Your draft is unchanged."),
+                        QueueCopyError::Unavailable => loc.pick("无法确认主机队列，草稿已保留", "Could not verify the host queue. Your draft is unchanged."),
+                    }, cx),
+                }
+            }
+            KarBridgeEvent::RemoteExtendedStateUpdated {
+                url,
+                peer_id,
+                snapshot: ext,
+            } => {
+                if matches!(&self.access_mode, ChatAccessMode::RemoteController { url: current, chat_id, peer_id: peer, .. } if current == &url && *peer == peer_id && *chat_id == ext.chat_id)
+                {
+                    self.projected.queued_inputs = ext.queued_inputs.unwrap_or_default();
                     self.active_briefs = ext.briefs;
                     for (tid, cap) in ext.turn_captures {
                         self.client_reducer.record_turn_capture(cap);
@@ -5249,6 +5292,7 @@ impl KarWorkbench {
             chat_id,
             association,
             briefs: self.active_briefs.clone(),
+            queued_inputs: None,
             turn_captures: self.client_reducer.turn_captures.clone(),
             revision: 0,
         };
@@ -5734,6 +5778,24 @@ impl KarWorkbench {
         cx: &mut Context<Self>,
     ) {
         if !self.access_mode.is_writable() {
+            return;
+        }
+        if let ChatAccessMode::RemoteController {
+            url,
+            peer_id,
+            chat_id,
+            ..
+        } = &self.access_mode
+        {
+            if let Some(chat_id) = *chat_id {
+                self.bridge.send(KarCommand::RemoteQueuedAction {
+                    url: url.clone(),
+                    peer_id: *peer_id,
+                    chat_id,
+                    input_id,
+                    copy_to_draft: edit,
+                });
+            }
             return;
         }
         if matches!(self.access_mode, ChatAccessMode::DemoShowcase) {

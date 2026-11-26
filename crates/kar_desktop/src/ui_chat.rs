@@ -2368,6 +2368,21 @@ impl KarWorkbench {
 
     fn render_queued_inputs_strip(&self, s: &StudioPalette, cx: &mut Context<Self>) -> AnyElement {
         let can_steer = self.projected.can_steer;
+        let loc = self.ui_locale;
+        let (edit_label, edit_tip) = if self.access_mode.is_remote_paired() {
+            (
+                loc.pick("复制到草稿", "Copy to draft"),
+                loc.pick(
+                    "原消息保留在主机待发队列中",
+                    "The original remains queued on the host",
+                ),
+            )
+        } else {
+            (
+                loc.pick("编辑", "Edit"),
+                loc.pick("取回到输入框继续修改", "Return to the composer to edit"),
+            )
+        };
         let mut col = div()
             .w_full()
             .px(px(6.))
@@ -2424,10 +2439,16 @@ impl KarWorkbench {
                                     } else {
                                         s.muted
                                     })
-                                    .child(if can_steer {
-                                        "平滑汇入"
+                                    .child(if self.access_mode.is_remote_paired() {
+                                        if item.status == kar::chat::InputStatus::Sending {
+                                            loc.pick("发送中", "Sending")
+                                        } else {
+                                            loc.pick("待发", "Queued")
+                                        }
+                                    } else if can_steer {
+                                        loc.pick("平滑汇入", "Steering")
                                     } else {
-                                        "待发队列"
+                                        loc.pick("待发队列", "Queued")
                                     }),
                             )
                             .child(
@@ -2446,9 +2467,9 @@ impl KarWorkbench {
                             .items_center()
                             .gap(px(2.))
                             .child(
-                                text_button(("edit-queued", ix), self.ui_locale.pick("编辑", "Edit"), s)
+                                text_button(("edit-queued", ix), edit_label, s)
                                     .disabled(!can_withdraw)
-                                    .tip("取回到输入框继续修改")
+                                    .tip(edit_tip)
                                     .on_press(cx, move |this, window, cx| {
                                         this.withdraw_or_edit_queued_input(
                                             input_id,

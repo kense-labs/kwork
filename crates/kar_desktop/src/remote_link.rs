@@ -20,6 +20,7 @@ use axum::{
     routing::{get, post},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use kar::chat::{ChatStore, InputStatus, QueuedInput};
 use ring::{
     digest::{SHA256, digest},
     hmac,
@@ -149,6 +150,8 @@ pub enum RemoteAction {
     },
     WithdrawQueued {
         input_id: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chat_id: Option<Uuid>,
     },
     AbortTurn,
     DecidePermission {
@@ -198,7 +201,36 @@ pub struct RemoteExtendedSnapshot {
     pub turn_captures: BTreeMap<Uuid, TurnCapture>,
     pub association: Option<SessionAssociation>,
     pub briefs: Vec<KarBrief>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_inputs: Option<Vec<QueuedInput>>,
     pub revision: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueueCopyError {
+    Unavailable,
+    Changed,
+    HostAttachments,
+}
+
+impl RemoteExtendedSnapshot {
+    pub fn pending_text(&self, chat_id: Uuid, input_id: Uuid) -> Result<String, QueueCopyError> {
+        if self.chat_id != Some(chat_id) {
+            return Err(QueueCopyError::Changed);
+        }
+        let queue = self
+            .queued_inputs
+            .as_ref()
+            .ok_or(QueueCopyError::Unavailable)?;
+        let input = queue
+            .iter()
+            .find(|q| q.id == input_id && q.status == InputStatus::Pending)
+            .ok_or(QueueCopyError::Changed)?;
+        if !input.attachments.is_empty() {
+            return Err(QueueCopyError::HostAttachments);
+        }
+        Ok(crate::types::strip_selection_envelope(&input.text).to_owned())
+    }
 }
 
 /// Cryptographic pairing & command admission state shared with the embedded Axum server.
@@ -426,6 +458,21 @@ impl RemoteLinkCore {
                 recorded_ms: now_ms,
             };
         }
+        if let RemoteAction::WithdrawQueued {
+            chat_id: Some(expected),
+            ..
+        } = env.action
+            && self.chat_id != Some(expected)
+        {
+            return RemoteCommandReceipt {
+                request_id: env.request_id,
+                peer_id: peer.peer_id,
+                recorded_ms: now_ms,
+                outcome: RemoteOutcome::Rejected {
+                    reason: "共享会话已切换，请刷新队列".into(),
+                },
+            };
+        }
         if let Some(exp_rev) = env.expected_revision
             && exp_rev != self.extended_snapshot.revision
         {
@@ -503,6 +550,7 @@ async fn handle_pair(
 async fn handle_v1_state(
     State(link): State<SharedRemoteLink>,
     headers: HeaderMap,
+    shared_queue: Option<(Uuid, ChatStore)>,
 ) -> Response {
     let Some(token) = extract_bearer(&headers) else {
         return (
@@ -511,12 +559,34 @@ async fn handle_v1_state(
         )
             .into_response();
     };
-    let now = now_epoch_ms();
-    let mut guard = link.lock().unwrap_or_else(|e| e.into_inner());
-    match guard.authenticate_token(&token, now) {
-        Ok(_) => (StatusCode::OK, Json(guard.extended_snapshot.clone())).into_response(),
-        Err((code, msg)) => (code, Json(serde_json::json!({ "error": msg }))).into_response(),
+    let (peer, mut snapshot) = {
+        let mut guard = link.lock().unwrap_or_else(|e| e.into_inner());
+        let peer = match guard.authenticate_token(&token, now_epoch_ms()) {
+            Ok(peer) => peer,
+            Err((code, msg)) => {
+                return (code, Json(serde_json::json!({ "error": msg }))).into_response();
+            }
+        };
+        (peer, guard.extended_snapshot.clone())
+    };
+    snapshot.queued_inputs = None;
+    if peer.role.can_mutate()
+        && let Some((chat_id, store)) = shared_queue
+        && snapshot.chat_id == Some(chat_id)
+    {
+        snapshot.queued_inputs = tokio::task::spawn_blocking(move || {
+            store.queued_inputs(chat_id).map(|entries| {
+                entries
+                    .into_iter()
+                    .filter(|q| matches!(q.status, InputStatus::Pending | InputStatus::Sending))
+                    .collect()
+            })
+        })
+        .await
+        .ok()
+        .and_then(Result::ok);
     }
+    (StatusCode::OK, Json(snapshot)).into_response()
 }
 
 async fn handle_v1_command(
@@ -549,11 +619,12 @@ async fn handle_v1_command(
 
 /// Build the `/v1/*` bidirectional pairing & control router to merge onto Kar's `HttpChatFeed` router.
 pub fn remote_link_router(link: SharedRemoteLink) -> Router {
-    remote_link_router_with_updates(link, |_| {})
+    remote_link_router_with_updates(link, None, |_| {})
 }
 
 pub(crate) fn remote_link_router_with_updates(
     link: SharedRemoteLink,
+    shared_queue: Option<(Uuid, ChatStore)>,
     notify: impl Fn(RemoteHostTelemetry) + Clone + Send + Sync + 'static,
 ) -> Router {
     Router::new()
@@ -561,7 +632,10 @@ pub(crate) fn remote_link_router_with_updates(
             "/v1/pair",
             post(move |state, req| handle_pair(state, req, notify.clone())),
         )
-        .route("/v1/state", get(handle_v1_state))
+        .route(
+            "/v1/state",
+            get(move |state, headers| handle_v1_state(state, headers, shared_queue.clone())),
+        )
         .route("/v1/command", post(handle_v1_command))
         .with_state(link)
 }
@@ -649,6 +723,52 @@ pub fn client_fetch_remote_state(base_url: &str, token: &str) -> Result<RemoteEx
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_copy_requires_a_pending_text_message_in_the_shared_thread() {
+        let chat = Uuid::new_v4();
+        let id = Uuid::new_v4();
+        let mut input: QueuedInput = serde_json::from_value(serde_json::json!({
+            "id":id, "text":"original", "status":"pending"
+        }))
+        .unwrap();
+        let mut snapshot = RemoteExtendedSnapshot {
+            chat_id: Some(chat),
+            ..Default::default()
+        };
+        assert_eq!(
+            snapshot.pending_text(chat, id),
+            Err(QueueCopyError::Unavailable)
+        );
+        snapshot.queued_inputs = Some(vec![input.clone()]);
+        assert_eq!(snapshot.pending_text(chat, id), Ok("original".into()));
+        assert_eq!(
+            snapshot.pending_text(Uuid::new_v4(), id),
+            Err(QueueCopyError::Changed)
+        );
+        assert_eq!(
+            snapshot.pending_text(chat, Uuid::new_v4()),
+            Err(QueueCopyError::Changed)
+        );
+        input.text = "请针对以下工作区源码文件 src/main.rs\n用户要求：\nkeep my words".into();
+        snapshot.queued_inputs = Some(vec![input.clone()]);
+        assert_eq!(snapshot.pending_text(chat, id), Ok("keep my words".into()));
+        input.status = InputStatus::Sending;
+        snapshot.queued_inputs = Some(vec![input.clone()]);
+        assert_eq!(
+            snapshot.pending_text(chat, id),
+            Err(QueueCopyError::Changed)
+        );
+        input.status = InputStatus::Pending;
+        input.attachments.push(serde_json::from_value(serde_json::json!({
+            "id":Uuid::new_v4(),"name":"fixture.txt","kind":"file","mime":"text/plain","bytes":3,"sha256":"fixture"
+        })).unwrap());
+        snapshot.queued_inputs = Some(vec![input]);
+        assert_eq!(
+            snapshot.pending_text(chat, id),
+            Err(QueueCopyError::HostAttachments)
+        );
+    }
 
     #[test]
     fn short_code_pairing_single_use_hmac_auth_idempotency_and_revocation() {
