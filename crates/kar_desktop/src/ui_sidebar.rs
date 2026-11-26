@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use gpui::{prelude::*, *};
+use gpui_kit::component::tooltip::Tooltip;
 use kar::chat::TurnStatus;
 use kui::{
     components::pro_chrome::{
@@ -17,11 +18,11 @@ use crate::{
         ChatAccessMode, ChatListEntry, localized_relative_age, runtime_display_name,
     },
     ui_motion::{
-        MenuPlacement, Tactile, close_button, icon_button, menu_caption, menu_check, menu_divider, menu_hint,
+        MenuPlacement, Tactile, close_button, icon_button_sm, menu_caption, menu_check, menu_divider, menu_hint,
         menu_host, menu_icon_item, menu_item, soft_button,
     },
     ui_primitives::{
-        CTRL_H, CTRL_SM_H, FS_META, FS_TAG, FS_UI, ICON, ICON_SM, LH_UI, R_CTRL, R_PILL, StudioPalette,
+        CTRL_H, CTRL_SM_H, FS_META, FS_TAG, FS_UI, ICON, ICON_SM, LH_UI, R_CTRL, R_PILL, StudioPalette, TITLEBAR_BUTTON_GAP,
         clean_display_doc_name, macos_traffic_pad, render_approval_hand,
         render_circle_check_icon,
         render_folder_icon,
@@ -44,9 +45,8 @@ impl KarWorkbench {
         action: Option<AnyElement>,
         s: &StudioPalette,
         window: &Window,
-        cx: &mut Context<Self>,
     ) -> Div {
-        let left = 20. + (macos_traffic_pad(window) - 20.).max(0.) * (1. - self.sidebar_reveal);
+        let left = 20. + (macos_traffic_pad(window) - 20.) * (1. - self.sidebar_reveal);
         div()
             .w_full()
             .h(px(crate::ui_primitives::HEADER_H))
@@ -58,18 +58,7 @@ impl KarWorkbench {
             .items_center()
             .gap(px(8.))
             .when(!self.sidebar_open, |row| {
-                row.child(
-                    icon_button(
-                        "stage-show-sidebar",
-                        ProIcon::SidebarLeft,
-                        self.ui_locale.pick("展开侧边栏", "Show sidebar"),
-                        s,
-                    )
-                    .on_press(cx, |this, window, cx| {
-                        this.focus_handle.focus(window, cx);
-                        this.set_sidebar_open(true, cx);
-                    }),
-                )
+                row.child(div().size(px(CTRL_SM_H)).flex_none())
             })
             .child(
                 div()
@@ -166,17 +155,6 @@ impl KarWorkbench {
         let show_chat_selection = in_conv && !on_start_screen && !git_selected && !self.settings_open;
         let nav_sensor = pro_selection_sensor();
         let left_inset = macos_traffic_pad(window);
-        let chrome_ink = s.ink;
-        let toolbar_button = |id, label, icon, size| {
-            Tactile::ghost(id, &s)
-                .size(px(CTRL_SM_H))
-                .flex_none()
-                .radius(6.)
-                .justify_center()
-                .fills(transparent_black(), chrome_ink.opacity(0.14))
-                .tip(label)
-                .child(pro_icon(icon, size, chrome_ink))
-        };
         let top_bar = div()
             .relative()
             .h(px(crate::ui_primitives::HEADER_H))
@@ -186,35 +164,15 @@ impl KarWorkbench {
             .flex_none()
             .flex()
             .items_center()
+            .gap(px(TITLEBAR_BUTTON_GAP))
+            .child(div().size(px(CTRL_SM_H)).flex_none())
             .child(
-                toolbar_button(
-                    "side-collapse",
-                    loc.pick("收起侧边栏  ⌘.", "Hide sidebar  ⌘."),
-                    ProIcon::SidebarLeft,
-                    16.,
-                )
-                .on_press(cx, |this, window, cx| {
-                    this.focus_handle.focus(window, cx);
-                    this.set_sidebar_open(false, cx);
-                }),
-            )
-            .child(
-                toolbar_button(
-                    "side-back",
-                    loc.pick("后退", "Go back"),
-                    ProIcon::ArrowLeft,
-                    14.,
-                )
+                icon_button_sm("side-back", ProIcon::ArrowLeft, loc.pick("后退", "Go back"), &s)
                 .disabled(!self.can_navigate(false))
                 .on_press(cx, |this, win, cx| this.navigate_history(false, win, cx)),
             )
             .child(
-                toolbar_button(
-                    "side-forward",
-                    loc.pick("前进", "Go forward"),
-                    ProIcon::ArrowRight,
-                    14.,
-                )
+                icon_button_sm("side-forward", ProIcon::ArrowRight, loc.pick("前进", "Go forward"), &s)
                 .disabled(!self.can_navigate(true))
                 .on_press(cx, |this, win, cx| this.navigate_history(true, win, cx)),
             );
@@ -402,7 +360,7 @@ impl KarWorkbench {
                     .is_some_and(|n| n.to_lowercase().contains(&query));
             proj_match
                 || e.title.to_lowercase().contains(&query)
-                || runtime_display_name(&e.info.runtime)
+                || runtime_display_name(e.runtime(self.projected.info.as_ref()))
                     .to_lowercase()
                     .contains(&query)
         };
@@ -451,6 +409,8 @@ impl KarWorkbench {
         );
 
         // ── Special active Demo / Shared / Remote thread cards ──────────────
+        let shared_agent = self.projected.info.as_ref()
+            .filter(|info| Some(info.id) == self.access_mode.selected_chat_id());
         if matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
             list_col = list_col.child(self.render_demo_showcase_cards(in_conv.then_some(&nav_sensor), &s, cx));
         } else if let ChatAccessMode::RemoteController { ref host_name, .. } = self.access_mode {
@@ -475,7 +435,10 @@ impl KarWorkbench {
                                     .flex()
                                     .items_center()
                                     .gap(px(6.))
-                                    .child(render_radar_link_icon(13., s.pro.green))
+                                    .child(match shared_agent {
+                                        Some(info) => thread_agent_mark("remote-thread-agent", &info.runtime, &s, cx).into_any_element(),
+                                        None => render_radar_link_icon(13., s.pro.green).into_any_element(),
+                                    })
                                     .child(
                                         div()
                                             .text_size(px(FS_META))
@@ -511,7 +474,10 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .child(pro_icon(ProIcon::Link, ICON_SM, s.text))
+                    .child(match shared_agent {
+                        Some(info) => thread_agent_mark("shared-thread-agent", &info.runtime, &s, cx).into_any_element(),
+                        None => pro_icon(ProIcon::Link, ICON_SM, s.text),
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -1123,43 +1089,34 @@ impl KarWorkbench {
         } else {
             loc.pick("本机", "Local")
         };
-        let context = format!(
-            "{proj_name} · {location} · {}",
-            runtime_display_name(&entry.info.runtime)
-        );
-        let marker = div()
-            .size(px(ICON))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(if needs_approval {
-                render_approval_hand(ICON_SM, s.pro.amber_ink)
-            } else if pinned {
-                pro_icon(ProIcon::Pin, ICON_SM, s.muted)
-            } else if has_assoc {
-                render_schedule_repeat_icon(ICON_SM, s.muted).into_any_element()
-            } else {
-                div()
-                    .size(px(6.))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(if running { s.pro.accent_info } else { s.faint })
-                    .when(running, |d| d.bg(s.pro.accent_info))
-                    .into_any_element()
-            });
+        let runtime = entry.runtime(self.projected.info.as_ref());
+        let context = format!("{proj_name} · {location} · {}", runtime_display_name(runtime));
+        let mut row_label = format!("{display_title} · {context}");
+        for (visible, label) in [
+            (pinned, loc.pick("已置顶", "Pinned")),
+            (has_assoc, loc.pick("已关联任务", "Linked task")),
+            (needs_approval, loc.pick("待确认", "Approval needed")),
+            (running && !needs_approval, loc.pick("运行中", "Working")),
+        ] {
+            if visible {
+                row_label.push_str(" · ");
+                row_label.push_str(label);
+            }
+        }
         let main = Tactile::ghost(
             SharedString::from(format!("chat-card-{prefix}-{chat_id}")),
             s,
         )
-        .aria(format!("{display_title} · {context}"))
+        .aria(row_label)
         .lit(in_conv && selected && is_settled)
         .lit_fill(s.sidebar_selected)
         .w_full()
         .h(px(THREAD_ROW_H))
         .px(px(9.))
         .gap(px(10.))
-        .child(marker)
+        .child(thread_agent_mark(
+            SharedString::from(format!("thread-agent-{prefix}-{chat_id}")), runtime, s, cx,
+        ))
         .child(
             div()
                 .flex_1()
@@ -1170,6 +1127,8 @@ impl KarWorkbench {
                 .text_color(s.ink)
                 .child(display_title.clone()),
         )
+        .when(pinned, |row| row.child(pro_icon(ProIcon::Pin, ICON_SM, s.muted)))
+        .when(has_assoc, |row| row.child(render_schedule_repeat_icon(ICON_SM, s.muted)))
         .child(
             div()
                 .flex_none()
@@ -1728,59 +1687,51 @@ fn demo_static_card(
     s: &StudioPalette,
     cx: &App,
 ) -> Stateful<Div> {
+    let project = branch.map_or_else(|| proj.to_owned(), |branch| format!("{proj} · {branch}"));
+    let context = SharedString::from(format!("{title} · {project} · {}", runtime_display_name(runtime)));
     div()
         .id(id)
         .relative()
         .w_full()
         .h(px(THREAD_ROW_H))
         .px(px(9.))
-        .py(px(5.))
         .rounded(px(R_CTRL))
         .when(!selected, |d| d.hover(|h| h.bg(s.sidebar_hover)))
         .when_some(sensor, |d, sn| d.child(pro_mark_selected(sn)))
         .flex()
-        .flex_col()
+        .items_center()
+        .gap(px(10.))
+        .child(thread_agent_mark(SharedString::from(format!("{id}-agent")), runtime, s, cx))
         .child(
             div()
-                .w_full()
-                .h(px(20.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(px(FS_UI))
-                        .line_height(px(20.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(s.ink)
-                        .child(title.to_owned()),
-                )
-                .child(right_status),
+                .id(SharedString::from(format!("{id}-title")))
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(px(FS_UI))
+                .line_height(px(LH_UI))
+                .text_color(s.ink)
+                .child(title.to_owned())
+                .tooltip(move |window, cx| Tooltip::new(context.clone()).build(window, cx)),
         )
-        .child(
-            div()
-                .w_full()
-                .h(px(24.))
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .text_size(px(FS_META))
-                .text_color(s.muted)
-                .child(render_project_mark(proj, 14., s, cx))
-                .child(div().min_w_0().truncate().child(proj.to_owned()))
-                .when_some(branch, |row, branch| {
-                    row.child(pro_icon(ProIcon::GitBranch, 12., s.muted))
-                        .child(div().min_w_0().truncate().child(branch.to_owned()))
-                })
-                .child(div().flex_1())
-                .child(render_runtime_mark(runtime, 14., s, cx)),
-        )
+        .child(right_status)
 }
 
 fn status_dot(color: Hsla) -> Div {
     div().size(px(6.)).flex_none().rounded_full().bg(color)
+}
+
+fn thread_agent_mark(
+    id: impl Into<ElementId>,
+    runtime: &str,
+    s: &StudioPalette,
+    cx: &App,
+) -> Stateful<Div> {
+    let name = SharedString::from(runtime_display_name(runtime));
+    div()
+        .id(id)
+        .size(px(ICON))
+        .flex_none()
+        .child(render_runtime_mark(runtime, ICON, s, cx))
+        .tooltip(move |window, cx| Tooltip::new(name.clone()).build(window, cx))
 }

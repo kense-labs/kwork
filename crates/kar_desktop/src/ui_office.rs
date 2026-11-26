@@ -16,8 +16,9 @@ use crate::{
         primary_button, soft_button, text_button,
     },
     ui_primitives::{
-        CTRL_H, DotTone, FS_META, FS_TAG, FS_UI, HEADER_H, ICON_SM, ICON_XS, LH_META,
-        R_CARD, R_CTRL, R_PILL, StudioPalette, clean_display_doc_name, mono_font,
+        CTRL_H, CTRL_SM_H, DotTone, FS_META, FS_TAG, FS_UI, HEADER_H, ICON_SM, ICON_XS, LH_META,
+        R_CARD, R_CTRL, R_PILL, StudioPalette, TITLEBAR_BUTTON_GAP, TITLEBAR_EDGE_INSET,
+        clean_display_doc_name, macos_traffic_pad, mono_font,
         render_file_diff_icon, render_folder_icon,
         render_office_chip, render_sample_tag, tnum_features,
     },
@@ -28,6 +29,7 @@ impl KarWorkbench {
     pub(crate) fn render_office_pane(
         &mut self,
         pane_w: f32,
+        single_dock: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -217,10 +219,11 @@ impl KarWorkbench {
 
         let header = div()
             .h(px(HEADER_H))
-            .pl(px(10.))
-            .pr(px(10.))
-            .border_b_1()
-            .border_color(s.line)
+            .relative()
+            .pl(px(if single_dock {
+                macos_traffic_pad(window) + CTRL_SM_H + TITLEBAR_BUTTON_GAP
+            } else { 10. }))
+            .pr(px(TITLEBAR_EDGE_INSET + CTRL_SM_H + TITLEBAR_BUTTON_GAP))
             .bg(s.surface)
             .window_control_area(WindowControlArea::Drag)
             .flex_none()
@@ -272,8 +275,8 @@ impl KarWorkbench {
                                 }),
                         )
                     })
-                    .child(
-                        icon_button(
+                    .when(!single_dock, |d| {
+                        d.child(icon_button(
                             "office-wide-toggle",
                             ProIcon::Expand,
                             if wide_canvas {
@@ -284,19 +287,13 @@ impl KarWorkbench {
                             &s,
                         )
                         .lit(wide_canvas)
-                        .on_press(cx, |this, _, cx| this.toggle_wide_document(cx)),
-                    )
+                        .on_press(cx, |this, _, cx| this.toggle_wide_document(cx)))
+                    })
                     .when(is_office_surface && active_tab.is_some() && !active_is_demo, |d| {
                         d.child(more_doc_menu)
-                    })
-                    .child(
-                        icon_button("office-hide", ProIcon::Close, "隐藏右侧工作台  ⌘J", &s)
-                            .on_press(cx, |this, window, cx| {
-                                this.focus_handle.focus(window, cx);
-                                this.toggle_document_pane(cx);
-                            }),
-                    ),
-            );
+                    }),
+            )
+            .child(div().absolute().left_0().right_0().bottom_0().h(px(1.)).bg(s.line));
 
         let body = match self.right_surface.clone() {
             RightPaneSurface::GitWorkbench => self.render_git_workbench_body(pane_w, &s, window, cx),

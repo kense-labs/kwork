@@ -44,7 +44,6 @@ impl KarWorkbench {
             Some(open.into_any_element()),
             &s,
             window,
-            cx,
         );
         let query = self.documents_search.read(cx).value().trim().to_lowercase();
         let mut content = workspace_page()

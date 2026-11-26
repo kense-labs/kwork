@@ -64,12 +64,12 @@ use crate::{
     ui_primitives::{
         CTRL_H, CTRL_SM_H, DETAILS_CARD_W, DotTone, FS_CONTROL, FS_META, FS_READ, FS_TAG, FS_UI, HEADER_H, ICON,
         ICON_SM, ICON_XS, LH_META, LH_READ, LH_UI, R_CARD, R_CTRL, R_HERO, R_PILL, StudioPalette, UiLocale,
-        THREAD_PAD, card_box, clean_display_doc_name, macos_traffic_pad, mono_font,
+        THREAD_PAD, TITLEBAR_BUTTON_GAP, TITLEBAR_EDGE_INSET, card_box, clean_display_doc_name, macos_traffic_pad, mono_font,
         render_bg_layers_icon,
         render_file_diff_icon, render_folder_git_icon, render_folder_icon, render_git_branch_icon,
-        render_machine_icon, render_office_chip, render_panel_bottom_icon, render_panel_right_icon,
+        render_machine_icon, render_office_chip,
         render_runtime_mark, render_schedule_repeat_icon,
-        render_skills_puzzle_icon, render_square_menu_icon, render_square_pen_icon, render_status,
+        render_skills_puzzle_icon, render_square_menu_icon, render_status,
         render_steer_merge_icon, search_input_box, tnum_features,
     },
     ui_settings::SettingsTab,
@@ -80,6 +80,12 @@ use crate::{
 
 /// Most lines of a tool's output or a file change shown before it is cut short.
 const DETAIL_MAX_LINES: usize = 24;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChatRail {
+    Review,
+    Details,
+}
 
 impl KarWorkbench {
     pub(crate) fn pending_decisions(&self) -> impl Iterator<Item = &PendingRequest> {
@@ -94,7 +100,7 @@ impl KarWorkbench {
         pane_w: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> (AnyElement, bool) {
+    ) -> (AnyElement, Option<ChatRail>) {
         let s = StudioPalette::get(cx);
 
         let view_only = !self.access_mode.is_writable()
@@ -465,7 +471,12 @@ impl KarWorkbench {
                     )),
             )
             .into_any_element();
-        (pane, show_review_rail || show_details_rail)
+        let rail = if show_review_rail {
+            Some(ChatRail::Review)
+        } else {
+            show_details_rail.then_some(ChatRail::Details)
+        };
+        (pane, rail)
     }
 
     fn jump_to_latest(&self, s: &StudioPalette, cx: &Context<Self>) -> Div {
@@ -552,7 +563,6 @@ impl KarWorkbench {
             || matches!(self.access_mode, ChatAccessMode::RemoteController { .. });
         let status = self.chat_status();
         let pointer_controls = !window.last_input_was_keyboard() && !window.last_input_was_touch();
-        let docs_shown = show_review_rail || self.layout_mode != WorkspaceLayoutMode::ChatFocus;
         let has_own_chat = matches!(
             self.access_mode,
             ChatAccessMode::WriteController { .. }
@@ -562,9 +572,9 @@ impl KarWorkbench {
 
         let rail_hidden = (1. - self.sidebar_reveal).clamp(0., 1.);
         let base_pad = 20.0;
-        let traffic_extra = (macos_traffic_pad(window) - base_pad).max(0.0);
+        let traffic_extra = macos_traffic_pad(window) - base_pad;
         let left_pad = base_pad + traffic_extra * rail_hidden;
-        let collapsed_slot_w = (2. * CTRL_H + 2.) * rail_hidden;
+        let collapsed_slot_w = (2. * CTRL_SM_H + TITLEBAR_BUTTON_GAP) * rail_hidden;
         // Leave room for the thread title and the panel controls when the sidebar tools move here.
         let title_lane = pane_w - left_pad - collapsed_slot_w;
         let compact_crumb = title_lane < if on_start_screen { 232. } else { 272. };
@@ -640,7 +650,9 @@ impl KarWorkbench {
         div()
             .h(px(HEADER_H))
             .pl(px(left_pad))
-            .pr(px(13.))
+            .pr(px(TITLEBAR_EDGE_INSET + if self.layout_mode == WorkspaceLayoutMode::ChatFocus {
+                CTRL_SM_H + TITLEBAR_BUTTON_GAP
+            } else { 0. }))
             .window_control_area(WindowControlArea::Drag)
             .flex_none()
             .flex()
@@ -664,25 +676,11 @@ impl KarWorkbench {
                                 .opacity(rail_hidden)
                                 .flex()
                                 .items_center()
-                                .gap(px(2.))
+                                .gap(px(TITLEBAR_BUTTON_GAP))
+                                .child(div().size(px(CTRL_SM_H)).flex_none())
                                 .child(
-                                    icon_button(
-                                        "chat-show-sidebar",
-                                        ProIcon::SidebarLeft,
-                                        loc.pick("展开侧边栏  ⌘.", "Expand sidebar  ⌘."),
-                                        s,
-                                    )
-                                    .on_press(cx, |this, window, cx| {
-                                        this.focus_handle.focus(window, cx);
-                                        this.set_sidebar_open(true, cx);
-                                    }),
-                                )
-                                .child(
-                                    Tactile::ghost("chat-new", s)
-                                        .size(px(CTRL_H))
-                                        .justify_center()
-                                        .tip(loc.pick("新建对话  ⌘N", "New thread  ⌘N"))
-                                        .child(render_square_pen_icon(15., s.muted))
+                                    icon_button_sm("chat-new", ProIcon::NewChat,
+                                        loc.pick("新建对话  ⌘N", "New thread  ⌘N"), s)
                                         .on_press(cx, |this, window, cx| {
                                             this.start_new_chat(window, cx)
                                         }),
@@ -824,42 +822,10 @@ impl KarWorkbench {
                     })
                     // 2. `PanelBottom` (`[⬒]`) -> Toggle Bottom Resizable Terminal Drawer
                     .child(
-                        Tactile::ghost("chat-toggle-bottom-terminal", s)
-                            .size(px(28.))
-                            .justify_center()
-                            .lit(self.bottom_terminal_open)
-                            .tip(loc.pick("底部集成终端  ⇧⌘T", "Toggle bottom terminal  ⇧⌘T"))
-                            .child(render_panel_bottom_icon(
-                                15.5,
-                                if self.bottom_terminal_open {
-                                    s.ink
-                                } else {
-                                    s.muted
-                                },
-                            ))
+                        icon_button_sm("chat-toggle-bottom-terminal", ProIcon::PanelBottom,
+                            loc.pick("底部集成终端  ⇧⌘T", "Toggle bottom terminal  ⇧⌘T"), s)
+                            .expanded(self.bottom_terminal_open)
                             .on_press(cx, |this, _, cx| this.toggle_bottom_terminal(cx)),
-                    )
-                    // 3. `PanelRight` (`[◫]`) -> Toggle Right Split Panel (Diff / Files / Office)
-                    .child(
-                        Tactile::ghost("chat-toggle-docs", s)
-                            .size(px(28.))
-                            .justify_center()
-                            .lit(docs_shown)
-                            .tip(loc.pick(
-                                "右侧面板（差异 / 文件 / 文档）  ⌘J",
-                                "Toggle right panel  ⌘J",
-                            ))
-                            .child(render_panel_right_icon(
-                                15.5,
-                                if docs_shown { s.ink } else { s.muted },
-                            ))
-                            .on_press(cx, move |this, win, cx| {
-                                if show_review_rail {
-                                    this.close_file_review(win, cx);
-                                } else {
-                                    this.toggle_document_pane(cx);
-                                }
-                            }),
                     ),
             )
     }

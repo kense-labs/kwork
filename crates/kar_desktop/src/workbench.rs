@@ -73,9 +73,10 @@ use crate::{
         SelectionTarget, runtime_display_name, strip_selection_envelope,
     },
     ui_brief::BriefWidgetCache,
-    ui_motion::{DismissFn, MenuPlacement, ToastState, menu_popup, render_toast},
+    ui_chat::ChatRail,
+    ui_motion::{DismissFn, MenuPlacement, ToastState, icon_button_sm, menu_popup, render_toast},
     ui_primitives::{
-        DOC_MIN_W, FS_META, FS_READ, FS_TAG, FS_UI, ICON_SM, LH_META, LH_UI,
+        CTRL_SM_H, HEADER_H, TITLEBAR_EDGE_INSET, macos_traffic_pad, DOC_MIN_W, FS_META, FS_READ, FS_TAG, FS_UI, ICON_SM, LH_META, LH_UI,
         R_CTRL, R_MODAL, SHEET_GUTTER, SIDEBAR_W, StudioPalette, TERMINAL_MIN_H,
         UiLocale, clean_display_doc_name, render_kbd, ui_font,
     },
@@ -6803,23 +6804,23 @@ impl Render for KarWorkbench {
         } else {
             usable
         };
-        let (stage_key, inner_stage, has_chat_rail) = match self.main_stage_view {
+        let (stage_key, inner_stage, chat_rail) = match self.main_stage_view {
             MainStageView::Conversation => {
-                let (chat, has_rail) = self.render_chat_pane(pane_w, window, cx);
-                ("stage-conversation", chat, has_rail)
+                let (chat, rail) = self.render_chat_pane(pane_w, window, cx);
+                ("stage-conversation", chat, rail)
             }
             MainStageView::TasksInbox => {
-                ("stage-tasks-inbox", self.render_tasks_inbox_screen(usable, window, cx), false)
+                ("stage-tasks-inbox", self.render_tasks_inbox_screen(usable, window, cx), None)
             }
             MainStageView::OfficeGallery => {
-                ("stage-office-gallery", self.render_office_gallery_screen(usable, window, cx), false)
+                ("stage-office-gallery", self.render_office_gallery_screen(usable, window, cx), None)
             }
         };
         let chat_view = pro_view_transition_fill("kar-main-stage-vtx", stage_key, inner_stage);
         let term_drawer =
             (term_drawer_h > 0.5).then(|| self.render_bottom_terminal_drawer(&s, window, cx));
         let dock_w = if single_dock { usable } else { usable - chat_w };
-        let doc_view = show_doc.then(|| self.render_office_pane(dock_w, window, cx));
+        let doc_view = show_doc.then(|| self.render_office_pane(dock_w, single_dock, window, cx));
         let sidebar_view = (sidebar_w > 0.5).then(|| self.render_sidebar(rail_width, window, cx));
 
         let left_handle = (!compact || !self.sidebar_open).then(|| {
@@ -6837,7 +6838,7 @@ impl Render for KarWorkbench {
             )
         });
         let dock_closed = self.layout_mode == WorkspaceLayoutMode::ChatFocus;
-        let show_right_handle = in_conversation_stage && !has_chat_rail && !drawer_active
+        let show_right_handle = in_conversation_stage && chat_rail.is_none() && !drawer_active
             && (!compact || dock_closed);
         let right_handle = show_right_handle.then(|| {
             let x = if dock_closed {
@@ -6875,6 +6876,50 @@ impl Render for KarWorkbench {
                 )
             });
 
+        // Anchor the controls to the window so resizing and moving panes cannot move the targets.
+        let toggle_slot = || div()
+            .absolute()
+            .top(px((HEADER_H - CTRL_SM_H) / 2.))
+            .size(px(CTRL_SM_H))
+            .occlude();
+        let sidebar_label = if self.sidebar_open {
+            self.ui_locale.pick("收起侧边栏  ⌘.", "Hide sidebar  ⌘.")
+        } else {
+            self.ui_locale.pick("展开侧边栏  ⌘.", "Show sidebar  ⌘.")
+        };
+        let sidebar_toggle = toggle_slot().left(px(macos_traffic_pad(window))).child(
+            icon_button_sm("window-toggle-sidebar", ProIcon::SidebarLeft, sidebar_label, &s)
+                .expanded(self.sidebar_open)
+                .on_press(cx, |this, window, cx| {
+                    this.focus_handle.focus(window, cx);
+                    this.set_sidebar_open(!this.sidebar_open, cx);
+                }),
+        );
+        let right_toggle = in_conversation_stage.then(|| {
+            let review = chat_rail == Some(ChatRail::Review);
+            let open = !dock_closed || review;
+            let label = if single_dock {
+                self.ui_locale.pick("收起右侧面板，返回对话  ⌘J", "Hide right panel and return to thread  ⌘J")
+            } else if open {
+                self.ui_locale.pick("收起右侧面板  ⌘J", "Hide right panel  ⌘J")
+            } else {
+                self.ui_locale.pick("展开右侧面板  ⌘J", "Show right panel  ⌘J")
+            };
+            toggle_slot().right(px(TITLEBAR_EDGE_INSET)).child(
+                icon_button_sm("window-toggle-dock", ProIcon::SidebarRight, label, &s)
+                    .expanded(open)
+                    .on_press(cx, move |this, window, cx| {
+                        this.focus_handle.focus(window, cx);
+                        this.dismiss_compact_sidebar(cx);
+                        if review {
+                            this.close_file_review(window, cx);
+                        } else {
+                            this.toggle_document_pane(cx);
+                        }
+                    }),
+            )
+        });
+
         let stage_inner = div()
             .id("kar-main")
             .relative()
@@ -6895,33 +6940,6 @@ impl Render for KarWorkbench {
                         .flex()
                         .flex_col()
                         .overflow_hidden()
-                        .when(single_dock, |d| {
-                            d.child(
-                                div()
-                                    .h(px(52.))
-                                    .pl(px(86.))
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .child(
-                                        crate::ui_motion::text_button(
-                                            "compact-return-chat",
-                                            self.ui_locale.pick("返回对话", "Back to thread"),
-                                            &s,
-                                        )
-                                        .on_press(
-                                            cx,
-                                            |this, window, cx| {
-                                                this.focus_handle.focus(window, cx);
-                                                this.set_layout_mode(
-                                                    WorkspaceLayoutMode::ChatFocus,
-                                                    cx,
-                                                )
-                                            },
-                                        ),
-                                    ),
-                            )
-                        })
                         .child(div().flex_1().min_h_0().overflow_hidden().child(doc)),
                 )
             });
@@ -7037,7 +7055,7 @@ impl Render for KarWorkbench {
             .when(self.pane_drag.is_some(), |d| d.child(self.capture_divider_drag(cx)))
             .when_some(drawer_rail, |d, rail| {
                 d.child(
-                    div().absolute().inset_0().flex().child(rail).child(
+                    div().absolute().inset_0().occlude().flex().child(rail).child(
                         div()
                             .id("close-compact-sidebar")
                             .flex_1()
@@ -7049,6 +7067,8 @@ impl Render for KarWorkbench {
                     ),
                 )
             })
+            .child(sidebar_toggle)
+            .children(right_toggle)
             .when_some(kantor_ui::overlay::menu_shield(window), |d, shield| {
                 d.child(shield)
             })

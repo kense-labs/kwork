@@ -14,7 +14,7 @@ use kui::{
 pub(crate) mod material;
 pub(crate) use material::{frosted_composer, frosted_panel};
 
-use crate::types::{OfficeKind, runtime_brand_svg, runtime_display_name};
+use crate::types::{OfficeKind, runtime_brand_id, runtime_brand_svg, runtime_display_name};
 
 // ── UI Locale (`中` / `EN`) ──────────────────────────────────────────────────
 
@@ -51,6 +51,8 @@ impl UiLocale {
 // ── Desktop workspace geometry in logical pixels ─
 
 pub const HEADER_H: f32 = 52.0;
+pub const TITLEBAR_EDGE_INSET: f32 = 14.0;
+pub const TITLEBAR_BUTTON_GAP: f32 = 4.0;
 pub const MACOS_TRAFFIC_LIGHT_PAD: f32 = 76.0;
 pub const SIDEBAR_W: f32 = 257.0;
 pub const SHEET_GUTTER: f32 = 1.0;
@@ -64,7 +66,7 @@ pub const TERMINAL_MIN_H: f32 = 176.0;
 /// Fullscreen-aware left padding for macOS window controls.
 pub fn macos_traffic_pad(window: &Window) -> f32 {
     if !cfg!(target_os = "macos") || window.is_fullscreen() {
-        14.0
+        TITLEBAR_EDGE_INSET
     } else {
         MACOS_TRAFFIC_LIGHT_PAD
     }
@@ -553,14 +555,6 @@ pub fn render_paperclip_icon(side: f32, color: Hsla) -> AnyElement {
     pro_icon(ProIcon::Paperclip, side, color)
 }
 
-pub fn render_panel_bottom_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_icon(ProIcon::PanelBottom, side, color)
-}
-
-pub fn render_panel_right_icon(side: f32, color: Hsla) -> AnyElement {
-    pro_icon(ProIcon::SidebarRight, side, color)
-}
-
 pub fn render_square_menu_icon(side: f32, color: Hsla) -> AnyElement {
     pro_symbol("0 0 24 24", SVG_SQUARE_MENU, side, color)
 }
@@ -769,19 +763,32 @@ type BrandImageCache = LazyLock<Mutex<HashMap<(String, bool), Arc<Image>>>>;
 pub fn render_runtime_mark(runtime_id: &str, side: f32, s: &StudioPalette, cx: &App) -> AnyElement {
     static BRAND_CACHE: BrandImageCache = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+    let brand_id = runtime_brand_id(runtime_id);
+    if brand_id == "aster" {
+        static ASTER: [OnceLock<Arc<Image>>; 2] = [const { OnceLock::new() }; 2];
+        let image = ASTER[s.dark as usize].get_or_init(|| {
+            let bytes: &[u8] = if s.dark {
+                include_bytes!("../../../assets/icons/aster-dark.svg")
+            } else {
+                include_bytes!("../../../assets/icons/aster-light.svg")
+            };
+            Arc::new(Image::from_bytes(ImageFormat::Svg, bytes.to_vec()))
+        });
+        return pro_artwork(image.clone(), side).into_any_element();
+    }
     // Prefer KUI's crisp Claude starburst vector over CLI pixel-mascot for `"claude"`.
-    if runtime_id == "claude"
+    if brand_id == "claude"
         && let Some(el) = pro_app_artwork("claude", side, cx)
     {
         return el;
     }
 
-    if let Some(data_uri) = runtime_brand_svg(runtime_id, s.dark) {
+    if let Some(data_uri) = runtime_brand_svg(brand_id, s.dark) {
         let cached = BRAND_CACHE
             .lock()
             .ok()
             .and_then(|mut map| {
-                let key = (runtime_id.to_owned(), s.dark);
+                let key = (brand_id.to_owned(), s.dark);
                 if let Some(existing) = map.get(&key) {
                     return Some(existing.clone());
                 }
@@ -795,12 +802,12 @@ pub fn render_runtime_mark(runtime_id: &str, side: f32, s: &StudioPalette, cx: &
         }
     }
 
-    let brand_key = match runtime_id {
+    let brand_key = match brand_id {
         "codex" => Some("openai"),
         "claude" => Some("claude"),
         "grok" => Some("grok"),
         "qwen" => Some("qwen"),
-        "antigravity" => Some("gemini"),
+        "gemini" | "antigravity" => Some("gemini"),
         _ => None,
     };
     if let Some(key) = brand_key

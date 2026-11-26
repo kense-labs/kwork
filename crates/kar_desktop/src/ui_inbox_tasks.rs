@@ -147,7 +147,7 @@ impl KarWorkbench {
     ) -> AnyElement {
         let loc = self.ui_locale;
         let s = StudioPalette::get(cx);
-        let toolbar = self.workspace_toolbar(loc.pick("收件箱", "Inbox"), None, &s, window, cx);
+        let toolbar = self.workspace_toolbar(loc.pick("收件箱", "Inbox"), None, &s, window);
         let query = self.inbox_search.read(cx).value().trim().to_lowercase();
         let rows = self.inbox_activity();
         let mut content = crate::ui_primitives::workspace_page()

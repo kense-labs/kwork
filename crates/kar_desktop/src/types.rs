@@ -34,14 +34,37 @@ pub fn strip_selection_envelope(text: &str) -> &str {
     text
 }
 
+/// Kar persists managed agents as `acp:{agent}:{version}:{distribution}` and
+/// local profiles as `acp-profile:{id}:{revision}`. Revisions identify a
+/// launch, while the agent ID identifies the artwork.
+pub(crate) fn runtime_brand_id(runtime: &str) -> &str {
+    if crate::aster::is_aster(runtime) {
+        return "aster";
+    }
+    let id = runtime
+        .strip_prefix("acp:")
+        .or_else(|| runtime.strip_prefix("acp-profile:"))
+        .and_then(|key| key.split(':').next())
+        .filter(|id| !id.is_empty())
+        .unwrap_or(runtime);
+    match id {
+        "gemini-cli" | "gemini-acp" | "@google/gemini-cli" => "gemini",
+        "codex-acp" | "codex-cli" => "codex",
+        "claude-acp" | "claude-code" | "claude-code-acp" => "claude",
+        _ => id,
+    }
+}
+
 /// Product name of a Kar runtime, sourced from `kar::brands::runtime_brands()` with fallback.
 pub fn runtime_display_name(id: &str) -> String {
     if crate::aster::is_aster(id) { return "Aster".into(); }
     if let Some(name) = crate::registry::name(id) { return name; }
+    let id = runtime_brand_id(id);
     if let Some(brand) = kar::brands::runtime_brands().get(id) {
         return brand.name.clone();
     }
     match id {
+        "gemini" => "Gemini CLI",
         "codex" => "Codex",
         "claude" => "Claude Code",
         "opencode" => "OpenCode",
@@ -899,6 +922,13 @@ pub(crate) fn localized_relative_age(
 }
 
 impl ChatListEntry {
+    pub(crate) fn runtime<'a>(&'a self, live: Option<&'a ChatInfo>) -> &'a str {
+        live.filter(|info| info.id == self.info.id)
+            .unwrap_or(&self.info)
+            .runtime
+            .as_str()
+    }
+
     pub fn from_info_and_turns(info: ChatInfo, turns: &[ChatTurn]) -> Self {
         Self::from_info_and_turns_with_title(info, turns, None)
     }
@@ -1111,6 +1141,32 @@ mod tests {
                 "expected dark SVG data URI for runtime {id}"
             );
         }
+    }
+
+    #[test]
+    fn sidebar_agent_uses_the_saved_chat_and_follows_its_own_handoff() {
+        let info: ChatInfo = serde_json::from_value(serde_json::json!({
+            "id": Uuid::new_v4(), "runtime": "codex", "protocol": "codex", "native_id": "session",
+            "workspace": "/test", "created_ms": 1, "program": "/test/codex", "approvals": "host"
+        })).unwrap();
+        let row = ChatListEntry::from_info_and_turns(info.clone(), &[]);
+        let mut live = info;
+        live.runtime = "acp:gemini-cli:0.3.0:npx".into();
+        assert_eq!(row.runtime(None), "codex");
+        assert_eq!(runtime_brand_id(row.runtime(Some(&live))), "gemini");
+        live.id = Uuid::new_v4();
+        assert_eq!(row.runtime(Some(&live)), "codex");
+    }
+
+    #[test]
+    fn agent_artwork_handles_profile_revisions_without_guessing_custom_brands() {
+        for id in ["gemini", "gemini-cli", "acp-profile:gemini-cli:48ef", "acp:@google/gemini-cli:1:npx"] {
+            assert_eq!(runtime_brand_id(id), "gemini");
+            assert_eq!(runtime_display_name(id), "Gemini CLI");
+        }
+        assert_eq!(runtime_brand_id("acp:claude-code-acp:1:npx"), "claude");
+        assert_eq!(runtime_brand_id("acp:codex-acp:1:npx"), "codex");
+        assert_eq!(runtime_brand_id("acp-profile:my-gemini-proxy:31be"), "my-gemini-proxy");
     }
 
     #[test]
