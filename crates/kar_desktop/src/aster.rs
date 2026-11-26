@@ -564,6 +564,30 @@ mod tests {
                     }
                 }
             }).await??;
+            let side_request = Uuid::new_v4();
+            left.send(KarCommand::AskSideQuestion {
+                request_id: side_request,
+                chat_id: id,
+                question: "Unsupported provider test".into(),
+            });
+            tokio::time::timeout(Duration::from_secs(4), async {
+                loop {
+                    if let KarBridgeEvent::SideQuestionAnswered {
+                        request_id, result, ..
+                    } = left.rx.recv().await?
+                    {
+                        if request_id == side_request {
+                            ensure!(
+                                result.is_err(),
+                                "unsupported provider produced a pretend answer"
+                            );
+                            return Ok::<_, anyhow::Error>(());
+                        }
+                    }
+                }
+            })
+            .await??;
+            ensure!(store.history(id)?.turns.len() == 2);
             left.send(KarCommand::HandoffChat {
                 source_chat: Some(id),
                 target_runtime: target_runtime.clone(),
