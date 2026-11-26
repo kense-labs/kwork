@@ -30,4 +30,10 @@ The Remote panel offers Kar chat sharing and a separate remote desktop invitatio
 cargo test --locked -p kar_desktop
 ```
 
-The desktop code is in [crates/kar_desktop](crates/kar_desktop). The embedded office suite retains its own [documentation](KANTOR.md), [notices](NOTICE) and [licence](LICENSE). The runtime and remote client have their own distributions. [Kar](https://github.com/kense-labs/Kar) · [Aster](https://github.com/aster-ai-lab/aster) · [KRemote](https://github.com/kense-labs/kremote)
+The desktop code is in [crates/kar_desktop](crates/kar_desktop). See the [Kantor documentation](KANTOR.md) for the embedded office suite. The runtime and remote client have their own distributions. [Kar](https://github.com/kense-labs/Kar) · [Aster](https://github.com/aster-ai-lab/aster) · [KRemote](https://github.com/kense-labs/kremote)
+
+## Licenses
+
+Kense licenses its original code in Kwrok and the Kar runtime under MIT. [Kwrok MIT license](LICENSE-MIT) · [Kar license](https://github.com/kense-labs/Kar/blob/main/LICENSE)
+
+The desktop application incorporates the Kantor office suite and is distributed as a whole under AGPL-3.0-or-later. Third-party components retain their own licenses. [Desktop license](LICENSE) · [Third-party notices](NOTICE)

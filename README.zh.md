@@ -20,3 +20,9 @@ cargo build --locked -p kar_desktop
 ./scripts/macos-kwrok-app.sh target/debug/kar-desktop target
 open target/Kwrok.app
 ```
+
+## 开源许可
+
+Kwrok 和 Kar 运行时中由 Kense 原创的代码都采用 MIT 许可。[Kwrok 的 MIT 许可证](LICENSE-MIT) · [Kar 许可证](https://github.com/kense-labs/Kar/blob/main/LICENSE)
+
+桌面应用集成了 Kantor 办公套件，组合后的应用整体按 AGPL-3.0-or-later 分发。第三方组件保留各自的许可证。[桌面应用许可证](LICENSE) · [第三方声明](NOTICE)

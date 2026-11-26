@@ -11,9 +11,10 @@ binary="$1"
 app="$2/Kwrok.app"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' "$root/Cargo.toml" | head -1)"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/Licenses"
 install -m755 "$binary" "$app/Contents/MacOS/Kwrok"
 install -m644 "$root/assets/icons/Kwork.icns" "$app/Contents/Resources/Kwork.icns"
+install -m644 "$root/LICENSE-MIT" "$root/LICENSE" "$root/NOTICE" "$app/Contents/Resources/Licenses/"
 "$root/scripts/macos-dictation.sh" "$app"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

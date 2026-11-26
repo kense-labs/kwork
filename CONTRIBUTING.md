@@ -13,4 +13,4 @@ Thanks for helping! Short version:
    Never commit private documents.
 
 You don't need to build locally: push a branch and CI builds and tests it on every platform.
-Contributions are licensed under AGPL-3.0-or-later, as the project is.
+Contributions to Kantor are licensed under AGPL-3.0-or-later. For Kwrok and the combined desktop application, see the [license overview](README.md#licenses).

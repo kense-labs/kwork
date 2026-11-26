@@ -5882,7 +5882,7 @@ dependencies = [
 [[package]]
 name = "kar"
 version = "0.1.0"
-source = "git+https://github.com/kense-labs/Kar.git?rev=45dbf16d837efd021ffa8da395d0202a9aa5a537#45dbf16d837efd021ffa8da395d0202a9aa5a537"
+source = "git+https://github.com/kense-labs/Kar.git?rev=b81ec17a81fe5f44f5abe4f07a9f4dabbf906424#b81ec17a81fe5f44f5abe4f07a9f4dabbf906424"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -5955,7 +5955,7 @@ dependencies = [
 [[package]]
 name = "kar-documents"
 version = "0.1.0"
-source = "git+https://github.com/kense-labs/Kar.git?rev=45dbf16d837efd021ffa8da395d0202a9aa5a537#45dbf16d837efd021ffa8da395d0202a9aa5a537"
+source = "git+https://github.com/kense-labs/Kar.git?rev=b81ec17a81fe5f44f5abe4f07a9f4dabbf906424#b81ec17a81fe5f44f5abe4f07a9f4dabbf906424"
 dependencies = [
  "anyhow",
  "axum",
