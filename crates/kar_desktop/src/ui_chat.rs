@@ -666,16 +666,11 @@ impl KarWorkbench {
                 .into_any_element()
         };
 
-        div()
-            .h(px(HEADER_H))
+        crate::ui_primitives::titlebar_row(window)
             .pl(px(left_pad))
             .pr(px(TITLEBAR_EDGE_INSET + if self.layout_mode == WorkspaceLayoutMode::ChatFocus {
                 CTRL_SM_H + TITLEBAR_BUTTON_GAP
             } else { 0. }))
-            .window_control_area(WindowControlArea::Drag)
-            .flex_none()
-            .flex()
-            .items_center()
             .justify_between()
             .gap(px(12.))
             .child(

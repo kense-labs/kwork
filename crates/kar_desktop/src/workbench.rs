@@ -77,7 +77,7 @@ use crate::{
     ui_chat::ChatRail,
     ui_motion::{DismissFn, MenuPlacement, ToastState, icon_button_sm, menu_popup, render_toast},
     ui_primitives::{
-        CTRL_SM_H, HEADER_H, TITLEBAR_EDGE_INSET, macos_traffic_pad, DOC_MIN_W, FS_META, FS_READ, FS_TAG, FS_UI, ICON_SM, LH_META, LH_UI,
+        CTRL_SM_H, TITLEBAR_EDGE_INSET, macos_traffic_pad, titlebar_center_y, DOC_MIN_W, FS_META, FS_READ, FS_TAG, FS_UI, ICON_SM, LH_META, LH_UI,
         R_CTRL, R_MODAL, SHEET_GUTTER, SIDEBAR_W, StudioPalette, TERMINAL_MIN_H,
         UiLocale, clean_display_doc_name, render_kbd, ui_font,
     },
@@ -6966,9 +6966,10 @@ impl Render for KarWorkbench {
             });
 
         // Anchor the controls to the window so resizing and moving panes cannot move the targets.
+        let toggle_top = titlebar_center_y(window) - CTRL_SM_H / 2.;
         let toggle_slot = || div()
             .absolute()
-            .top(px((HEADER_H - CTRL_SM_H) / 2.))
+            .top(px(toggle_top))
             .size(px(CTRL_SM_H))
             .occlude();
         let sidebar_label = if self.sidebar_open {

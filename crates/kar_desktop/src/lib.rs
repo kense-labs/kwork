@@ -65,8 +65,8 @@ use kui::{
 };
 
 use crate::ui_primitives::{
-    FS_META, FS_READ, FS_UI, HEADER_H, LH_UI, MACOS_TRAFFIC_LIGHT_PAD, R_CARD, StudioPalette,
-    render_kar_brand_lockup, render_office_chip, ui_font,
+    FS_META, FS_READ, FS_UI, LH_UI, R_CARD, StudioPalette, macos_traffic_pad,
+    render_kar_brand_lockup, render_office_chip, titlebar_row, ui_font,
 };
 
 pub const APP_NAME: &str = "Kwrok";
@@ -236,7 +236,11 @@ pub fn studio_window_options(
         titlebar: Some(TitlebarOptions {
             title: Some(title.into()),
             appears_transparent: true,
-            traffic_light_position: Some(point(px(16.), px(19.))),
+            // Align the right edge of the three lights with AppKit's window-sharing pill.
+            traffic_light_position: Some(point(
+                px(12.),
+                px(ui_primitives::MACOS_TITLEBAR_CENTER_Y - 7.),
+            )),
         }),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
@@ -305,17 +309,17 @@ impl SmokeIntegrationView {
                 "smoke-split",
                 "Kwrok KUI + Kantor Split",
                 vec![
-                    Pane::new("kui-pane", "KUI Controls", 0.34, move |_, _, cx| {
+                    Pane::new("kui-pane", "KUI Controls", 0.34, move |_, window, cx| {
                         weak_left
                             .upgrade()
-                            .map(|e| e.update(cx, |this, cx| this.render_left_pane(cx)))
+                            .map(|e| e.update(cx, |this, cx| this.render_left_pane(window, cx)))
                             .unwrap_or_else(|| div().into_any_element())
                     })
                     .with_limits(300., Some(460.)),
-                    Pane::new("kantor-pane", "Kantor DocsView", 0.66, move |_, _, cx| {
+                    Pane::new("kantor-pane", "Kantor DocsView", 0.66, move |_, window, cx| {
                         weak_right
                             .upgrade()
-                            .map(|e| e.update(cx, |this, cx| this.render_right_pane(cx)))
+                            .map(|e| e.update(cx, |this, cx| this.render_right_pane(window, cx)))
                             .unwrap_or_else(|| div().into_any_element())
                     })
                     .with_limits(440., None),
@@ -336,7 +340,7 @@ impl SmokeIntegrationView {
         }
     }
 
-    fn render_left_pane(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_left_pane(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let s = StudioPalette::get(cx);
         let para_count = self.docs_view.read(cx).agent_read(|doc, _| doc.len());
 
@@ -346,19 +350,11 @@ impl SmokeIntegrationView {
             .flex()
             .flex_col()
             .child(
-                div()
-                    .h(px(HEADER_H))
-                    .pl(px(if cfg!(target_os = "macos") {
-                        MACOS_TRAFFIC_LIGHT_PAD
-                    } else {
-                        16.
-                    }))
+                titlebar_row(window)
+                    .pl(px(macos_traffic_pad(window)))
                     .pr(px(12.))
                     .border_b_1()
                     .border_color(s.line_soft)
-                    .window_control_area(WindowControlArea::Drag)
-                    .flex()
-                    .items_center()
                     .justify_between()
                     .child(render_kar_brand_lockup(&s, cx))
                     .child(self.theme_switch.clone()),
@@ -492,7 +488,7 @@ impl SmokeIntegrationView {
             .into_any_element()
     }
 
-    fn render_right_pane(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_right_pane(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let s = StudioPalette::get(cx);
         div()
             .size_full()
@@ -501,15 +497,11 @@ impl SmokeIntegrationView {
             .flex_col()
             .overflow_hidden()
             .child(
-                div()
-                    .h(px(HEADER_H))
+                titlebar_row(window)
                     .px(px(12.))
                     .border_b_1()
                     .border_color(s.line_soft)
                     .bg(s.stage)
-                    .window_control_area(WindowControlArea::Drag)
-                    .flex()
-                    .items_center()
                     .justify_between()
                     .child(
                         div()

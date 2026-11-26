@@ -53,7 +53,10 @@ impl UiLocale {
 pub const HEADER_H: f32 = 52.0;
 pub const TITLEBAR_EDGE_INSET: f32 = 14.0;
 pub const TITLEBAR_BUTTON_GAP: f32 = 4.0;
-pub const MACOS_TRAFFIC_LIGHT_PAD: f32 = 76.0;
+// AppKit's window-sharing control is centered 16 pt from the top of the window.
+pub(crate) const MACOS_TITLEBAR_CENTER_Y: f32 = 16.;
+// The system controls end at 72 pt; 12 more to the button slot equalizes the visible icon gaps.
+pub const MACOS_TRAFFIC_LIGHT_PAD: f32 = 84.;
 pub const SIDEBAR_W: f32 = 257.0;
 pub const SHEET_GUTTER: f32 = 1.0;
 pub const DOC_MIN_W: f32 = 380.0;
@@ -70,6 +73,24 @@ pub fn macos_traffic_pad(window: &Window) -> f32 {
     } else {
         MACOS_TRAFFIC_LIGHT_PAD
     }
+}
+
+pub(crate) fn titlebar_center_y(window: &Window) -> f32 {
+    if cfg!(target_os = "macos") && !window.is_fullscreen() {
+        MACOS_TITLEBAR_CENTER_Y
+    } else {
+        HEADER_H / 2.
+    }
+}
+
+pub(crate) fn titlebar_row(window: &Window) -> Div {
+    div()
+        .h(px(HEADER_H))
+        .pb(px(HEADER_H - 2. * titlebar_center_y(window)))
+        .window_control_area(WindowControlArea::Drag)
+        .flex_none()
+        .flex()
+        .items_center()
 }
 
 

@@ -46,15 +46,10 @@ impl KarWorkbench {
         window: &Window,
     ) -> Div {
         let left = 20. + (macos_traffic_pad(window) - 20.) * (1. - self.sidebar_reveal);
-        div()
+        crate::ui_primitives::titlebar_row(window)
             .w_full()
-            .h(px(crate::ui_primitives::HEADER_H))
             .pl(px(left))
             .pr(px(12.))
-            .flex_none()
-            .window_control_area(WindowControlArea::Drag)
-            .flex()
-            .items_center()
             .gap(px(8.))
             .when(!self.sidebar_open, |row| {
                 row.child(div().size(px(CTRL_SM_H)).flex_none())
@@ -154,15 +149,10 @@ impl KarWorkbench {
         let show_chat_selection = in_conv && !on_start_screen && !git_selected && !self.settings_open;
         let nav_sensor = pro_selection_sensor();
         let left_inset = macos_traffic_pad(window);
-        let top_bar = div()
+        let top_bar = crate::ui_primitives::titlebar_row(window)
             .relative()
-            .h(px(crate::ui_primitives::HEADER_H))
             .pl(px(left_inset))
             .pr(px(8.))
-            .window_control_area(WindowControlArea::Drag)
-            .flex_none()
-            .flex()
-            .items_center()
             .gap(px(TITLEBAR_BUTTON_GAP))
             .child(div().size(px(CTRL_SM_H)).flex_none())
             .child(

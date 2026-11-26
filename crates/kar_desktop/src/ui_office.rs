@@ -16,7 +16,7 @@ use crate::{
         primary_button, soft_button, text_button,
     },
     ui_primitives::{
-        CTRL_H, CTRL_SM_H, DotTone, FS_META, FS_TAG, FS_UI, HEADER_H, ICON_SM, ICON_XS, LH_META,
+        CTRL_H, CTRL_SM_H, DotTone, FS_META, FS_TAG, FS_UI, ICON_SM, ICON_XS, LH_META,
         R_CARD, R_CTRL, R_PILL, StudioPalette, TITLEBAR_BUTTON_GAP, TITLEBAR_EDGE_INSET,
         clean_display_doc_name, macos_traffic_pad, mono_font,
         render_file_diff_icon, render_folder_icon,
@@ -217,18 +217,13 @@ impl KarWorkbench {
             self.render_office_more_menu(&s, cx),
         );
 
-        let header = div()
-            .h(px(HEADER_H))
+        let header = crate::ui_primitives::titlebar_row(window)
             .relative()
             .pl(px(if single_dock {
                 macos_traffic_pad(window) + CTRL_SM_H + TITLEBAR_BUTTON_GAP
             } else { 10. }))
             .pr(px(TITLEBAR_EDGE_INSET + CTRL_SM_H + TITLEBAR_BUTTON_GAP))
             .bg(s.surface)
-            .window_control_area(WindowControlArea::Drag)
-            .flex_none()
-            .flex()
-            .items_center()
             .justify_between()
             .gap(px(8.))
             .child(
