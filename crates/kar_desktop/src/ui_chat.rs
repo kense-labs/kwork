@@ -60,11 +60,11 @@ use crate::{
         MenuPlacement, Tactile, close_button, disclosure_body, disclosure_line, icon_button,
         icon_button_sm, menu_caption,
         menu_check, menu_divider, menu_hint, menu_host, menu_icon_item, menu_item,
-        pulse_beacon, soft_button, spinner, text_button,
+        pulse_beacon, soft_button, soft_button_sm, spinner, text_button, text_button_sm,
     },
     ui_primitives::{
         CTRL_H, CTRL_SM_H, DETAILS_CARD_W, DotTone, FS_CONTROL, FS_META, FS_READ, FS_TAG, FS_UI, HEADER_H, ICON,
-        ICON_SM, ICON_XS, LH_META, LH_READ, LH_UI, R_CARD, R_CTRL, R_HERO, R_PILL, StudioPalette, UiLocale,
+        ICON_SM, ICON_XS, LH_META, LH_READ, LH_UI, R_CARD, R_CTRL, R_HERO, R_PILL, R_SM, R_XS, ROW_H, StudioPalette, UiLocale,
         THREAD_PAD, TITLEBAR_BUTTON_GAP, TITLEBAR_EDGE_INSET, card_box, clean_display_doc_name, macos_traffic_pad, mono_font,
         render_bg_layers_icon,
         render_file_diff_icon, render_folder_git_icon, render_folder_icon, render_git_branch_icon,
@@ -760,18 +760,19 @@ impl KarWorkbench {
                             d.child(
                                 Tactile::soft("chat-localhost-preview-pill", s)
                                     .fills(s.pro.accent_soft, s.pro.accent_soft)
-                                    .radius(R_PILL)
-                                    .h(px(24.))
-                                    .px(px(9.))
+                                    .radius(R_CTRL)
+                                    .h(px(CTRL_SM_H))
+                                    .px(px(10.))
                                     .gap(px(5.))
-                                    .text_size(px(FS_TAG))
+                                    .font_features(tnum_features())
+                                    .text_size(px(FS_META))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(s.pro.accent_info)
                                     .tip(loc.pick(
                                         "打开本地运行中的预览地址",
                                         "Open live localhost preview",
                                     ))
-                                    .child(pro_icon(ProIcon::Globe, 12., s.pro.accent_info))
+                                    .child(pro_icon(ProIcon::Globe, 13., s.pro.accent_info))
                                     .child(format!("localhost:{port}"))
                                     .on_press(cx, move |_, _, _| {
                                         let url = format!("http://localhost:{port}");
@@ -786,11 +787,12 @@ impl KarWorkbench {
                         d.child(
                             Tactile::soft("chat-remote-live-pill", s)
                                 .fills(s.pro.green_soft, s.pro.green_soft)
-                                .radius(R_PILL)
-                                .h(px(24.))
-                                .px(px(8.))
+                                .radius(R_CTRL)
+                                .h(px(CTRL_SM_H))
+                                .px(px(9.))
                                 .gap(px(5.))
-                                .text_size(px(FS_TAG))
+                                .text_size(px(FS_META))
+                                .font_weight(FontWeight::MEDIUM)
                                 .text_color(s.pro.green_ink)
                                 .child(pulse_beacon(s.pro.green, 5., true, window, cx))
                                 .child(loc.pick("已配对", "Paired"))
@@ -1563,7 +1565,7 @@ impl KarWorkbench {
                 .pb(px(2.))
                 .child(
                     div()
-                        .h(px(34.))
+                        .h(px(ROW_H))
                         .pl(px(12.))
                         .pr(px(4.))
                         .rounded(px(R_CTRL))
@@ -1589,7 +1591,7 @@ impl KarWorkbench {
                                 .text_color(s.muted)
                                 .child(url),
                         )
-                        .child(text_button("share-copy", "复制链接", s).on_press(
+                        .child(text_button_sm("share-copy", "复制链接", s).on_press(
                             cx,
                             move |this, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(to_copy.clone()));
@@ -1597,7 +1599,7 @@ impl KarWorkbench {
                             },
                         ))
                         .child(
-                            text_button("share-stop", "停止", s)
+                            text_button_sm("share-stop", "停止", s)
                                 .on_press(cx, |this, _, cx| this.stop_sharing(cx)),
                         ),
                 )
@@ -1626,7 +1628,7 @@ impl KarWorkbench {
                 "paused" | "blocked" | "budgetLimited" | "usageLimited" => Some((GoalAction::Resume, ProIcon::ArrowRight, loc.pick("继续目标", "Resume goal"))),
                 _ => None,
             };
-            let mut row = div().w_full().min_w_0().h(px(34.)).px(px(6.))
+            let mut row = div().w_full().min_w_0().h(px(ROW_H)).px(px(8.))
                 .rounded(px(R_CTRL)).bg(s.soft).flex().items_center().gap(px(6.));
             if let Some((used, limit)) = g.tokens_used.zip(budget).filter(|(_, limit)| *limit > 0) {
                 row = row.child(pro_progress_ring((used as f64 / limit as f64).min(1.) as f32, 14., 2., s.ink, s.line_strong));
@@ -1637,16 +1639,16 @@ impl KarWorkbench {
                     .text_color(s.ink).text_size(px(FS_CONTROL)).child(g.objective.clone()))
                 .child(div().flex_none().text_size(px(FS_META)).text_color(s.muted).child(self.goal_status_label(&g.status)));
             if thread_w >= 520. && let Some(seconds) = g.time_used_seconds.filter(|s| *s > 0) {
-                row = row.child(div().flex_none().text_size(px(FS_META)).text_color(s.muted)
+                row = row.child(div().flex_none().font_features(tnum_features()).text_size(px(FS_META)).text_color(s.muted)
                     .child(worked_duration(seconds.saturating_mul(1000), loc)));
             }
             if let Some(id) = owner {
                 if let Some((action, icon, label)) = control {
-                    row = row.child(icon_button("goal-toggle", icon, label, s)
-                        .size(px(CTRL_SM_H)).disabled(self.goal_request_pending(id))
+                    row = row.child(icon_button_sm("goal-toggle", icon, label, s)
+                        .disabled(self.goal_request_pending(id))
                         .on_press(cx, move |this, _, cx| { this.request_chat_goal(id, action.clone(), cx); }));
                 }
-                row = row.child(text_button("goal-edit", loc.pick("管理", "Manage"), s)
+                row = row.child(text_button_sm("goal-edit", loc.pick("管理", "Manage"), s)
                     .on_press(cx, move |this, window, cx| {
                         if this.current_chat_id() == Some(id) { this.open_goal_dialog(window, cx); }
                     }));
@@ -1785,8 +1787,8 @@ impl KarWorkbench {
         let project =
             crate::studio_hub::project_display_name(&project).replace(['\n', '\r', '\t'], " ");
         let content_w = (pane_w - 2. * chat_lane_gutter(pane_w, window)).clamp(1., thread_w);
-        let title_size = (content_w / 18.).clamp(22., 30.);
-        let title_line = (title_size * 1.35).ceil();
+        let title_size = (content_w / 24.).clamp(18., 22.);
+        let title_line = (title_size * 1.38).ceil();
         let short = f32::from(window.viewport_size().height) <= 544.;
         let can_switch = !self.chat_is_open();
         let full_title = match loc {
@@ -1799,8 +1801,8 @@ impl KarWorkbench {
             .shape_line(full_title.into(), px(title_size), &[run], None)
             .width();
         let inline = f32::from(title_width) + 32. <= content_w;
-        let label_size = if inline { title_size } else { 15. };
-        let label_line = if inline { title_line } else { 22. };
+        let label_size = if inline { title_size } else { FS_READ };
+        let label_line = if inline { title_line } else { LH_READ };
         let picker = Tactile::ghost("draft-project", s)
             .h(px(label_line + 8.))
             .max_w(px(content_w))
@@ -1896,7 +1898,7 @@ impl KarWorkbench {
                 col.child(
                     div().w_full().flex().justify_end().child(
                         div().max_w(relative(0.86)).px(px(12.)).py(px(7.))
-                            .rounded(px(12.)).bg(s.hover).child(
+                            .rounded(px(R_CARD)).bg(s.hover).child(
                                 div().id("planned-task-scroll").max_h(px(20. * visible_lines))
                                     .overflow_y_scroll().text_size(px(FS_UI)).line_height(px(20.))
                                     .text_color(s.ink).child(topic.to_owned())
@@ -1908,9 +1910,9 @@ impl KarWorkbench {
                 col.child(
                     div().when(browsing_commands, |hint| hint.invisible()).mt(px(4.)).flex().justify_center().child(
                         secondary
-                            .h(px(26.))
-                            .px(px(4.))
-                            .text_size(px(FS_UI))
+                            .h(px(CTRL_SM_H))
+                            .px(px(8.))
+                            .text_size(px(FS_CONTROL))
                             .ink(s.muted, s.ink),
                     ),
                 )
@@ -2156,21 +2158,51 @@ impl KarWorkbench {
         } else {
             self.effective_runtime()
         };
-        let settings_button = Tactile::ghost("cmp-options", s)
-            .h(px(24.))
-            .px(px(6.))
-            .gap(px(5.))
-            .lit(self.open_menu == Some(Menu::ComposerApproval))
-            .aria(loc.pick("权限请求", "Permission requests"))
-            .when(self.open_menu != Some(Menu::ComposerApproval), |button| {
-                button.tip(loc.pick("权限请求", "Permission requests"))
-            })
-            .ink(s.muted, s.ink)
-            .child(pro_icon(ProIcon::Shield, ICON, s.muted))
-            .when(pane_w >= 440., |b| b.child(loc.approval_label(self.approval_mode)))
-            .on_press(cx, |this, _, cx| {
-                this.toggle_menu(Menu::ComposerApproval, cx)
-            });
+        let cur_approval = self.effective_chat_approvals();
+        let is_full_auto = crate::prefs::is_approval_allow(cur_approval);
+        let is_read_only = cur_approval == ApprovalMode::Deny;
+        let (perm_icon, perm_icon_col) = if is_full_auto {
+            (ProIcon::Bolt, s.pro.accent_info)
+        } else if is_read_only {
+            (ProIcon::Lock, s.pro.amber_ink)
+        } else {
+            (ProIcon::Shield, s.muted)
+        };
+        let perm_pill = menu_host(
+            Tactile::ghost("cmp-options", s)
+                .h(px(CTRL_H))
+                .px(px(8.))
+                .radius(R_CTRL)
+                .gap(px(5.))
+                .text_size(px(FS_CONTROL))
+                .when(is_full_auto, |b| {
+                    b.fills(s.pro.accent_soft.opacity(0.65), s.pro.accent_soft)
+                        .ink(s.pro.accent_info, s.pro.accent_info)
+                })
+                .when(is_read_only, |b| {
+                    b.fills(s.pro.amber_soft.opacity(0.65), s.pro.amber_soft)
+                        .ink(s.pro.amber_ink, s.pro.amber_ink)
+                })
+                .when(!is_full_auto && !is_read_only, |b| b.ink(s.muted, s.ink))
+                .lit(self.open_menu == Some(Menu::ComposerApproval))
+                .aria(loc.pick("对话执行权限模式", "Conversation permission mode"))
+                .when(self.open_menu != Some(Menu::ComposerApproval), |button| {
+                    button.tip(if chat_open {
+                        loc.pick("点击随时切换当前对话的权限模式", "Switch permission mode for this conversation")
+                    } else {
+                        loc.pick("设置新对话的执行权限模式", "Set permission mode for new conversations")
+                    })
+                })
+                .child(pro_icon(perm_icon, 14.5, perm_icon_col))
+                .when(card_width >= 380., |b| {
+                    b.child(loc.approval_label(cur_approval))
+                })
+                .child(pro_icon(ProIcon::ChevronDown, 11., s.muted))
+                .on_press(cx, |this, _, cx| {
+                    this.toggle_menu(Menu::ComposerApproval, cx)
+                }),
+            self.render_approval_menu(start, s, cx),
+        );
 
         let model = if chat_open {
             self.projected
@@ -2182,7 +2214,6 @@ impl KarWorkbench {
         };
         let add_menu = match self.open_menu {
             Some(Menu::ComposerSkills) => self.render_skills_menu(end, s, cx),
-            Some(Menu::ComposerApproval) if chat_open => self.render_approval_menu(end, s, cx),
             _ => self.render_add_menu(end, s, cx),
         };
 
@@ -2254,7 +2285,7 @@ impl KarWorkbench {
                         button.tip(loc.pick("上下文容量与压缩", "Context window usage"))
                     })
                     .font_features(tnum_features())
-                    .text_size(px(FS_META))
+                    .text_size(px(FS_CONTROL))
                     .ink(s.muted, s.ink)
                     .when_some(ctx_ratio, |row, r| {
                         row.child(pro_progress_ring(r, 13., 2., s.ink, s.line_strong))
@@ -2265,6 +2296,8 @@ impl KarWorkbench {
             )
         });
 
+        let can_switch_perm = self.access_mode.is_writable()
+            || matches!(self.access_mode, ChatAccessMode::NoneSelected);
         let rec_active = self.active_voice_rec.is_some();
         let left = div()
             .flex_none()
@@ -2301,7 +2334,7 @@ impl KarWorkbench {
                         b.child(pulse_beacon(s.pro.red, 6., true, window, cx))
                             .child(
                                 div()
-                                    .text_size(px(FS_META))
+                                    .text_size(px(FS_CONTROL))
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(loc.pick("听写中…", "Listening…")),
                             )
@@ -2311,6 +2344,7 @@ impl KarWorkbench {
                     })
                     .on_press(cx, |this, win, cx| this.toggle_voice_dictation(win, cx)),
             )
+            .when(can_switch_perm, |d| d.child(perm_pill))
             .when_some(ctx_control, |d, c| d.child(c));
 
         let effort_word = if chat_open {
@@ -2382,7 +2416,7 @@ impl KarWorkbench {
         let action_disc = |id| {
             Tactile::ghost(id, s)
                 .size(px(CTRL_H))
-                .face_inset(3.)
+                .face_inset(1.5)
                 .radius(R_PILL)
                 .flex_none()
                 .justify_center()
@@ -2391,7 +2425,7 @@ impl KarWorkbench {
             action_disc("cmp-stop")
                 .fills(s.pro.red, s.pro.red_ink)
                 .tip(loc.pick("停止当前执行", "Stop generation"))
-                .child(div().size(px(9.)).rounded(px(2.)).bg(s.on_brand_action))
+                .child(div().size(px(9.)).rounded(px(R_XS)).bg(s.on_brand_action))
                 .on_press(cx, |this, _, _| this.bridge.send(KarCommand::AbortTurn))
                 .into_any_element()
         } else {
@@ -2500,16 +2534,18 @@ impl KarWorkbench {
             )
             .when(is_draft, |d| {
                 let wt = self.new_chat_use_worktree;
-                let local_label = loc.pick("当前检出", "Current checkout");
-                let tree_label = loc.pick("独立工作树", "Worktree");
+                let local_label = loc.pick("当前工作目录", "Current checkout");
+                let tree_label = loc.pick("独立分支副本", "Isolated worktree");
                 let mode_label = if wt { tree_label } else { local_label };
                 let mode_button = Tactile::ghost("cmp-worktree-mode", s)
-                    .h(px(24.))
-                    .px(px(6.))
+                    .h(px(CTRL_SM_H))
+                    .px(px(8.))
+                    .radius(R_SM)
                     .gap(px(6.))
+                    .text_size(px(FS_META))
                     .ink(s.muted, s.ink)
                     .aria(mode_label)
-                    .child(render_folder_icon(13., s.muted))
+                    .child(render_folder_icon(13.5, s.muted))
                     .child(mode_label);
                 let mode = if self.git_snapshot.is_repo || wt {
                     let choices = [local_label, tree_label]
@@ -2532,7 +2568,7 @@ impl KarWorkbench {
                             .on_press(cx, |this, _, cx| {
                                 this.toggle_menu(Menu::ComposerWorkspaceMode, cx)
                             }),
-                        self.render_menu(Menu::ComposerWorkspaceMode, start, 192., choices, s, cx),
+                        self.render_menu(Menu::ComposerWorkspaceMode, start, 196., choices, s, cx),
                     )
                     .into_any_element()
                 } else {
@@ -2556,14 +2592,16 @@ impl KarWorkbench {
                                 .as_deref()
                                 .unwrap_or("HEAD");
                             let trigger = Tactile::ghost("draft-branch", s)
-                                .h(px(24.))
-                                .px(px(6.))
+                                .h(px(CTRL_SM_H))
+                                .px(px(8.))
+                                .radius(R_SM)
                                 .gap(px(5.))
+                                .text_size(px(FS_META))
                                 .ink(s.muted, s.ink)
-                                .child(render_git_branch_icon(13., s.muted))
+                                .child(render_git_branch_icon(13.5, s.muted))
                                 .child(
                                     div()
-                                        .max_w(px((pane_w * 0.2).clamp(60., 180.)))
+                                        .max_w(px((pane_w * 0.24).clamp(60., 200.)))
                                         .truncate()
                                         .child(branch.to_owned()),
                                 );
@@ -2597,11 +2635,7 @@ impl KarWorkbench {
                                         }),
                                 )
                             }
-                        })
-                        .child(menu_host(
-                            settings_button,
-                            self.render_approval_menu(end, s, cx),
-                        )),
+                        }),
                 )
             })
     }
@@ -2819,9 +2853,9 @@ impl KarWorkbench {
             };
             col = col.child(
                 div()
-                    .h(px(30.))
-                    .pl(px(8.))
-                    .pr(px(4.))
+                    .h(px(ROW_H))
+                    .pl(px(10.))
+                    .pr(px(6.))
                     .rounded(px(R_CTRL))
                     .bg(s.card)
                     .border_1()
@@ -2848,14 +2882,15 @@ impl KarWorkbench {
                             .child(
                                 div()
                                     .flex_none()
-                                    .px(px(5.))
-                                    .py(px(1.))
+                                    .px(px(6.))
+                                    .py(px(1.5))
                                     .rounded(px(R_PILL))
                                     .bg(if finished {
                                         s.pro.green_soft
                                     } else {
                                         s.pro.accent_soft
                                     })
+                                    .font_features(tnum_features())
                                     .text_size(px(FS_TAG))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(if finished {
@@ -2882,7 +2917,7 @@ impl KarWorkbench {
                             .items_center()
                             .gap(px(4.))
                             .child(
-                                soft_button(
+                                soft_button_sm(
                                     ("bg-cmd-followup", ix),
                                     if follow_up {
                                         "结束汇报：开"
@@ -2902,8 +2937,9 @@ impl KarWorkbench {
                                 }),
                             )
                             .child(
-                                close_button(
+                                icon_button_sm(
                                     ("bg-cmd-dismiss", ix),
+                                    ProIcon::Close,
                                     self.ui_locale.pick("收起后台命令条", "Dismiss background command"),
                                     s,
                                 )
@@ -3288,18 +3324,24 @@ impl KarWorkbench {
                 .skills
                 .iter()
                 .filter(|sk| sk.enabled)
-                .take(5)
+                .take(6)
                 .enumerate()
             {
+                let (zh_title, _) = crate::studio_hub::localized_skill_presentation(
+                    &sk.name,
+                    &sk.description,
+                    self.ui_locale,
+                );
                 let token = format!("${} ", sk.name);
-                let label = format!("${}", sk.name);
+                let id_hint = format!("${}", sk.name);
                 rows.push(
                     menu_item(
                         SharedString::from(format!("cmp-sk-{ix}")),
                         Some(render_skills_puzzle_icon(ICON_SM, s.muted)),
-                        label,
+                        zh_title,
                         s,
                     )
+                    .child(menu_hint(id_hint, s))
                     .on_press(cx, move |this, win, cx| {
                         this.open_menu = None;
                         this.inject_token_into_composer(&token, win, cx);
@@ -3337,88 +3379,136 @@ impl KarWorkbench {
     ) -> AnyElement {
         let loc = self.ui_locale;
         let open = self.chat_is_open();
-        let info = self.projected.info.as_ref();
-        let mut panel = div()
-            .w_full()
-            .px(px(8.))
-            .py(px(6.))
-            .flex()
-            .flex_col()
-            .items_start()
-            .gap(px(8.))
-            .child(
-                div()
-                    .text_size(px(FS_META))
-                    .text_color(s.muted)
-                    .child(if open {
-                        loc.pick("本次对话的权限请求", "Permission requests in this chat")
-                    } else {
-                        loc.pick("新对话的权限请求", "Permission requests in new chats")
-                    }),
-            );
-        let mode = if open {
-            let mode = info.map(|session| session.approvals);
-            if let Some(mode) = mode {
-                panel = panel.child(
-                    div()
-                        .text_size(px(FS_UI))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(s.ink)
-                        .child(loc.approval_label(mode)),
-                );
-            }
-            mode
-        } else {
-            panel = panel.child(self.new_chat_approval_picker("composer-approval-modes", s, cx));
-            Some(self.approval_mode)
-        };
-        #[allow(unreachable_patterns)]
-        let explanation = match mode {
-            Some(ApprovalMode::Host) => loc.pick(
-                "智能体请求额外权限时，在对话中选择允许或拒绝。可用的授权范围由智能体提供。",
-                "Review each permission request in the chat. The agent supplies the available choices.",
-            ),
-            Some(ApprovalMode::Deny) => loc.pick(
-                "智能体发来的额外权限请求会被自动拒绝。",
-                "Additional permission requests from the agent are declined automatically.",
-            ),
-            Some(_) => loc.pick(
-                "智能体发来的工具与命令权限请求将自动放行执行，无需在对话中逐步确认。",
-                "Permission requests from the agent are approved automatically without prompting.",
-            ),
-            None => loc.pick("当前连接未提供审批设置。", "This connection has not reported an approval setting."),
-        };
-        panel = panel.child(
-            div()
-                .w_full()
-                .text_size(px(FS_META))
-                .line_height(px(LH_META))
-                .text_color(s.muted)
-                .child(explanation),
-        );
-        if open && let Some(native_mode) = info.and_then(|i| i.settings.acp_mode.as_deref()) {
-            panel = panel.child(
-                div()
-                    .text_size(px(FS_META))
-                    .text_color(s.text)
-                    .child(format!("{} · {native_mode}", loc.pick("智能体模式", "Agent mode"))),
+        let active_mode = self.effective_chat_approvals();
+        let mut rows: Vec<AnyElement> = vec![
+            menu_caption(
+                if open {
+                    loc.pick("当前对话的执行权限（点击即刻切换）", "Permission policy for this chat")
+                } else {
+                    loc.pick("新对话默认执行权限", "Default permission policy")
+                },
+                s,
+            )
+            .into_any_element(),
+        ];
+
+        for (ix, candidate) in crate::prefs::all_approval_modes().into_iter().enumerate() {
+            let selected = candidate == active_mode;
+            let is_allow = crate::prefs::is_approval_allow(candidate);
+            let is_deny = candidate == ApprovalMode::Deny;
+            let (icon, icon_col, title, desc) = if is_allow {
+                (
+                    ProIcon::Bolt,
+                    s.pro.accent_info,
+                    loc.pick("全自动执行", "Auto-run"),
+                    loc.pick(
+                        "自动批准运行命令与修改文件，适合连续自治任务",
+                        "Approve tool & command execution automatically",
+                    ),
+                )
+            } else if is_deny {
+                (
+                    ProIcon::Lock,
+                    s.pro.amber_ink,
+                    loc.pick("仅只读保护", "Read-only"),
+                    loc.pick(
+                        "仅允许阅读与分析代码，自动拒绝高权限写入操作",
+                        "Allow reading & analysis, decline write permissions",
+                    ),
+                )
+            } else {
+                (
+                    ProIcon::Shield,
+                    s.ink,
+                    loc.pick("每次先问我（推荐）", "Ask first (Recommended)"),
+                    loc.pick(
+                        "涉及执行命令或敏感改动前，在对话中由你确认",
+                        "Review and approve sensitive actions inline",
+                    ),
+                )
+            };
+
+            rows.push(
+                Tactile::ghost(("approval-opt", ix), s)
+                    .w_full()
+                    .px(px(10.))
+                    .py(px(7.))
+                    .radius(R_SM)
+                    .lit(selected)
+                    .items_start()
+                    .gap(px(9.))
+                    .child(div().pt(px(2.)).flex_none().child(pro_icon(icon, ICON_SM, icon_col)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(FS_CONTROL))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(s.ink)
+                                            .child(title),
+                                    )
+                                    .when(selected, |d| d.child(menu_check(s))),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(FS_META))
+                                    .line_height(px(LH_META))
+                                    .text_color(s.muted)
+                                    .child(desc),
+                            ),
+                    )
+                    .on_press(cx, move |wb, _, cx| {
+                        wb.set_active_or_new_chat_approvals(candidate, cx);
+                        wb.close_menu(cx);
+                    })
+                    .into_any_element(),
             );
         }
-        let mut rows = vec![panel.into_any_element()];
-        if open {
+
+        if open
+            && let Some(native_mode) = self
+                .projected
+                .info
+                .as_ref()
+                .and_then(|i| i.settings.acp_mode.as_deref())
+        {
             rows.push(menu_divider(s).into_any_element());
             rows.push(
-                menu_icon_item(
-                    "approval-new-chat-settings",
-                    ProIcon::Sliders,
-                    loc.pick("设置新对话默认值…", "New chat defaults…"),
-                    s,
-                )
-                .on_press(cx, |wb, _, cx| wb.open_settings(SettingsTab::Agents, cx))
-                .into_any_element(),
+                div()
+                    .px(px(10.))
+                    .py(px(4.))
+                    .text_size(px(FS_TAG))
+                    .text_color(s.muted)
+                    .child(format!(
+                        "{} · {native_mode}",
+                        loc.pick("智能体协作模式", "Agent mode")
+                    ))
+                    .into_any_element(),
             );
         }
-        self.render_menu(Menu::ComposerApproval, placement, 280., rows, s, cx)
+        rows.push(menu_divider(s).into_any_element());
+        rows.push(
+            menu_icon_item(
+                "approval-new-chat-settings",
+                ProIcon::Sliders,
+                loc.pick("设置所有新对话的默认权限…", "Configure global defaults…"),
+                s,
+            )
+            .on_press(cx, |wb, _, cx| wb.open_settings(SettingsTab::Agents, cx))
+            .into_any_element(),
+        );
+        self.render_menu(Menu::ComposerApproval, placement, 296., rows, s, cx)
     }
 
     pub(crate) fn render_effort_menu(
@@ -4203,7 +4293,34 @@ impl KarWorkbench {
                 || turn.status != TurnStatus::Completed
                 || !turn_steps.has_answer(),
         );
-        let mut work_items_count = 0;
+        let mut work_items_count = 0usize;
+        let mut think_count = 0usize;
+        let mut tool_count = 0usize;
+        let mut diff_count = 0usize;
+        for (step_ix, entry) in turn.items.iter().enumerate() {
+            let delegated = !entry.source.path.is_empty()
+                || entry
+                    .source
+                    .session_id
+                    .as_ref()
+                    .is_some_and(|id| turn.child_sessions.contains_key(id));
+            if (matches!(entry.item, Item::Message { role: KarRole::User, .. }) && !delegated)
+                || matches!(&entry.item, Item::Message { text, .. } if text.trim().is_empty())
+            {
+                continue;
+            }
+            if !running && !turn_steps.is_answer(step_ix) {
+                match &entry.item {
+                    Item::Message {
+                        role: KarRole::Reasoning,
+                        ..
+                    } => think_count += 1,
+                    Item::Tool { .. } => tool_count += 1,
+                    Item::Diff { .. } => diff_count += 1,
+                    _ => {}
+                }
+            }
+        }
         let mut work_rows = Vec::new();
         let mut reply_rows = Vec::new();
 
@@ -4461,68 +4578,162 @@ impl KarWorkbench {
 
         if work_items_count > 0 {
             has_parts = true;
-            let worked_label = duration.unwrap_or_else(|| match loc {
-                UiLocale::Zh => format!("已执行 {work_items_count} 步"),
-                UiLocale::En if work_items_count == 1 => "1 step".to_owned(),
-                UiLocale::En => format!("{work_items_count} steps"),
-            });
-            let work_body = div()
-                .w_full()
-                .min_w_0()
-                .pt(px(8.))
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .children(work_rows);
-            parts = parts.child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .items_start()
+            let mut facets: Vec<String> = Vec::new();
+            if think_count > 0 {
+                facets.push(match loc {
+                    UiLocale::Zh => format!("思考 {think_count} 次"),
+                    UiLocale::En => format!("{think_count} thoughts"),
+                });
+            }
+            if tool_count > 0 {
+                facets.push(match loc {
+                    UiLocale::Zh => format!("调用 {tool_count} 项工具"),
+                    UiLocale::En if tool_count == 1 => "1 tool".into(),
+                    UiLocale::En => format!("{tool_count} tools"),
+                });
+            }
+            if diff_count > 0 || !touched.is_empty() {
+                let edit_n = touched.len().max(diff_count);
+                facets.push(match loc {
+                    UiLocale::Zh => format!("改动 {edit_n} 处"),
+                    UiLocale::En if edit_n == 1 => "1 edit".into(),
+                    UiLocale::En => format!("{edit_n} edits"),
+                });
+            }
+            if facets.is_empty() {
+                facets.push(match loc {
+                    UiLocale::Zh => format!("{work_items_count} 个步骤"),
+                    UiLocale::En => format!("{work_items_count} steps"),
+                });
+            }
+            if let Some(ref dur) = duration {
+                facets.push(dur.clone());
+            }
+            let detail_summary = facets.join(" · ");
+            let toggle_hint = if work_grp_open {
+                loc.pick("收起", "Hide")
+            } else {
+                loc.pick("查看过程", "Show process")
+            };
+            let lead_icon = if work_failed {
+                ProIcon::AlertTriangle
+            } else {
+                ProIcon::Sparkles
+            };
+            let lead_color = if work_failed {
+                s.pro.amber
+            } else if work_grp_open {
+                s.pro.accent_info
+            } else {
+                s.muted
+            };
+
+            let mut process_block = div().w_full().flex().flex_col().items_start().child(
+                Tactile::ghost(SharedString::from(format!("worked-grp-{turn_id}")), s)
+                    .h(px(CTRL_SM_H))
+                    .px(px(10.))
+                    .radius(R_CTRL)
+                    .fills(
+                        if work_grp_open {
+                            s.soft
+                        } else {
+                            s.soft.opacity(0.52)
+                        },
+                        s.hover,
+                    )
+                    .outlined(s.line_soft, s.line)
+                    .gap(px(6.))
+                    .font_features(tnum_features())
+                    .text_size(px(FS_META))
+                    .ink(s.text, s.ink)
+                    .aria(format!(
+                        "{} · {detail_summary}",
+                        loc.pick("思考与执行过程", "Thought & actions")
+                    ))
+                    .expanded(work_grp_open)
+                    .child(pro_icon(lead_icon, ICON_XS, lead_color))
                     .child(
-                        Tactile::ghost(SharedString::from(format!("worked-grp-{turn_id}")), s)
-                            .h(px(26.))
-                            .px(px(6.))
-                            .ml(px(-6.))
-                            .gap(px(5.))
-                            .font_features(tnum_features())
-                            .text_size(px(FS_CONTROL))
-                            .ink(s.muted, s.ink)
-                            .aria(worked_label.clone())
-                            .expanded(work_grp_open)
-                            .child(worked_label)
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(s.ink)
+                            .child(loc.pick("思考与执行过程", "Thought & actions")),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(s.muted)
+                            .child(format!("· {detail_summary}")),
+                    )
+                    .child(
+                        div()
+                            .ml(px(4.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(3.))
+                            .text_color(if work_grp_open {
+                                s.pro.accent_info
+                            } else {
+                                s.muted
+                            })
+                            .child(toggle_hint)
                             .child(pro_icon(
                                 if work_grp_open {
-                                    ProIcon::ChevronDown
+                                    ProIcon::ChevronUp
                                 } else {
-                                    ProIcon::ChevronRight
+                                    ProIcon::ChevronDown
                                 },
-                                11.5,
-                                s.muted,
-                            ))
-                            .on_press(cx, move |this, _, cx| {
-                                this.part_open.insert(work_grp_key, !work_grp_open);
-                                cx.notify();
-                            }),
+                                11.,
+                                if work_grp_open {
+                                    s.pro.accent_info
+                                } else {
+                                    s.muted
+                                },
+                            )),
                     )
-                    .child(pro_fold(
-                        SharedString::from(format!("worked-grp-fold-{turn_id}")),
-                        work_grp_open,
-                        (work_items_count as f32 * 44. + 48.).clamp(72., 280.),
-                        0.,
-                        move || work_body.into_any_element(),
-                    )),
+                    .on_press(cx, move |this, _, cx| {
+                        this.part_open.insert(work_grp_key, !work_grp_open);
+                        cx.notify();
+                    }),
             );
+
+            if work_grp_open && !work_rows.is_empty() {
+                process_block = process_block.child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .mt(px(8.))
+                        .px(px(12.))
+                        .py(px(10.))
+                        .rounded(px(R_CARD))
+                        .bg(s.stage.opacity(if s.dark { 0.55 } else { 0.68 }))
+                        .border_1()
+                        .border_color(s.line_soft)
+                        .child(
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .pl(px(10.))
+                                .border_l_2()
+                                .border_color(s.line)
+                                .flex()
+                                .flex_col()
+                                .gap(px(8.))
+                                .children(work_rows),
+                        ),
+                );
+            }
+            parts = parts.child(process_block);
         } else if let Some(label) = duration {
             has_parts = true;
             parts = parts.child(
                 div()
-                    .min_h(px(26.))
+                    .min_h(px(CTRL_SM_H))
                     .flex()
                     .items_center()
                     .font_features(tnum_features())
-                    .text_size(px(FS_CONTROL))
+                    .text_size(px(FS_META))
                     .text_color(s.muted)
                     .child(label),
             );
@@ -4752,8 +4963,7 @@ impl KarWorkbench {
                     })
                     .when(can_retry, |row| {
                         row.child(
-                            text_button(format!("retry-{turn_id}"), loc.pick("重试", "Retry"), s)
-                                .h(px(28.))
+                            text_button_sm(format!("retry-{turn_id}"), loc.pick("重试", "Retry"), s)
                                 .on_press(cx, move |this, _, cx| {
                                     this.retry_turn_with_same_uuid(turn_id, first_ask.clone(), cx)
                                 }),
@@ -4768,13 +4978,12 @@ impl KarWorkbench {
                     })
                     .when_some(can_fork.then_some(current_cid).flatten(), |row, chat_id| {
                         row.child(
-                            icon_button(
+                            icon_button_sm(
                                 format!("fork-{turn_id}"),
                                 ProIcon::GitBranch,
                                 loc.pick("从此处分叉新对话", "Fork thread from here"),
                                 s,
                             )
-                            .size(px(28.))
                             .on_press(cx, move |this, _, _| {
                                 this.bridge.send(KarCommand::ForkChatAt {
                                     chat_id,
@@ -4786,13 +4995,12 @@ impl KarWorkbench {
                     })
                     .when(show_extra_actions, |row| {
                         row.child(
-                            icon_button(
+                            icon_button_sm(
                                 format!("turn-actions-{turn_id}"),
                                 ProIcon::MoreHorizontal,
                                 loc.pick("更多本轮操作（撤回对话 / 恢复文件）", "More turn actions"),
                                 s,
                             )
-                            .size(px(28.))
                             .lit(extra_actions_open)
                             .expanded(extra_actions_open)
                             .on_press(cx, move |this, _, cx| {
@@ -4864,7 +5072,7 @@ impl KarWorkbench {
             .min_w_0()
             .text_size(px(FS_READ))
             .line_height(px(LH_READ))
-            .text_color(s.ink)
+            .text_color(s.ink.opacity(0.94))
             .child(reply_stream::ReplyMarkdown {
                 turn_id,
                 item_ix,
@@ -4891,14 +5099,15 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        let open = self.part_is_open(key, false);
+        let default_open = active || text.chars().count() <= 360;
+        let open = self.part_is_open(key, default_open);
         let body = div()
-            .text_size(px(FS_UI))
+            .text_size(px(FS_CONTROL))
             .line_height(px(LH_UI))
             .text_color(s.muted)
             .child(text.to_owned())
             .into_any_element();
-        let estimate = 24. + (text.len() as f32 / 90.).ceil() * LH_UI;
+        let estimate = 28. + (text.chars().count() as f32 / 46.).ceil() * LH_UI;
         div()
             .w_full()
             .min_w_0()
@@ -5017,6 +5226,7 @@ impl KarWorkbench {
                     div()
                         .px(px(12.))
                         .pt(px(4.))
+                        .font_features(tnum_features())
                         .text_color(s.faint)
                         .child(format!("还有 {} 行", view.lines.len() - shown)),
                 );
@@ -5181,7 +5391,7 @@ impl KarWorkbench {
                     SharedString::from(format!("turn-files-fold-{turn}-button")),
                     s,
                 )
-                .h(px(40.))
+                .h(px(ROW_H))
                 .w_full()
                 .px(px(14.))
                 .gap(px(8.))
@@ -5189,7 +5399,8 @@ impl KarWorkbench {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_size(px(FS_UI))
+                        .font_features(tnum_features())
+                        .text_size(px(FS_CONTROL))
                         .font_weight(FontWeight::MEDIUM)
                         .child(count_label),
                 )

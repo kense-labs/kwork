@@ -942,6 +942,490 @@ pub struct ToolSchemaItem {
     pub schema_json: Value,
 }
 
+fn contains_cjk(text: &str) -> bool {
+    text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+}
+
+fn canonical_skill_slug(raw: &str) -> String {
+    raw.trim()
+        .trim_start_matches(['$', '/'])
+        .rsplit([':', '/'])
+        .next()
+        .unwrap_or(raw)
+        .to_ascii_lowercase()
+        .replace('_', "-")
+}
+
+/// Returns `(display_title, display_description)` localized for the active UI language.
+/// Preserves the underlying `$skill` identifier for invocation while presenting natural,
+/// jargon-free Chinese titles and explanations when `loc == UiLocale::Zh`.
+pub fn localized_skill_presentation(
+    name: &str,
+    raw_desc: &str,
+    loc: crate::ui_primitives::UiLocale,
+) -> (String, String) {
+    if loc == crate::ui_primitives::UiLocale::En {
+        return (name.to_owned(), raw_desc.to_owned());
+    }
+    let slug = canonical_skill_slug(name);
+    let curated: Option<(&'static str, &'static str)> = match slug.as_str() {
+        // Antigravity / Gemini built-in & plugin skills
+        "a11y-debugging" => Some((
+            "网页无障碍体验诊断",
+            "自动检查语义标签、键盘焦点顺序、触控热区与色彩对比度问题。",
+        )),
+        "agy-customizations" => Some((
+            "工作台扩展与规则指南",
+            "指导编写自定义技能、项目规则、插件钩子与工具服务配置。",
+        )),
+        "antigravity-guide" => Some((
+            "工作台使用与配置速查",
+            "查询快捷指令、命令行参数、快捷键绑定与进阶工作流用法。",
+        )),
+        "automation" => Some((
+            "定时自动化任务助手",
+            "通过对话设计每日汇总、周期巡检等后台自动执行任务。",
+        )),
+        "chrome-devtools" => Some((
+            "浏览器实时调试与自动化",
+            "连接浏览器检查页面元素、网络请求与控制台报错，并自动操控页面。",
+        )),
+        "cookie-debugging" => Some((
+            "登录态与 Cookie 故障排查",
+            "定位 401/403 权限报错、登录重定向循环、会话过期与跨域 Cookie 问题。",
+        )),
+        "debug-optimize-lcp" => Some((
+            "首屏加载速度优化",
+            "分析网页主内容渲染耗时瓶颈，优化首屏图片与关键资源加载速度。",
+        )),
+        "generative-ui" => Some((
+            "交互式可视化界面生成",
+            "在对话中直接生成可交互图表、结构演示与可视化小组件。",
+        )),
+        "memory-leak-debugging" => Some((
+            "内存泄漏定位与修复",
+            "采集并对比内存堆快照，排查前端或 Node 应用内存持续暴涨根因。",
+        )),
+        "migrate-agent-settings" => Some((
+            "导入其他 AI 编程工具配置",
+            "一键迁移 Claude Code、Codex、Cursor 等工具的规则、技能与 MCP 配置。",
+        )),
+        "migrate-workflows" => Some((
+            "旧版工作流升级转换",
+            "扫描旧版工作流文件，自动转换为标准技能包并安全归档备份。",
+        )),
+        "plugin" => Some((
+            "插件打包与启停管理",
+            "安装、启用或创建包含技能、规则与工具服务的组合插件。",
+        )),
+        "swarm" | "native-swarm" => Some((
+            "多智能体并行协作团队",
+            "将大型任务拆分为并行子模块，由多名智能体同时推进并交叉复核。",
+        )),
+        "swarm-monitor" => Some((
+            "并行协作进度巡检",
+            "定时巡检多智能体团队状态，遇到阻塞自动唤醒对应成员继续执行。",
+        )),
+        "swarm-narrator" => Some((
+            "多智能体协作过程播报",
+            "实时汇总并清晰播报多智能体团队各成员的分工进展与关键结论。",
+        )),
+        "permissioned-github" => Some((
+            "GitHub 安全受控操作",
+            "在明确权限边界下安全查询仓库、提交拉取请求与处理议题。",
+        )),
+        "run-workflow" => Some((
+            "执行标准化工作流",
+            "按既定步骤顺序自动执行项目内配置好的标准化任务流程。",
+        )),
+        "troubleshooting" => Some((
+            "浏览器调试连接自检",
+            "排查浏览器连接失败、目标标签页不可达或调试服务初始化异常。",
+        )),
+        "ui-plugin-navigation" => Some((
+            "侧边面板快捷打开",
+            "根据当前任务推荐对应的可视化工具面板，并在对话中提供一键开关。",
+        )),
+
+        // Codex & OpenAI system/curated skills
+        "create-statusline" => Some((
+            "终端状态栏定制",
+            "为命令行界面配置分支名、模型状态与上下文用量的实时状态栏。",
+        )),
+        "review-agent" => Some((
+            "代码变更深度审查",
+            "自动检查当前代码修改的潜在缺陷、边界条件遗漏与测试覆盖率。",
+        )),
+        "skill-creator" => Some((
+            "创建新技能包",
+            "按规范生成结构清晰的自定义技能说明文件与辅助脚本。",
+        )),
+        "skill-installer" => Some((
+            "安装社区技能包",
+            "浏览、下载并安装精选技能或来自代码仓库的扩展技能。",
+        )),
+        "openai-docs" => Some((
+            "OpenAI 官方开发文档查询",
+            "精准检索最新模型接口、SDK 用法与官方最佳实践文档。",
+        )),
+        "gh-fix-ci" => Some((
+            "自动排查并修复 CI 报错",
+            "读取 GitHub Actions 失败日志，定位编译或测试问题并自动修复。",
+        )),
+        "gh-address-comments" => Some((
+            "逐条处理 PR 审查意见",
+            "拉取代码合并请求中的评审评论，逐项修改代码并给出答复。",
+        )),
+        "playwright" => Some((
+            "端到端网页自动化测试",
+            "驱动真实浏览器执行用户交互操作、截图对比与自动化回归测试。",
+        )),
+        "imagegen" => Some((
+            "AI 配图与图标生成",
+            "根据文字描述生成或编辑界面插画、图标与视觉素材。",
+        )),
+        "speech" | "transcribe" => Some((
+            "语音合成与音频转写",
+            "将音频文件转写为清晰文稿，或将文本合成为自然语音。",
+        )),
+        "security-best-practices" | "security-review" => Some((
+            "代码安全漏洞审计",
+            "全面排查注入风险、越权访问、密钥泄露与不安全依赖。",
+        )),
+        "security-threat-model" | "security-ownership-map" => Some((
+            "系统安全边界与威胁建模",
+            "梳理服务信任边界、敏感数据流向与潜在攻击面。",
+        )),
+        "jupyter-notebook" => Some((
+            "交互式数据分析笔记本",
+            "创建与整理包含代码、图表和结论的 Jupyter 分析文档。",
+        )),
+        "linear" => Some((
+            "Linear 需求与缺陷同步",
+            "查询、创建并跟进团队在 Linear 中的任务单与迭代进度。",
+        )),
+        "notion" => Some((
+            "Notion 知识库读写",
+            "读取或整理 Notion 页面文档、团队知识库与数据表。",
+        )),
+        "figma" => Some((
+            "Figma 设计稿转代码",
+            "读取 Figma 设计图层、间距与色值，高还原度转化为前端代码。",
+        )),
+        "sentry" => Some((
+            "线上报错日志排查（Sentry）",
+            "查询线上崩溃堆栈与高频异常，快速定位生产环境缺陷。",
+        )),
+        "vercel" | "cloudflare" | "netlify-deploy" | "render-deploy" => Some((
+            "云端一键构建与部署",
+            "检查云平台配置、构建日志与预览环境并发布最新改动。",
+        )),
+        "supabase" | "postgres" | "database" => Some((
+            "数据库表结构与查询优化",
+            "协助设计数据表结构、编写安全迁移脚本并优化慢查询。",
+        )),
+        "stripe" => Some((
+            "支付与订阅接入助手",
+            "集成账单结算、订阅周期回调与支付安全校验逻辑。",
+        )),
+
+        // Claude Code & Superpowers popular skills & commands
+        "simplify" => Some((
+            "代码精简与可读性优化",
+            "审视刚刚修改的代码，消除冗余嵌套与重复逻辑，提升整洁度与性能。",
+        )),
+        "loop" => Some((
+            "周期循环巡检执行",
+            "按设定时间间隔重复运行指定检查指令，持续跟进构建或任务状态。",
+        )),
+        "claude-api" => Some((
+            "大模型接口应用开发",
+            "协助编写工具调用、流式输出、多轮上下文与智能体应用代码。",
+        )),
+        "keybindings-help" => Some((
+            "快捷键自定义助手",
+            "帮助你查询或修改常用功能快捷键与按键组合配置。",
+        )),
+        "init" => Some((
+            "生成项目架构说明",
+            "自动扫描当前代码仓库结构、构建命令与规范，生成项目引导文档。",
+        )),
+        "review" | "code-review" | "pr-review" | "requesting-code-review" | "receiving-code-review" => Some((
+            "代码变更深度审查",
+            "仔细检查当前改动的边界条件、潜在缺陷、类型安全与架构一致性。",
+        )),
+        "commit" => Some((
+            "智能生成 Git 提交",
+            "分析暂存区与工作区改动，自动拟定清晰规范的提交说明并完成提交。",
+        )),
+        "commit-push-pr" | "yeet" | "finishing-a-development-branch" => Some((
+            "提交推送并创建合并请求",
+            "一键串联代码检查、Git 提交、远程分支推送与创建 PR 描述。",
+        )),
+        "clean-gone" => Some((
+            "清理已合并的过期分支",
+            "自动识别并清理远端已删除或已合入主干的本地遗留分支。",
+        )),
+        "docx" | "doc" | "doc-coauthoring" => Some((
+            "Word 文档撰写与排版",
+            "创建、润色和结构化编辑 .docx 文档的章节标题、表格与段落样式。",
+        )),
+        "xlsx" | "spreadsheet" => Some((
+            "Excel 表格公式与数据分析",
+            "读写电子表格数据、编写精确汇总公式并调整单元格专业排版。",
+        )),
+        "pptx" | "slides" => Some((
+            "演示文稿设计与制作",
+            "生成结构清晰、排版美观的 .pptx 汇报幻灯片与图表页。",
+        )),
+        "pdf" => Some((
+            "PDF 文档解析与生成",
+            "提取 PDF 文本表格、合并拆分页面、核验表单内容或导出 PDF。",
+        )),
+        "frontend-design" | "canvas-design" | "theme-factory" | "web-artifacts-builder" => Some((
+            "高水准界面视觉设计",
+            "打造排版考究、层次分明、交互细腻的现代化应用界面与视觉主题。",
+        )),
+        "webapp-testing" | "test-driven-development" | "tdd" => Some((
+            "自动化测试补齐与验证",
+            "围绕核心业务与边界场景编写可靠的单元测试和端到端测试。",
+        )),
+        "mcp-builder" => Some((
+            "开发自定义 MCP 工具服务",
+            "构建符合协议标准的外部数据源或本地系统工具接入服务。",
+        )),
+        "brainstorming" => Some((
+            "需求拆解与方案共创",
+            "在动手写代码前厘清核心需求、对比备选方案并消除设计盲点。",
+        )),
+        "writing-plans" | "plan" | "executing-plans" => Some((
+            "分步实施计划制定与推进",
+            "将复杂工程拆解为可逐步验证的小步骤并稳健落地。",
+        )),
+        "systematic-debugging" | "debug" => Some((
+            "系统化根因定位调试",
+            "先复现并定位真实故障根因，再实施最小化精准修复与回归验证。",
+        )),
+        "verification-before-completion" => Some((
+            "完工前编译与测试核验",
+            "在交付前强制执行编译检查与自动化测试，确保零报错零遗漏。",
+        )),
+        "using-git-worktrees" | "git-worktrees" => Some((
+            "Git 独立工作树并行开发",
+            "在不打乱当前代码目录的前提下创建独立分支副本并行开发新功能。",
+        )),
+        "subagent-driven-development" | "dispatching-parallel-agents" => Some((
+            "子智能体分工并行开发",
+            "将独立子任务委派给多个专职子智能体分头处理并汇总验收。",
+        )),
+        _ => None,
+    };
+
+    if let Some((zh_title, zh_desc)) = curated {
+        let final_desc = if contains_cjk(raw_desc) && !raw_desc.trim().is_empty() {
+            raw_desc.to_owned()
+        } else {
+            zh_desc.to_owned()
+        };
+        return (zh_title.to_owned(), final_desc);
+    }
+
+    // If author already wrote Chinese, humanize title if needed and keep Chinese description
+    if contains_cjk(name) || contains_cjk(raw_desc) {
+        let title = if contains_cjk(name) {
+            name.to_owned()
+        } else {
+            humanize_english_skill_title(&slug)
+        };
+        let desc = if contains_cjk(raw_desc) {
+            raw_desc.to_owned()
+        } else {
+            synthesize_chinese_skill_summary(&slug, raw_desc)
+        };
+        return (title, desc);
+    }
+
+    // Smart heuristic translation for unknown 3rd-party English skills
+    (
+        humanize_english_skill_title(&slug),
+        synthesize_chinese_skill_summary(&slug, raw_desc),
+    )
+}
+
+fn humanize_english_skill_title(slug: &str) -> String {
+    let mut parts_zh: Vec<&'static str> = Vec::new();
+    for tok in slug.split(['-', '_', '.', ' ']).filter(|s| !s.is_empty()) {
+        let mapped = match tok {
+            "a11y" | "accessibility" => Some("无障碍"),
+            "api" | "rest" | "graphql" => Some("接口"),
+            "auth" | "oauth" | "login" | "sso" => Some("登录鉴权"),
+            "auto" | "automation" | "workflow" => Some("自动化"),
+            "aws" | "gcp" | "cloud" | "k8s" | "docker" => Some("云原生部署"),
+            "benchmark" | "perf" | "performance" | "optimize" | "lcp" => Some("性能优化"),
+            "browser" | "web" | "chrome" => Some("网页与浏览器"),
+            "build" | "compile" | "bundle" => Some("构建打包"),
+            "changelog" | "release" => Some("版本发布"),
+            "chat" | "prompt" | "agent" => Some("智能体协作"),
+            "check" | "lint" | "audit" | "verify" => Some("质量检查"),
+            "ci" | "cd" | "deploy" | "pipeline" => Some("持续集成部署"),
+            "clean" | "cleanup" | "prune" => Some("环境清理"),
+            "code" | "coding" | "dev" => Some("代码研发"),
+            "commit" | "git" | "branch" | "pr" | "merge" => Some("Git 版本协作"),
+            "config" | "settings" | "setup" | "init" => Some("项目配置"),
+            "cookie" | "session" => Some("会话状态"),
+            "css" | "tailwind" | "style" | "theme" | "ui" | "ux" | "design" => Some("界面设计"),
+            "data" | "csv" | "json" | "sql" | "db" | "database" => Some("数据处理"),
+            "debug" | "debugging" | "fix" | "troubleshoot" => Some("故障排查"),
+            "doc" | "docs" | "readme" | "markdown" | "wiki" => Some("文档编写"),
+            "file" | "files" | "fs" => Some("文件处理"),
+            "gen" | "generate" | "generator" | "create" | "creator" | "builder" => Some("生成构建"),
+            "image" | "img" | "svg" | "icon" | "media" => Some("图像素材"),
+            "install" | "installer" | "migrate" | "migration" => Some("安装迁移"),
+            "ios" | "android" | "mobile" => Some("移动端"),
+            "log" | "logs" | "trace" | "monitor" => Some("日志监控"),
+            "mcp" | "tool" | "tools" | "plugin" => Some("工具扩展"),
+            "memory" | "leak" => Some("内存分析"),
+            "plan" | "planning" | "spec" | "arch" => Some("方案规划"),
+            "refactor" | "simplify" => Some("代码重构"),
+            "review" | "reviewer" => Some("代码审查"),
+            "rust" | "cargo" => Some("Rust 工程"),
+            "search" | "find" | "query" => Some("检索查询"),
+            "sec" | "security" | "vuln" => Some("安全防护"),
+            "test" | "testing" | "e2e" | "unit" => Some("自动化测试"),
+            _ => None,
+        };
+        if let Some(word) = mapped
+            && !parts_zh.contains(&word)
+        {
+            parts_zh.push(word);
+        }
+    }
+    if parts_zh.is_empty() {
+        format!("专项技能 · {slug}")
+    } else if parts_zh.len() == 1 {
+        format!("{}助手", parts_zh[0])
+    } else {
+        parts_zh.into_iter().take(2).collect::<Vec<_>>().join("与")
+    }
+}
+
+fn synthesize_chinese_skill_summary(slug: &str, raw_desc: &str) -> String {
+    let lc = format!("{slug} {}", raw_desc.to_ascii_lowercase());
+    let mut actions: Vec<&'static str> = Vec::new();
+    for (kw, label) in [
+        ("debug", "定位并排查异常问题"),
+        ("fix", "自动修复常见错误"),
+        ("test", "编写并执行自动化测试"),
+        ("review", "审查代码质量与潜在风险"),
+        ("optimiz", "分析性能瓶颈并提升运行效率"),
+        ("performance", "优化加载与执行耗时"),
+        ("refactor", "重构精简复杂代码结构"),
+        ("deploy", "自动化构建与环境部署"),
+        ("doc", "生成与维护结构化文档"),
+        ("browser", "自动化操控与检查网页状态"),
+        ("security", "检查安全隐患与权限边界"),
+        ("migrat", "平滑迁移配置或历史代码"),
+        ("generat", "按规范快速生成目标代码或内容"),
+        ("git", "管理分支、提交记录与合并请求"),
+        ("mcp", "连接外部工具与数据源接口"),
+    ] {
+        if lc.contains(kw) && !actions.contains(&label) {
+            actions.push(label);
+        }
+    }
+    if actions.is_empty() {
+        format!("在对话中调用 ${slug} 专项工作流，按内置规范协助完成研发任务。")
+    } else {
+        format!(
+            "在对话中调用 ${slug}，协助{}。",
+            actions.into_iter().take(3).collect::<Vec<_>>().join("、")
+        )
+    }
+}
+
+pub fn localized_command_description(
+    name: &str,
+    raw_desc: &str,
+    loc: crate::ui_primitives::UiLocale,
+) -> String {
+    if loc == crate::ui_primitives::UiLocale::En || contains_cjk(raw_desc) {
+        return raw_desc.to_owned();
+    }
+    let slug = canonical_skill_slug(name);
+    match slug.as_str() {
+        "compact" => "压缩当前对话历史，释放上下文窗口空间。".into(),
+        "clear" | "reset" | "new" => "清空当前上下文并开启全新对话。".into(),
+        "init" => "扫描当前项目结构并初始化项目引导说明。".into(),
+        "review" | "pr-review" => "对当前代码改动或合并请求进行深度质量审查。".into(),
+        "security-review" => "对当前仓库改动执行安全漏洞与权限审计。".into(),
+        "commit" => "根据当前代码改动自动生成规范的 Git 提交。".into(),
+        "doctor" => "检查智能体运行环境、网络连接与工具配置状态。".into(),
+        "memory" => "查看或编辑智能体跨会话记住的项目偏好。".into(),
+        "cost" | "usage" | "status" => "查看当前会话的词元消耗与模型状态。".into(),
+        "model" => "切换当前使用的 AI 模型或推理深度。".into(),
+        "permissions" | "approvals" => "查看或调整工具与终端命令的执行权限。".into(),
+        "mcp" => "查看已连接的 MCP 工具服务状态。".into(),
+        "resume" => "恢复并继续最近一次保存的历史对话。".into(),
+        "plan" => "先制定清晰的分步实施方案，确认后再动手改代码。".into(),
+        "goal" => "设定持续目标，由智能体自主推进并验收直至达成。".into(),
+        _ => {
+            let (_, desc) = localized_skill_presentation(&slug, raw_desc, loc);
+            desc
+        }
+    }
+}
+
+pub fn localized_tool_presentation(
+    name: &str,
+    raw_desc: &str,
+    loc: crate::ui_primitives::UiLocale,
+) -> (String, String) {
+    if loc == crate::ui_primitives::UiLocale::En {
+        return (name.to_owned(), raw_desc.to_owned());
+    }
+    let bare = name
+        .rsplit(['/', '.'])
+        .next()
+        .unwrap_or(name)
+        .rsplit("__")
+        .next()
+        .unwrap_or(name);
+    let curated: Option<(&'static str, &'static str)> = match bare {
+        "docs_get_overview" | "word_overview" => Some(("读取文档大纲结构", "获取当前 Word 文档的章节层级与段落概览。")),
+        "docs_read_paragraphs" | "word_read" => Some(("读取文档段落内容", "按范围读取 Word 文档中的正文段落与样式。")),
+        "docs_replace_paragraph" | "word_edit" => Some(("修改文档指定段落", "精准替换或润色 Word 文档中的目标段落内容。")),
+        "docs_insert_paragraph" => Some(("插入新文档段落", "在 Word 文档指定位置插入新的标题或正文段落。")),
+        "sheets_get_overview" | "excel_overview" => Some(("读取表格工作簿概览", "查看当前 Excel 文件的工作表列表与数据区域范围。")),
+        "sheets_read_range" | "excel_read" => Some(("读取单元格数据区域", "读取指定工作表区域的数值、文本与公式。")),
+        "sheets_write_cells" | "excel_write" => Some(("写入单元格与公式", "批量更新 Excel 单元格数据或计算公式。")),
+        "slides_get_overview" | "ppt_overview" => Some(("读取演示文稿目录", "查看当前 PPT 所有幻灯片页码、标题与元素结构。")),
+        "slides_read_slide" | "ppt_read" => Some(("读取单页幻灯片详情", "获取指定幻灯片上的文本框、图形与排版信息。")),
+        "slides_update_shape" | "ppt_edit" => Some(("修改幻灯片文本与排版", "更新 PPT 指定幻灯片中的文字内容或图形位置。")),
+        "Bash" | "bash" | "exec_command" | "run_command" => Some(("执行终端命令", "在工作区终端运行构建、测试或脚本命令。")),
+        "Read" | "read_file" | "read" => Some(("读取文件内容", "读取工作区中的源代码、配置文件或文档。")),
+        "Edit" | "edit_file" | "apply_patch" => Some(("精确修改代码文件", "对指定文件的目标代码片段执行精准替换修改。")),
+        "Write" | "write_file" => Some(("新建或写入文件", "在工作区创建新文件或写入完整文件内容。")),
+        "Grep" | "grep" | "search" => Some(("全文关键词检索", "在项目代码中高速检索函数、类型或文本匹配项。")),
+        "Glob" | "glob" | "list_dir" => Some(("查找工作区文件路径", "按文件名模式快速定位仓库中的目录与文件。")),
+        "WebSearch" | "web_search" | "search_web" => Some(("联网搜索技术资料", "检索最新的在线技术文档、接口规范与公开资料。")),
+        "WebFetch" | "web_fetch" => Some(("抓取网页正文内容", "读取指定网页链接并提取干净的正文信息。")),
+        _ => None,
+    };
+    if let Some((zh_title, zh_desc)) = curated {
+        let desc = if contains_cjk(raw_desc) && !raw_desc.trim().is_empty() {
+            raw_desc.to_owned()
+        } else {
+            zh_desc.to_owned()
+        };
+        return (zh_title.to_owned(), desc);
+    }
+    if contains_cjk(raw_desc) {
+        return (bare.to_owned(), raw_desc.to_owned());
+    }
+    let (zh_title, zh_desc) = localized_skill_presentation(bare, raw_desc, loc);
+    (zh_title, zh_desc)
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceInventorySnapshot {
     pub runtime_id: String,
@@ -1071,8 +1555,8 @@ pub async fn probe_inventory_with_office(workspace: &Path, runtime_id: &str, off
             .insert("PATH".into(), Some(crate::kar_bridge::augmented_path_os()));
         opts.timeout = Some(Duration::from_millis(1100));
         let command_opts = InventoryOptions {
-            // A cold CLI must finish its initialization handshake to advertise commands.
-            timeout: None,
+            // Bound cold CLI command handshake so a slow or interactive CLI never stalls inventory forever.
+            timeout: Some(Duration::from_millis(6000)),
             ..opts.clone()
         };
 
@@ -1159,31 +1643,62 @@ pub async fn probe_inventory_with_office(workspace: &Path, runtime_id: &str, off
 
 fn scan_local_skill_markdown_files(workspace: &Path) -> Vec<SkillCardItem> {
     let mut found = Vec::new();
-    let candidates = [
-        workspace.join(".agents/skills"),
-        workspace.join("skills"),
-        workspace.join(".claude/skills"),
-    ];
-    for dir in candidates {
-        let Ok(rd) = std::fs::read_dir(&dir) else {
-            continue;
+    let mut scan_dir = |dir: &Path, scope: &str| {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
         };
-        for entry in rd.filter_map(std::result::Result::ok) {
+        let mut entries: Vec<_> = rd.filter_map(std::result::Result::ok).collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
             let skill_md = entry.path().join("SKILL.md");
             if let Ok(raw) = std::fs::read_to_string(&skill_md) {
                 let fallback_name = entry.file_name().to_string_lossy().into_owned();
                 let (name, desc) = parse_skill_frontmatter(&raw, &fallback_name);
+                if found.iter().any(|s: &SkillCardItem| s.name == name) {
+                    continue;
+                }
                 found.push(SkillCardItem {
                     name,
                     description: desc,
-                    scope_label: "项目技能".into(),
+                    scope_label: scope.to_owned(),
                     path: Some(skill_md.display().to_string()),
                     preview_markdown: Some(truncate_chars(&raw, 1800)),
                     enabled: true,
                 });
             }
         }
+    };
+
+    for dir in [
+        workspace.join(".agents/skills"),
+        workspace.join("skills"),
+        workspace.join(".claude/skills"),
+        workspace.join(".gemini/skills"),
+    ] {
+        scan_dir(&dir, "项目技能");
     }
+
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        for (rel, scope) in [
+            (".agents/skills", "用户全局"),
+            (".claude/skills", "用户全局"),
+            (".codex/skills", "用户全局"),
+            (".codex/skills/.system", "内置技能"),
+            (".gemini/skills", "用户全局"),
+            (".gemini/antigravity/skills", "用户全局"),
+            (".gemini/antigravity/builtin/skills", "内置技能"),
+        ] {
+            scan_dir(&home.join(rel), scope);
+        }
+        if let Ok(plugins_rd) = std::fs::read_dir(home.join(".gemini/config/plugins")) {
+            let mut plugins: Vec<_> = plugins_rd.filter_map(std::result::Result::ok).collect();
+            plugins.sort_by_key(|e| e.file_name());
+            for plugin_entry in plugins {
+                scan_dir(&plugin_entry.path().join("skills"), "托管插件");
+            }
+        }
+    }
+
     found
 }
 
@@ -2550,5 +3065,51 @@ mod git_discovery_tests {
         assert!(!damaged.is_repo && damaged.error.is_some(), "{damaged:?}");
         let missing = discover_git_workspace(&folder.path().join("missing"));
         assert!(missing.error.is_some());
+    }
+}
+
+#[cfg(test)]
+mod skill_localization_tests {
+    use super::{
+        localized_command_description, localized_skill_presentation, localized_tool_presentation,
+    };
+    use crate::ui_primitives::UiLocale;
+
+    #[test]
+    fn translates_known_and_unknown_english_skills_commands_and_tools_cleanly() {
+        let (title, desc) = localized_skill_presentation(
+            "a11y-debugging",
+            "Uses Chrome DevTools MCP for accessibility debugging",
+            UiLocale::Zh,
+        );
+        assert!(title.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)));
+        assert!(desc.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)));
+
+        let (fallback_title, fallback_desc) = localized_skill_presentation(
+            "postgres-query-tuning",
+            "Analyze slow SQL queries and optimize database indexes.",
+            UiLocale::Zh,
+        );
+        assert!(fallback_title.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)));
+        assert!(fallback_desc.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)));
+
+        let (en_title, en_desc) = localized_skill_presentation(
+            "a11y-debugging",
+            "Uses Chrome DevTools MCP for accessibility debugging",
+            UiLocale::En,
+        );
+        assert_eq!(en_title, "a11y-debugging");
+        assert!(en_desc.contains("Chrome DevTools"));
+
+        let cmd_zh = localized_command_description("/compact", "Compact context", UiLocale::Zh);
+        assert!(cmd_zh.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)));
+
+        let (tool_zh, tool_desc_zh) = localized_tool_presentation(
+            "browser_navigate",
+            "Navigate browser to target URL",
+            UiLocale::Zh,
+        );
+        assert!(tool_zh.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)));
+        assert!(tool_desc_zh.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)));
     }
 }

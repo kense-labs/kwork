@@ -2813,6 +2813,36 @@ impl KarWorkbench {
                 }
                 self.projected = proj;
                 self.reconcile_plan_submission(cx);
+                if !had_pending
+                    && self.access_mode.is_writable()
+                    && let Some(info) = &self.projected.info
+                {
+                    let is_allow = crate::prefs::is_approval_allow(info.approvals);
+                    let is_deny = info.approvals == ApprovalMode::Deny;
+                    if is_allow || is_deny {
+                        for req in self.projected.pending_requests.clone() {
+                            if req.kind == kar::RequestKind::Permission {
+                                let decision = if is_allow {
+                                    let controls = req.controls();
+                                    if controls
+                                        .decisions
+                                        .contains(&kar::PermissionDecision::AllowForSession)
+                                    {
+                                        kar::PermissionDecision::AllowForSession
+                                    } else {
+                                        kar::PermissionDecision::AllowOnce
+                                    }
+                                } else {
+                                    kar::PermissionDecision::Deny
+                                };
+                                self.bridge.send(KarCommand::DecidePermission {
+                                    request: req,
+                                    decision,
+                                });
+                            }
+                        }
+                    }
+                }
                 let now_running = self.turn_in_progress();
                 let now_pending = !self.projected.pending_requests.is_empty();
                 self.caffeinate_guard
@@ -3478,10 +3508,48 @@ impl KarWorkbench {
         );
     }
 
+    pub(crate) fn effective_chat_approvals(&self) -> ApprovalMode {
+        self.projected
+            .info
+            .as_ref()
+            .filter(|_| self.chat_is_open())
+            .map(|i| i.approvals)
+            .unwrap_or(self.approval_mode)
+    }
+
     pub(crate) fn set_new_chat_approvals(&mut self, mode: ApprovalMode, cx: &mut Context<Self>) {
         self.approval_mode = mode;
         self.write_chat_preference("new-chat-approvals", mode, cx);
         cx.notify();
+    }
+
+    pub(crate) fn set_active_or_new_chat_approvals(
+        &mut self,
+        mode: ApprovalMode,
+        cx: &mut Context<Self>,
+    ) {
+        if self.chat_is_open()
+            && self.access_mode.is_writable()
+            && let Some(chat_id) = self.current_chat_id()
+        {
+            if let Some(ref mut info) = self.projected.info {
+                info.approvals = mode;
+            }
+            self.bridge
+                .send(KarCommand::SetChatApprovalMode { chat_id, mode });
+            let label = self.ui_locale.approval_label(mode);
+            self.notify_toast(
+                format!(
+                    "{}「{label}」",
+                    self.ui_locale
+                        .pick("当前对话权限已切换为", "Thread permission set to ")
+                ),
+                cx,
+            );
+            cx.notify();
+        } else {
+            self.set_new_chat_approvals(mode, cx);
+        }
     }
 
     pub(crate) fn set_new_chat_worktree(&mut self, enabled: bool, cx: &mut Context<Self>) {

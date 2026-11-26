@@ -237,11 +237,15 @@ fn parse_cli() -> CliOptions {
             "--open-settings" => {
                 if let Some(v) = args.next() {
                     open_settings_tab = Some(match v.as_str() {
+                        "appearance" | "theme" => SettingsTab::Appearance,
+                        "keybindings" | "keys" => SettingsTab::Keybindings,
                         "skills" | "mcp" => SettingsTab::SkillsMcp,
                         "usage" | "cache" => SettingsTab::Usage,
+                        "projects" | "git" => SettingsTab::ProjectsGit,
+                        "devices" | "preview" => SettingsTab::Devices,
                         "schedules" | "cron" => SettingsTab::Schedules,
                         "remote" | "pair" => SettingsTab::Remote,
-                        "logs" | "diag" => SettingsTab::Logs,
+                        "logs" | "diag" | "about" => SettingsTab::Logs,
                         "agents" | "providers" => SettingsTab::Agents,
                         "voice" => SettingsTab::Voice,
                         _ => SettingsTab::General,

@@ -11,11 +11,14 @@ use kui::{
 };
 
 use crate::{
-    studio_hub::InventoryTab,
-    ui_motion::{Tactile, icon_button, pulse_beacon, soft_button},
+    studio_hub::{
+        InventoryTab, localized_command_description, localized_skill_presentation,
+        localized_tool_presentation,
+    },
+    ui_motion::{Tactile, icon_button_sm, pulse_beacon, soft_button_sm},
     ui_primitives::{
         CTRL_H, FS_CONTROL, FS_META, FS_TAG, FS_UI, R_PILL, SkillCardGlyph,
-        StudioPalette, card_box, mono_font, search_input_box, settings_page_shell,
+        StudioPalette, card_box, mono_font, search_input_box, settings_page_shell, tnum_features,
     },
     workbench::KarWorkbench,
 };
@@ -130,9 +133,15 @@ impl KarWorkbench {
             inv.skills
                 .iter()
                 .filter(|sk| {
-                    query.is_empty()
-                        || sk.name.to_lowercase().contains(&query)
+                    if query.is_empty() {
+                        return true;
+                    }
+                    let (zh_title, zh_desc) =
+                        localized_skill_presentation(&sk.name, &sk.description, loc);
+                    sk.name.to_lowercase().contains(&query)
                         || sk.description.to_lowercase().contains(&query)
+                        || zh_title.to_lowercase().contains(&query)
+                        || zh_desc.to_lowercase().contains(&query)
                 })
                 .cloned()
                 .collect()
@@ -144,10 +153,16 @@ impl KarWorkbench {
             inv.tools
                 .iter()
                 .filter(|t| {
-                    query.is_empty()
-                        || t.name.to_lowercase().contains(&query)
+                    if query.is_empty() {
+                        return true;
+                    }
+                    let (zh_title, zh_desc) =
+                        localized_tool_presentation(&t.name, &t.description, loc);
+                    t.name.to_lowercase().contains(&query)
                         || t.description.to_lowercase().contains(&query)
                         || t.server_id.to_lowercase().contains(&query)
+                        || zh_title.to_lowercase().contains(&query)
+                        || zh_desc.to_lowercase().contains(&query)
                 })
                 .cloned()
                 .collect()
@@ -280,11 +295,12 @@ impl KarWorkbench {
                                     ),
                             )
                             .child(
-                                soft_button(
+                                soft_button_sm(
                                     SharedString::from(format!("mcp-view-tools-{}", srv.id)),
                                     format!("{} {}", srv.tool_count, loc.pick("个工具", "tools")),
                                     s,
                                 )
+                                .font_features(tnum_features())
                                 .disabled(!inv.tools.iter().any(|t| t.server_id == srv.id))
                                 .on_press(
                                     cx,
@@ -337,6 +353,8 @@ impl KarWorkbench {
                     let sk_key = format!("skill:{}", sk.name);
                     let is_sel = active_inspector_key.as_deref() == Some(sk_key.as_str());
                     let accent = skill_accent_for(ix, s);
+                    let (sk_display_title, sk_display_desc) =
+                        localized_skill_presentation(&sk.name, &sk.description, loc);
                     let sk_token = format!("${} ", sk.name);
                     let sk_key_click = sk_key.clone();
                     let can_use = sk.enabled && can_inject;
@@ -381,7 +399,7 @@ impl KarWorkbench {
                                             .child(
                                                 div()
                                                     .min_w_0()
-                                                    .max_w(px(132.))
+                                                    .max_w(px(148.))
                                                     .px(px(6.))
                                                     .py(px(1.5))
                                                     .rounded(px(R_PILL))
@@ -399,20 +417,20 @@ impl KarWorkbench {
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(s.ink)
                                             .truncate()
-                                            .child(sk.name.clone()),
+                                            .child(sk_display_title),
                                     )
                                     .child(
                                         div()
                                             .line_clamp(2)
                                             .text_size(px(FS_META))
-                                            .line_height(px(16.5))
+                                            .line_height(px(17.5))
                                             .text_color(s.muted)
-                                            .child(sk.description.clone()),
+                                            .child(sk_display_desc),
                                     ),
                             )
                             .child(
                                 div()
-                                    .pt(px(4.))
+                                    .pt(px(6.))
                                     .border_t_1()
                                     .border_color(s.line_soft)
                                     .flex()
@@ -427,10 +445,10 @@ impl KarWorkbench {
                                             .child(scope_label(&sk.scope_label, loc)),
                                     )
                                     .child(
-                                        soft_button(
+                                        soft_button_sm(
                                             ("skill-use", ix),
                                             if sk.enabled {
-                                                loc.pick("填入草稿", "Add to draft")
+                                                loc.pick("填入对话", "Add to draft")
                                             } else {
                                                 loc.pick("已停用", "Disabled")
                                             },
@@ -474,6 +492,7 @@ impl KarWorkbench {
                         .child(loc.pick("快捷斜杠指令", "Slash commands")),
                 );
                 for (ix, cmd) in cmds.into_iter().enumerate() {
+                    let cmd_desc = localized_command_description(&cmd.name, &cmd.description, loc);
                     let token = format!("{} ", cmd.name);
                     sec = sec.child(
                         card_box(s)
@@ -512,10 +531,10 @@ impl KarWorkbench {
                                             .truncate()
                                             .text_size(px(FS_META))
                                             .text_color(s.muted)
-                                            .child(cmd.description),
+                                            .child(cmd_desc),
                                     ),
                             )
-                            .child(soft_button(("cmd-inject", ix), loc.pick("填入", "Insert"), s).disabled(!can_inject).on_press(
+                            .child(soft_button_sm(("cmd-inject", ix), loc.pick("填入", "Insert"), s).disabled(!can_inject).on_press(
                                 cx,
                                 move |this, win, cx| {
                                     this.inject_token_into_composer(&token, win, cx);
@@ -535,9 +554,11 @@ impl KarWorkbench {
                     .text_size(px(FS_META))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(s.muted)
-                    .child(loc.pick("MCP 与宿主工具参数定义", "Tool schemas")),
+                    .child(loc.pick("MCP 与宿主工具能力", "Tool schemas")),
             );
             for (ix, t) in filtered_tools.iter().cloned().enumerate() {
+                let (tool_title, tool_desc) =
+                    localized_tool_presentation(&t.name, &t.description, loc);
                 let tkey = format!("tool:{}:{}", t.server_id, t.name);
                 let is_sel = active_inspector_key.as_deref() == Some(tkey.as_str());
                 let tkey_click = tkey.clone();
@@ -575,12 +596,11 @@ impl KarWorkbench {
                                         .gap(px(6.))
                                         .child(
                                             div()
-                                                .font_family(mono_font(cx))
-                                                .text_size(px(FS_META))
+                                                .text_size(px(FS_CONTROL))
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(s.ink)
                                                 .truncate()
-                                                .child(t.name),
+                                                .child(tool_title),
                                         )
                                         .child(
                                             div()
@@ -588,9 +608,10 @@ impl KarWorkbench {
                                                 .py(px(1.))
                                                 .rounded(px(R_PILL))
                                                 .bg(s.tray)
+                                                .font_family(mono_font(cx))
                                                 .text_size(px(FS_TAG))
                                                 .text_color(s.muted)
-                                                .child(t.server_id),
+                                                .child(format!("{} · {}", t.server_id, t.name)),
                                         ),
                                 )
                                 .child(
@@ -598,7 +619,7 @@ impl KarWorkbench {
                                         .text_size(px(FS_META))
                                         .text_color(s.muted)
                                         .truncate()
-                                        .child(t.description),
+                                        .child(tool_desc),
                                 ),
                         )
                         .child(pro_icon(ProIcon::ChevronRight, 12.5, s.muted)),
@@ -631,10 +652,12 @@ impl KarWorkbench {
         let inspector: Option<Div> = active_inspector_key.and_then(|key| {
             if let Some(sk_name) = key.strip_prefix("skill:") {
                 let sk = inv.skills.iter().find(|item| item.name == sk_name)?;
+                let (sk_title, sk_desc) =
+                    localized_skill_presentation(&sk.name, &sk.description, loc);
                 let md_text = sk
                     .preview_markdown
                     .clone()
-                    .unwrap_or_else(|| format!("# {}\n\n{}", sk.name, sk.description));
+                    .unwrap_or_else(|| format!("# {}\n\n{}", sk_title, sk_desc));
                 let cache_key = format!("skill-md-{}", sk.name);
                 let md_block = self
                     .code_block_cache
@@ -649,7 +672,7 @@ impl KarWorkbench {
                 let can_use = sk.enabled && can_inject;
                 Some(
                     div()
-                        .map(|d| if narrow { d.w_full() } else { d.w(px(258.)) })
+                        .map(|d| if narrow { d.w_full() } else { d.w(px(276.)) })
                         .h_full()
                         .flex_none()
                         .border_l_1()
@@ -679,10 +702,10 @@ impl KarWorkbench {
                                                 .text_size(px(FS_TAG))
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(s.faint)
-                                                .child("SKILL INSPECTOR"),
+                                                .child(loc.pick("技能详情说明", "SKILL INSPECTOR")),
                                         )
                                         .child(
-                                            icon_button(
+                                            icon_button_sm(
                                                 "skill-ins-close",
                                                 ProIcon::Close,
                                                 loc.pick("收起详情面板", "Close details"),
@@ -717,23 +740,27 @@ impl KarWorkbench {
                                                         .font_weight(FontWeight::SEMIBOLD)
                                                         .text_color(s.ink)
                                                         .truncate()
-                                                        .child(sk.name.clone()),
+                                                        .child(sk_title),
                                                 )
                                                 .child(
                                                     div()
                                                         .text_size(px(FS_TAG))
                                                         .text_color(s.muted)
                                                         .truncate()
-                                                        .child(scope_label(&sk.scope_label, loc)),
+                                                        .child(format!(
+                                                            "${} · {}",
+                                                            sk.name,
+                                                            scope_label(&sk.scope_label, loc)
+                                                        )),
                                                 ),
                                         ),
                                 )
                                 .child(
                                     div()
                                         .text_size(px(FS_META))
-                                        .line_height(px(17.))
+                                        .line_height(px(17.5))
                                         .text_color(s.text)
-                                        .child(sk.description.clone()),
+                                        .child(sk_desc),
                                 )
                                 .child(md_block),
                         )
@@ -769,6 +796,8 @@ impl KarWorkbench {
                     .tools
                     .iter()
                     .find(|item| item.server_id == srv_id && item.name == t_name)?;
+                let (t_title, t_desc) =
+                    localized_tool_presentation(&t.name, &t.description, loc);
                 let jv = (!t.schema_json.is_null()).then(|| {
                     let cache_key = format!("tool-schema-{:?}", (&t.server_id, &t.name));
                     self.tool_json_viewers
@@ -783,7 +812,7 @@ impl KarWorkbench {
                 });
                 Some(
                     div()
-                        .map(|d| if narrow { d.w_full() } else { d.w(px(258.)) })
+                        .map(|d| if narrow { d.w_full() } else { d.w(px(276.)) })
                         .h_full()
                         .flex_none()
                         .border_l_1()
@@ -803,10 +832,10 @@ impl KarWorkbench {
                                         .text_size(px(FS_TAG))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(s.faint)
-                                        .child("TOOL SCHEMA"),
+                                        .child(loc.pick("工具参数详情", "TOOL SCHEMA")),
                                 )
                                 .child(
-                                    icon_button(
+                                    icon_button_sm(
                                         "tool-ins-close",
                                         ProIcon::Close,
                                         loc.pick("收起详情面板", "Close details"),
@@ -820,18 +849,24 @@ impl KarWorkbench {
                         )
                         .child(
                             div()
-                                .font_family(mono_font(cx))
-                                .text_size(px(FS_CONTROL))
+                                .text_size(px(FS_UI))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(s.ink)
+                                .child(t_title),
+                        )
+                        .child(
+                            div()
+                                .font_family(mono_font(cx))
+                                .text_size(px(FS_TAG))
+                                .text_color(s.muted)
                                 .child(t.name.clone()),
                         )
                         .child(
                             div()
                                 .text_size(px(FS_META))
-                                .line_height(px(16.5))
+                                .line_height(px(17.5))
                                 .text_color(s.muted)
-                                .child(t.description.clone()),
+                                .child(t_desc),
                         )
                         .when_some(jv, |d, viewer| d.child(viewer)),
                 )

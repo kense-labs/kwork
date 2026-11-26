@@ -408,10 +408,15 @@ fn command_choices(
             continue;
         }
         let hint = cmd.hint.as_deref().map(str::trim).filter(|s| !s.is_empty());
-        let description = match (hint, cmd.description.is_empty()) {
-            (Some(hint), false) => format!("{hint} · {}", cmd.description),
+        let loc_desc = if cmd.description.is_empty() {
+            String::new()
+        } else {
+            crate::studio_hub::localized_command_description(&cmd.name, &cmd.description, loc)
+        };
+        let description = match (hint, loc_desc.is_empty()) {
+            (Some(hint), false) => format!("{hint} · {loc_desc}"),
             (Some(hint), true) => hint.to_owned(),
-            (None, _) => cmd.description.clone(),
+            (None, _) => loc_desc,
         };
         choices.push(Choice {
             name: cmd.name.clone(),
@@ -817,11 +822,12 @@ impl KarWorkbench {
                     .w_full()
                     .min_w_0()
                     .items_center()
-                    .h(px(30.))
-                    .px(px(9.))
+                    .h(px(crate::ui_primitives::CTRL_H))
+                    .px(px(10.))
                     .gap(px(8.))
                     .rounded(px(R_CTRL))
                     .when(i == selected, |d| d.bg(s.hover))
+                    .hover(|d| d.bg(s.hover))
                     .cursor_pointer()
                     .child(icon)
                     .child(

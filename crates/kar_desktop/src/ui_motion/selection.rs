@@ -1,6 +1,8 @@
 //! Controlled peer views and mutually exclusive settings. Workbench state remains authoritative.
 use super::Tactile;
-use crate::ui_primitives::{CTRL_SM_H, FS_CONTROL, LH_CONTROL, R_CTRL, R_SM, StudioPalette};
+use crate::ui_primitives::{
+    CTRL_SM_H, FS_CONTROL, LH_CONTROL, R_CTRL, R_SM, StudioPalette, tnum_features,
+};
 use gpui::{prelude::*, *};
 use kui::components::pro_chrome::{
     pro_eid, pro_mark_selected, pro_pill_indicator, pro_selection_sensor,
@@ -148,6 +150,7 @@ impl RenderOnce for SelectionStrip {
         let key_focus = focus.clone();
         let mut strip = div()
             .id(self.id.clone())
+            .font_features(tnum_features())
             .relative()
             .flex()
             .items_center()

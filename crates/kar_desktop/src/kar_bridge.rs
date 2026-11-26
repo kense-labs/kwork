@@ -96,6 +96,7 @@ pub enum KarCommand {
     ListChats,
     OpenEditor { workspace: PathBuf, target: Option<PathBuf>, preferred: String },
     SetAsterPlanMode { chat_id: Uuid, plan: bool },
+    SetChatApprovalMode { chat_id: Uuid, mode: ApprovalMode },
     CreateChat {
         aster_plan: bool,
         runtime_id: String,
@@ -1686,6 +1687,25 @@ impl TextFrameClock {
     }
 }
 
+fn approval_mode_slug(mode: ApprovalMode) -> &'static str {
+    #[allow(unreachable_patterns)]
+    match mode {
+        ApprovalMode::Host => "host",
+        ApprovalMode::Deny => "deny",
+        _ => "allow",
+    }
+}
+
+fn saved_chat_approval_override(store_dir: &Path, chat_id: Uuid) -> Option<ApprovalMode> {
+    let key = format!("chat-approval-{chat_id}");
+    match crate::client_store::desktop_preference(store_dir, &key)?.as_str() {
+        "host" => Some(ApprovalMode::Host),
+        "deny" => Some(ApprovalMode::Deny),
+        "allow" => crate::prefs::approval_mode_allow(),
+        _ => None,
+    }
+}
+
 fn state_from_replica(
     replica: &ChatReplica,
     caps: Option<Capabilities>,
@@ -1911,9 +1931,13 @@ fn spawn_local_follower(
                 queued = active_queued_inputs(Some(&store), chat_id);
                 queue_stamp = stamp;
             }
-            let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(
-                state_from_replica(replica, caps, queued.clone()),
-            ));
+            let mut projected = state_from_replica(replica, caps, queued.clone());
+            if let Some(override_mode) = saved_chat_approval_override(&store_dir, chat_id)
+                && let Some(ref mut info) = projected.info
+            {
+                info.approvals = override_mode;
+            }
+            let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(projected));
             let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
                 FeedConnectionState::Connected {
                     cursor: Some(replica.cursor().to_string()),
@@ -2583,14 +2607,82 @@ async fn worker_loop(
 
         // Kar applies ACP modes when attaching a controller. Reattach to the same native
         // session without sending a user turn or moving another window's controller.
-        let (cmd, requested_mode) = if let KarCommand::SetAsterPlanMode { chat_id, plan } = cmd {
-            let owns = state.active_controller.as_ref().is_some_and(|s| s.info().id == chat_id && crate::aster::is_aster(&s.info().runtime));
-            if !owns || state.turn_appears_busy() {
-                state.emit(KarBridgeEvent::AsterModeReady { chat_id, result: Err("请等当前会话空闲后再切换模式。".into()) });
-                continue;
+        let (cmd, requested_mode) = match cmd {
+            KarCommand::SetAsterPlanMode { chat_id, plan } => {
+                let owns = state.active_controller.as_ref().is_some_and(|s| s.info().id == chat_id && crate::aster::is_aster(&s.info().runtime));
+                if !owns || state.turn_appears_busy() {
+                    state.emit(KarBridgeEvent::AsterModeReady { chat_id, result: Err("请等当前会话空闲后再切换模式。".into()) });
+                    continue;
+                }
+                (KarCommand::SelectLocalChat { chat_id, prefer_read_only: false }, Some(if plan { "plan" } else { "default" }))
             }
-            (KarCommand::SelectLocalChat { chat_id, prefer_read_only: false }, Some(if plan { "plan" } else { "default" }))
-        } else { (cmd, None) };
+            KarCommand::SetChatApprovalMode { chat_id, mode } => {
+                let app_key = format!("chat-approval-{chat_id}");
+                let _ = crate::client_store::write_desktop_preference(
+                    &state.store_dir,
+                    &app_key,
+                    approval_mode_slug(mode),
+                );
+                let idle_reattachable = !state.turn_appears_busy()
+                    && state
+                        .active_controller
+                        .as_ref()
+                        .is_some_and(|s| s.info().id == chat_id && !s.info().process_only);
+                if idle_reattachable {
+                    (
+                        KarCommand::SelectLocalChat {
+                            chat_id,
+                            prefer_read_only: false,
+                        },
+                        None,
+                    )
+                } else {
+                    if let Some(session) = state.active_controller.clone()
+                        && session.info().id == chat_id
+                    {
+                        let caps = Some(session.capabilities());
+                        let store_opt = state.store.clone();
+                        let evt_tx = state.evt_tx.clone();
+                        let is_allow = crate::prefs::is_approval_allow(mode);
+                        let is_deny = mode == ApprovalMode::Deny;
+                        tokio::spawn(async move {
+                            if (is_allow || is_deny)
+                                && let Ok(hist) = session.history()
+                            {
+                                for req in hist.pending_requests {
+                                    if req.kind == kar::RequestKind::Permission {
+                                        let decision = if is_allow {
+                                            let controls = req.controls();
+                                            if controls
+                                                .decisions
+                                                .contains(&kar::PermissionDecision::AllowForSession)
+                                            {
+                                                kar::PermissionDecision::AllowForSession
+                                            } else {
+                                                kar::PermissionDecision::AllowOnce
+                                            }
+                                        } else {
+                                            kar::PermissionDecision::Deny
+                                        };
+                                        let _ = session.decide(&req, decision).await;
+                                    }
+                                }
+                            }
+                            if let Ok(h) = session.history() {
+                                let queued = active_queued_inputs(store_opt.as_ref(), chat_id);
+                                let mut proj = state_from_history(h, caps, queued);
+                                if let Some(ref mut info) = proj.info {
+                                    info.approvals = mode;
+                                }
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(proj));
+                            }
+                        });
+                    }
+                    continue;
+                }
+            }
+            other => (other, None),
+        };
         match cmd {
             KarCommand::Hardware {workspace, request_id, cmd} => {
                 let host = state.project_engine(&workspace);
@@ -2603,7 +2695,9 @@ async fn worker_loop(
                     let _ = output.send(KarBridgeEvent::Hardware {workspace,request_id,result}).await;
                 });
             }
-            KarCommand::SetAsterPlanMode { .. } => unreachable!("normalized above"),
+            KarCommand::SetAsterPlanMode { .. } | KarCommand::SetChatApprovalMode { .. } => {
+                unreachable!("normalized above")
+            }
             KarCommand::RefreshStoreAndProviders {
                 store_dir,
                 workspace,
@@ -3026,7 +3120,11 @@ async fn worker_loop(
                 let saved_mode = crate::aster::is_aster(&rt_id)
                     .then(|| crate::client_store::desktop_preference(&state.store_dir, &mode_key)).flatten()
                     .filter(|v| matches!(v.as_str(), "plan" | "default"));
+                let saved_approval = saved_chat_approval_override(&state.store_dir, chat_id);
                 let configure = |opts: &mut SessionOptions, mode: Option<&str>| {
+                    if let Some(app_mode) = saved_approval {
+                        opts.approvals = app_mode;
+                    }
                     if let Some(mode) = mode.or(saved_mode.as_deref()) { opts.settings.acp_mode = Some(mode.into()); }
                     configure_runtime_path(&rt_for_path, opts);
                     opts.prompt_suggestions = Some(sugg_source.clone());
@@ -4843,6 +4941,30 @@ async fn worker_loop(
                 let office_available = state.mcp_office.is_some() && state.mcp_supported_runtimes.get(&runtime_id)
                     .copied().unwrap_or_else(|| default_runtime_mcp_support(&runtime_id));
                 let probe = tokio::spawn(async move {
+                    let mut seeded = crate::studio_hub::seed_local_workspace_inventory(&workspace, &runtime_id);
+                    if office_available {
+                        use crate::mcp_office::{OFFICE_SERVER_NAME, office_tool_specs};
+                        seeded.tools = office_tool_specs()
+                            .into_iter()
+                            .map(|(name, description, schema_json)| crate::studio_hub::ToolSchemaItem {
+                                name: name.into(),
+                                description: description.into(),
+                                schema_json,
+                                server_id: OFFICE_SERVER_NAME.into(),
+                            })
+                            .collect();
+                        seeded.mcp_servers.push(crate::studio_hub::McpServerCardItem {
+                            id: OFFICE_SERVER_NAME.into(),
+                            name: "Kantor Office".into(),
+                            status: "可连接".into(),
+                            source: "Kwrok 桌面端".into(),
+                            tool_count: seeded.tools.len(),
+                            builtin_office: true,
+                            error: None,
+                        });
+                    }
+                    let _ = evt_tx.send(KarBridgeEvent::WorkspaceInventoryUpdated(seeded)).await;
+
                     let inv = probe_inventory_with_office(&workspace, &runtime_id, office_available).await;
                     emit_diag_log(
                         &evt_tx,

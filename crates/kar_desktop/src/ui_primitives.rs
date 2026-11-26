@@ -103,13 +103,13 @@ pub const FS_UI: f32 = 14.0;
 pub const FS_READ: f32 = 15.0;
 pub const FS_SECTION: f32 = 16.0;
 pub const FS_TITLE: f32 = 18.0;
-pub const FS_METRIC: f32 = 24.0;
-pub const FS_HERO: f32 = 30.0;
+pub const FS_METRIC: f32 = 20.0;
+pub const FS_HERO: f32 = 22.0;
 
 pub const LH_META: f32 = 16.0;
 pub const LH_CONTROL: f32 = 18.0;
 pub const LH_UI: f32 = 20.0;
-pub const LH_METRIC: f32 = 30.;
+pub const LH_METRIC: f32 = 26.0;
 pub const LH_READ: f32 = 22.5;
 
 

@@ -1,7 +1,7 @@
 use super::{DraftLocation, KarWorkbench, QueuedPrompt};
 use crate::kar_bridge::{GoalAction, GoalEdit, KarCommand};
 use crate::types::ChatAccessMode;
-use crate::ui_primitives::{FS_CONTROL, FS_META, R_CTRL, StudioPalette};
+use crate::ui_primitives::{FS_CONTROL, FS_META, R_CTRL, StudioPalette, tnum_features};
 use gpui::{prelude::*, *};
 use kar::GoalSnapshot;
 use kui::components::input::Input;
@@ -228,6 +228,7 @@ impl KarWorkbench {
             .gap(px(10.))
             .child(
                 div()
+                    .font_features(tnum_features())
                     .text_size(px(FS_META))
                     .text_color(s.muted)
                     .child(details.join(" · ")),

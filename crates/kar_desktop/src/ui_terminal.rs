@@ -11,11 +11,12 @@ use crate::{
     pty_terminal::{InteractivePtySession, keystroke_to_pty_bytes},
     studio_hub::TerminalRunRecord,
     ui_motion::{
-        MenuPlacement, Tactile, icon_button_xs, menu_host, menu_icon_item, menu_popup,
+        MenuPlacement, Tactile, icon_button_sm, icon_button_xs, menu_host, menu_icon_item,
+        menu_popup,
         selection::{Group, SelectionStrip},
         soft_button_sm, spinner,
     },
-    ui_primitives::{FS_TAG, R_PILL, R_SM, StudioPalette, mono_font},
+    ui_primitives::{FS_TAG, R_PILL, R_SM, ROW_H, StudioPalette, mono_font, tnum_features},
     workbench::KarWorkbench,
 };
 
@@ -261,7 +262,7 @@ impl KarWorkbench {
         let clear_cwd = cwd.clone();
         let mut header = div()
             .w_full()
-            .h(px(34.))
+            .h(px(ROW_H))
             .px(px(8.))
             .border_b_1()
             .border_color(s.line_soft)
@@ -273,6 +274,7 @@ impl KarWorkbench {
             .gap(px(8.))
             .child(
                 div()
+                    .font_features(tnum_features())
                     .flex()
                     .items_center()
                     .gap(px(8.))
@@ -315,7 +317,7 @@ impl KarWorkbench {
                     })
                     .when(in_pty, |row| {
                         row.child(
-                            icon_button_xs(
+                            icon_button_sm(
                                 "pty-ctrl-c",
                                 ProIcon::Pause,
                                 loc.pick("发送中断信号 (Ctrl+C)", "Send Ctrl+C"),
@@ -328,7 +330,7 @@ impl KarWorkbench {
                             }),
                         )
                         .child(
-                            icon_button_xs(
+                            icon_button_sm(
                                 "pty-restart",
                                 ProIcon::Refresh,
                                 loc.pick("重启交互 Shell", "Restart shell"),
@@ -352,7 +354,7 @@ impl KarWorkbench {
                         )
                     })
                     .child(menu_host(
-                        icon_button_xs(
+                        icon_button_sm(
                             "terminal-presets",
                             ProIcon::List,
                             loc.pick("填入常用命令", "Quick commands"),
@@ -368,7 +370,7 @@ impl KarWorkbench {
                         quick_menu,
                     ))
                     .child(
-                        icon_button_xs(
+                        icon_button_sm(
                             "terminal-clear-history",
                             ProIcon::Trash,
                             loc.pick("清屏", "Clear"),
@@ -390,7 +392,7 @@ impl KarWorkbench {
 
         if drawer {
             header = header.child(
-                icon_button_xs(
+                icon_button_sm(
                     "terminal-hide",
                     ProIcon::Close,
                     loc.pick("收起终端", "Hide terminal"),

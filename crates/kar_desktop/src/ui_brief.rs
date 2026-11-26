@@ -39,8 +39,8 @@ use crate::{
     },
     ui_motion::{Tactile, morph_glyph, primary_button, soft_button, text_button},
     ui_primitives::{
-        CTRL_H, FS_META, FS_TAG, FS_TITLE, FS_UI, ICON_SM, ICON_XS, LH_META, R_CARD, R_CTRL,
-        R_PILL, StudioPalette, render_brief_chart_icon, tnum_features,
+        CTRL_H, FS_META, FS_SECTION, FS_TAG, FS_UI, ICON_SM, ICON_XS, LH_META, R_CARD, R_CTRL,
+        R_PILL, R_SM, StudioPalette, render_brief_chart_icon, tnum_features,
     },
     workbench::KarWorkbench,
 };
@@ -143,7 +143,7 @@ impl KarWorkbench {
                         div()
                             .size(px(30.))
                             .flex_none()
-                            .rounded(px(8.))
+                            .rounded(px(R_CTRL))
                             .bg(s.pro.accent_soft)
                             .flex()
                             .items_center()
@@ -166,7 +166,7 @@ impl KarWorkbench {
                                         div()
                                             .min_w_0()
                                             .truncate()
-                                            .text_size(px(FS_TITLE - 1.))
+                                            .text_size(px(FS_SECTION))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(s.ink)
                                             .child(snap.title.clone()),
@@ -175,7 +175,7 @@ impl KarWorkbench {
                                         div()
                                             .h(px(18.))
                                             .px(px(6.))
-                                            .rounded(px(5.))
+                                            .rounded(px(R_SM))
                                             .bg(s.soft)
                                             .font_features(tnum_features())
                                             .text_size(px(FS_TAG))
@@ -190,7 +190,7 @@ impl KarWorkbench {
                                             div()
                                                 .h(px(18.))
                                                 .px(px(6.))
-                                                .rounded(px(5.))
+                                                .rounded(px(R_SM))
                                                 .bg(s.pro.accent_soft)
                                                 .text_size(px(FS_TAG))
                                                 .font_weight(FontWeight::MEDIUM)

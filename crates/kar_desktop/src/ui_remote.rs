@@ -176,7 +176,7 @@ impl KarWorkbench {
         // LAN Access Toggle Card
         let lan_sw = Self::settings_switch(
             "remote-lan-listen-sw",
-            loc.pick("允许局域网手机与其它电脑扫码接入 (0.0.0.0)", "Allow LAN devices to connect (0.0.0.0)"),
+            loc.pick("允许同一 Wi-Fi 下的手机或电脑扫码连接", "Allow devices on the same Wi-Fi to connect"),
             self.prefs.lan_listen_enabled,
             |wb, cx| {
                 wb.prefs.lan_listen_enabled = !wb.prefs.lan_listen_enabled;
@@ -192,10 +192,10 @@ impl KarWorkbench {
         );
 
         let lan_card = card_box(s).child(settings_row_item(
-            loc.pick("允许局域网跨设备访问", "LAN cross-device access"),
+            loc.pick("允许同一局域网跨设备扫码", "Cross-device Wi-Fi pairing"),
             loc.pick(
-                "开启后监听局域网网卡 IP 并生成手机可扫二维码；关闭则仅允许本机回环 (127.0.0.1) 连接。",
-                "Bind 0.0.0.0 with LAN QR code when enabled; loopback 127.0.0.1 only when off.",
+                "开启后，连接同一 Wi-Fi 的手机或平板可直接扫描二维码查看并操作对话；关闭时仅限本机浏览器访问。",
+                "Generate Wi-Fi QR codes for phones and tablets when enabled; localhost only when off.",
             ),
             lan_sw,
             stacked,
@@ -336,8 +336,8 @@ impl KarWorkbench {
                     }
                     digits_row = digits_row.child(
                         div()
-                            .w(px(if narrow { 30. } else { 40. }))
-                            .h(px(if narrow { 38. } else { 48. }))
+                            .w(px(if narrow { 30. } else { 36. }))
+                            .h(px(if narrow { 36. } else { 42. }))
                             .rounded(px(R_CTRL))
                             .bg(s.surface)
                             .border_1()
@@ -562,6 +562,7 @@ impl KarWorkbench {
                                 )
                                 .child(
                                     div()
+                                        .font_features(tnum_features())
                                         .text_size(px(FS_TAG))
                                         .text_color(s.muted)
                                         .child(format!("剩余 {rem_min} 分钟有效")),

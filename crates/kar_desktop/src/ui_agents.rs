@@ -16,11 +16,11 @@ use crate::{
     prefs::{CustomAcpAgent, all_approval_modes},
     types::{ProviderAvailability, ProviderReadiness, runtime_display_name},
     ui_motion::{
-        Tactile, disclosure_line, icon_button_sm,
-        primary_button_sm, soft_button, soft_button_sm, spinner, text_button_sm,
+        Tactile, disclosure_line, icon_button_sm, primary_button, primary_button_sm, soft_button,
+        soft_button_sm, spinner, text_button_sm,
     },
     ui_primitives::{
-        DotTone, FS_METRIC, FS_META, FS_TAG, FS_UI, ICON_SM, ICON_XS, LH_META, LH_UI,
+        CTRL_SM_H, DotTone, FS_META, FS_TAG, FS_TITLE, FS_UI, ICON_SM, ICON_XS, LH_META, LH_UI,
         R_PILL, R_SM, StudioPalette, card_box, mono_font, render_provider_color_tile,
         render_status, search_input_box, settings_divider, settings_page_shell, settings_row_item,
         settings_section_title, sub_card_box, tnum_features,
@@ -32,9 +32,9 @@ impl crate::ui_primitives::UiLocale {
     pub(crate) fn approval_label(self, mode: ApprovalMode) -> &'static str {
         #[allow(unreachable_patterns)]
         match mode {
-            ApprovalMode::Host => self.pick("询问我", "Ask me"),
-            ApprovalMode::Deny => self.pick("自动拒绝", "Auto-deny"),
-            _ => self.pick("全自动执行", "Full auto"),
+            ApprovalMode::Host => self.pick("每次确认", "Ask me"),
+            ApprovalMode::Deny => self.pick("仅只读", "Read-only"),
+            _ => self.pick("自动执行", "Full auto"),
         }
     }
 }
@@ -137,7 +137,7 @@ impl KarWorkbench {
                                 div()
                                     .font_family(mono_font(cx))
                                     .font_features(tnum_features())
-                                    .text_size(px(FS_METRIC))
+                                    .text_size(px(FS_TITLE))
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(s.ink)
                                     .child(user_code),
@@ -190,8 +190,8 @@ impl KarWorkbench {
             loc.pick("工作目录", "Working directory"),
             Group::Choices,
             [
-                (false, loc.pick("当前仓库目录", "Checkout")),
-                (true, loc.pick("独立 Git 工作树", "Worktree")),
+                (false, loc.pick("当前项目目录", "Checkout")),
+                (true, loc.pick("隔离分支目录", "Worktree")),
             ],
             self.new_chat_use_worktree,
             s,
@@ -199,95 +199,40 @@ impl KarWorkbench {
             |wb, enabled, _, cx| wb.set_new_chat_worktree(enabled, cx),
         );
 
-        let mut fb_opts = vec![("none".to_owned(), loc.pick("不启用备用", "None").to_owned())];
-        for ag in &usable {
-            fb_opts.push((ag.id.clone(), ag.display_name()));
-        }
-        let fb_current = self
-            .prefs
-            .fallback_runtime
-            .clone()
-            .unwrap_or_else(|| "none".into());
-        let fallback_strip = SelectionStrip::options(
-            "settings-fallback-rt",
-            loc.pick("备用兜底智能体", "Fallback agent"),
-            Group::Choices,
-            fb_opts,
-            fb_current,
-            s,
-            cx,
-            |wb, id, _, cx| {
-                wb.prefs.fallback_runtime = (id != "none").then_some(id);
-                wb.save_prefs();
-                cx.notify();
-            },
-        );
-
-        let auto_resume_sw = Self::settings_switch(
-            "agents-quota-auto-resume",
-            loc.pick("额度重置后自动唤醒排队任务", "Auto-resume after quota reset"),
-            self.prefs.auto_resume_after_quota_reset,
-            |wb, cx| {
-                wb.prefs.auto_resume_after_quota_reset = !wb.prefs.auto_resume_after_quota_reset;
-                wb.save_prefs();
-                cx.notify();
-            },
-            s,
-            window,
-            cx,
-        );
-
         let routing_card = card_box(s)
             .flex()
             .flex_col()
-            .when(!self.offered_efforts().is_empty(), |d| {
-                d.child(settings_row_item(
-                    loc.pick("思考深度", "Reasoning effort"),
-                    loc.pick("当前模型提供的推理档位。", "Levels reported by the selected model."),
-                    effort_menu.into_any_element(),
-                    stacked,
-                    s,
-                ))
-                .child(settings_divider(s))
-            })
             .child(settings_row_item(
-                loc.pick("默认权限策略", "Default permission mode"),
-                loc.pick("询问我（安全默认）、全自动放行（沙箱/工作树推荐）或自动拒绝。", "Ask me, Full auto, or Auto-deny for new chats."),
+                loc.pick("新对话默认执行权限", "Default permission mode"),
+                loc.pick("每次确认（推荐，也可在任意对话输入框随时切换）、自动执行或仅只读。", "Ask me, Full auto, or Read-only (also switchable live in any chat)."),
                 approval_seg.into_any_element(),
                 stacked,
                 s,
             ))
             .child(settings_divider(s))
             .child(settings_row_item(
-                loc.pick("新建对话隔离模式", "New thread isolation"),
-                loc.pick("独立工作树会为新对话自动拉取分支，互不干扰代码改动。", "Create an isolated Git branch and worktree per thread."),
+                loc.pick("新建对话代码修改方式", "New thread isolation"),
+                loc.pick("直接在当前文件夹修改，或自动拉取独立分支避免影响当前工作。", "Edit current folder directly or create an isolated Git branch."),
                 wt_seg.into_any_element(),
                 stacked,
                 s,
             ))
-            .child(settings_divider(s))
-            .child(settings_row_item(
-                loc.pick("备用兜底智能体", "Fallback provider"),
-                loc.pick("首选账号遇到限流或网络异常时一键切换接力的候选智能体。", "Candidate provider when primary hits rate limits."),
-                fallback_strip.into_any_element(),
-                stacked,
-                s,
-            ))
-            .child(settings_divider(s))
-            .child(settings_row_item(
-                loc.pick("额度冷却后自动续跑", "Quota cooldown recovery"),
-                loc.pick("遇到账号窗口限额时保留上下文并在冷却恢复后自动提醒继续。", "Preserve context on rate limits and resume when quota resets."),
-                auto_resume_sw,
-                stacked,
-                s,
-            ));
+            .when(!self.offered_efforts().is_empty(), |d| {
+                d.child(settings_divider(s)).child(settings_row_item(
+                    loc.pick("默认推理思考深度", "Reasoning effort"),
+                    loc.pick("控制模型回答前进行多步推理的深入程度。", "Levels reported by the selected model."),
+                    effort_menu.into_any_element(),
+                    stacked,
+                    s,
+                ))
+            });
 
         let mut shell = settings_page_shell()
             .when_some(login_banner, |d, b| d.child(b))
             .child(
                 div()
                     .child(settings_section_title(
-                        loc.pick("新对话默认策略与容灾兜底", "Defaults & Quota Recovery"),
+                        loc.pick("默认执行权限与对话行为", "Default Permissions & Behavior"),
                         s,
                     ))
                     .child(routing_card),
@@ -577,7 +522,7 @@ impl KarWorkbench {
                             .gap(px(8.))
                             .child(div().flex_1().min_w_0().child(api_key_inp.clone()))
                             .child(
-                                primary_button_sm(("save-rt-key", ix), loc.pick("保存并验证", "Save key"), s)
+                                primary_button(("save-rt-key", ix), loc.pick("保存并验证", "Save key"), s)
                                     .on_press(cx, move |wb, win, cx| {
                                         let key = k_inp.read(cx).value(cx).trim().to_owned();
                                         if !key.is_empty() {
@@ -807,7 +752,7 @@ impl KarWorkbench {
                                     .gap(px(8.))
                                     .child(div().flex_1().min_w_0().child(custom_model_inp.clone()))
                                     .child(
-                                        soft_button_sm("add-custom-model-btn", loc.pick("添加并选用", "Add model"), s)
+                                        soft_button("add-custom-model-btn", loc.pick("添加并选用", "Add model"), s)
                                             .on_press(cx, move |wb, win, cx| {
                                                 let v = cm_inp.read(cx).value(cx).trim().to_owned();
                                                 if !v.is_empty() {
@@ -1026,7 +971,66 @@ impl KarWorkbench {
             );
         }
 
-        // ── 5. Community ACP Registry & Custom ACP Command Registration ──────
+        // ── 5. Progressive Disclosure: Fallback, Quota Recovery & Custom ACP ──
+        let adv_state = window.use_keyed_state("agents-advanced-open", cx, |_, _| false);
+        let adv_open = *adv_state.read(cx);
+        let adv_toggle = adv_state.clone();
+
+        let mut fb_opts = vec![("none".to_owned(), loc.pick("不启用备用", "None").to_owned())];
+        for ag in &usable {
+            fb_opts.push((ag.id.clone(), ag.display_name()));
+        }
+        let fb_current = self
+            .prefs
+            .fallback_runtime
+            .clone()
+            .unwrap_or_else(|| "none".into());
+        let fallback_strip = SelectionStrip::options(
+            "settings-fallback-rt",
+            loc.pick("备用兜底智能体", "Fallback agent"),
+            Group::Choices,
+            fb_opts,
+            fb_current,
+            s,
+            cx,
+            |wb, id, _, cx| {
+                wb.prefs.fallback_runtime = (id != "none").then_some(id);
+                wb.save_prefs();
+                cx.notify();
+            },
+        );
+        let auto_resume_sw = Self::settings_switch(
+            "agents-quota-auto-resume",
+            loc.pick("额度冷却恢复后自动提醒继续", "Auto-resume after quota reset"),
+            self.prefs.auto_resume_after_quota_reset,
+            |wb, cx| {
+                wb.prefs.auto_resume_after_quota_reset = !wb.prefs.auto_resume_after_quota_reset;
+                wb.save_prefs();
+                cx.notify();
+            },
+            s,
+            window,
+            cx,
+        );
+        let fallback_card = card_box(s)
+            .flex()
+            .flex_col()
+            .child(settings_row_item(
+                loc.pick("备用接力智能体", "Fallback provider"),
+                loc.pick("当主用账号遇到限流或网络波动时，一键切换接力的候选智能体。", "Candidate provider when primary hits rate limits."),
+                fallback_strip.into_any_element(),
+                stacked,
+                s,
+            ))
+            .child(settings_divider(s))
+            .child(settings_row_item(
+                loc.pick("限额恢复后自动续跑", "Quota cooldown recovery"),
+                loc.pick("遇到账号时段限额时保留上下文，并在额度刷新后提醒继续。", "Preserve context on rate limits and resume when quota resets."),
+                auto_resume_sw,
+                stacked,
+                s,
+            ));
+
         let acp_name_inp = window.use_keyed_state("acp-custom-name", cx, |win, cx| {
             Input::new("acp-name", loc.pick("智能体显示名", "Agent name"), win, cx)
                 .with_placeholder("My ACP Agent", cx)
@@ -1039,13 +1043,26 @@ impl KarWorkbench {
         let ac = acp_cmd_inp.clone();
 
         let search = window.use_keyed_state("acp-registry-query", cx, |w, cx| {
-            Input::new("acp-search", loc.pick("搜索 ACP 目录", "Search ACP registry"), w, cx)
+            Input::new("acp-search", loc.pick("搜索社区智能体插件", "Search ACP registry"), w, cx)
         });
         let query = search.clone();
         let mut acp_card = card_box(s).flex().flex_col().child(
-            div().flex().items_center().p(px(12.)).gap(px(8.)).child(div().flex_1().min_w_0().child(search))
-                .child(soft_button_sm("acp-search-submit", loc.pick("搜索", "Search"), s)
-                    .on_press(cx, move |wb, _, cx| wb.bridge.send(KarCommand::Registry(crate::registry::Action::Search(query.read(cx).value(cx).into())))))
+            div()
+                .flex()
+                .items_end()
+                .p(px(14.))
+                .gap(px(8.))
+                .child(div().flex_1().min_w_0().child(search))
+                .child(
+                    soft_button("acp-search-submit", loc.pick("搜索", "Search"), s).on_press(
+                        cx,
+                        move |wb, _, cx| {
+                            wb.bridge.send(KarCommand::Registry(crate::registry::Action::Search(
+                                query.read(cx).value(cx).into(),
+                            )))
+                        },
+                    ),
+                ),
         );
         for (ix, installed) in self.registry_installed.iter().cloned().enumerate() {
             acp_card = acp_card.child(settings_divider(s)).child(div().flex().px(px(14.)).py(px(6.)).items_center().justify_between()
@@ -1071,7 +1088,7 @@ impl KarWorkbench {
                 .child(div().w(px(180.)).child(acp_name_inp))
                 .child(div().flex_1().min_w_0().child(acp_cmd_inp))
                 .child(
-                    soft_button("acp-add-custom", loc.pick("注册自定义 ACP", "Add ACP"), s)
+                    soft_button("acp-add-custom", loc.pick("添加自定义智能体", "Add ACP"), s)
                         .on_press(cx, move |wb, win, cx| {
                             let name = an.read(cx).value(cx).trim().to_owned();
                             let raw_cmd = ac.read(cx).value(cx).trim().to_owned();
@@ -1096,11 +1113,44 @@ impl KarWorkbench {
 
         shell = shell.child(
             div()
-                .child(settings_section_title(
-                    loc.pick("第三方社区 ACP 智能体商店与自定义接入", "Community ACP Registry"),
-                    s,
-                ))
-                .child(acp_card),
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .child(
+                    soft_button(
+                        "agents-toggle-advanced",
+                        if adv_open {
+                            loc.pick("收起容灾切换与第三方智能体接入 ▴", "Hide fallback & custom ACP ▴")
+                        } else {
+                            loc.pick("展开容灾切换与第三方智能体接入（高级） ▾", "Fallback & custom ACP agents ▾")
+                        },
+                        s,
+                    )
+                    .on_press(cx, move |_, _, cx| {
+                        adv_toggle.update(cx, |v, cx| {
+                            *v = !*v;
+                            cx.notify();
+                        });
+                    }),
+                )
+                .when(adv_open, |d| {
+                    d.child(
+                        div()
+                            .child(settings_section_title(
+                                loc.pick("限流兜底与额度恢复", "Fallback & Quota Recovery"),
+                                s,
+                            ))
+                            .child(fallback_card),
+                    )
+                    .child(
+                        div()
+                            .child(settings_section_title(
+                                loc.pick("第三方智能体商店与命令行接入", "Community ACP Registry"),
+                                s,
+                            ))
+                            .child(acp_card),
+                    )
+                }),
         );
 
         shell.into_any_element()
@@ -1119,7 +1169,7 @@ impl KarWorkbench {
         Tactile::soft(id, s)
             .radius(R_SM)
             .flex_none()
-            .h(px(28.))
+            .h(px(CTRL_SM_H))
             .pl(px(8.))
             .pr(px(7.))
             .gap(px(6.))

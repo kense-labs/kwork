@@ -25,9 +25,9 @@ use crate::{
         menu_item, primary_button, soft_button, text_button,
     },
     ui_primitives::{
-        FS_CONTROL, FS_META, FS_TAG, FS_TITLE, FS_UI, ICON_SM, LH_CONTROL, LH_META, R_CARD, R_PILL,
-        StudioPalette, UiLocale, mono_font, render_git_branch_icon, render_sample_tag,
-        tnum_features,
+        FS_CONTROL, FS_META, FS_SECTION, FS_TAG, FS_UI, ICON_SM, LH_CONTROL, LH_META, R_CARD,
+        R_PILL, R_SM, StudioPalette, UiLocale, mono_font, render_git_branch_icon,
+        render_sample_tag, tnum_features,
     },
     workbench::{GitSubMode, KarWorkbench, Menu},
 };
@@ -1063,6 +1063,7 @@ impl KarWorkbench {
                                     d.child(
                                         div()
                                             .font_family(mono_font(cx))
+                                            .font_features(tnum_features())
                                             .text_size(px(FS_TAG))
                                             .text_color(s.pro.green_ink)
                                             .child(format!("+{}", f.added_lines)),
@@ -1070,6 +1071,7 @@ impl KarWorkbench {
                                     .child(
                                         div()
                                             .font_family(mono_font(cx))
+                                            .font_features(tnum_features())
                                             .text_size(px(FS_TAG))
                                             .text_color(s.pro.red_ink)
                                             .child(format!("−{}", f.deleted_lines)),
@@ -1078,8 +1080,8 @@ impl KarWorkbench {
                             )
                             .child(
                                 Tactile::ghost(("git-file-tab-open", ix), s)
-                                    .size(px(22.))
-                                    .radius(5.)
+                                    .size(px(24.))
+                                    .radius(R_SM)
                                     .justify_center()
                                     .disabled(rel_open.is_none())
                                     .tip("在新标签页打开文件")
@@ -1092,7 +1094,8 @@ impl KarWorkbench {
                             )
                             .child(if staged {
                                 Tactile::ghost(("git-unstage-one", ix), s)
-                                    .size(px(22.))
+                                    .size(px(24.))
+                                    .radius(R_SM)
                                     .justify_center()
                                     .tip(self.ui_locale.pick("取消暂存此文件", "Unstage file"))
                                     .child(pro_icon(ProIcon::Minus, 13., s.muted))
@@ -1105,7 +1108,8 @@ impl KarWorkbench {
                                     })
                             } else {
                                 Tactile::ghost(("git-stage-one", ix), s)
-                                    .size(px(22.))
+                                    .size(px(24.))
+                                    .radius(R_SM)
                                     .justify_center()
                                     .tip(self.ui_locale.pick("暂存此文件", "Stage file"))
                                     .child(pro_icon(ProIcon::Plus, 13., s.muted))
@@ -1179,7 +1183,7 @@ impl KarWorkbench {
                                 div()
                                     .px(px(5.))
                                     .py(px(1.))
-                                    .rounded(px(4.))
+                                    .rounded(px(R_SM))
                                     .bg(s.soft)
                                     .font_family(mono_font(cx))
                                     .text_size(px(FS_TAG))
@@ -1231,7 +1235,7 @@ impl KarWorkbench {
                             .gap(px(2.))
                             .child(
                                 div()
-                                    .text_size(px(FS_TITLE - 1.))
+                                    .text_size(px(FS_SECTION))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(s.ink)
                                     .child("分支演进与合并策略预览（KUI BranchGraph）"),
@@ -1736,6 +1740,7 @@ impl KarWorkbench {
                                     .min_w_0()
                                     .flex_1()
                                     .truncate()
+                                    .font_features(tnum_features())
                                     .text_size(px(FS_UI))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(s.ink)
@@ -1914,6 +1919,7 @@ impl KarWorkbench {
                                     .min_w_0()
                                     .flex_1()
                                     .truncate()
+                                    .font_features(tnum_features())
                                     .text_size(px(FS_UI))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(s.ink)
@@ -1998,6 +2004,7 @@ pub(crate) fn render_split_diff_hunks(
                 .px(px(8.))
                 .py(px(3.))
                 .bg(s.tray)
+                .font_features(tnum_features())
                 .text_size(px(FS_TAG))
                 .text_color(s.muted)
                 .child(format!("@@ +{} @@", hunk.start_line)),

@@ -26,12 +26,12 @@ use crate::{
         SendShortcutMode, VoiceProviderKind, chord_from_keystroke,
     },
     ui_motion::{
-        Tactile, danger_button_sm, icon_button_sm, outline_button, primary_button,
+        Tactile, danger_button_sm, icon_button_sm, icon_button_xs, outline_button, primary_button,
         selection::{Group, SelectionStrip},
         soft_button, soft_button_sm, text_button_sm,
     },
     ui_primitives::{
-        FS_TITLE, FS_META, FS_TAG, FS_UI, ICON_XS, R_CTRL, R_PILL, R_SM, R_XS,
+        CTRL_H, CTRL_SM_H, FS_META, FS_TAG, FS_TITLE, FS_UI, ICON_XS, R_CTRL, R_PILL, R_SM, R_XS,
         StudioPalette, card_box, mono_font, render_kar_brand_lockup, render_kbd, search_input_box,
         settings_divider, settings_page_shell, settings_row_item, settings_section_title,
         sub_card_box, tnum_features,
@@ -72,14 +72,19 @@ impl KarWorkbench {
             },
         );
 
+        let gallery_open_state =
+            window.use_keyed_state("appearance-gallery-open", cx, |_, _| false);
+        let gallery_open = *gallery_open_state.read(cx);
+        let gallery_toggle_state = gallery_open_state.clone();
+
         let theme_search = window.use_keyed_state("appearance-theme-search", cx, |win, cx| {
             let mut ed = Editor::new(
-                loc.pick("搜索 900+ 配色主题…", "Search 900+ color themes…"),
+                loc.pick("搜索配色主题…", "Search color themes…"),
                 InputMode::Search,
                 win,
                 cx,
             );
-            ed.set_placeholder(loc.pick("搜索配色主题（如 Catppuccin、Tokyo Night、Gruvbox、Nord）…", "Search Catppuccin, Tokyo Night, Nord…"));
+            ed.set_placeholder(loc.pick("搜索主题名称（如 Catppuccin、Tokyo Night、Gruvbox、Nord）…", "Search Catppuccin, Tokyo Night, Nord…"));
             ed.font_size = FS_UI;
             ed
         });
@@ -100,7 +105,7 @@ impl KarWorkbench {
         let mono_selected = active_named.is_none();
         swatch_grid = swatch_grid.child(
             Tactile::soft("theme-card-monochrome", s)
-                .w(px(196.))
+                .w(px(204.))
                 .h(px(56.))
                 .px(px(10.))
                 .radius(R_CTRL)
@@ -127,7 +132,7 @@ impl KarWorkbench {
                                         .text_size(px(FS_META))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(s.ink)
-                                        .child(loc.pick("Kwrok 建筑极简黑白", "Kwrok Monochrome")),
+                                        .child(loc.pick("经典极简黑白（默认）", "Kwrok Monochrome")),
                                 )
                                 .when(mono_selected, |d| {
                                     d.child(pro_icon(ProIcon::Check, ICON_XS, s.pro.green_ink))
@@ -144,7 +149,7 @@ impl KarWorkbench {
                                         .map(|hex| {
                                             div()
                                                 .size(px(10.))
-                                                .rounded(px(2.))
+                                                .rounded(px(R_XS))
                                                 .bg(rgb(hex))
                                                 .border_1()
                                                 .border_color(s.line_soft)
@@ -160,16 +165,23 @@ impl KarWorkbench {
                 }),
         );
 
-        let curated = [
-            "Catppuccin Mocha",
+        let featured_zh: &[(&str, &str)] = &[
+            ("Catppuccin Latte", "柔白拿铁 · Latte"),
+            ("Catppuccin Mocha", "深邃夜幕 · Mocha"),
+            ("Tokyo Night", "东京夜色 · Tokyo Night"),
+            ("Nord", "北欧冰蓝 · Nord"),
+            ("Rose Pine", "柔光松木 · Rose Pine"),
+        ];
+        let expanded_curated = [
             "Catppuccin Latte",
+            "Catppuccin Mocha",
             "Tokyo Night",
             "Tokyo Night Light",
+            "Nord",
             "Rose Pine",
             "Rose Pine Dawn",
             "Gruvbox Dark",
             "Gruvbox Light",
-            "Nord",
             "Kanagawa Wave",
             "Solarized Dark - Patched",
             "Solarized Light",
@@ -179,18 +191,37 @@ impl KarWorkbench {
             "GitHub Light Default",
         ];
 
-        let filtered_themes: Vec<_> = if theme_q.is_empty() {
+        let filtered_themes: Vec<_> = if !gallery_open {
+            let mut list = Vec::new();
+            for &(raw_name, _) in featured_zh {
+                if let Some(found) = all_themes
+                    .iter()
+                    .find(|t| t.name.eq_ignore_ascii_case(raw_name))
+                {
+                    list.push(found.clone());
+                }
+            }
+            if let Some(active_id) = active_named.as_deref()
+                && !list.iter().any(|t| t.id.to_setting() == active_id)
+                && let Some(active_entry) = all_themes
+                    .iter()
+                    .find(|t| t.id.to_setting() == active_id)
+            {
+                list.push(active_entry.clone());
+            }
+            list
+        } else if theme_q.is_empty() {
             all_themes
                 .iter()
-                .filter(|t| curated.iter().any(|c| t.name.eq_ignore_ascii_case(c)))
-                .take(18)
+                .filter(|t| expanded_curated.iter().any(|c| t.name.eq_ignore_ascii_case(c)))
+                .take(20)
                 .cloned()
                 .collect()
         } else {
             all_themes
                 .iter()
                 .filter(|t| t.name.to_lowercase().contains(&theme_q))
-                .take(28)
+                .take(30)
                 .cloned()
                 .collect()
         };
@@ -203,9 +234,18 @@ impl KarWorkbench {
             let fg_hex = entry.palette.foreground;
             let is_dark = entry.palette.dark;
             let set_clone = setting_id.clone();
+            let display_name = if matches!(loc, crate::ui_primitives::UiLocale::Zh) {
+                featured_zh
+                    .iter()
+                    .find(|(raw, _)| entry.name.eq_ignore_ascii_case(raw))
+                    .map(|(_, zh)| (*zh).to_owned())
+                    .unwrap_or_else(|| entry.name.clone())
+            } else {
+                entry.name.clone()
+            };
             swatch_grid = swatch_grid.child(
                 Tactile::soft(("theme-card", ix), s)
-                    .w(px(196.))
+                    .w(px(204.))
                     .h(px(56.))
                     .px(px(10.))
                     .radius(R_CTRL)
@@ -246,7 +286,7 @@ impl KarWorkbench {
                                             .text_size(px(FS_META))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(s.ink)
-                                            .child(entry.name.clone()),
+                                            .child(display_name),
                                     )
                                     .when(chosen, |d| {
                                         d.child(pro_icon(ProIcon::Check, ICON_XS, s.pro.green_ink))
@@ -258,7 +298,7 @@ impl KarWorkbench {
                                     .items_center()
                                     .gap(px(3.))
                                     .children(sw.into_iter().map(|c| {
-                                        div().size(px(10.)).rounded(px(2.)).bg(rgb(c))
+                                        div().size(px(10.)).rounded(px(R_XS)).bg(rgb(c))
                                     })),
                             ),
                     )
@@ -277,70 +317,77 @@ impl KarWorkbench {
             );
         }
 
-        let theme_box = card_box(s)
-            .flex()
-            .flex_col()
-            .child(settings_row_item(
-                loc.pick("亮暗模式", "Appearance mode"),
-                loc.pick(
-                    "跟随系统自动切换，或固定使用浅色 / 深色界面。",
-                    "Follow macOS appearance or lock Light / Dark mode.",
-                ),
-                mode_picker.into_any_element(),
-                stacked,
-                s,
-            ))
-            .child(settings_divider(s))
-            .child(
-                div()
-                    .p(px(16.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(12.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(12.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.))
-                                    .child(
-                                        div()
-                                            .text_size(px(FS_UI))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(s.ink)
-                                            .child(loc.pick("多彩主题画廊", "Color theme gallery")),
+        let total_themes = all_themes.len();
+        let theme_box = card_box(s).flex().flex_col().child(
+            div()
+                .p(px(16.))
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .flex_wrap()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .text_size(px(FS_UI))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(s.ink)
+                                        .child(loc.pick("精选主题配色", "Curated color themes")),
+                                )
+                                .child(
+                                    div()
+                                        .font_features(tnum_features())
+                                        .text_size(px(FS_META))
+                                        .text_color(s.muted)
+                                        .child(loc.pick(
+                                            "默认展示 6 款护眼精选配色，点击右侧按钮可搜索全部主题库。",
+                                            "Showing 6 curated schemes; expand to search the full theme catalog.",
+                                        )),
+                                ),
+                        )
+                        .child(
+                            soft_button_sm(
+                                "appearance-toggle-gallery",
+                                if gallery_open {
+                                    loc.pick("收起全部主题 ▴", "Collapse gallery ▴").to_owned()
+                                } else {
+                                    format!(
+                                        "{} ({total_themes}) ▾",
+                                        loc.pick("浏览全部配色主题", "Browse all themes")
                                     )
-                                    .child(
-                                        div()
-                                            .text_size(px(FS_META))
-                                            .text_color(s.muted)
-                                            .child(format!(
-                                                "{} ({})",
-                                                loc.pick(
-                                                    "内置经典黑白及 Ghostty / Omarchy 精选配色方案",
-                                                    "Built-in Monochrome + Ghostty / Omarchy schemes"
-                                                ),
-                                                all_themes.len()
-                                            )),
-                                    ),
+                                },
+                                s,
                             )
-                            .child(
-                                div().w(px(260.)).child(search_input_box(
-                                    "appearance-theme-search-box",
-                                    theme_search,
-                                    theme_focused,
-                                    true,
-                                    s,
-                                )),
-                            ),
+                            .on_press(cx, move |_, _, cx| {
+                                gallery_toggle_state.update(cx, |v, cx| {
+                                    *v = !*v;
+                                    cx.notify();
+                                });
+                            }),
+                        ),
+                )
+                .when(gallery_open, |d| {
+                    d.child(
+                        div().w(px(300.)).max_w_full().child(search_input_box(
+                            "appearance-theme-search-box",
+                            theme_search,
+                            theme_focused,
+                            true,
+                            s,
+                        )),
                     )
-                    .child(swatch_grid),
-            );
+                })
+                .child(swatch_grid),
+        );
 
         // Typography & Layout Card
         let ui_scale_strip = SelectionStrip::options(
@@ -420,33 +467,44 @@ impl KarWorkbench {
             .flex()
             .flex_col()
             .child(settings_row_item(
+                loc.pick("亮暗外观模式", "Appearance mode"),
+                loc.pick(
+                    "跟随电脑系统自动切换，或固定使用浅色 / 深色界面。",
+                    "Follow macOS appearance or lock Light / Dark mode.",
+                ),
+                mode_picker.into_any_element(),
+                stacked,
+                s,
+            ))
+            .child(settings_divider(s))
+            .child(settings_row_item(
                 loc.pick("界面文字大小", "Interface text scale"),
-                loc.pick("统一调节全局导航、设置项与正文阅读字号。", "Scale navigation, settings, and reading text."),
+                loc.pick("一键调节全局菜单、设置与对话正文的阅读字号。", "Scale navigation, settings, and reading text."),
                 ui_scale_strip.into_any_element(),
                 stacked,
                 s,
             ))
             .child(settings_divider(s))
             .child(settings_row_item(
-                loc.pick("等宽代码字体", "Code & terminal font"),
-                loc.pick("用于代码块、Diff 审查视图与底部交互终端。", "Used for code blocks, diffs, and terminal."),
+                loc.pick("对话阅读宽度", "Thread reading width"),
+                loc.pick("适中宽度更适合专注阅读，宽屏显示器也可铺满窗口。", "Balanced column or full-width layout."),
+                chat_width_strip.into_any_element(),
+                stacked,
+                s,
+            ))
+            .child(settings_divider(s))
+            .child(settings_row_item(
+                loc.pick("代码与终端字体", "Code & terminal font"),
+                loc.pick("用于代码块、文件改动对比与底部终端。", "Used for code blocks, diffs, and terminal."),
                 code_font_strip.into_any_element(),
                 stacked,
                 s,
             ))
             .child(settings_divider(s))
             .child(settings_row_item(
-                loc.pick("代码字号", "Code font size"),
-                loc.pick("代码块与集成终端的默认像素字号。", "Default pixel size for code and terminal."),
+                loc.pick("代码字号大小", "Code font size"),
+                loc.pick("代码块与底部终端的显示字号。", "Default pixel size for code and terminal."),
                 code_size_strip.into_any_element(),
-                stacked,
-                s,
-            ))
-            .child(settings_divider(s))
-            .child(settings_row_item(
-                loc.pick("对话消息栏宽", "Thread reading width"),
-                loc.pick("紧凑专注阅读，或铺满宽屏显示器。", "Compact reading column or full-width layout."),
-                chat_width_strip.into_any_element(),
                 stacked,
                 s,
             ));
@@ -602,18 +660,18 @@ impl KarWorkbench {
                 settings_page_shell()
                     .child(
                         div()
-                            .child(settings_section_title(loc.pick("主题与配色", "Theme & Palette"), s))
-                            .child(theme_box),
-                    )
-                    .child(
-                        div()
-                            .child(settings_section_title(loc.pick("字体与版式", "Typography & Layout"), s))
+                            .child(settings_section_title(loc.pick("外观模式与阅读字号", "Mode & Typography"), s))
                             .child(typo_box),
                     )
                     .child(
                         div()
-                            .child(settings_section_title(loc.pick("对话与代码审查体验", "Chat & Diff Experience"), s))
+                            .child(settings_section_title(loc.pick("发送消息与代码查看习惯", "Chat & Diff Experience"), s))
                             .child(chat_diff_box),
+                    )
+                    .child(
+                        div()
+                            .child(settings_section_title(loc.pick("配色主题方案", "Theme & Palette"), s))
+                            .child(theme_box),
                     ),
             )
             .into_any_element()
@@ -1032,23 +1090,27 @@ impl KarWorkbench {
                     .px(px(16.))
                     .py(px(12.))
                     .flex()
-                    .items_end()
+                    .items_center()
                     .gap(px(10.))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .h(px(30.))
-                            .p(px(5.))
+                            .h(px(CTRL_H))
+                            .px(px(10.))
                             .bg(s.soft)
-                            .rounded(px(6.))
+                            .border_1()
+                            .border_color(s.line_soft)
+                            .rounded(px(R_CTRL))
+                            .flex()
+                            .items_center()
                             .child(key_input),
                     )
                     .when(configured, |row| {
                         row.child(
-                            soft_button_sm(
+                            soft_button(
                                 "voice-clear-key",
-                                loc.pick("移除密钥", "Remove key"),
+                                loc.pick("清除密钥", "Remove key"),
                                 s,
                             )
                             .on_press(cx, move |wb, _, _| {
@@ -1239,9 +1301,9 @@ impl KarWorkbench {
         for (ix, word) in self.prefs.voice_custom_words.iter().cloned().enumerate() {
             vocab_chips = vocab_chips.child(
                 div()
-                    .h(px(26.))
+                    .h(px(CTRL_SM_H))
                     .pl(px(10.))
-                    .pr(px(4.))
+                    .pr(px(3.))
                     .rounded(px(R_PILL))
                     .bg(s.tray)
                     .border_1()
@@ -1253,7 +1315,7 @@ impl KarWorkbench {
                     .text_color(s.ink)
                     .child(word)
                     .child(
-                        icon_button_sm(
+                        icon_button_xs(
                             ("vocab-del", ix),
                             ProIcon::Close,
                             loc.pick("移除", "Remove"),
@@ -1671,7 +1733,79 @@ impl KarWorkbench {
             },
         );
 
-        let forge_card = card_box(s)
+        let wt_origin_sw = Self::settings_switch(
+            "wt-from-origin",
+            loc.pick("隔离对话基于最新主分支创建", "Base worktrees on origin default branch"),
+            self.prefs.new_worktrees_from_origin,
+            |wb, cx| {
+                wb.prefs.new_worktrees_from_origin = !wb.prefs.new_worktrees_from_origin;
+                wb.save_prefs();
+                cx.notify();
+            },
+            s,
+            window,
+            cx,
+        );
+        let wt_prefix_inp = window.use_keyed_state("wt-prefix-inp", cx, |win, cx| {
+            Input::new("wt-prefix", loc.pick("隔离分支名前缀", "Worktree branch prefix"), win, cx)
+                .with_value(self.prefs.worktree_branch_prefix.clone(), win, cx)
+        });
+        let wt_pref_save = wt_prefix_inp.clone();
+
+        let git_adv_state =
+            window.use_keyed_state("projects-git-adv-open", cx, |_, _| false);
+        let git_adv_open = *git_adv_state.read(cx);
+        let git_adv_toggle = git_adv_state.clone();
+
+        let git_everyday_card = card_box(s)
+            .flex()
+            .flex_col()
+            .child(settings_row_item(
+                loc.pick("AI 生成提交说明风格", "AI commit message style"),
+                loc.pick("在 Git 改动面板点击「生成提交说明」时使用的格式。", "Used when generating commit messages from Git changes."),
+                commit_style_strip.into_any_element(),
+                stacked,
+                s,
+            ))
+            .child(settings_divider(s))
+            .child(settings_row_item(
+                loc.pick("默认合并分支（PR）方式", "Default PR merge strategy"),
+                loc.pick("在审查面板一键合并 Pull Request 时默认使用的方式。", "Default merge strategy in the PR panel."),
+                merge_strip.into_any_element(),
+                stacked,
+                s,
+            ))
+            .child(settings_divider(s))
+            .child(settings_row_item(
+                loc.pick("隔离对话基于最新主分支创建", "Start worktrees from origin/HEAD"),
+                loc.pick("新建独立分支对话前自动同步远端最新代码，避免冲突。", "Fetch origin before creating isolated chat worktrees."),
+                wt_origin_sw,
+                stacked,
+                s,
+            ))
+            .child(settings_divider(s))
+            .child(settings_row_item(
+                loc.pick("清理已结束对话遗留的临时目录", "Clean finished chat worktrees"),
+                loc.pick("安全清理已完成对话留下的无未提交改动临时分支目录。", "Prune clean temporary worktrees left by finished chats."),
+                outline_button("wt-prune-orphans", loc.pick("一键清理闲置目录", "Clean unused"), s)
+                    .on_press(cx, |wb, _, cx| {
+                        let ws = wb.effective_workspace_dir();
+                        match prune_managed_worktrees(&ws, true) {
+                            Ok(count) => {
+                                wb.notify_toast(
+                                    format!("已清理 {count} 个无未提交改动的临时目录"),
+                                    cx,
+                                );
+                            }
+                            Err(err) => wb.notify_warning(err.to_string(), cx),
+                        }
+                    })
+                    .into_any_element(),
+                stacked,
+                s,
+            ));
+
+        let forge_advanced_card = card_box(s)
             .flex()
             .flex_col()
             .child(
@@ -1685,7 +1819,7 @@ impl KarWorkbench {
                     .child(lin_inp)
                     .child(
                         div().flex().justify_end().child(
-                            primary_button("forge-save-tokens", loc.pick("保存代码托管凭据", "Save tokens"), s)
+                            primary_button("forge-save-tokens", loc.pick("保存访问令牌", "Save tokens"), s)
                                 .on_press(cx, move |wb, win, cx| {
                                     let fields = [&gh_save, &gl_save, &lin_save];
                                     let values = fields.map(|field| field.read(cx).value(cx).to_owned());
@@ -1697,53 +1831,6 @@ impl KarWorkbench {
                     ),
             )
             .child(settings_divider(s))
-            .child(settings_row_item(
-                loc.pick("提交说明生成规范", "AI commit message style"),
-                loc.pick("在 Git 变更面板点击「生成提交说明」时采用的格式标准。", "Used when generating commit messages from Git changes."),
-                commit_style_strip.into_any_element(),
-                stacked,
-                s,
-            ))
-            .child(settings_divider(s))
-            .child(settings_row_item(
-                loc.pick("默认 PR 合并方式", "Default PR merge strategy"),
-                loc.pick("在 PR 审查面板一键合并 Pull Request 时默认使用的方式。", "Default merge strategy in the PR panel."),
-                merge_strip.into_any_element(),
-                stacked,
-                s,
-            ));
-
-        // Worktrees Management Card
-        let wt_origin_sw = Self::settings_switch(
-            "wt-from-origin",
-            loc.pick("从远端默认分支拉取新建工作树", "Base worktrees on origin default branch"),
-            self.prefs.new_worktrees_from_origin,
-            |wb, cx| {
-                wb.prefs.new_worktrees_from_origin = !wb.prefs.new_worktrees_from_origin;
-                wb.save_prefs();
-                cx.notify();
-            },
-            s,
-            window,
-            cx,
-        );
-        let wt_prefix_inp = window.use_keyed_state("wt-prefix-inp", cx, |win, cx| {
-            Input::new("wt-prefix", loc.pick("工作树分支名前缀", "Worktree branch prefix"), win, cx)
-                .with_value(self.prefs.worktree_branch_prefix.clone(), win, cx)
-        });
-        let wt_pref_save = wt_prefix_inp.clone();
-
-        let wt_card = card_box(s)
-            .flex()
-            .flex_col()
-            .child(settings_row_item(
-                loc.pick("始终基于远端最新默认分支创建工作树", "Start worktrees from origin/HEAD"),
-                loc.pick("新建隔离对话工作树前自动同步 origin，避免在过期分支上改动。", "Fetch origin before creating isolated chat worktrees."),
-                wt_origin_sw,
-                stacked,
-                s,
-            ))
-            .child(settings_divider(s))
             .child(
                 div()
                     .px(px(16.))
@@ -1754,35 +1841,14 @@ impl KarWorkbench {
                     .gap(px(10.))
                     .child(div().w(px(260.)).child(wt_prefix_inp))
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(
-                                soft_button("wt-save-prefix", loc.pick("保存前缀", "Save prefix"), s)
-                                    .on_press(cx, move |wb, _, cx| {
-                                        let v = wt_pref_save.read(cx).value(cx).trim().to_owned();
-                                        wb.prefs.worktree_branch_prefix =
-                                            if v.is_empty() { "kar/wt-".into() } else { v };
-                                        wb.save_prefs();
-                                        wb.notify_toast("已更新工作树分支前缀", cx);
-                                    }),
-                            )
-                            .child(
-                                outline_button("wt-prune-orphans", loc.pick("一键清理闲置工作树", "Clean orphan worktrees"), s)
-                                    .on_press(cx, |wb, _, cx| {
-                                        let ws = wb.effective_workspace_dir();
-                                        match prune_managed_worktrees(&ws, true) {
-                                            Ok(count) => {
-                                                wb.notify_toast(
-                                                    format!("已清理 {count} 个闲置无未提交修改的工作树"),
-                                                    cx,
-                                                );
-                                            }
-                                            Err(err) => wb.notify_warning(err.to_string(), cx),
-                                        }
-                                    }),
-                            ),
+                        soft_button("wt-save-prefix", loc.pick("保存分支前缀", "Save prefix"), s)
+                            .on_press(cx, move |wb, _, cx| {
+                                let v = wt_pref_save.read(cx).value(cx).trim().to_owned();
+                                wb.prefs.worktree_branch_prefix =
+                                    if v.is_empty() { "kar/wt-".into() } else { v };
+                                wb.save_prefs();
+                                wb.notify_toast("已更新隔离分支名前缀", cx);
+                            }),
                     ),
             );
 
@@ -1794,23 +1860,42 @@ impl KarWorkbench {
                 settings_page_shell()
                     .child(
                         div()
-                            .child(settings_section_title(loc.pick("已注册工作区与外部编辑器", "Registered Projects & External Editor"), s))
+                            .child(settings_section_title(loc.pick("项目文件夹与外部编辑器", "Projects & External Editor"), s))
                             .child(projects_card),
                     )
                     .child(
                         div()
-                            .child(settings_section_title(loc.pick("当前项目快捷命令", "Project Quick Scripts"), s))
+                            .child(settings_section_title(loc.pick("Git 提交与临时分支清理", "Git Commits & Cleanup"), s))
+                            .child(git_everyday_card),
+                    )
+                    .child(
+                        div()
+                            .child(settings_section_title(loc.pick("当前项目常用命令", "Project Quick Scripts"), s))
                             .child(scripts_card),
                     )
                     .child(
                         div()
-                            .child(settings_section_title(loc.pick("代码托管（GitHub / GitLab）与 Linear", "Source Control & Issue Trackers"), s))
-                            .child(forge_card),
-                    )
-                    .child(
-                        div()
-                            .child(settings_section_title(loc.pick("Git 独立工作树管理", "Managed Git Worktrees"), s))
-                            .child(wt_card),
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.))
+                            .child(
+                                soft_button(
+                                    "projects-toggle-forge-adv",
+                                    if git_adv_open {
+                                        loc.pick("收起代码托管令牌与高级前缀设置 ▴", "Hide tokens & branch prefix ▴")
+                                    } else {
+                                        loc.pick("配置 GitHub / GitLab / Linear 访问令牌与分支前缀（高级） ▾", "Configure GitHub / GitLab / Linear tokens & prefix ▾")
+                                    },
+                                    s,
+                                )
+                                .on_press(cx, move |_, _, cx| {
+                                    git_adv_toggle.update(cx, |v, cx| {
+                                        *v = !*v;
+                                        cx.notify();
+                                    });
+                                }),
+                            )
+                            .when(git_adv_open, |d| d.child(forge_advanced_card)),
                     ),
             )
             .into_any_element()
@@ -1847,11 +1932,15 @@ impl KarWorkbench {
             cx,
         );
 
-        let mut ports_row = div().flex().flex_wrap().gap(px(8.));
+        let mut ports_row = div()
+            .font_features(tnum_features())
+            .flex()
+            .flex_wrap()
+            .gap(px(8.));
         if self.detected_dev_ports.is_empty() {
             ports_row = ports_row.child(div().text_size(px(FS_META)).text_color(s.muted).child(
                 loc.pick(
-                    "暂未探测到运行中的本地端口（点击右侧「扫描本机端口」或在终端启动开发服务器）",
+                    "暂未检测到正在运行的本地网页服务（启动开发服务后可点右侧按钮扫描）",
                     "No active local dev ports detected yet.",
                 ),
             ));
@@ -1963,9 +2052,14 @@ impl KarWorkbench {
             ))
             .child(settings_divider(s))
             .child(settings_row_item(
-                loc.pick("设备", "Devices"),
-                format!("{}", self.devices.devices.len()),
-                soft_button_sm("refresh-simulators", loc.pick("刷新", "Refresh"), s)
+                loc.pick("已连接设备列表", "Connected devices"),
+                format!(
+                    "{} {} {}",
+                    loc.pick("当前发现", "Detected"),
+                    self.devices.devices.len(),
+                    loc.pick("台模拟器或真机", "simulators or devices")
+                ),
+                soft_button_sm("refresh-simulators", loc.pick("刷新列表", "Refresh"), s)
                     .on_press(cx, |wb, _, _| wb.device_command(None))
                     .into_any_element(),
                 stacked,
@@ -1997,7 +2091,7 @@ impl KarWorkbench {
             let power = dev.clone();
             let chat = self.current_chat_id();
             let port = self.detected_dev_ports.first().copied();
-            let mut actions = div().flex().items_center().gap(px(4.)).flex_wrap();
+            let mut actions = div().flex().items_center().gap(px(6.)).flex_wrap();
             if dev.booted {
                 actions = actions.child(
                     soft_button_sm(("device-screenshot", ix), loc.pick("截图", "Screenshot"), s)
@@ -2029,6 +2123,8 @@ impl KarWorkbench {
                 };
                 actions = actions.child(
                     outline_button(("device-power", ix), label, s)
+                        .h(px(CTRL_SM_H))
+                        .px(px(10.))
                         .disabled(!dev.booted && chat.is_none())
                         .on_press(cx, move |wb, _, _| {
                             if power.booted {
@@ -2117,6 +2213,12 @@ impl KarWorkbench {
             ));
         }
 
+        let ssh_adv_state = window.use_keyed_state("devices-ssh-open", cx, |_, _| {
+            !self.prefs.device_ssh_hosts.is_empty()
+        });
+        let ssh_adv_open = *ssh_adv_state.read(cx);
+        let ssh_adv_toggle = ssh_adv_state.clone();
+
         div()
             .id("settings-devices-scroll")
             .size_full()
@@ -2126,7 +2228,7 @@ impl KarWorkbench {
                     .child(
                         div()
                             .child(settings_section_title(
-                                loc.pick("本地 Web 开发实时预览", "Local Dev Server Previews"),
+                                loc.pick("本地网页实时预览", "Local Dev Server Previews"),
                                 s,
                             ))
                             .child(preview_card),
@@ -2135,7 +2237,7 @@ impl KarWorkbench {
                         div()
                             .child(settings_section_title(
                                 loc.pick(
-                                    "iOS 模拟器与 Android 设备控制",
+                                    "手机模拟器与真机调试",
                                     "Mobile Simulators & Emulators",
                                 ),
                                 s,
@@ -2144,11 +2246,27 @@ impl KarWorkbench {
                     )
                     .child(
                         div()
-                            .child(settings_section_title(
-                                loc.pick("SSH 远端设备主机", "SSH Device Hosts"),
-                                s,
-                            ))
-                            .child(ssh_card),
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.))
+                            .child(
+                                soft_button(
+                                    "devices-toggle-ssh",
+                                    if ssh_adv_open {
+                                        loc.pick("收起 SSH 远端测试主机设置 ▴", "Hide SSH device hosts ▴")
+                                    } else {
+                                        loc.pick("连接远端 Mac / Linux 测试主机（SSH 高级） ▾", "Connect SSH device hosts ▾")
+                                    },
+                                    s,
+                                )
+                                .on_press(cx, move |_, _, cx| {
+                                    ssh_adv_toggle.update(cx, |v, cx| {
+                                        *v = !*v;
+                                        cx.notify();
+                                    });
+                                }),
+                            )
+                            .when(ssh_adv_open, |d| d.child(ssh_card)),
                     ),
             )
             .into_any_element()
@@ -2246,15 +2364,15 @@ impl KarWorkbench {
                 .flex()
                 .flex_col()
                 .child(settings_row_item(
-                    loc.pick("防休眠守护（Caffeinate）", "Keep Mac awake while working"),
-                    loc.pick("长耗时任务或定时自动化运行期间自动阻止系统休眠断流。", "Keep system awake during active agent turns."),
+                    loc.pick("长任务运行期间防止电脑休眠", "Keep Mac awake while working"),
+                    loc.pick("当智能体正在执行长耗时任务或定时任务时，自动阻止电脑合盖/息屏断网。", "Keep system awake during active agent turns."),
                     awake_sw,
                     stacked,
                     s,
                 ))
                 .child(settings_divider(s))
                 .child(settings_row_item(
-                    loc.pick("本地存储空间占用", "Local disk footprint"),
+                    loc.pick("本地缓存与日志空间", "Local disk footprint"),
                     storage_label,
                     outline_button("maint-clean-cache", loc.pick("清理过期缓存与旧日志", "Clean expired cache and logs"), s)
                         .on_press(cx, |wb, _, _| wb.bridge.send(KarCommand::InspectStorage { clean: true }))

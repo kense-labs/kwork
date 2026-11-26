@@ -1,4 +1,4 @@
-//! Workspace settings with a 12-page structured KUI navigation rail and deep item-level `/` search.
+//! Workspace settings with a 7-page product-oriented KUI navigation rail and deep `/` search.
 
 use crate::ui_motion::selection::{Group, SelectionStrip};
 use gpui::{prelude::*, *};
@@ -20,9 +20,9 @@ use crate::{
     ui_motion::{Tactile, icon_button, outline_button, soft_button, text_button},
     ui_primitives::{
         FS_META, FS_TAG, FS_UI, R_MODAL, R_PILL, R_SM, StudioPalette, UiLocale, card_box,
-        render_kbd, render_radar_link_icon, render_schedule_repeat_icon, render_skills_puzzle_icon,
-        render_terminal_logs_icon, render_usage_pulse_icon, settings_divider, settings_page_shell,
-        settings_row_item, settings_section_title,
+        render_kbd, render_schedule_repeat_icon, render_skills_puzzle_icon,
+        render_usage_pulse_icon, settings_divider, settings_page_shell, settings_row_item,
+        settings_section_title,
     },
     workbench::KarWorkbench,
 };
@@ -67,6 +67,37 @@ impl SettingsTab {
         Self::Logs,
     ];
 
+    pub const PRIMARY_NAV: [Self; 7] = [
+        Self::General,
+        Self::Appearance,
+        Self::Keybindings,
+        Self::Agents,
+        Self::SkillsMcp,
+        Self::Schedules,
+        Self::Usage,
+    ];
+
+    pub fn rail_parent(self) -> Self {
+        match self {
+            Self::Schedules | Self::Remote | Self::Voice => Self::Schedules,
+            Self::Usage | Self::ProjectsGit | Self::Devices | Self::Logs => Self::Usage,
+            other => other,
+        }
+    }
+
+    pub fn rail_title(self, locale: UiLocale) -> &'static str {
+        match self.rail_parent() {
+            Self::General => locale.pick("通用偏好", "General"),
+            Self::Appearance => locale.pick("外观与字号", "Appearance"),
+            Self::Keybindings => locale.pick("快捷键", "Shortcuts"),
+            Self::Agents => locale.pick("模型与权限", "Models & Access"),
+            Self::SkillsMcp => locale.pick("技能与工具", "Skills & Tools"),
+            Self::Schedules => locale.pick("自动化与协同", "Automation & Sync"),
+            Self::Usage => locale.pick("工程与维护", "Projects & System"),
+            _ => self.title(locale),
+        }
+    }
+
     pub fn key(self) -> &'static str {
         match self {
             Self::General => "settings-general",
@@ -86,18 +117,18 @@ impl SettingsTab {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::General => "通用",
-            Self::Appearance => "外观与主题",
+            Self::General => "通用偏好",
+            Self::Appearance => "外观与字号",
             Self::Keybindings => "快捷键",
-            Self::Voice => "语音输入",
-            Self::Agents => "智能体与账号",
-            Self::SkillsMcp => "技能与 MCP",
-            Self::Usage => "用量与缓存",
-            Self::Schedules => "定时自动化",
-            Self::ProjectsGit => "项目与代码托管",
-            Self::Devices => "移动设备与预览",
-            Self::Remote => "远端配对与分享",
-            Self::Logs => "维护、日志与关于",
+            Self::Voice => "语音听写",
+            Self::Agents => "模型与权限",
+            Self::SkillsMcp => "技能与工具",
+            Self::Usage => "用量统计",
+            Self::Schedules => "定时任务",
+            Self::ProjectsGit => "项目与 Git",
+            Self::Devices => "移动与预览",
+            Self::Remote => "多端扫码协同",
+            Self::Logs => "清理与关于",
         }
     }
 
@@ -575,53 +606,9 @@ impl KarWorkbench {
             cx,
         );
 
-        let sidebar_box = card_box(s)
-            .flex()
-            .flex_col()
-            .child(settings_row_item(
-                loc.pick("显示左侧会话栏", "Show sidebar"),
-                loc.pick("在主工作区左侧常驻显示项目筛选器与会话列表。", "Keep projects and threads visible beside the stage."),
-                sidebar_sw,
-                stacked,
-                s,
-            ))
-            .child(settings_divider(s))
-            .child(settings_row_item(
-                loc.pick("优先显示进行中的对话", "Show working chats first"),
-                loc.pick("启用后，进行中的对话排在各自列表的最前面。", "Move working chats to the top of their list or project group."),
-                running_first_switch,
-                stacked,
-                s,
-            ))
-            .child(settings_divider(s))
-            .child(settings_row_item(
-                loc.pick("按项目文件夹分组", "Project grouping"),
-                loc.pick("把同一代码仓库（含其隔离工作树）下的对话收纳为可折叠项目组。", "Group threads under collapsible repository folders."),
-                group_proj_sw,
-                stacked,
-                s,
-            ))
-            .child(settings_divider(s))
-            .child(settings_row_item(
-                loc.pick("项目排列顺序", "Project order"),
-                loc.pick("控制侧边栏项目切换菜单与分组的排序规则。", "Order of projects in the sidebar and project picker."),
-                proj_order_strip.into_any_element(),
-                stacked,
-                s,
-            ))
-            .child(settings_divider(s))
-            .child(settings_row_item(
-                loc.pick("显示以点开头的隐藏文件", "Show dotfiles in file tree"),
-                loc.pick("在工作区文件浏览器与画廊中包含 .github、.env 等隐藏条目（重启后保持）。", "Include dotfiles in the workspace file tree."),
-                hidden_files_sw,
-                stacked,
-                s,
-            ));
-
-        // 3. Confirmations & Quit Safety
         let unpin_sw = Self::settings_switch(
-            "confirm-unpin-sw",
-            loc.pick("取消置顶确认", "Unpin confirmation"),
+            "general-confirm-unpin",
+            loc.pick("取消置顶前二次确认", "Unpin confirmation"),
             self.prefs.confirm_unpin,
             |wb, cx| {
                 wb.prefs.confirm_unpin = !wb.prefs.confirm_unpin;
@@ -633,8 +620,8 @@ impl KarWorkbench {
             cx,
         );
         let archive_sw = Self::settings_switch(
-            "confirm-archive-sw",
-            loc.pick("归档对话确认", "Archive confirmation"),
+            "general-confirm-archive",
+            loc.pick("归档对话前二次确认", "Archive confirmation"),
             self.prefs.confirm_archive,
             |wb, cx| {
                 wb.prefs.confirm_archive = !wb.prefs.confirm_archive;
@@ -646,8 +633,8 @@ impl KarWorkbench {
             cx,
         );
         let delete_sw = Self::settings_switch(
-            "confirm-delete-sw",
-            loc.pick("删除对话确认", "Delete confirmation"),
+            "general-confirm-delete",
+            loc.pick("删除对话前确认", "Delete confirmation"),
             self.prefs.confirm_delete,
             |wb, cx| {
                 wb.prefs.confirm_delete = !wb.prefs.confirm_delete;
@@ -659,8 +646,8 @@ impl KarWorkbench {
             cx,
         );
         let term_close_sw = Self::settings_switch(
-            "confirm-term-close-sw",
-            loc.pick("关闭运行中终端确认", "Terminal close confirmation"),
+            "general-confirm-terminal-close",
+            loc.pick("关闭运行中的终端前确认", "Terminal close confirmation"),
             self.prefs.confirm_terminal_close,
             |wb, cx| {
                 wb.prefs.confirm_terminal_close = !wb.prefs.confirm_terminal_close;
@@ -672,8 +659,8 @@ impl KarWorkbench {
             cx,
         );
         let quit_strip = SelectionStrip::options(
-            "confirm-quit-mode",
-            loc.pick("退出快捷键防误触", "Quit shortcut behavior"),
+            "general-quit-shortcut",
+            loc.pick("退出防误触", "Quit shortcut"),
             Group::Choices,
             QuitShortcutMode::ALL.map(|m| (m, m.label(loc))),
             self.prefs.quit_shortcut_mode,
@@ -686,45 +673,96 @@ impl KarWorkbench {
             },
         );
 
+        let more_open_state =
+            window.use_keyed_state("settings-general-more-open", cx, |_, _| false);
+        let more_open = *more_open_state.read(cx);
+        let more_toggle_state = more_open_state.clone();
+
+        let sidebar_box = card_box(s)
+            .flex()
+            .flex_col()
+            .child(settings_row_item(
+                loc.pick("显示左侧会话栏", "Show sidebar"),
+                loc.pick("在主工作区左侧常驻显示项目筛选与历史对话列表。", "Keep projects and threads visible beside the stage."),
+                sidebar_sw,
+                stacked,
+                s,
+            ))
+            .child(settings_divider(s))
+            .child(settings_row_item(
+                loc.pick("把进行中的对话置顶", "Show working chats first"),
+                loc.pick("智能体正在思考或等待确认的对话自动排在最前面。", "Move working chats to the top of the list."),
+                running_first_switch,
+                stacked,
+                s,
+            ))
+            .child(settings_divider(s))
+            .child(settings_row_item(
+                loc.pick("按项目文件夹整理对话", "Group by project"),
+                loc.pick("将同一个代码仓库下的多条对话自动归入同一个文件夹。", "Group threads under collapsible project folders."),
+                group_proj_sw,
+                stacked,
+                s,
+            ));
+
         let confirm_box = card_box(s)
             .flex()
             .flex_col()
             .child(settings_row_item(
-                loc.pick("取消置顶确认", "Unpin confirmation"),
-                loc.pick("从置顶区移除重要对话前要求二次点击确认。", "Require confirmation before unpinning a thread."),
-                unpin_sw,
-                stacked,
-                s,
-            ))
-            .child(settings_divider(s))
-            .child(settings_row_item(
-                loc.pick("归档对话确认", "Archive confirmation"),
-                loc.pick("点击内联归档按钮时要求再次点击确认，避免误收起对话。", "Require a second click before archiving a thread."),
-                archive_sw,
-                stacked,
-                s,
-            ))
-            .child(settings_divider(s))
-            .child(settings_row_item(
-                loc.pick("删除对话确认", "Delete confirmation"),
-                loc.pick("永久移除本地对话记录前开启撤销缓冲保护。", "Protect threads from accidental deletion."),
+                loc.pick("删除对话前确认", "Delete confirmation"),
+                loc.pick("移除本地对话记录前开启二次确认保护，防止手滑误删。", "Protect threads from accidental deletion."),
                 delete_sw,
                 stacked,
                 s,
             ))
             .child(settings_divider(s))
             .child(settings_row_item(
-                loc.pick("终止运行中终端确认", "Terminal close confirmation"),
-                loc.pick("关闭仍有活跃子进程运行的交互终端前提示确认。", "Ask before stopping active PTY terminal processes."),
-                term_close_sw,
+                loc.pick("退出应用防误触（⌘Q）", "Quit shortcut safety"),
+                loc.pick("防止切换窗口时误按 ⌘Q 打断正在执行的任务。", "Prevent accidental ⌘Q while tasks are running."),
+                quit_strip.into_any_element(),
+                stacked,
+                s,
+            ));
+
+        let advanced_box = card_box(s)
+            .flex()
+            .flex_col()
+            .child(settings_row_item(
+                loc.pick("项目列表排序方式", "Project order"),
+                loc.pick("侧边栏项目文件夹的排列顺序。", "Order of projects in the sidebar."),
+                proj_order_strip.into_any_element(),
                 stacked,
                 s,
             ))
             .child(settings_divider(s))
             .child(settings_row_item(
-                loc.pick("退出快捷键（⌘Q）防误触", "Quit shortcut safety"),
-                loc.pick("防止编辑或切换窗口时误触 ⌘Q 中断正在执行的智能体任务。", "Prevent accidental ⌘Q while agents are running."),
-                quit_strip.into_any_element(),
+                loc.pick("文件列表显示隐藏文件", "Show hidden files"),
+                loc.pick("在文件浏览器中显示以点开头的配置文件（如 .env、.github）。", "Include dotfiles in the workspace file tree."),
+                hidden_files_sw,
+                stacked,
+                s,
+            ))
+            .child(settings_divider(s))
+            .child(settings_row_item(
+                loc.pick("取消置顶前二次确认", "Unpin confirmation"),
+                loc.pick("将置顶的重要对话移出前提示确认。", "Confirm before unpinning a thread."),
+                unpin_sw,
+                stacked,
+                s,
+            ))
+            .child(settings_divider(s))
+            .child(settings_row_item(
+                loc.pick("归档对话前二次确认", "Archive confirmation"),
+                loc.pick("点击归档按钮时需再点一次确认。", "Confirm before archiving a thread."),
+                archive_sw,
+                stacked,
+                s,
+            ))
+            .child(settings_divider(s))
+            .child(settings_row_item(
+                loc.pick("关闭运行中的终端前确认", "Terminal close confirmation"),
+                loc.pick("终端仍有命令运行时，关闭前提示确认。", "Ask before closing active terminals."),
+                term_close_sw,
                 stacked,
                 s,
             ));
@@ -778,23 +816,47 @@ impl KarWorkbench {
                 settings_page_shell()
                     .child(
                         div()
-                            .child(settings_section_title(loc.pick("通知提醒", "Notifications"), s))
-                            .child(notif_box),
+                            .child(settings_section_title(loc.pick("语言与时间显示", "Language & Time"), s))
+                            .child(locale_box),
                     )
                     .child(
                         div()
-                            .child(settings_section_title(loc.pick("侧边栏与工作区", "Sidebar & Workspace"), s))
+                            .child(settings_section_title(loc.pick("对话列表与侧边栏", "Sidebar"), s))
                             .child(sidebar_box),
                     )
                     .child(
                         div()
-                            .child(settings_section_title(loc.pick("二次确认与退出保护", "Confirmations & Quit Safety"), s))
+                            .child(settings_section_title(loc.pick("消息通知提醒", "Notifications"), s))
+                            .child(notif_box),
+                    )
+                    .child(
+                        div()
+                            .child(settings_section_title(loc.pick("防误触保护", "Safety"), s))
                             .child(confirm_box),
                     )
                     .child(
                         div()
-                            .child(settings_section_title(loc.pick("语言与时间格式", "Language & Time"), s))
-                            .child(locale_box),
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.))
+                            .child(
+                                soft_button(
+                                    "general-toggle-more",
+                                    if more_open {
+                                        loc.pick("收起更多细节选项 ▴", "Hide extra options ▴")
+                                    } else {
+                                        loc.pick("展开更多细节选项（隐藏文件 / 排序 / 细粒度确认） ▾", "More options ▾")
+                                    },
+                                    s,
+                                )
+                                .on_press(cx, move |_, _, cx| {
+                                    more_toggle_state.update(cx, |v, cx| {
+                                        *v = !*v;
+                                        cx.notify();
+                                    });
+                                }),
+                            )
+                            .when(more_open, |d| d.child(advanced_box)),
                     ),
             )
             .into_any_element()
@@ -968,6 +1030,7 @@ impl KarWorkbench {
                 .collect()
         };
 
+        let rail_active = active_tab.rail_parent();
         let nav_sensor = pro_selection_sensor();
         let mut nav_items = div()
             .relative()
@@ -976,7 +1039,7 @@ impl KarWorkbench {
             .gap(px(2.))
             .child(pro_pill_indicator(
                 "kar-settings-rail-pill",
-                active_tab.key(),
+                rail_active.key(),
                 nav_sensor.clone(),
                 R_SM,
                 s.sidebar_selected,
@@ -985,21 +1048,20 @@ impl KarWorkbench {
             ));
 
         let mut results = 0usize;
-        for (index, tab) in SettingsTab::ALL.into_iter().enumerate() {
-            let tab_matches_deep = deep_hits.iter().any(|h| h.tab == tab);
+        for (index, tab) in SettingsTab::PRIMARY_NAV.into_iter().enumerate() {
+            let tab_matches_deep = deep_hits.iter().any(|h| h.tab.rail_parent() == tab);
             if !query.is_empty()
-                && !tab.label().to_lowercase().contains(&query)
-                && !tab.title(UiLocale::En).to_lowercase().contains(&query)
+                && !tab.rail_title(UiLocale::Zh).to_lowercase().contains(&query)
+                && !tab.rail_title(UiLocale::En).to_lowercase().contains(&query)
                 && !tab_matches_deep
             {
                 continue;
             }
             if !compact && query.is_empty() {
                 let group = match tab {
-                    SettingsTab::General => Some(loc.pick("偏好与交互", "Preferences")),
-                    SettingsTab::Agents => Some(loc.pick("智能体与自动化", "Agents")),
-                    SettingsTab::ProjectsGit => Some(loc.pick("代码、设备与连接", "Code & Connections")),
-                    SettingsTab::Logs => Some(loc.pick("系统维护", "System")),
+                    SettingsTab::General => Some(loc.pick("日常体验", "Basics")),
+                    SettingsTab::Agents => Some(loc.pick("AI 与扩展", "AI & Capabilities")),
+                    SettingsTab::Usage => Some(loc.pick("工程与维护", "Projects & System")),
                     _ => None,
                 };
                 if let Some(group) = group {
@@ -1016,21 +1078,17 @@ impl KarWorkbench {
                 }
             }
             results += 1;
-            let selected = tab == active_tab;
+            let selected = tab == rail_active;
             let color = if selected { s.ink } else { s.muted };
             let icon = match tab {
                 SettingsTab::General => pro_icon(ProIcon::Sliders, 15., color),
                 SettingsTab::Appearance => pro_icon(ProIcon::Eye, 15., color),
                 SettingsTab::Keybindings => pro_icon(ProIcon::Code, 15., color),
-                SettingsTab::Voice => pro_icon(ProIcon::Sparkles, 15., color),
                 SettingsTab::Agents => pro_icon(ProIcon::Users, 15., color),
                 SettingsTab::SkillsMcp => render_skills_puzzle_icon(15., color),
-                SettingsTab::Usage => render_usage_pulse_icon(15., color),
                 SettingsTab::Schedules => render_schedule_repeat_icon(15., color),
-                SettingsTab::ProjectsGit => pro_icon(ProIcon::GitBranch, 15., color),
-                SettingsTab::Devices => pro_icon(ProIcon::Expand, 15., color),
-                SettingsTab::Remote => render_radar_link_icon(15., color),
-                SettingsTab::Logs => render_terminal_logs_icon(15., color),
+                SettingsTab::Usage => render_usage_pulse_icon(15., color),
+                _ => pro_icon(ProIcon::Settings, 15., color),
             };
             let query_editor = search.clone();
             let fold = expanded.clone();
@@ -1049,7 +1107,7 @@ impl KarWorkbench {
                             .gap(px(8.))
                             .radius(R_SM)
                             .when(compact, |b| b.justify_center())
-                            .tip(tab.title(loc))
+                            .tip(tab.rail_title(loc))
                             .child(icon)
                             .when(!compact, |b| {
                                 b.child(
@@ -1064,7 +1122,7 @@ impl KarWorkbench {
                                             FontWeight::NORMAL
                                         })
                                         .text_color(if selected { s.ink } else { s.text })
-                                        .child(tab.title(loc)),
+                                        .child(tab.rail_title(loc)),
                                 )
                             })
                             .on_press(cx, move |wb, win, cx| {
@@ -1253,6 +1311,59 @@ impl KarWorkbench {
             SettingsTab::Logs => self.render_maintenance_about_settings(s, window, cx),
         };
 
+        let sub_strip: Option<Div> = match rail_active {
+            SettingsTab::Schedules => Some(
+                div()
+                    .px(px(20.))
+                    .py(px(10.))
+                    .border_b_1()
+                    .border_color(s.line_soft)
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .child(SelectionStrip::options(
+                        "settings-automation-subtabs",
+                        loc.pick("自动化与协同分类", "Automation & Sync"),
+                        Group::Tabs,
+                        [
+                            (SettingsTab::Schedules, loc.pick("定时任务", "Schedules")),
+                            (SettingsTab::Remote, loc.pick("手机扫码协同", "Remote Sync")),
+                            (SettingsTab::Voice, loc.pick("语音听写", "Voice Input")),
+                        ],
+                        active_tab,
+                        s,
+                        cx,
+                        |wb, t, _, cx| wb.select_settings_tab(t, cx),
+                    )),
+            ),
+            SettingsTab::Usage => Some(
+                div()
+                    .px(px(20.))
+                    .py(px(10.))
+                    .border_b_1()
+                    .border_color(s.line_soft)
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .child(SelectionStrip::options(
+                        "settings-system-subtabs",
+                        loc.pick("工程与维护分类", "Projects & System"),
+                        Group::Tabs,
+                        [
+                            (SettingsTab::Usage, loc.pick("用量统计", "Usage")),
+                            (SettingsTab::ProjectsGit, loc.pick("项目与 Git", "Projects & Git")),
+                            (SettingsTab::Devices, loc.pick("移动与预览", "Devices & Preview")),
+                            (SettingsTab::Logs, loc.pick("清理与更新", "Maintenance & About")),
+                        ],
+                        active_tab,
+                        s,
+                        cx,
+                        |wb, t, _, cx| wb.select_settings_tab(t, cx),
+                    )),
+            ),
+            _ => None,
+        };
+
         let focus_before_close = modal_focus.clone();
         let key_search = search.clone();
         let key_expand = expanded.clone();
@@ -1342,6 +1453,7 @@ impl KarWorkbench {
                     .flex()
                     .flex_col()
                     .child(self.settings_header(active_tab, s, cx))
+                    .when_some(sub_strip, |d, bar| d.child(bar))
                     .child(
                         div()
                             .flex_1()

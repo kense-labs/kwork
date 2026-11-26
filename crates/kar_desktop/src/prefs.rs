@@ -27,9 +27,9 @@ impl NotificationLevel {
 
     pub fn label(self, loc: UiLocale) -> &'static str {
         match self {
-            Self::Off => loc.pick("关闭", "Off"),
-            Self::NeedsInput => loc.pick("仅需审批或异常", "Input & errors"),
-            Self::All => loc.pick("全部完成与审批", "All events"),
+            Self::Off => loc.pick("关闭提醒", "Off"),
+            Self::NeedsInput => loc.pick("需我确认或出错时", "Input & errors"),
+            Self::All => loc.pick("任务完成也提醒", "All events"),
         }
     }
 }
@@ -49,7 +49,7 @@ impl ProjectSortOrder {
     pub fn label(self, loc: UiLocale) -> &'static str {
         match self {
             Self::Recent => loc.pick("最近活跃", "Last activity"),
-            Self::Alphabetical => loc.pick("名称排序", "Alphabetical"),
+            Self::Alphabetical => loc.pick("按名称", "Alphabetical"),
             Self::Manual => loc.pick("添加顺序", "Added order"),
         }
     }
@@ -71,7 +71,7 @@ impl QuitShortcutMode {
         match self {
             Self::Immediate => loc.pick("直接退出", "Immediate"),
             Self::PressTwice => loc.pick("连按两次 ⌘Q", "Press twice"),
-            Self::Hold => loc.pick("长按确认", "Hold"),
+            Self::Hold => loc.pick("长按退出", "Hold"),
         }
     }
 }
@@ -100,10 +100,10 @@ impl FontScale {
 
     pub fn label(self, loc: UiLocale) -> &'static str {
         match self {
-            Self::Compact => loc.pick("紧凑 (-1)", "Compact"),
+            Self::Compact => loc.pick("紧凑", "Compact"),
             Self::Default => loc.pick("标准", "Default"),
-            Self::Comfortable => loc.pick("舒适 (+1)", "Comfortable"),
-            Self::Large => loc.pick("大字号 (+2)", "Large"),
+            Self::Comfortable => loc.pick("舒适偏大", "Comfortable"),
+            Self::Large => loc.pick("大字号", "Large"),
         }
     }
 }
@@ -132,10 +132,10 @@ impl ChatWidthMode {
 
     pub fn label(self, loc: UiLocale) -> &'static str {
         match self {
-            Self::Compact => loc.pick("紧凑 (640)", "Compact"),
-            Self::Standard => loc.pick("标准 (736)", "Standard"),
-            Self::Wide => loc.pick("宽栏 (940)", "Wide"),
-            Self::Full => loc.pick("铺满", "Full"),
+            Self::Compact => loc.pick("紧凑阅读", "Compact"),
+            Self::Standard => loc.pick("适中专注", "Standard"),
+            Self::Wide => loc.pick("宽屏舒展", "Wide"),
+            Self::Full => loc.pick("铺满窗口", "Full"),
         }
     }
 }
@@ -153,8 +153,8 @@ impl SendShortcutMode {
 
     pub fn label(self, loc: UiLocale) -> &'static str {
         match self {
-            Self::Enter => loc.pick("Enter 发送", "Enter"),
-            Self::ModEnter => loc.pick("⌘Enter 发送", "⌘Enter"),
+            Self::Enter => loc.pick("回车直接发送", "Enter"),
+            Self::ModEnter => loc.pick("⌘+回车发送", "⌘Enter"),
         }
     }
 }
@@ -172,8 +172,8 @@ impl FollowUpMode {
 
     pub fn label(self, loc: UiLocale) -> &'static str {
         match self {
-            Self::Queue => loc.pick("加入队列", "Queue"),
-            Self::Steer => loc.pick("立即插话转向", "Steer"),
+            Self::Queue => loc.pick("等本轮结束再发", "Queue"),
+            Self::Steer => loc.pick("立即插话引导", "Steer"),
         }
     }
 }
@@ -192,7 +192,7 @@ impl DiffLayoutMode {
     pub fn label(self, loc: UiLocale) -> &'static str {
         match self {
             Self::Unified => loc.pick("上下合并", "Unified"),
-            Self::Split => loc.pick("左右分栏", "Split"),
+            Self::Split => loc.pick("左右并排", "Split"),
         }
     }
 }

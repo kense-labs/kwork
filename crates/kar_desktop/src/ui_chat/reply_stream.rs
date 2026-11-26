@@ -2,7 +2,10 @@
 use super::*;
 use gpui_kit::{
     base::Easing,
-    component::text::{TextView, TextViewMotion, TextViewState, TextViewStyle},
+    component::{
+        highlighter::HighlightTheme,
+        text::{TextView, TextViewMotion, TextViewState, TextViewStyle},
+    },
 };
 use kui::primitives::family::disabled_motion;
 use std::{collections::VecDeque, time::Instant};
@@ -177,28 +180,107 @@ impl RenderOnce for ReplyMarkdown {
             stream.document.clone()
         });
 
+        let s = StudioPalette::get(cx);
+        let mono = crate::ui_primitives::mono_font(cx);
+        let inline_ink = if s.dark {
+            s.pro.cyan
+        } else {
+            s.pro.accent_info
+        };
+        let inline_bg = if s.dark {
+            s.pro.accent_soft.opacity(0.32)
+        } else {
+            s.pro.accent_soft.opacity(0.58)
+        };
+
         let mut table = StyleRefinement::default()
-            .border(px(0.))
-            .bg(transparent_black())
-            .rounded(px(0.));
+            .border_1()
+            .border_color(s.line_soft)
+            .bg(s.card.opacity(0.55))
+            .rounded(px(crate::ui_primitives::R_CTRL));
         table.overflow.x = Some(Overflow::Scroll);
-        let style = TextViewStyle::default()
-            .code_block(StyleRefinement::default().pt(px(38.)))
+
+        let base_style = TextViewStyle {
+            paragraph_gap: rems(0.82),
+            heading_base_font_size: px(FS_READ),
+            highlight_theme: if s.dark {
+                HighlightTheme::default_dark()
+            } else {
+                HighlightTheme::default_light()
+            },
+            is_dark: s.dark,
+            ..TextViewStyle::default()
+        };
+        let style = base_style
+            .heading_font_size(|level, _| match level {
+                1 => px(19.0),
+                2 => px(17.0),
+                3 => px(15.5),
+                _ => px(FS_READ),
+            })
+            .inline_code(HighlightStyle {
+                color: Some(inline_ink),
+                background_color: Some(inline_bg),
+                font_weight: Some(FontWeight::MEDIUM),
+                ..Default::default()
+            })
+            .code_block(
+                StyleRefinement::default()
+                    .pt(px(38.))
+                    .pb(px(10.))
+                    .rounded(px(R_CARD))
+                    .bg(s.stage)
+                    .border_1()
+                    .border_color(s.line_soft),
+            )
             .table(table)
             .table_head(
                 StyleRefinement::default()
-                    .bg(transparent_black())
-                    .font_weight(FontWeight::SEMIBOLD),
+                    .bg(s.soft)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(s.ink),
             )
             .table_cell(
                 StyleRefinement::default()
-                    .py(px(8.))
-                    .px(px(8.))
-                    .border_color(transparent_black()),
+                    .py(px(7.))
+                    .px(px(10.))
+                    .border_color(s.line_soft),
             );
 
+        let mono_for_badge = mono.clone();
         TextView::new(&document)
             .style(style)
+            .inline_code_style(
+                StyleRefinement::default()
+                    .font_family(mono)
+                    .text_size(px(FS_CONTROL))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(inline_ink)
+                    .bg(inline_bg)
+                    .px(px(5.))
+                    .py(px(1.))
+                    .rounded(px(crate::ui_primitives::R_XS)),
+            )
+            .blockquote_style(
+                StyleRefinement::default()
+                    .border_l(px(3.))
+                    .border_color(s.pro.accent_info)
+                    .bg(s.pro.accent_soft.opacity(if s.dark { 0.22 } else { 0.38 }))
+                    .px(px(12.))
+                    .py(px(8.))
+                    .rounded(px(crate::ui_primitives::R_SM))
+                    .text_color(s.ink),
+            )
+            .list_style(StyleRefinement::default().text_color(s.muted))
+            .on_link_click(|href, _, _, _| {
+                let url = href.as_ref();
+                if let Some(local_path) = url.strip_prefix("file://") {
+                    let clean = local_path.split('#').next().unwrap_or(local_path);
+                    let _ = std::process::Command::new("open").arg(clean).spawn();
+                } else if url.starts_with("http://") || url.starts_with("https://") {
+                    let _ = std::process::Command::new("open").arg(url).spawn();
+                }
+            })
             .selectable(true)
             .code_block_actions(move |code, window, cx| {
                 let key = format!(
@@ -208,13 +290,18 @@ impl RenderOnce for ReplyMarkdown {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(5.))
+                    .gap(px(6.))
                     .when_some(code.lang().filter(|lang| !lang.is_empty()), |row, lang| {
                         row.child(
                             div()
-                                .max_w(px(90.))
+                                .max_w(px(110.))
+                                .px(px(6.))
+                                .py(px(1.))
+                                .rounded(px(crate::ui_primitives::R_XS))
+                                .bg(s.soft)
+                                .font_family(mono_for_badge.clone())
                                 .truncate()
-                                .text_size(px(FS_META))
+                                .text_size(px(FS_TAG))
                                 .text_color(muted)
                                 .child(lang),
                         )

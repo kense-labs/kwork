@@ -12,15 +12,15 @@ use crate::{
     coedit::{CoEditProposal, CoEditStatus, ScenarioKey, UserResolutionChoice},
     kar_bridge::KarCommand,
     ui_motion::{
-        MenuPlacement, Tactile, close_button, icon_button, menu_divider, menu_hint, menu_host, menu_icon_item,
-        primary_button, soft_button, text_button,
+        MenuPlacement, Tactile, close_button, icon_button_sm, menu_divider, menu_hint, menu_host,
+        menu_icon_item, primary_button, primary_button_sm, soft_button, soft_button_sm,
+        text_button_sm,
     },
     ui_primitives::{
-        CTRL_H, CTRL_SM_H, DotTone, FS_META, FS_TAG, FS_UI, ICON_SM, ICON_XS, LH_META,
-        R_CARD, R_CTRL, R_PILL, StudioPalette, TITLEBAR_BUTTON_GAP, TITLEBAR_EDGE_INSET,
-        clean_display_doc_name, macos_traffic_pad, mono_font,
-        render_file_diff_icon, render_folder_icon,
-        render_office_chip, render_sample_tag, tnum_features,
+        CTRL_H, CTRL_SM_H, DotTone, FS_META, FS_TAG, FS_UI, ICON_SM, ICON_XS, LH_META, R_CARD,
+        R_CTRL, R_PILL, ROW_H, StudioPalette, TITLEBAR_BUTTON_GAP, TITLEBAR_EDGE_INSET,
+        clean_display_doc_name, macos_traffic_pad, mono_font, render_file_diff_icon,
+        render_folder_icon, render_office_chip, render_sample_tag, tnum_features,
     },
     workbench::{KarWorkbench, Menu, RightPaneSurface, WorkspaceLayoutMode},
 };
@@ -192,7 +192,7 @@ impl KarWorkbench {
         );
 
         let add_doc_menu = menu_host(
-            icon_button(
+            icon_button_sm(
                 "office-add-tab",
                 ProIcon::Plus,
                 loc.pick("打开面板", "Open a surface"),
@@ -211,7 +211,7 @@ impl KarWorkbench {
         );
 
         let more_doc_menu = menu_host(
-            icon_button("office-more", ProIcon::MoreHorizontal, "文档操作", &s)
+            icon_button_sm("office-more", ProIcon::MoreHorizontal, "文档操作", &s)
                 .lit(self.open_menu == Some(Menu::DocMore))
                 .on_press(cx, |this, _, cx| this.toggle_menu(Menu::DocMore, cx)),
             self.render_office_more_menu(&s, cx),
@@ -241,10 +241,10 @@ impl KarWorkbench {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(2.))
+                    .gap(px(4.))
                     .when(active_is_demo, |d| {
                         d.child(
-                            soft_button(
+                            soft_button_sm(
                                 "office-coedit-toggle",
                                 if self.coedit_panel_open {
                                     "收起演练"
@@ -262,7 +262,7 @@ impl KarWorkbench {
                     })
                     .when(active_dirty && !active_is_demo, |d| {
                         d.child(
-                            primary_button("office-save", "保存", &s)
+                            primary_button_sm("office-save", "保存", &s)
                                 .mr(px(2.))
                                 .tip("保存修改  ⌘S")
                                 .on_press(cx, |this, window, cx| {
@@ -271,7 +271,7 @@ impl KarWorkbench {
                         )
                     })
                     .when(!single_dock, |d| {
-                        d.child(icon_button(
+                        d.child(icon_button_sm(
                             "office-wide-toggle",
                             ProIcon::Expand,
                             if wide_canvas {
@@ -309,8 +309,8 @@ impl KarWorkbench {
                     let quote_btn = if already_pinned {
                         Tactile::ghost("office-quote", &s)
                             .flex_none()
-                            .h(px(24.))
-                            .px(px(8.))
+                            .h(px(CTRL_SM_H))
+                            .px(px(10.))
                             .gap(px(5.))
                             .text_size(px(FS_META))
                             .text_color(s.pro.green_ink)
@@ -323,7 +323,7 @@ impl KarWorkbench {
                     } else {
                         Tactile::soft("office-quote", &s)
                             .flex_none()
-                            .h(px(24.))
+                            .h(px(CTRL_SM_H))
                             .pl(px(8.))
                             .pr(px(10.))
                             .gap(px(5.))
@@ -349,7 +349,7 @@ impl KarWorkbench {
                         .collect();
 
                     let strip = div()
-                        .h(px(32.))
+                        .h(px(ROW_H))
                         .pl(px(12.))
                         .pr(px(8.))
                         .border_b_1()
@@ -485,9 +485,9 @@ impl KarWorkbench {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(4.))
+                    .gap(px(6.))
                     .child(
-                        soft_button(
+                        soft_button_sm(
                             "files-dock-hidden-toggle",
                             if show_hidden {
                                 loc.pick("隐藏点文件", "Hide dotfiles")
@@ -497,9 +497,6 @@ impl KarWorkbench {
                             s,
                         )
                         .lit(show_hidden)
-                        .h(px(23.))
-                        .px(px(7.))
-                        .text_size(px(FS_TAG))
                         .on_press(cx, move |this, _, cx| {
                             this.tree_show_hidden = !this.tree_show_hidden;
                             this.prefs.tree_show_hidden = this.tree_show_hidden;
@@ -512,7 +509,7 @@ impl KarWorkbench {
                         }),
                     )
                     .child(
-                        icon_button(
+                        icon_button_sm(
                             "files-dock-refresh",
                             ProIcon::Refresh,
                             loc.pick("刷新文件树", "Refresh files"),
@@ -776,8 +773,8 @@ impl KarWorkbench {
             let btn = if danger {
                 Tactile::soft(id, s)
                     .fills(s.pro.red_soft, s.pro.red.opacity(0.16))
-                    .h(px(26.))
-                    .px(px(9.))
+                    .h(px(CTRL_SM_H))
+                    .px(px(10.))
                     .text_size(px(FS_META))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(s.pro.red_ink)
@@ -785,8 +782,8 @@ impl KarWorkbench {
             } else {
                 Tactile::soft(id, s)
                     .fills(s.card, s.hover)
-                    .h(px(26.))
-                    .px(px(9.))
+                    .h(px(CTRL_SM_H))
+                    .px(px(10.))
                     .text_size(px(FS_META))
                     .text_color(s.ink)
                     .child(label)
@@ -1049,7 +1046,7 @@ impl KarWorkbench {
                                 },
                             ))
                             .child(
-                                text_button("coedit-reset-all", "重置", s)
+                                text_button_sm("coedit-reset-all", "重置", s)
                                     .child(pro_icon(ProIcon::Refresh, ICON_XS, s.muted))
                                     .on_press(cx, |this, window, cx| {
                                         this.trigger_coedit_human_step("reset_all", window, cx);
