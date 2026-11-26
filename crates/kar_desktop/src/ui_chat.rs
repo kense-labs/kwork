@@ -66,7 +66,7 @@ use crate::{
         render_bg_layers_icon,
         render_file_diff_icon, render_folder_git_icon, render_folder_icon, render_git_branch_icon,
         render_machine_icon, render_office_chip, render_panel_bottom_icon, render_panel_right_icon,
-        render_project_mark, render_runtime_mark, render_schedule_repeat_icon,
+        render_runtime_mark, render_schedule_repeat_icon,
         render_skills_puzzle_icon, render_square_menu_icon, render_square_pen_icon, render_status,
         render_steer_merge_icon, tnum_features,
     },
@@ -304,7 +304,8 @@ impl KarWorkbench {
                         .child(self.render_view_only_bar(&s, cx))
                         .into_any_element()
                 } else {
-                    self.render_composer(center_w, activity_row, &s, window, cx)
+                    let slash_popup = self.slash_popup(&s, window, cx);
+                    self.render_composer(center_w, activity_row, slash_popup, &s, window, cx)
                         .into_any_element()
                 });
 
@@ -499,12 +500,11 @@ impl KarWorkbench {
             .h(px(28.))
             .min_w_0()
             .when(compact_crumb, |b| {
-                b.w(px(24.)).flex_none().justify_center()
+                b.w(px(24.)).flex_none().justify_center().child(render_folder_icon(16., s.muted))
             })
-            .gap(px(6.))
+            .when(!compact_crumb, |b| b.px(px(4.)))
             .tip(new_in_project)
             .aria(format!("{new_in_project} · {proj_name}"))
-            .child(render_project_mark(&proj_name, 16., s, cx))
             .when(!compact_crumb, |b| {
                 b.child(
                     div()
@@ -1559,15 +1559,17 @@ impl KarWorkbench {
                 .on_press(cx, |this, _, cx| this.open_files_dock_tab(cx))
         };
         let dropzone = self.file_dropzone.clone();
-        let composer = self.render_composer(pane_w, None, s, window, cx);
+        let slash_popup = self.slash_popup(s, window, cx);
+        let browsing_commands = slash_popup.is_some();
+        let composer = self.render_composer(pane_w, None, slash_popup, s, window, cx);
         let content = chat_content_lane(pane_w, window)
             .flex_none()
             .flex()
             .flex_col()
-            .child(heading)
+            .child(heading.when(browsing_commands, |title| title.invisible()))
             .when(!short, |col| {
                 col.child(
-                    div().mt(px(4.)).flex().justify_center().child(
+                    div().when(browsing_commands, |hint| hint.invisible()).mt(px(4.)).flex().justify_center().child(
                         secondary
                             .h(px(26.))
                             .px(px(4.))
@@ -1723,6 +1725,7 @@ impl KarWorkbench {
         &self,
         pane_w: f32,
         activity_row: Option<AnyElement>,
+        slash_popup: Option<AnyElement>,
         s: &StudioPalette,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1968,27 +1971,27 @@ impl KarWorkbench {
             .into_any_element()
         };
 
-        let primary_action: AnyElement = if turn_running && !has_draft {
-            Tactile::primary("cmp-stop", s)
-                .fills(s.pro.red, s.pro.red_ink)
-                .radius(16.)
-                .size(px(32.))
+        let action_disc = |id| {
+            Tactile::ghost(id, s)
+                .size(px(CTRL_H))
+                .face_inset(3.)
+                .radius(R_PILL)
                 .flex_none()
                 .justify_center()
+        };
+        let primary_action: AnyElement = if turn_running && !has_draft {
+            action_disc("cmp-stop")
+                .fills(s.pro.red, s.pro.red_ink)
                 .tip(loc.pick("停止当前执行", "Stop generation"))
                 .child(div().size(px(9.)).rounded(px(2.)).bg(s.on_brand_action))
                 .on_press(cx, |this, _, _| this.bridge.send(KarCommand::AbortTurn))
                 .into_any_element()
         } else {
-            Tactile::primary("cmp-send", s)
-                .radius(16.)
+            action_disc("cmp-send")
                 .fills(s.brand_action, s.brand_action)
                 .lit_fill(s.brand_action)
                 .lit(can_send)
                 .disabled(!can_send)
-                .size(px(32.))
-                .flex_none()
-                .justify_center()
                 .tip(if turn_running {
                     loc.pick("平滑汇入补充指令", "Steer / queue follow-up")
                 } else {
@@ -2025,21 +2028,8 @@ impl KarWorkbench {
             ))
             .child(primary_action);
 
-        let write_card = div()
+        let write_card = crate::ui_primitives::frosted_composer(s)
             .w_full()
-            .rounded(px(16.))
-            .bg(s.card)
-            .border_1()
-            .border_color(s.line_soft)
-            .when(!s.dark, |d| {
-                d.shadow(vec![BoxShadow {
-                    color: hsla(0., 0., 0., 0.05),
-                    offset: point(px(0.), px(1.)),
-                    blur_radius: px(2.),
-                    spread_radius: px(0.),
-                    inset: false,
-                }])
-            })
             .pt(px(16.))
             .pb(px(8.))
             .flex()
@@ -2080,9 +2070,14 @@ impl KarWorkbench {
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, win, cx| {
                 this.navigate_slash_picker(ev, win, cx);
             }))
-            .when_some(self.slash_popup(card_width, s, window, cx), |d, popup| d.child(popup))
             .children(activity_row)
-            .child(write_card)
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .child(write_card)
+                    .children(slash_popup),
+            )
             .when(is_draft, |d| {
                 let wt = self.new_chat_use_worktree;
                 let local_label = loc.pick("当前检出", "Current checkout");

@@ -72,6 +72,7 @@ pub fn init_runtime_ui(cx: &mut App) {
     docs_ui::init(cx);
     slides_ui::init(cx);
     kui::init(cx);
+    ui_primitives::material::init_window_glass(cx);
     ui_chat::init_project_picker_keys(cx);
     #[cfg(target_os = "macos")]
     cx.set_reduce_motion(
@@ -151,6 +152,11 @@ pub fn studio_window_options(
 ) -> WindowOptions {
     WindowOptions {
         app_id: Some("kar-desktop".into()),
+        window_background: if ui_primitives::material::native_glass() {
+            WindowBackgroundAppearance::Blurred
+        } else {
+            WindowBackgroundAppearance::Opaque
+        },
         titlebar: Some(TitlebarOptions {
             title: Some(title.into()),
             appears_transparent: true,

@@ -11,6 +11,9 @@ use kui::{
     primitives::pro_icons::{ProIcon, pro_app_artwork, pro_artwork, pro_icon, pro_symbol},
 };
 
+pub(crate) mod material;
+pub(crate) use material::{frosted_composer, frosted_panel};
+
 use crate::types::{OfficeKind, runtime_brand_svg, runtime_display_name};
 
 // ── UI Locale (`中` / `EN`) ──────────────────────────────────────────────────
@@ -563,6 +566,7 @@ pub(crate) fn sidebar_texture(s: &StudioPalette, width: f32, running: bool, wind
         .overflow_hidden()
         .child(
             img(grain.clone())
+                .opacity(if material::native_glass() { 0.14 } else { 0.50 })
                 .absolute()
                 .left(px(-2.))
                 .top(px(-2.))

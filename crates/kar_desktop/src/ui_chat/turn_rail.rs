@@ -340,15 +340,10 @@ pub(crate) fn render(
                 entry.bookmarked,
                 if entry.bookmarked { s.ink } else { s.muted },
             ));
-        let card = div()
+        let card = crate::ui_primitives::frosted_panel(s)
             .id("turn-rail-preview")
             .w(px(card_width))
             .min_w_0()
-            .rounded(px(12.))
-            .border_1()
-            .border_color(s.line_strong)
-            .shadow_sm()
-            .bg(if s.dark { s.message_surface } else { s.card })
             .p(px(8.))
             .flex()
             .flex_col()

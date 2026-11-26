@@ -69,10 +69,10 @@ use crate::{
         SelectionTarget, runtime_display_name, strip_selection_envelope,
     },
     ui_brief::BriefWidgetCache,
-    ui_motion::{DismissFn, MenuPlacement, Tactile, ToastState, menu_popup, render_toast},
+    ui_motion::{DismissFn, MenuPlacement, ToastState, menu_popup, render_toast},
     ui_primitives::{
         DOC_MIN_W, FS_META, FS_READ, FS_TAG, FS_UI, ICON_SM, LH_META, LH_UI,
-        SHEET_GUTTER, SIDEBAR_W, StudioPalette, TERMINAL_DEFAULT_H, TERMINAL_MIN_H,
+        R_CTRL, SHEET_GUTTER, SIDEBAR_W, StudioPalette, TERMINAL_DEFAULT_H, TERMINAL_MIN_H,
         UiLocale, clean_display_doc_name, render_kbd, ui_font,
     },
     ui_settings::SettingsTab,
@@ -4716,22 +4716,18 @@ impl KarWorkbench {
             };
             let total = items.len() + hit_count + usize::from(has_ask);
             match key {
-                "down" => {
+                "up" | "down" | "tab" => {
                     if total > 0 {
-                        self.cmd_selected_ix = (self.cmd_selected_ix + 1) % total;
+                        let backward = key == "up" || (key == "tab" && shift);
+                        self.cmd_selected_ix = if backward {
+                            self.cmd_selected_ix.checked_sub(1).unwrap_or(total - 1)
+                        } else {
+                            (self.cmd_selected_ix + 1) % total
+                        };
                         self.reveal_cmd_selection = true;
                         cx.notify();
                     }
-                    cx.stop_propagation();
-                    return;
-                }
-                "up" => {
-                    if total > 0 {
-                        self.cmd_selected_ix =
-                            self.cmd_selected_ix.checked_sub(1).unwrap_or(total - 1);
-                        self.reveal_cmd_selection = true;
-                        cx.notify();
-                    }
+                    window.prevent_default();
                     cx.stop_propagation();
                     return;
                 }
@@ -4906,6 +4902,37 @@ impl KarWorkbench {
         })
     }
 
+    fn palette_option(
+        id: impl Into<ElementId>,
+        index: usize,
+        active: bool,
+        s: &StudioPalette,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        // Arrow keys operate from the search field. Pointer movement changes the same
+        // active option, so Enter always opens the row that is visibly highlighted.
+        div()
+            .id(id)
+            .role(Role::ListBoxOption)
+            .aria_selected(active)
+            .when(active, |row| row.aria_active_descendant().bg(s.active))
+            .w_full()
+            .h(px(32.))
+            .flex_none()
+            .px(px(10.))
+            .rounded(px(R_CTRL))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .cursor_pointer()
+            .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                if this.cmd_selected_ix != index {
+                    this.cmd_selected_ix = index;
+                    cx.notify();
+                }
+            }))
+    }
+
     fn render_command_palette_modal(
         &mut self,
         s: &StudioPalette,
@@ -4932,6 +4959,8 @@ impl KarWorkbench {
 
         let mut list = div()
             .id("kar-cmd-palette-scroll")
+            .role(Role::ListBox)
+            .aria_label(loc.pick("命令结果", "Command results"))
             .track_scroll(&self.cmd_scroll)
             .min_h_0()
             .flex_1()
@@ -4972,13 +5001,7 @@ impl KarWorkbench {
             let cmd_id = item.id;
             let active = ix == selected;
             list = list.child(
-                Tactile::ghost(("cmd-palette-item", ix), s)
-                    .lit(active)
-                    .w_full()
-                    .h(px(32.))
-                    .flex_none()
-                    .px(px(10.))
-                    .gap(px(10.))
+                Self::palette_option(("cmd-palette-item", ix), ix, active, s, cx)
                     .child(pro_icon(
                         item.icon,
                         ICON_SM,
@@ -4997,10 +5020,10 @@ impl KarWorkbench {
                     .when(!item.shortcut.is_empty(), |row| {
                         row.child(render_kbd(item.shortcut, s))
                     })
-                    .on_press(cx, move |this, window, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         this.accept_command_palette(window, cx);
                         this.execute_command_id(cmd_id, window, cx);
-                    }),
+                    })),
             );
         }
 
@@ -5025,12 +5048,7 @@ impl KarWorkbench {
                         let rel = rel_path.clone();
                         let label = rel.display().to_string();
                         list = list.child(
-                            Tactile::ghost(("cmd-hit-path", h_ix), s)
-                                .lit(hit_active)
-                                .w_full()
-                                .h(px(32.))
-                                .px(px(10.))
-                                .gap(px(8.))
+                            Self::palette_option(("cmd-hit-path", h_ix), items.len() + h_ix, hit_active, s, cx)
                                 .child(pro_icon(ProIcon::PageDoc, ICON_SM, s.pro.accent_info))
                                 .child(
                                     div()
@@ -5047,10 +5065,10 @@ impl KarWorkbench {
                                         .text_color(s.muted)
                                         .child(loc.pick("打开文件", "Open file")),
                                 )
-                                .on_press(cx, move |this, win, cx| {
+                                .on_click(cx.listener(move |this, _, win, cx| {
                                     this.accept_command_palette(win, cx);
                                     this.open_workspace_any_file(rel.clone(), win, cx);
-                                }),
+                                })),
                         );
                     }
                     GlobalSearchHit::FileContent {
@@ -5062,13 +5080,7 @@ impl KarWorkbench {
                         let title = format!("{}:{line}", rel.display());
                         let sub = snippet.clone();
                         list = list.child(
-                            Tactile::ghost(("cmd-hit-line", h_ix), s)
-                                .lit(hit_active)
-                                .w_full()
-                                .h(px(32.))
-                                .flex_none()
-                                .px(px(10.))
-                                .gap(px(8.))
+                            Self::palette_option(("cmd-hit-line", h_ix), items.len() + h_ix, hit_active, s, cx)
                                 .child(pro_icon(ProIcon::Search, ICON_SM, s.muted))
                                 .child(
                                     div()
@@ -5079,10 +5091,10 @@ impl KarWorkbench {
                                         .text_color(s.ink)
                                         .child(format!("{title}  —  {sub}")),
                                 )
-                                .on_press(cx, move |this, win, cx| {
+                                .on_click(cx.listener(move |this, _, win, cx| {
                                     this.accept_command_palette(win, cx);
                                     this.open_workspace_any_file(rel.clone(), win, cx);
-                                }),
+                                })),
                         );
                     }
                     GlobalSearchHit::ChatMessage {
@@ -5094,13 +5106,7 @@ impl KarWorkbench {
                         let cid = *chat_id;
                         let desc = format!("[{role_label}] {chat_title}: {snippet}");
                         list = list.child(
-                            Tactile::ghost(("cmd-hit-msg", h_ix), s)
-                                .lit(hit_active)
-                                .w_full()
-                                .h(px(32.))
-                                .flex_none()
-                                .px(px(10.))
-                                .gap(px(8.))
+                            Self::palette_option(("cmd-hit-msg", h_ix), items.len() + h_ix, hit_active, s, cx)
                                 .child(pro_icon(ProIcon::Sparkles, ICON_SM, s.pro.purple))
                                 .child(
                                     div()
@@ -5111,10 +5117,10 @@ impl KarWorkbench {
                                         .text_color(s.ink)
                                         .child(desc),
                                 )
-                                .on_press(cx, move |this, win, cx| {
+                                .on_click(cx.listener(move |this, _, win, cx| {
                                     this.accept_command_palette(win, cx);
                                     this.open_chat(cid, win, cx);
-                                }),
+                                })),
                         );
                     }
                 }
@@ -5140,12 +5146,7 @@ impl KarWorkbench {
                         .child(loc.pick("立即提问", "Ask in thread")),
                 )
                 .child(
-                    Tactile::ghost("cmd-palette-ask-agent", s)
-                        .lit(active)
-                        .w_full()
-                        .h(px(36.))
-                        .px(px(10.))
-                        .gap(px(10.))
+                    Self::palette_option("cmd-palette-ask-agent", ask_ix, active, s, cx)
                         .child(pro_icon(
                             ProIcon::Sparkles,
                             ICON_SM,
@@ -5164,11 +5165,11 @@ impl KarWorkbench {
                                 )),
                         )
                         .child(render_kbd("↵", s))
-                        .on_press(cx, move |this, window, cx| {
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             this.accept_command_palette(window, cx);
                             this.fill_starter_prompt(&q_for_send, window, cx);
                             this.submit_composer_prompt(window, cx);
-                        }),
+                        })),
                 );
         }
 
@@ -5188,15 +5189,10 @@ impl KarWorkbench {
             self.cmd_scroll.scroll_to_item(selected_child);
         }
 
-        let card = div()
+        let card = crate::ui_primitives::frosted_panel(&s)
             .w(px((f32::from(viewport.width) - 24.).min(576.)))
             .h(px((f32::from(viewport.height) * 0.85).min(420.)))
             .max_w_full()
-            .rounded(px(14.))
-            .bg(s.card)
-            .border_1()
-            .border_color(s.line)
-            .shadow(s.popover_shadow())
             .overflow_hidden()
             .flex()
             .flex_col()
@@ -6481,7 +6477,7 @@ impl Render for KarWorkbench {
                 .w(px(sidebar_w))
                 .h_full()
                 .flex_none()
-                .bg(s.stage)
+                .when(compact, |d| d.bg(s.stage))
                 .overflow_hidden()
                 .child(
                     div()
@@ -6558,7 +6554,7 @@ impl Render for KarWorkbench {
             )
             .size_full()
             .relative()
-            .bg(s.stage)
+            .bg(crate::ui_primitives::material::window_tint(&s))
             .flex()
             .flex_row()
             .overflow_hidden()

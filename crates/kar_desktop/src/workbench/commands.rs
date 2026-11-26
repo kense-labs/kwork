@@ -4,8 +4,11 @@ use crate::kar_bridge::KarCommand;
 use crate::studio_hub::SlashCommandItem;
 use crate::types::ChatAccessMode;
 use crate::ui_primitives::UiLocale;
-use crate::ui_primitives::{FS_META, FS_UI, R_CARD, StudioPalette};
+use crate::ui_primitives::{
+    FS_META, FS_UI, HEADER_H, ICON_SM, R_CTRL, StudioPalette, frosted_panel,
+};
 use gpui::{prelude::*, *};
+use kui::primitives::pro_icons::{ProIcon, pro_icon, pro_svg};
 
 #[derive(Default)]
 pub(super) struct SlashPicker {
@@ -334,10 +337,22 @@ impl KarWorkbench {
             }
             return;
         }
-        let index = self.slash.index.min(choices.len() - 1);
+        let index = selected_index(&choices, self.slash.index);
         match ev.keystroke.key.as_str() {
-            "down" => self.slash.index = (index + 1) % choices.len(),
-            "up" => self.slash.index = (index + choices.len() - 1) % choices.len(),
+            "down" | "up" => {
+                let n = choices.len();
+                let down = ev.keystroke.key == "down";
+                self.slash.index = (1..=n)
+                    .map(|step| {
+                        if down {
+                            (index + step) % n
+                        } else {
+                            (index + n - step) % n
+                        }
+                    })
+                    .find(|&i| choices[i].enabled)
+                    .unwrap_or(index);
+            }
             "escape" => self.slash.close(),
             "enter" | "tab" => {
                 if choices[index].enabled {
@@ -356,14 +371,11 @@ impl KarWorkbench {
 
     pub(crate) fn slash_popup(
         &self,
-        width: f32,
         s: &StudioPalette,
         win: &Window,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
         let editor = self.composer_editor.read(cx);
-        let below =
-            self.projected.turns.is_empty() && f32::from(win.viewport_size().height) >= 530.;
         if !editor.focus_handle(cx).is_focused(win) || self.open_menu.is_some() {
             return None;
         }
@@ -372,26 +384,17 @@ impl KarWorkbench {
         if choices.is_empty() && query != "/" {
             return None;
         }
-        let index = self.slash.index.min(choices.len().saturating_sub(1));
-        let mut menu = div()
+        let selected = selected_index(&choices, self.slash.index);
+        let mut menu = frosted_panel(s)
             .id("composer-slash-picker")
             .role(Role::ListBox)
             .aria_label(self.ui_locale.pick("对话指令", "Chat commands"))
-            .w(px((width - 12.).clamp(120., 350.)))
             .p(px(4.))
-            .max_h(px(
-                (f32::from(win.viewport_size().height) * 0.38).clamp(70., 230.)
-            ))
             .overflow_y_scroll()
             .track_scroll(&self.slash.scroll)
             .occlude()
             .flex()
-            .flex_col()
-            .rounded(px(R_CARD))
-            .bg(s.card)
-            .border_1()
-            .border_color(s.line)
-            .shadow(s.popover_shadow());
+            .flex_col();
         if choices.is_empty() {
             menu = menu.child(
                 div()
@@ -407,28 +410,52 @@ impl KarWorkbench {
         }
         for (i, choice) in choices.into_iter().enumerate() {
             let enabled = choice.enabled;
+            let label = match &choice.action {
+                Command::Goal => self.ui_locale.pick("目标", "Goal"),
+                Command::PlanDraft => self.ui_locale.pick("计划", "Plan"),
+                Command::Native(_) => &choice.name,
+            };
+            let ink = if enabled { s.ink } else { s.muted };
+            // Keep the advertised slash spelling beside its localized name.
+            let alias = (label != choice.name).then(|| choice.name.clone());
+            let icon = match choice.name.as_str() {
+                "/goal" => pro_svg(
+                    "0 0 24 24",
+                    r#"<g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 10.1a9 9 0 1 1-6.7-6.7M16.8 11a5 5 0 1 1-3.8-3.8M12 12l8-8M17 4h3v3"/></g>"#,
+                    ICON_SM,
+                    ink,
+                ),
+                "/plan" => pro_icon(ProIcon::Tasks, ICON_SM, ink),
+                _ => pro_icon(ProIcon::Terminal, ICON_SM, ink),
+            };
+            let spoken = format!("{} · {}", choice.name, choice.description);
             menu = menu.child(
                 div()
                     .id(("slash-choice", i))
                     .role(Role::ListBoxOption)
-                    .aria_label(format!("{} · {}", choice.name, choice.description))
-                    .aria_selected(i == index)
+                    .aria_label(spoken)
+                    .aria_selected(i == selected)
                     .flex_none()
                     .flex()
                     .w_full()
+                    .min_w_0()
                     .items_center()
-                    .h(px(34.))
+                    .h(px(30.))
                     .px(px(9.))
-                    .gap(px(12.))
-                    .rounded(px(5.))
-                    .when(i == index, |d| d.bg(s.soft))
-                    .when(enabled, |d| d.cursor_pointer().hover(|st| st.bg(s.hover)))
+                    .gap(px(8.))
+                    .rounded(px(R_CTRL))
+                    .when(i == selected && enabled, |d| d.bg(s.hover))
+                    .when(enabled, |d| d.cursor_pointer())
+                    .child(icon)
                     .child(
                         div()
+                            .flex_none()
+                            .max_w(relative(0.44))
+                            .truncate()
                             .text_size(px(FS_UI))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(if enabled { s.ink } else { s.muted })
-                            .child(choice.name),
+                            .text_color(ink)
+                            .child(label.to_owned()),
                     )
                     .child(
                         div()
@@ -439,45 +466,76 @@ impl KarWorkbench {
                             .text_color(s.muted)
                             .child(choice.description),
                     )
-                    .on_mouse_down(MouseButton::Left, move |_, win, cx| {
+                    .when_some(alias, |row, alias| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .text_size(px(FS_META))
+                                .text_color(s.muted)
+                                .child(alias),
+                        )
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, win, cx| {
+                        // Preserve the editor focus so pointer selection works, including with an IME.
                         win.prevent_default();
                         cx.stop_propagation();
                     })
                     .when(enabled, |d| {
-                        d.on_click(cx.listener(move |this, _, win, cx| {
-                            this.choose_slash(choice.action.clone(), win, cx)
+                        d.on_mouse_move(cx.listener(move |this, _, _, cx| {
+                            if this.slash.index != i {
+                                this.slash.index = i;
+                                cx.notify();
+                            }
                         }))
+                        .on_click(cx.listener(
+                            move |this, _, win, cx| {
+                                this.choose_slash(choice.action.clone(), win, cx);
+                                cx.stop_propagation();
+                            },
+                        ))
                     }),
             );
         }
+
+        // Size against the actual writing card after layout. This remains accurate
+        // in the centered start page, in a split pane and above a growing draft.
         Some(
-            div()
-                .absolute()
-                .left(px(3.))
-                .map(|d| {
-                    if below {
-                        d.top(relative(1.))
-                    } else {
-                        d.top_0()
-                    }
-                })
-                .size_0()
-                .child(
-                    deferred(
-                        anchored()
-                            .anchor(if below {
-                                Anchor::TopLeft
-                            } else {
-                                Anchor::BottomLeft
-                            })
-                            .offset(point(px(0.), px(if below { 5. } else { -5. })))
-                            .snap_to_window_with_margin(Edges::all(px(8.)))
-                            .child(menu),
-                    )
-                    .with_priority(3),
+            deferred(
+                canvas(
+                    move |anchor, win, cx| {
+                        let bottom = anchor.top() - px(4.);
+                        let max_height = (bottom - px(HEADER_H + 4.)).max(px(0.)).min(px(360.));
+                        let mut menu = menu
+                            .w(anchor.size.width)
+                            .max_h(max_height)
+                            .into_any_element();
+                        let space = size(
+                            AvailableSpace::Definite(anchor.size.width),
+                            AvailableSpace::MaxContent,
+                        );
+                        let dimensions = menu.layout_as_root(space, win, cx);
+                        menu.prepaint_at(point(anchor.left(), bottom - dimensions.height), win, cx);
+                        menu
+                    },
+                    |_, mut menu, win, cx| menu.paint(win, cx),
                 )
-                .into_any_element(),
+                .absolute()
+                .left_0()
+                .right_0()
+                .top_0()
+                .h(px(0.)),
+            )
+            .with_priority(3)
+            .into_any_element(),
         )
+    }
+}
+
+fn selected_index(choices: &[Choice], index: usize) -> usize {
+    if choices.get(index).is_some_and(|c| c.enabled) {
+        index
+    } else {
+        choices.iter().position(|c| c.enabled).unwrap_or(0)
     }
 }
 
@@ -513,7 +571,12 @@ mod tests {
         assert_eq!(actions(true, &[]), vec![Command::Goal, Command::PlanDraft]);
         assert!(command_choices(false, &[], false, "/plan", UiLocale::En).is_empty());
         assert!(command_choices(false, &[], false, "/goal", UiLocale::En).is_empty());
-        assert!(!command_choices(false, &[], true, "/goal", UiLocale::En)[0].enabled);
+        let unsupported_goal = command_choices(false, &[], true, "/", UiLocale::En);
+        assert!(!unsupported_goal[0].enabled);
+        assert_eq!(
+            unsupported_goal[super::selected_index(&unsupported_goal, 0)].action,
+            Command::PlanDraft
+        );
     }
 
     #[test]

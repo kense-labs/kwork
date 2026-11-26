@@ -25,7 +25,7 @@ use kui::{
 };
 
 use crate::ui_primitives::{
-    CTRL_H, FS_CONTROL, FS_META, FS_UI, LH_CONTROL, ICON, ICON_SM, ICON_XS, R_CARD, R_CTRL, R_PILL, ROW_H, StudioPalette,
+    CTRL_H, FS_CONTROL, FS_META, FS_UI, LH_CONTROL, ICON, ICON_SM, ICON_XS, R_CTRL, R_PILL, ROW_H, StudioPalette,
 };
 pub(crate) fn copy_with_hint(
     id: String,
@@ -83,6 +83,7 @@ pub struct Tactile {
     lit_fill: Hsla,
     lit: bool,
     radius: f32,
+    face_inset: f32,
     disabled: bool,
     inert: bool,
     ink: Option<(Hsla, Hsla)>,
@@ -108,6 +109,7 @@ impl Tactile {
             lit_fill: s.active,
             lit: false,
             radius: R_CTRL,
+            face_inset: 0.,
             disabled: false,
             inert: false,
             ink: None,
@@ -145,6 +147,12 @@ impl Tactile {
 
     pub fn radius(mut self, radius: f32) -> Self {
         self.radius = radius;
+        self
+    }
+
+    /// Inset just the painted face of a button, keeping its full hit and focus area.
+    pub fn face_inset(mut self, inset: f32) -> Self {
+        self.face_inset = inset;
         self
     }
 
@@ -272,6 +280,7 @@ impl RenderOnce for Tactile {
             pro_mix_color(base, self.hover, hov * (1. - 0.55 * lit))
         };
         let radius = self.radius;
+        let face_inset = self.face_inset;
         let reduce_motion = disabled_motion(cx);
         let down = if reduce_motion { 0. } else { down };
         let focus_ring = StudioPalette::get(cx).pro.focus;
@@ -284,15 +293,16 @@ impl RenderOnce for Tactile {
         let paint_face = canvas(
             |_, _, _| (),
             move |bounds, _, window, _| {
-                let bw = f32::from(bounds.size.width);
-                let bh = f32::from(bounds.size.height);
+                let face_bounds = bounds.inset(px(face_inset));
+                let bw = f32::from(face_bounds.size.width);
+                let bh = f32::from(face_bounds.size.height);
                 if bw <= 1. || bh <= 1. {
                     return;
                 }
                 let ix = (bw * 0.022 * down).clamp(0., 2.2);
                 let iy = (bh * 0.042 * down).clamp(0., 1.4);
                 let rect = Bounds::new(
-                    point(bounds.origin.x + px(ix), bounds.origin.y + px(iy)),
+                    point(face_bounds.origin.x + px(ix), face_bounds.origin.y + px(iy)),
                     size(px((bw - 2. * ix).max(1.)), px((bh - 2. * iy).max(1.))),
                 );
                 let r = px(radius)
@@ -303,7 +313,7 @@ impl RenderOnce for Tactile {
                 }
                 if show_button_ring {
                     window.paint_quad(
-                        outline(bounds, focus_ring, BorderStyle::default()).corner_radii(r),
+                        outline(bounds, focus_ring, BorderStyle::default()).corner_radii(r + px(face_inset)),
                     );
                 }
             },
@@ -569,18 +579,13 @@ pub(crate) fn menu_popup(
         let gap = if above { -(6. - travel) } else { 6. - travel };
 
         let dismiss = on_dismiss.clone();
-        let surface = div()
+        let surface = crate::ui_primitives::frosted_panel(&s)
             .id(surface_id)
             .role(Role::Menu)
             .w(px(width))
             .max_h(px(max_height))
             .overflow_y_scroll()
             .p(px(4.))
-            .rounded(px(R_CARD))
-            .bg(s.card)
-            .border_1()
-            .border_color(s.line)
-            .shadow(s.popover_shadow())
             .opacity(amount)
             .when(open, |d| {
                 d.occlude()
