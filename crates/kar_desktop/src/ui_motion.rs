@@ -433,18 +433,33 @@ pub fn menu_host(trigger: impl IntoElement, menu: AnyElement) -> Div {
     div().relative().flex_none().child(trigger).child(menu)
 }
 
+pub(crate) struct MenuSize {
+    pub width: f32,
+    pub max_height: f32,
+}
+
+impl From<f32> for MenuSize {
+    fn from(width: f32) -> Self {
+        Self {
+            width,
+            max_height: 360.,
+        }
+    }
+}
+
 /// A floating menu. Drawn at `deferred` priority 3 with an occluding full-window dismiss shield
 /// while open so outside clicks cleanly dismiss the menu without clicking through to underlying
 /// controls, and bounded in height so long lists scroll smoothly inside narrow windows.
-pub fn menu_popup(
+pub(crate) fn menu_popup(
     id: impl Into<ElementId>,
     open: bool,
     placement: MenuPlacement,
-    width: f32,
+    dimensions: impl Into<MenuSize>,
     rows: Vec<AnyElement>,
     on_dismiss: DismissFn,
     s: &StudioPalette,
 ) -> AnyElement {
+    let MenuSize { width, max_height } = dimensions.into();
     let id = id.into();
     let surface_id = pro_eid(&id, "surface");
     let s = *s;
@@ -469,7 +484,7 @@ pub fn menu_popup(
             .id(surface_id)
             .role(Role::Menu)
             .w(px(width))
-            .max_h(px(360.))
+            .max_h(px(max_height))
             .overflow_y_scroll()
             .p(px(4.))
             .rounded(px(R_CARD))
@@ -519,8 +534,10 @@ pub fn menu_item(
     label: impl Into<SharedString>,
     s: &StudioPalette,
 ) -> Tactile {
+    let label = label.into();
     Tactile::ghost(id, s)
         .role(Role::MenuItem)
+        .aria(label.clone())
         .w_full()
         .flex_none()
         .h(px(ROW_H))
@@ -538,7 +555,7 @@ pub fn menu_item(
                     .child(el),
             )
         })
-        .child(div().flex_1().min_w_0().truncate().child(label.into()))
+        .child(div().flex_1().min_w_0().truncate().child(label))
 }
 
 /// A menu row led by one of KUI's line icons.

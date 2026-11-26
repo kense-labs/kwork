@@ -406,6 +406,9 @@ impl KarWorkbench {
         let traffic_extra = (macos_traffic_pad(window) - base_pad).max(0.0);
         let left_pad = base_pad + traffic_extra * rail_hidden;
         let collapsed_slot_w = 60.0 * rail_hidden;
+        // Leave room for the thread title and the panel controls when the sidebar tools move here.
+        let title_lane = pane_w - left_pad - collapsed_slot_w;
+        let compact_crumb = title_lane < if on_start_screen { 232. } else { 272. };
 
         let ws = self.effective_workspace_dir();
         let proj_name = if matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
@@ -419,20 +422,27 @@ impl KarWorkbench {
                 .to_owned()
         };
 
+        let new_in_project = loc.pick("在此项目中新建对话", "New thread in this project");
         let project_crumb = Tactile::ghost("chat-project-crumb", s)
             .h(px(28.))
             .min_w_0()
+            .when(compact_crumb, |b| {
+                b.w(px(24.)).flex_none().justify_center()
+            })
             .gap(px(6.))
-            .tip(loc.pick("在此项目中新建对话", "New thread in this project"))
+            .tip(new_in_project)
+            .aria(format!("{new_in_project} · {proj_name}"))
             .child(render_project_monogram(&proj_name, 16., s, cx))
-            .child(
-                div()
-                    .max_w(px((pane_w * 0.18).clamp(44., 160.)))
-                    .truncate()
-                    .text_size(px(14.))
-                    .text_color(s.muted)
-                    .child(proj_name),
-            )
+            .when(!compact_crumb, |b| {
+                b.child(
+                    div()
+                        .max_w(px((pane_w * 0.18).clamp(44., 160.)))
+                        .truncate()
+                        .text_size(px(14.))
+                        .text_color(s.muted)
+                        .child(proj_name),
+                )
+            })
             .on_press(cx, move |this, win, cx| {
                 this.select_project_and_new_chat(ws.clone(), win, cx)
             });
@@ -504,7 +514,10 @@ impl KarWorkbench {
                                         loc.pick("展开侧边栏  ⌘.", "Expand sidebar  ⌘."),
                                         s,
                                     )
-                                    .on_press(cx, |this, _, cx| this.set_sidebar_open(true, cx)),
+                                    .on_press(cx, |this, window, cx| {
+                                        this.focus_handle.focus(window, cx);
+                                        this.set_sidebar_open(true, cx);
+                                    }),
                                 )
                                 .child(
                                     Tactile::ghost("chat-new", s)
@@ -519,7 +532,9 @@ impl KarWorkbench {
                         )
                     })
                     .child(project_crumb)
-                    .child(div().text_size(px(13.)).text_color(s.faint).child("/"))
+                    .when(!compact_crumb, |d| {
+                        d.child(div().text_size(px(13.)).text_color(s.faint).child("/"))
+                    })
                     .child(title_el)
                     .when(!on_start_screen, |d| {
                         d.child(menu_host(
@@ -1404,9 +1419,6 @@ impl KarWorkbench {
             .line_height(px(label_line))
             .font_weight(FontWeight::MEDIUM)
             .ink(s.ink, s.ink)
-            .when(self.open_menu != Some(Menu::ComposerProject), |button| {
-                button.tip(workspace.display().to_string())
-            })
             .aria(format!(
                 "{} · {project}",
                 loc.pick("切换项目", "Switch project")
@@ -2013,15 +2025,15 @@ impl KarWorkbench {
                 let wt = self.new_chat_use_worktree;
                 let local_label = loc.pick("当前检出", "Current checkout");
                 let tree_label = loc.pick("独立工作树", "Worktree");
-                let ws = self.effective_workspace_dir();
+                let mode_label = if wt { tree_label } else { local_label };
                 let mode_button = Tactile::ghost("cmp-worktree-mode", s)
                     .h(px(24.))
                     .px(px(6.))
                     .gap(px(6.))
                     .ink(s.muted, s.ink)
-                    .tip(ws.display().to_string())
+                    .aria(mode_label)
                     .child(render_folder_icon(13., s.muted))
-                    .child(if wt { tree_label } else { local_label });
+                    .child(mode_label);
                 let mode = if self.git_snapshot.is_repo || wt {
                     let choices = [local_label, tree_label]
                         .into_iter()

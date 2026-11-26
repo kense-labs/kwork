@@ -9,6 +9,7 @@ use kui::{
     },
     primitives::{
         editor::{Editor, InputMode},
+        family::{Slide, press},
         pro_icons::{ProIcon, pro_icon},
     },
 };
@@ -23,6 +24,13 @@ use crate::{
     },
     workbench::KarWorkbench,
 };
+
+struct SettingsSwitchInteraction {
+    focus: FocusHandle,
+    hovered: bool,
+    stretch: Slide,
+    _blur: Subscription,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SettingsTab {
@@ -122,6 +130,110 @@ impl KarWorkbench {
         cx.notify();
     }
 
+    fn settings_switch(
+        id: &'static str,
+        label: &'static str,
+        checked: bool,
+        change: fn(&mut Self, &mut Context<Self>),
+        s: &StudioPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let phase = pro_spring_f32((id, 0usize), u8::from(checked) as f32, 0.16, window, cx)
+            .clamp(0., 1.);
+        let interaction = window.use_keyed_state((id, 1usize), cx, |window, cx| {
+            let focus = cx.focus_handle().tab_stop(true);
+            let blur = cx.on_blur(&focus, window, |state: &mut SettingsSwitchInteraction, _, cx| {
+                state.stretch.set(0., cx);
+                cx.notify();
+            });
+            SettingsSwitchInteraction {
+                focus,
+                hovered: false,
+                stretch: Slide::snappy(0.),
+                _blur: blur,
+            }
+        });
+        let (focus, hovered, stretch) = interaction.update(cx, |state, cx| {
+            (state.focus.clone(), state.hovered, state.stretch.get(window, cx).clamp(0., 1.) * 3.)
+        });
+        let keyboard_focus = focus.is_focused(window) && window.last_input_was_keyboard();
+        let track = if checked { s.brand_action } else { s.line_strong };
+        let track = if hovered {
+            track.blend(s.ink.opacity(0.12))
+        } else {
+            track
+        };
+        let control = div()
+            .id(id)
+            .role(Role::Switch)
+            .aria_label(label)
+            .aria_toggled(checked.into())
+            .track_focus(&focus)
+            .tab_stop(true)
+            .size(px(32.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .child(
+                div()
+                    .relative()
+                    .w(px(30.))
+                    .h(px(18.))
+                    .rounded_full()
+                    .bg(track)
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(2. + phase * (12. - stretch)))
+                            .top(px(2.))
+                            .w(px(14. + stretch))
+                            .h(px(14.))
+                            .rounded_full()
+                            .bg(if checked {
+                                s.on_brand_action
+                            } else {
+                                s.surface
+                            }),
+                    )
+                    .when(keyboard_focus, |track| {
+                        track.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .rounded_full()
+                                .border_1()
+                                .border_color(s.ink),
+                        )
+                    }),
+            )
+            .on_key_down(move |ev, window, cx| {
+                if ev.keystroke.key == "tab" {
+                    if ev.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+            })
+            .on_click(cx.listener(move |wb, _, _, cx| change(wb, cx)));
+        interaction.update(cx, |_, cx| {
+            press(control, cx, |state| &mut state.stretch)
+                .on_hover(cx.listener(|state, hovered, _, cx| {
+                    state.hovered = *hovered;
+                    if !hovered {
+                        state.stretch.set(0., cx);
+                    }
+                    cx.notify();
+                }))
+                .into_any_element()
+        })
+    }
+
     fn render_general_settings(
         &self,
         s: &StudioPalette,
@@ -199,53 +311,14 @@ impl KarWorkbench {
             .child(loc.pick("简体中文", "English"))
             .tip(loc.pick("切换至 English", "Switch to 简体中文"))
             .on_press(cx, |wb, window, cx| wb.toggle_ui_locale(window, cx));
-        let mut toggle = |id: &'static str,
-                          label: &'static str,
-                          checked: bool,
-                          change: fn(&mut Self, &mut Context<Self>)| {
-            let phase = pro_spring_f32((id, 0usize), u8::from(checked) as f32, 0.16, window, cx)
-                .clamp(0., 1.);
-            Tactile::ghost(id, s)
-                .role(Role::Switch)
-                .aria(label)
-                .tip(label)
-                .size(px(32.))
-                .justify_center()
-                .child(
-                    div()
-                        .relative()
-                        .w(px(30.))
-                        .h(px(18.))
-                        .rounded_full()
-                        .bg(if checked {
-                            s.brand_action
-                        } else {
-                            s.line_strong
-                        })
-                        .child(
-                            div()
-                                .absolute()
-                                .left(px(2. + phase * 12.))
-                                .top(px(2.))
-                                .size(px(14.))
-                                .rounded_full()
-                                .bg(if checked {
-                                    s.on_brand_action
-                                } else {
-                                    s.surface
-                                }),
-                        ),
-                )
-                .on_press(cx, move |wb, _, cx| change(wb, cx))
-                .into_any_element()
-        };
-        let sidebar = toggle(
+        let sidebar = Self::settings_switch(
             "settings-show-sidebar",
             loc.pick("显示侧栏", "Show sidebar"),
             self.sidebar_open,
             |wb, cx| wb.toggle_sidebar(cx),
+            s, window, cx,
         );
-        let hidden_files = toggle(
+        let hidden_files = Self::settings_switch(
             "settings-hidden-files",
             loc.pick("显示隐藏文件", "Show hidden files"),
             self.tree_show_hidden,
@@ -257,6 +330,7 @@ impl KarWorkbench {
                 });
                 cx.notify();
             },
+            s, window, cx,
         );
         let rule = || div().mx(px(16.)).h(px(1.)).bg(s.line_soft);
         let selected = if self.follows_system_appearance() {
@@ -475,6 +549,22 @@ impl KarWorkbench {
         let width = f32::from(viewport.width);
         let height = f32::from(viewport.height);
         let small_screen = width < 768.;
+        let inset = if width >= 1024. {
+            40.
+        } else if width >= 640. {
+            24.
+        } else {
+            0.
+        };
+        let card_h = (height - 2. * inset).clamp(1., 960.);
+        let rail_top_padding = if cfg!(target_os = "macos") && !window.is_fullscreen() {
+            // The traffic lights end at y=34 even when the panel covers the title bar.
+            let card_top = (height - card_h) * 0.5;
+            (40. - card_top).max(8.)
+        } else {
+            8.
+        };
+        let card_radius = 16.;
         let expanded = window.use_keyed_state("settings-nav-expanded", cx, |_, _| false);
         let compact = small_screen && !*expanded.read(cx);
         let modal_focus = window
@@ -629,9 +719,16 @@ impl KarWorkbench {
             .h_full()
             .flex_none()
             .bg(if s.dark { s.tray } else { s.stage })
+            // GPUI's overflow mask is rectangular. The rail paints its own outer corners.
+            .when(inset > 0., |d| {
+                let radius = px(card_radius - 1.);
+                d.rounded_l(radius)
+                    .when(small_screen && !compact, |d| d.rounded_r(radius))
+            })
             .border_r_1()
             .border_color(s.line_soft)
             .p(px(8.))
+            .pt(px(rail_top_padding))
             .flex()
             .flex_col()
             .gap(px(8.))
@@ -690,15 +787,6 @@ impl KarWorkbench {
             }
         };
 
-        // AppRouteModal uses 24px outer gutters, increasing to 40px on large screens.
-        let inset = if width >= 1024. {
-            40.
-        } else if width >= 640. {
-            24.
-        } else {
-            0.
-        };
-        let card_h = (height - 2. * inset).clamp(1., 960.);
         let focus_before_close = modal_focus.clone();
         let key_search = search.clone();
         let key_expand = expanded.clone();
@@ -759,7 +847,7 @@ impl KarWorkbench {
             .w(px((width - 2. * inset).clamp(1., 1280.)))
             .h(px(card_h))
             .max_w_full()
-            .when(inset > 0., |d| d.rounded(px(16.)).border_1())
+            .when(inset > 0., |d| d.rounded(px(card_radius)).border_1())
             .bg(s.surface)
             .border_color(s.line)
             .shadow(s.popover_shadow())

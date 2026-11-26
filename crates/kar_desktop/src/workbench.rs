@@ -441,6 +441,7 @@ pub struct KarWorkbench {
     /// The conversation's share of the work area in `Split`, as last set by the person.
     pub split_ratio: f32,
     pane_drag: Option<PaneDrag>,
+    pub(crate) sidebar_focus: FocusHandle,
     sidebar_divider_focus: FocusHandle,
     doc_divider_focus: FocusHandle,
     collapsed_sidebar_grip: bool,
@@ -1350,6 +1351,7 @@ impl KarWorkbench {
             layout_mode: initial_layout,
             split_ratio,
             pane_drag: None,
+            sidebar_focus: cx.focus_handle(),
             sidebar_divider_focus: cx.focus_handle().tab_stop(true),
             doc_divider_focus: cx.focus_handle().tab_stop(true),
             collapsed_sidebar_grip: false,
@@ -1976,7 +1978,7 @@ impl KarWorkbench {
         &self,
         menu: Menu,
         placement: MenuPlacement,
-        width: f32,
+        dimensions: impl Into<crate::ui_motion::MenuSize>,
         rows: Vec<AnyElement>,
         s: &StudioPalette,
         cx: &mut Context<Self>,
@@ -1988,7 +1990,7 @@ impl KarWorkbench {
                 entity.update(cx, |this, cx| this.dismiss_menu(menu, cx));
             }
         });
-        menu_popup(menu.id(), open, placement, width, rows, on_dismiss, s)
+        menu_popup(menu.id(), open, placement, dimensions, rows, on_dismiss, s)
     }
 
     fn any_dialog_open(&self, cx: &App) -> bool {
@@ -4744,6 +4746,9 @@ impl KarWorkbench {
                     true
                 }
                 "." | "\\" => {
+                    if self.sidebar_open && self.sidebar_focus.contains_focused(window, cx) {
+                        self.focus_handle.focus(window, cx);
+                    }
                     self.toggle_sidebar(cx);
                     true
                 }

@@ -8,7 +8,7 @@ use kui::{
     components::pro_chrome::{
         pro_fold, pro_mark_selected, pro_pill_indicator, pro_progress_ring, pro_selection_sensor,
     },
-    primitives::pro_icons::{ProIcon, pro_icon},
+    primitives::pro_icons::{ProIcon, pro_app_artwork, pro_icon},
 };
 
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
         ChatAccessMode, ChatListEntry, format_relative_age, runtime_display_name,
     },
     ui_motion::{
-        MenuPlacement, Tactile, icon_button, menu_caption, menu_check, menu_divider, menu_hint,
+        MenuPlacement, MenuSize, Tactile, icon_button, menu_caption, menu_check, menu_divider, menu_hint,
         menu_host, menu_icon_item, menu_item, soft_button,
     },
     ui_primitives::{
@@ -25,7 +25,7 @@ use crate::{
         clean_display_doc_name, macos_traffic_pad, render_approval_hand,
         render_circle_check_icon, render_folder_git_icon,
         render_folder_icon,
-        kar_brand_on, sidebar_texture, render_office_chip, render_project_monogram,
+        sidebar_texture, render_office_chip, render_project_monogram,
         render_radar_link_icon, render_runtime_mark, render_sample_tag,
         render_schedule_repeat_icon, render_square_pen_icon,
         tnum_features,
@@ -64,7 +64,10 @@ impl KarWorkbench {
                         self.ui_locale.pick("展开侧边栏", "Show sidebar"),
                         s,
                     )
-                    .on_press(cx, |this, _, cx| this.set_sidebar_open(true, cx)),
+                    .on_press(cx, |this, window, cx| {
+                        this.focus_handle.focus(window, cx);
+                        this.set_sidebar_open(true, cx);
+                    }),
                 )
             })
             .child(
@@ -179,10 +182,20 @@ impl KarWorkbench {
             }
         };
 
+        let toolbar_width = width - 8. - 1.; // Right inset and sidebar border.
+        let traffic_pad = macos_traffic_pad(window);
+        let left_inset = if cfg!(target_os = "macos") && !window.is_fullscreen() {
+            (toolbar_width - 4. * 28.).clamp(traffic_pad, 91.)
+        } else {
+            12.
+        };
+        let button_width = ((toolbar_width - left_inset) / 4.).clamp(24., 28.);
         let chrome_ink = s.ink;
         let toolbar_button = |id, label, icon, size| {
             Tactile::ghost(id, &s)
-                .size(px(28.))
+                .w(px(button_width))
+                .h(px(28.))
+                .flex_none()
                 .radius(6.)
                 .justify_center()
                 .fills(transparent_black(), chrome_ink.opacity(0.14))
@@ -192,13 +205,7 @@ impl KarWorkbench {
         let top_bar = div()
             .relative()
             .h(px(crate::ui_primitives::HEADER_H))
-            .pl(px(
-                if cfg!(target_os = "macos") && !window.is_fullscreen() {
-                    91.
-                } else {
-                    12.
-                },
-            ))
+            .pl(px(left_inset))
             .pr(px(8.))
             .window_control_area(WindowControlArea::Drag)
             .flex_none()
@@ -211,17 +218,22 @@ impl KarWorkbench {
                     ProIcon::SidebarLeft,
                     16.,
                 )
-                .on_press(cx, |this, _, cx| this.set_sidebar_open(false, cx)),
+                .on_press(cx, |this, window, cx| {
+                    this.focus_handle.focus(window, cx);
+                    this.set_sidebar_open(false, cx);
+                }),
             )
             .child(
                 Tactile::ghost("side-home", &s)
-                    .w(px(65.))
+                    .w(px(button_width))
+                    .flex_none()
                     .h(px(28.))
                     .radius(6.)
                     .justify_center()
                     .fills(transparent_black(), chrome_ink.opacity(0.14))
-                    .tip(loc.pick("Kwrok 主页", "Kwrok home"))
-                    .child(kar_brand_on(chrome_ink, cx))
+                    .aria(loc.pick("Kwrok 主页", "Kwrok home"))
+                    .tip(loc.pick("主页", "Home"))
+                    .when_some(pro_app_artwork("kense", 17., cx), |d, mark| d.child(mark))
                     .on_press(cx, |this, win, cx| this.start_new_chat(win, cx)),
             )
             .child(
@@ -748,12 +760,14 @@ impl KarWorkbench {
                 ))
         });
 
+        let more_open = self.open_menu == Some(Menu::SidebarMore);
         let footer_button = |id, icon, label| {
             Tactile::ghost(id, &s)
                 .size(px(32.))
                 .radius(6.)
                 .justify_center()
-                .tip(label)
+                .aria(label)
+                .when(!more_open, |button| button.tip(label))
                 .child(pro_icon(icon, 16., s.muted))
         };
         let more_btn = menu_host(
@@ -762,9 +776,9 @@ impl KarWorkbench {
                 ProIcon::MoreHorizontal,
                 loc.pick("更多操作", "More actions"),
             )
-            .lit(self.open_menu == Some(Menu::SidebarMore))
+            .lit(more_open)
             .on_press(cx, |this, _, cx| this.toggle_menu(Menu::SidebarMore, cx)),
-            self.render_sidebar_more_menu(&s, cx),
+            self.render_sidebar_more_menu(&s, window, cx),
         );
         let footer = div()
             .w_full()
@@ -774,7 +788,7 @@ impl KarWorkbench {
             .pb(px(8.))
             .flex()
             .items_center()
-            .gap(px(4.))
+            .gap(px(if width < 204. { 3. } else { 4. }))
             .when(in_conv, |row| {
                 row.child(
                     footer_button(
@@ -873,6 +887,7 @@ impl KarWorkbench {
 
         let has_running_task = self.sidebar_open && self.has_running_task();
         div()
+            .track_focus(&self.sidebar_focus)
             .relative()
             .size_full()
             .flex()
@@ -1404,34 +1419,44 @@ impl KarWorkbench {
         )
     }
 
-    fn render_sidebar_more_menu(&self, s: &StudioPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_sidebar_more_menu(
+        &self,
+        s: &StudioPalette,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let loc = self.ui_locale;
-        let rows: Vec<AnyElement> = vec![
-            menu_icon_item(
-                "side-more-inbox",
-                ProIcon::Inbox,
-                loc.pick("收件箱", "Inbox"),
-                s,
-            )
-            .on_press(cx, |this, _, cx| this.open_tasks_inbox_stage(cx))
-            .into_any_element(),
-            menu_icon_item(
-                "side-more-docs",
-                ProIcon::PageDoc,
-                loc.pick("文档", "Documents"),
-                s,
-            )
-            .on_press(cx, |this, _, cx| this.open_office_gallery_stage(cx))
-            .into_any_element(),
-            menu_icon_item(
-                "side-more-git",
-                ProIcon::GitBranch,
-                loc.pick("Git 变更", "Git changes"),
-                s,
-            )
-            .on_press(cx, |this, _, cx| this.open_git_workbench_tab(cx))
-            .into_any_element(),
-            menu_divider(s).into_any_element(),
+        let mut rows = Vec::new();
+        if self.main_stage_view != MainStageView::Conversation {
+            rows.extend([
+                menu_icon_item(
+                    "side-more-inbox",
+                    ProIcon::Inbox,
+                    loc.pick("收件箱", "Inbox"),
+                    s,
+                )
+                .on_press(cx, |this, _, cx| this.open_tasks_inbox_stage(cx))
+                .into_any_element(),
+                menu_icon_item(
+                    "side-more-docs",
+                    ProIcon::PageDoc,
+                    loc.pick("文档", "Documents"),
+                    s,
+                )
+                .on_press(cx, |this, _, cx| this.open_office_gallery_stage(cx))
+                .into_any_element(),
+                menu_icon_item(
+                    "side-more-git",
+                    ProIcon::GitBranch,
+                    loc.pick("Git 变更", "Git changes"),
+                    s,
+                )
+                .on_press(cx, |this, _, cx| this.open_git_workbench_tab(cx))
+                .into_any_element(),
+                menu_divider(s).into_any_element(),
+            ]);
+        }
+        rows.extend([
             menu_icon_item(
                 "side-more-language",
                 ProIcon::Globe,
@@ -1455,6 +1480,7 @@ impl KarWorkbench {
                 this.toggle_command_palette(window, cx);
             })
             .into_any_element(),
+            menu_divider(s).into_any_element(),
             menu_icon_item(
                 "side-more-remote",
                 ProIcon::Link,
@@ -1498,11 +1524,15 @@ impl KarWorkbench {
                 this.enter_coedit_demo_workshop(window, cx)
             })
             .into_any_element(),
-        ];
+        ]);
         self.render_menu(
             Menu::SidebarMore,
             MenuPlacement::AboveEnd,
-            228.,
+            MenuSize {
+                width: 236.,
+                // 40px above the bottom edge for the trigger, 6px gap, 10px top margin.
+                max_height: (f32::from(window.viewport_size().height) - 56.).max(36.),
+            },
             rows,
             s,
             cx,
