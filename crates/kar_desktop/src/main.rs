@@ -62,6 +62,7 @@ OPTIONS:
   --open-runtime-popover       Open the inline composer runtime picker popover after launch
   --open-latest-chat           Reopen the most recent saved chat in --chat-dir on launch
   --collapse-sidebar           Collapse the left navigation rail after launch
+  --hide-details-card          Start with the conversation environment and Git card closed
   --wide-canvas                Switch the Office split view to wide canvas mode
   --window-size <WxH>          Initial window size in logical px (default: 1100x780, min: 400x360)
   --light                      Launch in Light theme

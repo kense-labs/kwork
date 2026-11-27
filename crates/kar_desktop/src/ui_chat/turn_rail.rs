@@ -356,7 +356,7 @@ pub(crate) fn render(
             .flex_col()
             .gap(px(3.))
             .hover(|d| d.border_color(s.line_strong))
-            .active(|d| d.bg(s.hover))
+            .active(|d| d.border_color(s.muted))
             .cursor_pointer()
             .on_click(cx.listener(move |wb, _, win, cx| {
                 wb.jump_to_rail_turn(i, win, cx);

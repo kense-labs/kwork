@@ -12,7 +12,7 @@ use kui::{
 };
 
 pub(crate) mod material;
-pub(crate) use material::{frosted_composer, frosted_panel};
+pub(crate) use material::{frosted_card, frosted_composer, frosted_panel};
 
 use crate::types::{OfficeKind, runtime_brand_id, runtime_brand_svg, runtime_display_name};
 
@@ -345,48 +345,15 @@ impl StudioPalette {
         px(base * (1. + self.text_delta / FS_UI))
     }
 
-    /// Subtle resting 1px elevation for content cards (`s.card`).
-    pub fn card_shadow(&self) -> Vec<BoxShadow> {
-        let alpha = if self.dark { 0.28 } else { 0.035 };
-        vec![BoxShadow {
-            color: hsla(0., 0., 0., alpha),
-            offset: point(px(0.), px(1.)),
-            blur_radius: px(3.),
-            spread_radius: px(0.),
-            inset: false,
-        }]
-    }
-
-    /// Medium elevation for floating composer cards, rails, and jump pills.
-    pub fn floating_shadow(&self) -> Vec<BoxShadow> {
-        let (far, near) = if self.dark { (0.48, 0.24) } else { (0.08, 0.035) };
-        vec![
-            BoxShadow {
-                color: hsla(0., 0., 0., far),
-                offset: point(px(0.), px(6.)),
-                blur_radius: px(20.),
-                spread_radius: px(-4.),
-                inset: false,
-            },
-            BoxShadow {
-                color: hsla(0., 0., 0., near),
-                offset: point(px(0.), px(1.)),
-                blur_radius: px(4.),
-                spread_radius: px(0.),
-                inset: false,
-            },
-        ]
-    }
-
     /// Popover & modal glass elevation shadow.
     pub fn popover_shadow(&self) -> Vec<BoxShadow> {
-        let (far, near) = if self.dark { (0.68, 0.34) } else { (0.12, 0.045) };
+        let (far, near) = if self.dark { (0.32, 0.15) } else { (0.10, 0.035) };
         vec![
             BoxShadow {
                 color: hsla(0., 0., 0., far),
-                offset: point(px(0.), px(16.)),
-                blur_radius: px(42.),
-                spread_radius: px(-10.),
+                offset: point(px(0.), px(7.)),
+                blur_radius: px(24.),
+                spread_radius: px(-5.),
                 inset: false,
             },
             BoxShadow {
@@ -1276,15 +1243,9 @@ pub fn settings_page_shell() -> Div {
         .gap(px(20.))
 }
 
-/// Standard elevated card container (`s.card` + `1px s.line_soft` + `R_CARD` + `card_shadow`)
-/// ensuring clear surface contrast against both `s.stage` and `s.surface` modal backgrounds.
+/// Content cards share their finish across the conversation and settings.
 pub fn card_box(s: &StudioPalette) -> Div {
-    div()
-        .rounded(px(R_CARD))
-        .bg(s.card)
-        .border_1()
-        .border_color(s.line_soft)
-        .shadow(s.card_shadow())
+    frosted_card(s)
 }
 
 /// Quiet nested container inside a `card_box` (`s.tray` + `1px s.line_soft` + `R_CTRL`).

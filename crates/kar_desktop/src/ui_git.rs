@@ -25,8 +25,8 @@ use crate::{
         menu_item, primary_button, soft_button, text_button,
     },
     ui_primitives::{
-        FS_CONTROL, FS_META, FS_SECTION, FS_TAG, FS_UI, ICON_SM, LH_CONTROL, LH_META, R_CARD,
-        R_PILL, R_SM, StudioPalette, UiLocale, mono_font, render_git_branch_icon,
+        FS_CONTROL, FS_META, FS_SECTION, FS_TAG, FS_UI, ICON_SM, LH_CONTROL, LH_META,
+        R_PILL, R_SM, StudioPalette, UiLocale, frosted_card, mono_font, render_git_branch_icon,
         render_sample_tag, tnum_features,
     },
     workbench::{GitSubMode, KarWorkbench, Menu},
@@ -1133,13 +1133,9 @@ impl KarWorkbench {
         s: &StudioPalette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut commits_card = div()
+        let mut commits_card = frosted_card(s)
             .w_full()
             .p(px(14.))
-            .rounded(px(R_CARD))
-            .bg(s.card)
-            .border_1()
-            .border_color(s.line)
             .flex()
             .flex_col()
             .gap(px(6.))
@@ -1219,13 +1215,9 @@ impl KarWorkbench {
             .flex_col()
             .gap(px(14.))
             .child(
-                div()
+                frosted_card(s)
                     .w_full()
                     .p(px(14.))
-                    .rounded(px(R_CARD))
-                    .bg(s.card)
-                    .border_1()
-                    .border_color(s.line)
                     .flex()
                     .flex_col()
                     .gap(px(8.))

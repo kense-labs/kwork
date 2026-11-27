@@ -281,12 +281,8 @@ impl KarWorkbench {
             move || body_el.unwrap_or_else(|| div().into_any_element()),
         );
 
-        div()
+        crate::ui_primitives::frosted_card(s)
             .w_full()
-            .rounded(px(R_CARD + 2.))
-            .bg(s.card)
-            .border_1()
-            .border_color(s.line)
             .overflow_hidden()
             .flex()
             .flex_col()
@@ -351,11 +347,7 @@ impl KarWorkbench {
                             div()
                                 .flex_1()
                                 .min_w(px(150.))
-                                .p(px(12.))
-                                .rounded(px(R_CARD))
-                                .bg(s.surface)
-                                .border_1()
-                                .border_color(s.line_soft)
+                                .py(px(6.))
                                 .flex()
                                 .flex_col()
                                 .gap(px(6.))
@@ -368,8 +360,8 @@ impl KarWorkbench {
                                 .child(
                                     div()
                                         .flex()
+                                        .flex_wrap()
                                         .items_baseline()
-                                        .justify_between()
                                         .gap(px(6.))
                                         .child(counter)
                                         .when_some(m.delta.clone(), |row, d| {

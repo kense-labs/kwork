@@ -66,7 +66,7 @@ use crate::{
     ui_primitives::{
         CTRL_H, CTRL_SM_H, DETAILS_CARD_W, DotTone, FS_CONTROL, FS_META, FS_READ, FS_TAG, FS_UI, HEADER_H, ICON,
         ICON_SM, ICON_XS, LH_META, LH_READ, LH_UI, R_CARD, R_CTRL, R_HERO, R_PILL, R_SM, R_XS, ROW_H, StudioPalette, UiLocale,
-        THREAD_PAD, TITLEBAR_BUTTON_GAP, TITLEBAR_EDGE_INSET, card_box, clean_display_doc_name, macos_traffic_pad, mono_font,
+        THREAD_PAD, TITLEBAR_BUTTON_GAP, TITLEBAR_EDGE_INSET, card_box, clean_display_doc_name, frosted_card, macos_traffic_pad, mono_font,
         render_bg_layers_icon,
         render_file_diff_icon, render_folder_git_icon, render_folder_icon, render_git_branch_icon,
         render_machine_icon, render_office_chip,
@@ -182,7 +182,7 @@ impl KarWorkbench {
         let active_match_turn_ix = active_match.map(|index| matches[index]);
 
         let stage = if on_start_screen {
-            self.render_start_stage(center_w, &s, window, cx)
+            self.render_start_stage(center_w, show_details_rail, &s, window, cx)
                 .into_any_element()
         } else {
             let mut rows = Vec::new();
@@ -331,8 +331,10 @@ impl KarWorkbench {
                         .into_any_element()
                 } else {
                     let slash_popup = self.slash_popup(&s, window, cx);
-                    self.render_composer(center_w, activity_row, slash_popup, &s, window, cx)
-                        .into_any_element()
+                    self.render_composer(
+                        center_w, show_details_rail, activity_row, slash_popup, &s, window, cx,
+                    )
+                    .into_any_element()
                 });
 
             // Each turn is a direct scroll child so its anchor follows live Markdown layout,
@@ -457,7 +459,6 @@ impl KarWorkbench {
         let pane = div()
             .id("kar-chat-drop-zone")
             .size_full()
-            .bg(s.surface)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -829,6 +830,7 @@ impl KarWorkbench {
                                 .size(px(28.))
                                 .justify_center()
                                 .lit(show_details_rail)
+                                .expanded(show_details_rail)
                                 .tip(loc.pick("会话环境与 Git 详情卡", "Toggle thread details"))
                                 .child(render_square_menu_icon(
                                     15.5,
@@ -963,12 +965,8 @@ impl KarWorkbench {
             ),
         );
 
-        let card = div()
+        let card = frosted_card(s)
             .w_full()
-            .rounded(px(R_HERO))
-            .bg(s.card)
-            .border_1()
-            .border_color(s.line)
             .p(px(6.))
             .flex()
             .flex_col()
@@ -1792,6 +1790,7 @@ impl KarWorkbench {
     fn render_start_stage(
         &self,
         pane_w: f32,
+        show_details_rail: bool,
         s: &StudioPalette,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1912,7 +1911,8 @@ impl KarWorkbench {
         let slash_popup = self.slash_popup(s, window, cx);
         let browsing_commands = slash_popup.is_some();
         let planning = self.planning_here();
-        let composer = self.render_composer(pane_w, None, slash_popup, s, window, cx);
+        let composer =
+            self.render_composer(pane_w, show_details_rail, None, slash_popup, s, window, cx);
         let content = chat_content_lane(pane_w, thread_w, window)
             .flex_none()
             .flex()
@@ -2090,6 +2090,7 @@ impl KarWorkbench {
     fn render_composer(
         &self,
         pane_w: f32,
+        show_details_rail: bool,
         activity_row: Option<AnyElement>,
         slash_popup: Option<AnyElement>,
         s: &StudioPalette,
@@ -2507,7 +2508,7 @@ impl KarWorkbench {
         let editor_focus = self.composer_editor.read(cx).focus.clone();
         let editor_focused = editor_focus.is_focused(window);
         let write_card = crate::ui_primitives::frosted_composer(s)
-            .when(editor_focused, |card| card.border_color(s.ink.opacity(0.32)))
+            .when(editor_focused, |card| card.border_color(s.ink.opacity(0.24)))
             .w_full()
             .pt(px(16.))
             .pb(px(8.))
@@ -2635,7 +2636,7 @@ impl KarWorkbench {
                                         .child(branch.to_owned()),
                                 );
                             if self.layout_mode == WorkspaceLayoutMode::ChatFocus
-                                && !self.thread_details_open
+                                && !show_details_rail
                             {
                                 row.child(menu_host(
                                     trigger
@@ -3814,18 +3815,13 @@ impl KarWorkbench {
             );
         let s = *s;
         pro_presence(Menu::ComposerAgent.id(), open, 0.16, 0.12, move |amount| {
-            let surface = div()
+            let surface = crate::ui_primitives::frosted_panel(&s)
                 .id("composer-model-picker")
                 .role(Role::Dialog)
                 .occlude()
                 .w(px(width))
                 .h(px(height))
-                .rounded(px(12.))
                 .overflow_hidden()
-                .border_1()
-                .border_color(s.line)
-                .bg(s.card)
-                .shadow(s.popover_shadow())
                 .flex()
                 .flex_col()
                 .opacity(amount)
@@ -5226,12 +5222,8 @@ impl KarWorkbench {
             rows_col = rows_col.child(row_btn);
         }
 
-        div()
+        frosted_card(s)
             .w_full()
-            .rounded(px(R_CARD))
-            .bg(s.card.opacity(if s.dark { 0.72 } else { 1.0 }))
-            .border_1()
-            .border_color(s.line)
             .overflow_hidden()
             .flex()
             .flex_col()
@@ -5507,14 +5499,10 @@ impl KarWorkbench {
                 ))
             });
 
-        let card = div()
+        let card = frosted_card(s)
             .w_full()
             .min_h_0()
             .p(px(if compact { 8. } else if permission { 12. } else { 16. }))
-            .rounded(px(R_HERO))
-            .bg(s.card)
-            .border_1()
-            .border_color(s.line_strong)
             .flex()
             .flex_col()
             .gap(px(10.))

@@ -449,7 +449,7 @@ impl Default for WorkbenchConfig {
             sidebar_repo_files: false,
             open_terminal_tab: false,
             open_bottom_terminal: false,
-            hide_details_card: true,
+            hide_details_card: false,
             lang_en: false,
             lang_zh: false,
             initial_terminal_cmd: None,
@@ -1485,7 +1485,7 @@ impl KarWorkbench {
             sidebar_metadata: BTreeMap::new(),
             hosted_writer: None,
             settled_shelf_open: false,
-            thread_details_open: !config.hide_details_card,
+            thread_details_open: !config.hide_details_card && loaded_prefs.thread_details_open,
             bottom_terminal_open: config.open_bottom_terminal || loaded_prefs.bottom_terminal_open,
             bottom_terminal_h: loaded_prefs.bottom_terminal_h.clamp(TERMINAL_MIN_H, 680.),
             bottom_terminal_anim: Slide::new(
@@ -1887,7 +1887,10 @@ impl KarWorkbench {
     }
 
     pub fn toggle_thread_details(&mut self, cx: &mut Context<Self>) {
-        self.thread_details_open = !self.thread_details_open;
+        self.thread_details_open = self.layout_mode != WorkspaceLayoutMode::ChatFocus
+            || !self.thread_details_open;
+        self.prefs.thread_details_open = self.thread_details_open;
+        self.save_prefs();
         if self.thread_details_open && self.layout_mode != WorkspaceLayoutMode::ChatFocus {
             self.set_layout_mode(WorkspaceLayoutMode::ChatFocus, cx);
         }
@@ -7127,7 +7130,7 @@ impl Render for KarWorkbench {
 
         let chat_column = div()
             .h_full()
-            .bg(s.surface)
+            .bg(crate::ui_primitives::material::reading_surface(&s))
             .flex()
             .flex_col()
             .overflow_hidden()

@@ -1,7 +1,7 @@
 //! Window glass for navigation chrome, with a denser finish for text over the conversation.
-use super::StudioPalette;
+use super::{R_CARD, StudioPalette};
 use gpui::{prelude::*, *};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 fn reduce_transparency() -> bool {
     static REDUCED: OnceLock<bool> = OnceLock::new();
@@ -55,61 +55,74 @@ pub(crate) fn window_tint(s: &StudioPalette) -> Hsla {
     }
 }
 
-pub(crate) fn frosted_panel(s: &StudioPalette) -> Div {
-    surface(s, true)
+/// Tint the macOS window blur once underneath the transcript and its controls.
+pub(crate) fn reading_surface(s: &StudioPalette) -> Hsla {
+    if native_glass() {
+        s.surface.opacity(if s.dark { 0.56 } else { 0.64 })
+    } else {
+        s.surface
+    }
+}
+
+pub(crate) fn frosted_card(s: &StudioPalette) -> Div {
+    frost(s, R_CARD, 0.063, 0.76).when(native_glass(), |card| card.child(frost_grain(R_CARD)))
 }
 
 pub(crate) fn frosted_composer(s: &StudioPalette) -> Div {
-    surface(s, false)
+    frost(s, 16., 0.092, 0.87).when(native_glass(), |card| card.child(frost_grain(16.)))
 }
 
-fn surface(s: &StudioPalette, floating: bool) -> Div {
-    let top = if s.dark {
-        s.card.blend(white().opacity(0.14))
+pub(crate) fn frosted_panel(s: &StudioPalette) -> Div {
+    // Menus can cover glyphs. Keep their coat dense enough to read over a transcript.
+    frost(s, 14., 0.108, 0.98).shadow(s.popover_shadow())
+}
+
+fn frost(s: &StudioPalette, radius: f32, lift: f32, density: f32) -> Div {
+    let tint = if s.dark {
+        s.card.blend(s.ink.opacity(lift))
     } else {
-        s.card.blend(white().opacity(0.50))
+        s.card.blend(white().opacity(0.40))
     };
-    let bottom = if s.dark {
-        s.card.blend(white().opacity(0.09))
-    } else {
-        s.card.blend(s.ink.opacity(0.032))
-    };
-    // Keep glyphs behind a popup from showing through as a second line of text.
-    let density = if reduce_transparency() {
-        1.
-    } else if floating {
-        0.98
-    } else {
-        0.95
-    };
-    let (alpha, travel, blur, spread) = match (floating, s.dark) {
-        (true, true) => (0.34, 6., 20., -4.),
-        (true, false) => (0.105, 6., 20., -4.),
-        (false, true) => (0.18, 1., 3., 0.),
-        (false, false) => (0.04, 1., 3., 0.),
-    };
-    let mut shadows = vec![BoxShadow {
-        color: black().opacity(alpha),
-        offset: point(px(0.), px(travel)),
-        blur_radius: px(blur),
-        spread_radius: px(spread),
-        inset: false,
-    }];
-    shadows.push(BoxShadow {
-        color: white().opacity(if s.dark { 0.065 } else { 0.68 }),
-        offset: point(px(0.), px(1.)),
-        blur_radius: px(0.),
-        spread_radius: px(0.),
-        inset: true,
-    });
+    let opacity = if native_glass() { density } else { 1. };
     div()
-        .rounded(px(if floating { 14. } else { 16. }))
-        .bg(linear_gradient(
-            170.,
-            linear_color_stop(top.opacity(density), 0.),
-            linear_color_stop(bottom.opacity(density), 1.),
-        ))
+        .rounded(px(radius))
+        .bg(tint.opacity(opacity))
         .border_1()
-        .border_color(s.ink.opacity(if s.dark { 0.14 } else { 0.13 }))
-        .shadow(shadows)
+        .border_color(s.ink.opacity(if s.dark { 0.11 } else { 0.10 }))
+}
+
+// A fixed, low-contrast grain gives even a plain backdrop a little texture.
+// It sits inside the rim, underneath the controls, and never needs an animation frame.
+fn frost_grain(radius: f32) -> impl IntoElement {
+    static GRAIN: OnceLock<Arc<RenderImage>> = OnceLock::new();
+    let grain = GRAIN.get_or_init(|| {
+        let mut seed = 0x41c6_ce57_u32;
+        let pixels = image::RgbaImage::from_fn(512, 384, |_, _| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let grey = (seed >> 24) as u8;
+            image::Rgba([grey, grey, grey, 255])
+        });
+        Arc::new(RenderImage::new([image::Frame::new(pixels)]))
+    });
+    let texture = canvas(
+        |_, _, _| (),
+        move |bounds, (), window, _| {
+            let _ = window.paint_image(
+                bounds,
+                bounds,
+                px(radius - 1.).into(),
+                grain.clone(),
+                0,
+                false,
+            );
+        },
+    );
+    div()
+        .absolute()
+        .inset(px(1.))
+        .overflow_hidden()
+        .opacity(0.026)
+        .child(texture.absolute().inset_0())
 }

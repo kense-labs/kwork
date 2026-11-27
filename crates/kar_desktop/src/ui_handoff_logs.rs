@@ -202,17 +202,13 @@ impl KarWorkbench {
                 });
                 cx.notify();
             });
-        let card = div()
+        let card = crate::ui_primitives::frosted_panel(s)
             .w(px(568.))
             .max_w_full()
             .h(px(
                 (f32::from(window.viewport_size().height) - 60.).clamp(1., 480.)
             ))
             .rounded(px(R_MODAL))
-            .bg(s.card)
-            .border_1()
-            .border_color(s.line)
-            .shadow(s.floating_shadow())
             .overflow_hidden()
             .flex()
             .flex_col()
@@ -334,15 +330,11 @@ impl KarWorkbench {
             );
         }
         let cap = (f32::from(window.viewport_size().height) - 60.).clamp(1., 500.);
-        let card = div()
+        let card = crate::ui_primitives::frosted_panel(s)
             .w(px(500.))
             .max_w_full()
             .max_h(px(cap))
             .rounded(px(R_MODAL))
-            .bg(s.card)
-            .border_1()
-            .border_color(s.line)
-            .shadow(s.floating_shadow())
             .overflow_hidden()
             .flex()
             .flex_col()
