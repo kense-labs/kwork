@@ -11,6 +11,7 @@ repository = "https://github.com/dzulfikar08/kantor"
 authors = ["Dzulfikar Ats Tsauri"]
 
 [workspace.dependencies]
+fast2s = "0.3.1"
 # UI: gpui-kit pins the matching GPUI release (published as gpui-pre-*) and re-exports it.
 gpui-kit = "0.9"
 ironcalc = "0.9.1"

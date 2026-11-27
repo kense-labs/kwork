@@ -155,6 +155,7 @@ impl Recognizer {
         let mut tokens = prompt.to_vec();
         tokens.push(self.sot);
         // English-only checkpoints are trained without language and task prefix tokens.
+        let mut chinese = false;
         if self.languages.len() > 1 {
             let language = requested.unwrap_or_else(|| {
                 self.languages
@@ -163,6 +164,7 @@ impl Recognizer {
                     .max_by(|a, b| first[*a as usize].total_cmp(&first[*b as usize]))
                     .expect("at least two language tokens")
             });
+            chinese = self.tokenizer.token_to_id("<|zh|>") == Some(language);
             tokens.extend([language, self.id(task)?]);
         }
         tokens.push(self.id(whisper::NO_TIMESTAMPS_TOKEN)?);
@@ -201,9 +203,15 @@ impl Recognizer {
         {
             return Ok(String::new());
         }
-        self.tokenizer
+        let text = self.tokenizer
             .decode(generated, false)
-            .map_err(|e| anyhow!("{e}"))
+            .map_err(|e| anyhow!("{e}"))?;
+        // Whisper's Chinese token covers both scripts, including when detected automatically.
+        Ok(if chinese && task == whisper::TRANSCRIBE_TOKEN {
+            fast2s::convert(&text)
+        } else {
+            text
+        })
     }
 
     fn id(&self, s: &str) -> Result<u32> {

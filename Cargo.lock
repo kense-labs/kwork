@@ -177,6 +177,17 @@ dependencies = [
 
 [[package]]
 name = "ahash"
+version = "0.7.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae442e79f0396cdfccee3e4380cc8d4a9fabbd23dc4a25e1bcc7f960693104ed"
+dependencies = [
+ "getrandom 0.2.17",
+ "once_cell",
+ "version_check",
+]
+
+[[package]]
+name = "ahash"
 version = "0.8.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fca89247609239eeb6915e6991111866b92d7b31025e69302bbf430cc4d2c38"
@@ -833,6 +844,15 @@ name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
+
+[[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "bindgen"
@@ -2865,6 +2885,17 @@ name = "fast-float2"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6e8948ce679d00a02a94739ea185595dca7118ed04feb991127e443bd3d761f"
+
+[[package]]
+name = "fast2s"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1316063b5422f1f7bf4cc784c959eaf04b843de7c9ecbd4190c60614aa23b27e"
+dependencies = [
+ "bincode",
+ "hashbrown 0.12.3",
+ "lazy_static",
+]
 
 [[package]]
 name = "faster-hex"
@@ -4971,6 +5002,15 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
+dependencies = [
+ "ahash 0.7.9",
+]
+
+[[package]]
+name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
@@ -5936,7 +5976,7 @@ version = "0.63.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f048e101172edb2c5f0351d7e3bc3796ac89b7f150e64b0cbd20dd82215b2160"
 dependencies = [
- "ahash",
+ "ahash 0.8.13",
  "bytecount",
  "data-encoding",
  "email_address",
@@ -5973,7 +6013,7 @@ version = "0.63.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d698d83c2661d1e6f289b567a73e95d5549ec155775260e93165110a583296f4"
 dependencies = [
- "ahash",
+ "ahash 0.8.13",
  "bytecount",
  "fraction",
  "getrandom 0.3.4",
@@ -6370,6 +6410,7 @@ dependencies = [
  "docs_engine",
  "docs_ui",
  "env_logger",
+ "fast2s",
  "flate2",
  "form_urlencoded",
  "futures",
@@ -6404,6 +6445,7 @@ dependencies = [
  "tokio",
  "tower",
  "unicode-bidi",
+ "unicode-script",
  "unicode-segmentation",
  "ureq",
  "url",
@@ -6528,12 +6570,13 @@ dependencies = [
 name = "kwrok_dictation"
 version = "0.1.0"
 dependencies = [
- "ahash",
+ "ahash 0.8.13",
  "anyhow",
  "candle-core",
  "candle-nn",
  "candle-transformers",
  "clap",
+ "fast2s",
  "hound",
  "rustfft",
  "serde_json",
@@ -9216,7 +9259,7 @@ version = "0.63.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f768339da7ef756decd99f3c6ada0c0ffdc0a7522c37032916bed80db94d0b5c"
 dependencies = [
- "ahash",
+ "ahash 0.8.13",
  "fluent-uri 0.4.1",
  "getrandom 0.3.4",
  "hashbrown 0.17.1",
@@ -10997,7 +11040,7 @@ version = "0.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7afbf6e88718afcc138bad01d6ccc3051dbbc3b2ce9793d8b8a3aeb610969cfc"
 dependencies = [
- "ahash",
+ "ahash 0.8.13",
  "compact_str",
  "daachorse",
  "dary_heap",
@@ -13377,7 +13420,7 @@ version = "0.4.0-zed"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c0b46ed118eba34d9ba53d94ddc0b665e0e06a2cf874cfa2dd5dec278148642"
 dependencies = [
- "ahash",
+ "ahash 0.8.13",
  "hashbrown 0.14.5",
  "log",
  "x11rb",

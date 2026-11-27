@@ -1045,7 +1045,7 @@ impl KarWorkbench {
                     "auto".to_owned(),
                     loc.pick("中英自动识别", "Auto").to_owned(),
                 ),
-                ("zh".to_owned(), "中文".to_owned()),
+                ("zh".to_owned(), "简体中文".to_owned()),
                 ("en".to_owned(), "English".to_owned()),
                 ("ja".to_owned(), "日本語".to_owned()),
             ],

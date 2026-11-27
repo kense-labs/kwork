@@ -1004,7 +1004,7 @@ impl Editor {
                 1. - ease((now.duration_since(started).as_secs_f32() / 0.11).clamp(0., 1.))
             });
             let mut animating = self.ghost_fade_out.is_some();
-            let ink = if live_suffix { p.secondary } else { p.faint };
+            let ink = if live_suffix { p.ink } else { p.faint };
             if self
                 .ghost_chunks
                 .iter()
@@ -1079,12 +1079,12 @@ impl Editor {
             mask,
             line,
         };
-        let scroll_to = if self.dictation_preview && at_end && self.marked.is_none() {
+        let display_caret = if live_suffix && at_end && self.marked.is_none() {
             self.value.len() + self.ghost.len()
         } else {
             self.caret
         };
-        let pt = layout.at(scroll_to) - origin;
+        let pt = layout.at(display_caret) - origin;
         if self.follow_caret {
             let keep = |scroll: Pixels, pos: Pixels, room: Pixels| {
                 scroll.min(pos).max(pos - room).max(px(0.))
@@ -1148,7 +1148,7 @@ impl Editor {
                 && self.selected().is_empty()
                 && self.committed_label.is_none()
             {
-                let caret = layout.at(self.caret);
+                let caret = layout.at(display_caret);
                 w.paint_quad(fill(
                     Bounds::new(caret + point(px(0.), px(2.)), size(px(1.), line - px(4.))),
                     p.ink,

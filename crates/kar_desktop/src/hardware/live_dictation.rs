@@ -11,7 +11,9 @@ use std::{
     time::Duration,
 };
 
-const STEP: usize = RATE;
+// Start with enough audio for a short word, then send the freshest available
+// window as soon as the preceding decode returns.
+const STEP: usize = RATE * 2 / 5;
 const WINDOW: usize = 12 * RATE;
 const HOP: usize = RATE / 50;
 
@@ -163,7 +165,6 @@ fn recognize(
     let mut prefix = String::new();
     let mut last_sent = String::new();
     while !updates.is_closed() {
-        thread::sleep(Duration::from_millis(120));
         let window = {
             let data = capture
                 .lock()
@@ -172,12 +173,18 @@ fn recognize(
                 break;
             }
             if data.samples.len().saturating_sub(seen) < STEP {
+                drop(data);
+                thread::sleep(Duration::from_millis(40));
                 continue;
             }
             let available = &data.samples[start..];
-            let (length, commit) = boundary(available);
+            let threshold = speech_threshold(&available[..available.len().min(WINDOW)]);
+            let (length, commit) = boundary(available, threshold);
             let samples = &available[..length];
-            let newly_voiced = has_speech(&samples[seen.saturating_sub(start).min(length)..]);
+            let newly_voiced = has_speech(
+                &samples[seen.saturating_sub(start).min(length)..],
+                threshold,
+            );
             seen = start + length;
             if !newly_voiced && !commit {
                 continue;
@@ -186,10 +193,10 @@ fn recognize(
             if commit {
                 start = seen;
             }
-            (window, commit)
+            (window, commit, threshold)
         };
-        let (samples, commit) = window;
-        if !has_speech(&samples) {
+        let (samples, commit, threshold) = window;
+        if !has_speech(&samples, threshold) {
             continue;
         }
         // Read the response before considering another window, coalescing intervening callbacks.
@@ -203,6 +210,13 @@ fn recognize(
         let mut line = String::new();
         ensure!(output.read_line(&mut line)? > 0, "dictation helper closed");
         let text: String = serde_json::from_str(&line)?;
+        if text.trim().is_empty() {
+            // A partial word can temporarily receive an empty hypothesis.
+            if commit {
+                prefix.clone_from(&last_sent);
+            }
+            continue;
+        }
         let mut draft = prefix.clone();
         if draft.ends_with(|c: char| {
             c.is_ascii_alphanumeric() || matches!(c, '.' | '?' | '!' | ',' | ':' | ';')
@@ -229,16 +243,27 @@ fn energy(samples: &[f32]) -> f32 {
     samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32
 }
 
-fn has_speech(samples: &[f32]) -> bool {
+fn speech_threshold(samples: &[f32]) -> f32 {
+    // Estimate the microphone's noise floor from recent 60 ms spans. A quiet
+    // speaker can have clear syllables even when every sample is below -42 dBFS.
+    let recent = &samples[samples.len().saturating_sub(2 * RATE)..];
+    let floor = recent
+        .chunks_exact(3 * HOP)
+        .map(energy)
+        .fold(f32::INFINITY, f32::min);
+    (floor * 6.25).clamp(0.0009_f32.powi(2), 0.008_f32.powi(2))
+}
+
+fn has_speech(samples: &[f32], threshold: f32) -> bool {
     samples
         .chunks_exact(HOP)
-        .filter(|chunk| energy(chunk) >= 0.008 * 0.008)
+        .filter(|chunk| energy(chunk) >= threshold)
         .take(3)
         .count()
         == 3
 }
 
-fn boundary(samples: &[f32]) -> (usize, bool) {
+fn boundary(samples: &[f32], threshold: f32) -> (usize, bool) {
     if samples.len() >= WINDOW {
         // Carry the exact boundary into the next window. Prefer a quiet spot near its end.
         let search = WINDOW - RATE;
@@ -249,7 +274,8 @@ fn boundary(samples: &[f32]) -> (usize, bool) {
             .map_or(0, |(i, _)| i);
         return (search + HOP * quietest + HOP / 2, true);
     }
-    let pause = samples.len() >= 4 * RATE && !has_speech(&samples[samples.len() - RATE / 2..]);
+    let pause =
+        samples.len() >= 4 * RATE && !has_speech(&samples[samples.len() - RATE / 2..], threshold);
     (samples.len(), pause)
 }
 
@@ -261,20 +287,84 @@ mod tests {
     fn thresholds_keep_short_clicks_and_quiet_room_tone_out_of_previews() {
         let mut samples = vec![0.002; RATE];
         samples[0] = 1.;
-        assert!(!has_speech(&samples));
+        assert!(!has_speech(&samples, speech_threshold(&samples)));
         samples[HOP..4 * HOP].fill(0.02);
-        assert!(has_speech(&samples));
+        assert!(has_speech(&samples, speech_threshold(&samples)));
+    }
+
+    #[test]
+    fn quiet_speech_above_room_tone_can_start_a_preview() {
+        let mut samples = vec![0.001; STEP];
+        assert!(!has_speech(&samples, speech_threshold(&samples)));
+        samples[3 * HOP..8 * HOP].fill(0.004);
+        assert!(has_speech(&samples, speech_threshold(&samples)));
+    }
+
+    #[test]
+    #[ignore = "requires the Rust speech helper, a Whisper model and a spoken Mandarin 16 kHz f32 fixture"]
+    fn quiet_microphone_emits_revisions_before_recording_stops() -> Result<()> {
+        let model = std::env::var("KWORK_TEST_VOICE_MODEL")?;
+        let bytes = std::fs::read(std::env::var("KWORK_TEST_ZH_UTTERANCE")?)?;
+        let mut samples: Vec<f32> = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect();
+        let loudest = samples
+            .chunks_exact(HOP)
+            .map(energy)
+            .fold(0., f32::max)
+            .sqrt();
+        ensure!(loudest > 0., "the test fixture must contain speech");
+        for sample in &mut samples {
+            *sample *= 0.006 / loudest;
+        }
+        let capture = Arc::new(Mutex::new(Capture::default()));
+        let state = VoiceState {
+            models: vec![serde_json::json!({
+                "id": super::super::BUNDLED_MODEL, "active": true, "state": "installed",
+                "languages": ["zh"], "linkedFrom": model
+            })],
+            ..Default::default()
+        };
+        let (_live, updates) = LiveDictation::start(capture.clone(), &state, "auto", &[])
+            .context("missing speech preview helper or model")?;
+        let start = std::time::Instant::now();
+        let mut elapsed = Duration::ZERO;
+        let mut revisions = Vec::new();
+        for callback in samples.chunks(HOP) {
+            elapsed += Duration::from_secs_f64(callback.len() as f64 / RATE as f64);
+            thread::sleep(elapsed.saturating_sub(start.elapsed()));
+            capture.lock().unwrap().push(callback, 1, RATE);
+            if let Ok(text) = updates.try_recv() {
+                eprintln!("preview at {:.2}s: {text}", start.elapsed().as_secs_f32());
+                revisions.push(text);
+            }
+        }
+        ensure!(
+            revisions.len() >= 2,
+            "expected successive previews while speaking: {revisions:?}"
+        );
+        ensure!(
+            revisions
+                .iter()
+                .any(|text| text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))),
+            "expected Chinese speech: {revisions:?}"
+        );
+        Ok(())
     }
 
     #[test]
     fn previews_revise_one_phrase_until_a_pause_or_bounded_window() {
         let mut samples = vec![0.05; WINDOW + RATE];
-        assert_eq!(boundary(&samples[..2 * RATE]), (2 * RATE, false));
+        let threshold = speech_threshold(&samples);
+        assert_eq!(boundary(&samples[..2 * RATE], threshold), (2 * RATE, false));
         samples[4 * RATE..5 * RATE].fill(0.);
-        assert_eq!(boundary(&samples[..5 * RATE]), (5 * RATE, true));
+        assert_eq!(boundary(&samples[..5 * RATE], threshold), (5 * RATE, true));
         let quiet = WINDOW - 2 * HOP..WINDOW - HOP;
         samples[quiet.clone()].fill(0.);
-        let (cut, commit) = boundary(&samples);
+        let (cut, commit) = boundary(&samples, threshold);
         assert!(commit && quiet.contains(&cut));
     }
 }

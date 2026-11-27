@@ -12,6 +12,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use uuid::Uuid;
+use unicode_script::{Script, UnicodeScript};
 
 const RATE: usize = 16_000;
 const MAX_FRAMES: usize = RATE * 300;
@@ -482,6 +483,54 @@ pub enum Outcome {
 fn target(device: &Device) -> Value {
     json!({"host_id":device.host_id,"device_id":device.id})
 }
+
+fn external_transcript(text: &str, language: &str, words: &[String]) -> String {
+    // External engines return just the text. Auto in the UI means Chinese/English.
+    let simplify = match language {
+        "zh" => true,
+        "" | "auto" => {
+            let mut han = false;
+            for ch in text.chars() {
+                match ch.script() {
+                    Script::Han => han = true,
+                    Script::Hiragana | Script::Katakana | Script::Hangul => return text.to_owned(),
+                    _ => {}
+                }
+            }
+            han
+        }
+        _ => false,
+    };
+    if !simplify {
+        return text.to_owned();
+    }
+    // Kar has already applied the user's spelling corrections to these terms.
+    let mut protected = Vec::new();
+    for word in words {
+        let term = word.split_once("=>").map_or(word.as_str(), |(_, term)| term).trim();
+        if !term.is_ascii() && fast2s::convert(term) != term {
+            protected.extend(text.match_indices(term).map(|(start, term)| (start, start + term.len())));
+        }
+    }
+    if protected.is_empty() {
+        return fast2s::convert(text);
+    }
+    protected.sort_unstable();
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for (start, end) in protected {
+        if start > cursor {
+            out.push_str(&fast2s::convert(&text[cursor..start]));
+        }
+        if end > cursor {
+            out.push_str(&text[start.max(cursor)..end]);
+            cursor = end;
+        }
+    }
+    out.push_str(&fast2s::convert(&text[cursor..]));
+    out
+}
+
 pub(crate) async fn run(engine: Engine, cmd: Command) -> Result<Outcome> {
     match cmd {
         Command::Transcribe(id, audio) => {
@@ -516,12 +565,13 @@ pub(crate) async fn run(engine: Engine, cmd: Command) -> Result<Outcome> {
                     path
                 };
                 let reply = engine.post_audio(&path, data).await?;
-                Ok::<_, anyhow::Error>(
-                    reply["text"]
-                        .as_str()
-                        .context("Kar 未返回转写文本")?
-                        .to_owned(),
-                )
+                let text = reply["text"].as_str().context("Kar 未返回转写文本")?;
+                Ok::<_, anyhow::Error>(if audio.provider == VoiceProviderKind::Local && uses_rust_dictation() {
+                    // The bundled recognizer already knows each segment's detected language.
+                    text.to_owned()
+                } else {
+                    external_transcript(text, &audio.language, &audio.words)
+                })
             }
             .await;
             Ok(match result {
@@ -732,6 +782,26 @@ mod tests {
         }
     }
     #[test]
+    fn external_chinese_preserves_custom_vocabulary_and_other_languages() {
+        for language in ["zh", "auto"] {
+            assert_eq!(external_transcript("請檢查 Kwork 網絡。", language, &[]), "请检查 Kwork 网络。");
+        }
+        for (text, language) in [
+            ("電気を消す", "auto"),
+            ("電氣", "ja"),
+            ("韓國語를", "auto"),
+            ("Kwork is ready.", "auto"),
+        ] {
+            assert_eq!(external_transcript(text, language, &[]), text);
+        }
+        let words = ["華=>華碩".to_owned(), "華碩電腦".to_owned()];
+        let names = external_transcript("請將華碩電腦與華碩連接", "zh", &words);
+        assert_eq!(names, "请将華碩電腦与華碩连接");
+        let overlapping = ["華碩電腦".to_owned(), "電腦協會".to_owned()];
+        assert_eq!(external_transcript("請查華碩電腦協會", "zh", &overlapping), "请查華碩電腦協會");
+    }
+
+    #[test]
     fn voice_meter_tracks_recent_sound_and_silence() {
         let mut capture = Capture::default();
         capture.push(&[0.1f32; 512], 1, RATE);
@@ -875,6 +945,9 @@ mod tests {
                 bail!("real transcription failed: {outcome:?}")
             };
             assert!(text.to_lowercase().contains(expected), "{text}");
+            if language == "zh" {
+                assert_eq!(text, fast2s::convert(&text), "expected Simplified Chinese");
+            }
             eprintln!("Native Kar transcription ({language}): {text}");
         }
         Ok(())

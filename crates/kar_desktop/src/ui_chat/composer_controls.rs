@@ -1,7 +1,7 @@
 //! Transient composer controls for attached files and microphone capture.
 use super::*;
 use crate::hardware::VOICE_METER_BARS;
-use kui::primitives::{family::disabled_motion, ops_surface::Fold};
+use kui::primitives::{family::disabled_motion, glyph, ops_surface::Fold};
 
 struct RecordingMeter {
     workbench: WeakEntity<KarWorkbench>,
@@ -81,13 +81,16 @@ impl KarWorkbench {
                 }),
             )
             .child(
-                Tactile::soft("cmp-confirm-voice", s)
+                Tactile::ghost("cmp-confirm-voice", s)
                     .size(px(CTRL_SM_H))
-                    .radius(R_SM)
+                    .flex_none()
+                    .face_inset(2.)
+                    .radius(R_PILL)
+                    .fills(s.ink, s.text)
                     .justify_center()
                     .aria(finish)
                     .tip(finish)
-                    .child(pro_icon(ProIcon::Check, ICON_SM, s.ink))
+                    .child(glyph::icon(Glyph::Check, ICON, s.card))
                     .on_press(cx, |this, win, cx| {
                         if this.active_voice_rec.is_some() {
                             this.toggle_voice_dictation(win, cx);
