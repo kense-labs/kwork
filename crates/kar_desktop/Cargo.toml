@@ -52,6 +52,7 @@ tempfile.workspace = true
 tokio.workspace = true
 zip.workspace = true
 tower = { version = "0.5", features = ["util"] }
+unicode-bidi = "0.3"
 unicode-segmentation = "1"
 ureq.workspace = true
 url = "2"

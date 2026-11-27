@@ -14,6 +14,7 @@ mod planning;
 mod resize;
 mod read_receipts;
 use resize::{Divider, PaneDrag, Span};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -59,7 +60,7 @@ use crate::{
         CoEditService, DemoCoEditEngine, DemoEditorMutation, FenceMutationPayload, LiveTargetState,
         RevisionFenceLedger, ScenarioKey, SubmissionOutcome, UserResolutionChoice,
     },
-    kar_bridge::{ChatCreateFailure, KarBridgeEvent, KarBridgeHandle, KarCommand, ProjectedChatState},
+    kar_bridge::{ChatCreateFailure, KarBridgeEvent, KarBridgeHandle, KarCommand, LocalChatDestination, ProjectedChatState},
     office_host::{OfficeEditorView, OfficeTab, clean_doc_para_text, materialize_coedit_demo_files},
     remote_link::{PeerRole, QueueCopyError, RemoteAction, RemoteExtendedSnapshot, RemoteHostTelemetry, now_epoch_ms},
     schedules::{ScheduleCadence, ScheduleRegistry, ScheduleRunOutcome, ScheduledTask, workflow},
@@ -161,6 +162,19 @@ enum WorkspaceLocation {
     Inbox,
     Documents,
     Demo,
+}
+
+// The command worker publishes NavigationStarted just before applying this request.
+// Mode changes queued by earlier clicks must not replace the current draft.
+struct PendingNavigation {
+    request: Uuid,
+    destination: LocalChatDestination,
+    started: bool,
+}
+
+struct PendingChatCreation {
+    request: Uuid,
+    goal_draft: Option<(PathBuf, String)>,
 }
 
 /// Scope filter for the KUI `AgentInboxBoard` + `AgentTasks` stage screen.
@@ -558,6 +572,8 @@ pub struct KarWorkbench {
     read_receipts: read_receipts::ThreadReadReceipts,
     opened_unread_reply: Option<(Uuid, u64)>,
     pub(crate) pending_delete_chat: Option<(Uuid, Instant)>,
+    pending_navigation: Option<PendingNavigation>,
+    creating_chat: Option<PendingChatCreation>,
     pub access_mode: ChatAccessMode,
     pub connection_state: FeedConnectionState,
     pub projected: ProjectedChatState,
@@ -658,8 +674,8 @@ pub struct KarWorkbench {
     pub open_code_tabs: BTreeMap<PathBuf, WorkspaceFilePreview>,
     pub code_tab_order: Vec<PathBuf>,
     pub(crate) code_block_cache: BTreeMap<String, Entity<CodeBlock>>,
-    pub(crate) patch_review_cache: BTreeMap<String, Entity<PatchReview>>,
-    pub(crate) tool_json_viewers: BTreeMap<String, Entity<JsonViewer>>,
+    pub(crate) patch_review_cache: RefCell<BTreeMap<String, Entity<PatchReview>>>,
+    pub(crate) tool_json_viewers: RefCell<BTreeMap<String, Entity<JsonViewer>>>,
     pub workspace_tree: Vec<WorkspaceTreeItem>,
     pub(crate) workspace_tree_view: Option<Entity<TreeView>>,
     pub tree_show_hidden: bool,
@@ -693,7 +709,7 @@ pub struct KarWorkbench {
     pub start_dropzone_open: bool,
     pub(crate) file_dropzone: Entity<FileDropzone>,
     pub(crate) presence_stack: Option<Entity<PresenceStack>>,
-    pub(crate) rollback_hold_buttons: BTreeMap<(Uuid, Uuid, bool), Entity<HoldToConfirm>>,
+    pub(crate) rollback_hold_buttons: RefCell<BTreeMap<(Uuid, Uuid, bool), Entity<HoldToConfirm>>>,
     /// Deferred reversible chat deletion `(chat_id, chat_title, started_at)`.
     pub(crate) deferred_delete_chat: Option<(Uuid, String, Instant)>,
     /// Live model-suggested follow-up prompt from `kar::PromptSuggestions`.
@@ -1544,6 +1560,8 @@ impl KarWorkbench {
             read_receipts,
             opened_unread_reply: None,
             pending_delete_chat: None,
+            pending_navigation: None,
+            creating_chat: None,
             access_mode: ChatAccessMode::NoneSelected,
             connection_state: FeedConnectionState::Idle,
             projected: ProjectedChatState::default(),
@@ -1631,8 +1649,8 @@ impl KarWorkbench {
             open_code_tabs: BTreeMap::new(),
             code_tab_order: Vec::new(),
             code_block_cache: BTreeMap::new(),
-            patch_review_cache: BTreeMap::new(),
-            tool_json_viewers: BTreeMap::new(),
+            patch_review_cache: RefCell::default(),
+            tool_json_viewers: RefCell::default(),
             workspace_tree: Vec::new(),
             workspace_tree_view: None,
             tree_show_hidden: loaded_prefs.tree_show_hidden,
@@ -1669,7 +1687,7 @@ impl KarWorkbench {
             start_dropzone_open: false,
             file_dropzone,
             presence_stack: None,
-            rollback_hold_buttons: BTreeMap::new(),
+            rollback_hold_buttons: RefCell::default(),
             deferred_delete_chat: None,
             live_prompt_suggestion: None,
             main_stage_view: if config.open_tasks_inbox {
@@ -1740,7 +1758,7 @@ impl KarWorkbench {
             this.bridge
                 .send(KarCommand::ConnectHttpFeed { url: url.clone() });
         } else if config.start_demo_chat {
-            this.bridge.send(KarCommand::EnterDemoShowcase);
+            this.request_navigation(LocalChatDestination::Demo, cx);
         } else if config.start_brief_demo {
             this.access_mode = ChatAccessMode::DemoShowcase;
             this.projected.is_demo = true;
@@ -2445,7 +2463,7 @@ impl KarWorkbench {
             "open_docx" => { self.open_working_sample("sample_minutes.docx", window, cx); }
             "open_xlsx" => { self.open_working_sample("sample_formulas.xlsx", window, cx); }
             "open_pptx" => { self.open_working_sample("sample_deck.pptx", window, cx); }
-            "demo_chat" => self.open_sample_chat(cx),
+            "demo_chat" => self.open_sample_chat(window, cx),
             "coedit_word" => {
                 self.enter_coedit_demo_workshop(window, cx);
                 self.switch_coedit_scenario(ScenarioKey::WordSameParagraph, window, cx);
@@ -2562,7 +2580,7 @@ impl KarWorkbench {
                         self.resume_chat_or_workspace_plan(cx)
                     };
                     if let Some(chat_id) = chat {
-                        self.bridge.send(KarCommand::SelectLocalChat { chat_id, prefer_read_only: false });
+                        self.request_navigation(LocalChatDestination::Thread(chat_id), cx);
                     } else if self.config.initial_terminal_cmd.take().is_some() {
                         self.notify_warning("没有可重新打开的对话，启动命令已取消", cx);
                     }
@@ -2630,7 +2648,44 @@ impl KarWorkbench {
                 }
             }
             KarBridgeEvent::HostedSession(chat) => self.hosted_writer = Some(chat),
+            KarBridgeEvent::NavigationStarted(request) => {
+                if let Some(pending) = &mut self.pending_navigation {
+                    pending.started = pending.request == request;
+                }
+            }
+            KarBridgeEvent::NavigationUnavailable(request) => {
+                if self.pending_navigation.as_ref().is_some_and(|p| p.request == request) {
+                    self.pending_navigation = None;
+                    let writable = self.access_mode.is_writable()
+                        || matches!(self.access_mode, ChatAccessMode::NoneSelected);
+                    self.composer_editor.update(cx, |editor, cx| {
+                        editor.disabled = !writable;
+                        cx.notify();
+                    });
+                    self.notify_warning(
+                        self.ui_locale.pick("暂时无法打开对话存储", "Chat storage is unavailable"),
+                        cx,
+                    );
+                }
+            }
+            KarBridgeEvent::ChatCreated { request, chat_id } => {
+                if !self.owns_chat_creation(request) {
+                    return;
+                }
+                self.creating_chat = None;
+                let mode = ChatAccessMode::WriteController { chat_id };
+                self.on_bridge_event(KarBridgeEvent::AccessModeChanged(mode), window, cx);
+                if let Some(queued) = self.queued_prompt.take() {
+                    self.dispatch_prompt(queued.text, queued.target, queued.attachments, cx);
+                }
+            }
             KarBridgeEvent::AccessModeChanged(mode) => {
+                if self.pending_navigation.as_ref().is_some_and(|navigation| {
+                    !navigation.started || !navigation.destination.matches(&mode)
+                }) {
+                    return;
+                }
+                self.pending_navigation = None;
                 self.hosted_writer = None;
                 if let Some(id) = mode.selected_chat_id() { self.load_saved_plan(id, cx); }
                 self.session_commands = None;
@@ -2642,7 +2697,6 @@ impl KarWorkbench {
                     ed.set_placeholder(placeholder);
                     cx.notify();
                 });
-                let chat_ready = matches!(mode, ChatAccessMode::WriteController { .. });
                 let chat_changed = std::mem::discriminant(&self.access_mode)
                     != std::mem::discriminant(&mode)
                     || self.current_chat_id() != chat_id_of(&mode);
@@ -2705,7 +2759,7 @@ impl KarWorkbench {
                     self.live_prompt_suggestion = None;
                     self.turn_review = None;
                     self.question_draft = None;
-                    self.patch_review_cache.retain(|key, _| !key.starts_with("turn-patch-"));
+                    self.patch_review_cache.get_mut().retain(|key, _| !key.starts_with("turn-patch-"));
                     self.sync_workspace_panels(window, cx);
                     self.client_reducer.detail_cache.release_all_unlocked();
                     if let Some(cid) = self.current_chat_id() {
@@ -2720,11 +2774,11 @@ impl KarWorkbench {
                     }
                 }
                 self.refresh_agent_notice(cx);
-                if chat_ready && let Some(queued) = self.queued_prompt.take() {
-                    self.dispatch_prompt(queued.text, queued.target, queued.attachments, cx);
-                }
             }
             KarBridgeEvent::ConnectionStateChanged(conn) => {
+                if self.pending_navigation.is_some() {
+                    return;
+                }
                 match &conn {
                     FeedConnectionState::Disconnected { reason, .. } => {
                         let detail = format!("{reason} 已收到的内容都还在。");
@@ -2755,6 +2809,9 @@ impl KarWorkbench {
                 }
             }
             KarBridgeEvent::ChatStateUpdated(mut proj) => {
+                if self.pending_navigation.is_some() {
+                    return;
+                }
                 // Ignore stale projections arriving from a previously deselected chat.
                 if let Some(proj_cid) = proj.chat_id
                     && !proj.is_demo
@@ -2884,6 +2941,7 @@ impl KarWorkbench {
                         );
                     }
                     if !now_pending
+                        && self.creating_chat.is_none()
                         && self.access_mode.is_writable()
                         && let Some(queued) = self.queued_prompt.take()
                     {
@@ -2919,19 +2977,23 @@ impl KarWorkbench {
             KarBridgeEvent::GoalResult { chat_id, action, result } =>
                 self.on_goal_result(chat_id, action, result, window, cx),
             KarBridgeEvent::GoalChatCreated(chat_id) => {
-                self.slash.creating_goal = false;
                 self.goal_pending.insert(chat_id);
             }
-            KarBridgeEvent::ChatCreateFailed { plan_request_id, cause, mut detail, goal_draft } => {
-                if let Some(id) = plan_request_id { self.plan_create_failed(id, window, cx); }
-                self.config.initial_terminal_cmd = None;
-                if let Some((workspace, command)) = goal_draft {
-                    self.slash.creating_goal = false;
-                    self.prepend_composer_draft(DraftLocation::Project(workspace),
-                        QueuedPrompt { text: command, ..Default::default() }, window, cx);
-                } else {
-                    self.restore_queued_prompt(window, cx);
+            KarBridgeEvent::ChatCreateFailed {
+                request,
+                plan_request_id,
+                cause,
+                mut detail,
+            } => {
+                if let Some(id) = plan_request_id {
+                    self.plan_create_failed(id, window, cx);
                 }
+                if !self.owns_chat_creation(request) {
+                    return;
+                }
+                self.restore_queued_prompt(window, cx);
+                self.creating_chat = None;
+                self.config.initial_terminal_cmd = None;
                 let (title, action) = match cause {
                     ChatCreateFailure::Store => ("无法保存新对话".into(), NoticeAction::None),
                     ChatCreateFailure::Runtime(id) => (
@@ -3193,7 +3255,7 @@ impl KarWorkbench {
                 let refresh_tree = self.workspace_tree_view.is_none() || self.git_snapshot != snapshot;
                 self.git_snapshot = snapshot;
                 self.inline_git_diffs.clear();
-                self.patch_review_cache
+                self.patch_review_cache.get_mut()
                     .retain(|k, _| !k.starts_with("inline-diff-"));
                 if let Some((ref exp_rel, staged)) = self.expanded_git_diff_file {
                     if self.git_snapshot.files.iter().any(|f| &f.path == exp_rel && if staged { f.is_staged() } else { f.has_unstaged() }) {
@@ -3215,7 +3277,7 @@ impl KarWorkbench {
             KarBridgeEvent::GitFileDiffLoaded { workspace, rel_path, staged, hunks } => {
                 if workspace != self.panel_workspace { return; }
                 let cache_key = format!("inline-diff-{staged}-{}", rel_path.display());
-                self.patch_review_cache.remove(&cache_key);
+                self.patch_review_cache.get_mut().remove(&cache_key);
                 self.inline_git_diffs.insert((rel_path, staged), hunks);
             }
             KarBridgeEvent::WorkspaceTreeUpdated { workspace, show_hidden, tree } => {
@@ -3263,7 +3325,7 @@ impl KarWorkbench {
                 let rel = preview.rel_path.clone();
                 let key = rel.to_string_lossy().into_owned();
                 self.code_block_cache.remove(&key);
-                self.patch_review_cache.remove(&format!("tab-patch-{key}"));
+                self.patch_review_cache.get_mut().remove(&format!("tab-patch-{key}"));
                 if !self.code_tab_order.contains(&rel) {
                     self.code_tab_order.push(rel.clone());
                 }
@@ -3276,7 +3338,7 @@ impl KarWorkbench {
             KarBridgeEvent::WorkspaceInventoryUpdated(inventory) => {
                 if inventory.belongs_to(&self.effective_workspace_dir(), self.active_or_selected_runtime_id()) {
                     self.code_block_cache.retain(|key, _| !key.starts_with("skill-md-"));
-                    self.tool_json_viewers.retain(|key, _| !key.starts_with("tool-schema-"));
+                    self.tool_json_viewers.get_mut().retain(|key, _| !key.starts_with("tool-schema-"));
                     self.workspace_inventory = inventory;
                 }
             }
@@ -3450,7 +3512,7 @@ impl KarWorkbench {
         let on_screen: BTreeSet<Uuid> = turns.iter().map(|t| t.id).collect();
         self.copy_buttons.retain(|id, _| on_screen.contains(id));
         let chat = projected.chat_id;
-        self.rollback_hold_buttons.retain(|(owner, turn, _), _| Some(*owner) == chat && on_screen.contains(turn));
+        self.rollback_hold_buttons.get_mut().retain(|(owner, turn, _), _| Some(*owner) == chat && on_screen.contains(turn));
         self.part_open.retain(|(id, _), _| on_screen.contains(id));
         if self.tool_detail.is_some_and(|(id, _)| !on_screen.contains(&id)) {
             self.tool_detail = None;
@@ -3752,7 +3814,7 @@ impl KarWorkbench {
         self.open_code_tabs.clear();
         self.code_tab_order.clear();
         self.code_block_cache.clear();
-        self.patch_review_cache
+        self.patch_review_cache.get_mut()
             .retain(|key, _| key.starts_with("turn-patch-"));
         if matches!(self.right_surface, RightPaneSurface::CodeFile(_)) {
             self.files_tab_open = true;
@@ -3822,7 +3884,7 @@ impl KarWorkbench {
             }
             WorkspaceLocation::Inbox => self.open_tasks_inbox_stage(cx),
             WorkspaceLocation::Documents => self.open_office_gallery_stage(cx),
-            WorkspaceLocation::Demo => self.open_sample_chat(cx),
+            WorkspaceLocation::Demo => self.open_sample_chat(window, cx),
         }
     }
 
@@ -3858,20 +3920,44 @@ impl KarWorkbench {
         self.main_stage_view = MainStageView::Conversation;
         self.coedit_panel_open = false;
         self.restore_queued_prompt(window, cx);
-        // Bug #6 Fix: always clear transient briefs & demo/projected state so `⌘N` reliably returns to Start Screen!
         self.active_briefs.clear();
-        if !matches!(self.access_mode, ChatAccessMode::NoneSelected) {
-            self.access_mode = ChatAccessMode::NoneSelected;
-            self.projected = ProjectedChatState::default();
-            self.bridge.send(KarCommand::CloseChat);
-        } else {
-            self.projected = ProjectedChatState::default();
+        if self.chat_selection_pending() || !matches!(self.access_mode, ChatAccessMode::NoneSelected) {
+            self.request_navigation(LocalChatDestination::Draft, cx);
         }
+        self.access_mode = ChatAccessMode::NoneSelected;
+        self.projected = ProjectedChatState::default();
         self.switch_composer_draft(window, cx);
         self.sync_workspace_panels(window, cx);
         self.composer_editor
             .update(cx, |ed, cx| ed.focus(window, cx));
         cx.notify();
+    }
+
+    fn owns_chat_creation(&self, request: Uuid) -> bool {
+        self.creating_chat.as_ref().is_some_and(|creation| creation.request == request)
+    }
+
+    fn creating_chat_goal(&self) -> bool {
+        self.creating_chat.as_ref().is_some_and(|creation| creation.goal_draft.is_some())
+    }
+
+    fn chat_selection_pending(&self) -> bool {
+        self.creating_chat.is_some() || self.pending_navigation.is_some()
+    }
+
+    fn request_navigation(&mut self, destination: LocalChatDestination, cx: &mut Context<Self>) {
+        let request = Uuid::new_v4();
+        self.creating_chat = None;
+        self.pending_navigation = Some(PendingNavigation {
+            request,
+            destination,
+            started: false,
+        });
+        self.composer_editor.update(cx, |editor, cx| {
+            editor.disabled = destination != LocalChatDestination::Draft;
+            cx.notify();
+        });
+        self.bridge.send(KarCommand::Navigate { request, destination });
     }
 
     pub fn open_chat(&mut self, chat_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
@@ -3884,19 +3970,19 @@ impl KarWorkbench {
         self.coedit_panel_open = false;
         // A failed resume leaves the archive selected. Selecting it again must retry
         // the connection, even though its chat ID is already on screen.
-        if matches!(&self.access_mode, ChatAccessMode::WriteController { chat_id: active }
-            | ChatAccessMode::LocalReadOnlySubscriber { chat_id: active, .. } if *active == chat_id)
-        {
+        let already_open = matches!(
+            &self.access_mode,
+            ChatAccessMode::WriteController { chat_id: active }
+            | ChatAccessMode::LocalReadOnlySubscriber { chat_id: active, .. } if *active == chat_id
+        );
+        if already_open && !self.chat_selection_pending() {
             self.record_location(WorkspaceLocation::Thread(chat_id));
             self.close_all_overlays(cx);
             cx.notify();
             return;
         }
         self.restore_queued_prompt(window, cx);
-        self.bridge.send(KarCommand::SelectLocalChat {
-            chat_id,
-            prefer_read_only: false,
-        });
+        self.request_navigation(LocalChatDestination::Thread(chat_id), cx);
         cx.notify();
     }
 
@@ -3941,13 +4027,14 @@ impl KarWorkbench {
         self.pick_workspace(window, cx);
     }
 
-    pub fn open_sample_chat(&mut self, cx: &mut Context<Self>) {
+    pub fn open_sample_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.restore_queued_prompt(window, cx);
         self.dismiss_compact_sidebar(cx);
         self.record_location(WorkspaceLocation::Demo);
         self.main_stage_view = MainStageView::Conversation;
         self.coedit_panel_open = false;
-        if !matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
-            self.bridge.send(KarCommand::EnterDemoShowcase);
+        if self.chat_selection_pending() || !matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
+            self.request_navigation(LocalChatDestination::Demo, cx);
         }
         cx.notify();
     }
@@ -3968,6 +4055,14 @@ impl KarWorkbench {
     }
 
     fn restore_queued_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((workspace, text)) = self.creating_chat.as_mut().and_then(|c| c.goal_draft.take()) {
+            self.prepend_composer_draft(
+                DraftLocation::Project(workspace),
+                QueuedPrompt { text, ..Default::default() },
+                window,
+                cx,
+            );
+        }
         if let Some(queued) = self.queued_prompt.take() {
             self.prepend_composer_draft(self.drafts.location.clone(), queued, window, cx);
         }
@@ -4009,7 +4104,9 @@ impl KarWorkbench {
     }
 
     fn create_chat_for_composer(&mut self, initial_goal: Option<crate::kar_bridge::GoalEdit>, initial_plan: Option<(Uuid, String)>, cx: &mut Context<Self>) -> bool {
-        if self.slash.creating_goal { return false; }
+        if self.creating_chat.is_some() || self.opening_existing_conversation() {
+            return false;
+        }
         self.open_menu = None;
         let agent = self
             .providers
@@ -4027,8 +4124,15 @@ impl KarWorkbench {
         self.project_registry
             .ensure_project(&self.config.workspace_dir);
         let _ = self.project_registry.save(&self.config.chat_dir);
-        self.slash.creating_goal = initial_goal.is_some();
+        let request = Uuid::new_v4();
+        self.creating_chat = Some(PendingChatCreation {
+            request,
+            goal_draft: initial_goal.as_ref().map(|goal| {
+                (self.config.workspace_dir.clone(), goal.command())
+            }),
+        });
         self.bridge.send(KarCommand::CreateChat {
+            request,
             aster_plan: crate::aster::is_aster(&self.selected_runtime) && self.aster_planning.draft,
             initial_goal,
             initial_plan,
@@ -4091,8 +4195,19 @@ impl KarWorkbench {
         self.reveal_chat_composer(window, cx);
     }
 
+    fn opening_existing_conversation(&self) -> bool {
+        self.pending_navigation
+            .as_ref()
+            .is_some_and(|navigation| navigation.destination != LocalChatDestination::Draft)
+    }
+
     pub fn submit_composer_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.aster_switching() || self.composer_dictation().is_some() { return; }
+        if self.opening_existing_conversation()
+            || self.aster_switching()
+            || self.composer_dictation().is_some()
+        {
+            return;
+        }
         self.open_menu = None;
         let typed = self.composer_editor.read(cx).value().trim().to_owned();
         if (typed.is_empty() && self.pending_attachments.is_empty())

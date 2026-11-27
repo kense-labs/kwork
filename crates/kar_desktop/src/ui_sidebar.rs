@@ -1,6 +1,6 @@
 //! Native workspace chrome and thread navigation.
 
-use std::time::Duration;
+use std::{ops::Range, time::Duration};
 
 use gpui::{prelude::*, *};
 use gpui_kit::component::tooltip::Tooltip;
@@ -1575,9 +1575,9 @@ impl KarWorkbench {
                 loc.pick("示例对话", "Demo showcase thread"),
                 s,
             )
-            .on_press(cx, |this, _, cx| {
+            .on_press(cx, |this, window, cx| {
                 this.open_menu = None;
-                this.open_sample_chat(cx);
+                this.open_sample_chat(window, cx);
             })
             .into_any_element(),
             menu_icon_item(
@@ -1637,6 +1637,41 @@ fn demo_static_card(
         .child(right_status)
 }
 
+struct TitleOverflow {
+    origin: Point<Pixels>,
+    solid: Range<Pixels>,
+    edge: Range<Pixels>,
+    rtl: bool,
+}
+
+impl TitleOverflow {
+    fn layout(
+        title: &str,
+        width: Pixels,
+        bounds: Bounds<Pixels>,
+        max_fade: Pixels,
+        snap: impl FnOnce(Pixels) -> Pixels,
+    ) -> Option<Self> {
+        if width <= bounds.size.width {
+            return None;
+        }
+        let rtl = unicode_bidi::get_base_direction(title) == unicode_bidi::Direction::Rtl;
+        let fade = max_fade.min(bounds.size.width / 2.);
+        let (x, solid, edge) = if rtl {
+            let boundary = snap(bounds.left() + fade);
+            (bounds.right() - width, boundary..bounds.right(), bounds.left()..boundary)
+        } else {
+            let boundary = snap(bounds.right() - fade);
+            (bounds.left(), bounds.left()..boundary, boundary..bounds.right())
+        };
+        Some(Self { origin: point(x, bounds.top()), solid, edge, rtl })
+    }
+
+    fn opacity(&self, fraction_from_left: f32) -> f32 {
+        if self.rtl { fraction_from_left } else { 1. - fraction_from_left }
+    }
+}
+
 fn thread_title(
     id: impl Into<ElementId>,
     title: impl Into<SharedString>,
@@ -1669,22 +1704,26 @@ fn thread_title(
             move |bounds, line, window, cx| {
                 let Some(line) = line else { return };
                 let height = bounds.size.height;
-                let paint = |window: &mut Window, cx: &mut App| {
-                    let _ = line.paint(bounds.origin, height, TextAlign::Left, None, window, cx);
-                };
-                if line.width() <= bounds.size.width {
-                    window.with_content_mask(Some(ContentMask { bounds }), |window| paint(window, cx));
+                let Some(layout) = TitleOverflow::layout(
+                    line.text.as_ref(), line.width(), bounds, font_size * 1.6, |x| window.pixel_snap(x),
+                ) else {
+                    window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                        let _ = line.paint(bounds.origin, height, TextAlign::Left, None, window, cx);
+                    });
                     return;
-                }
+                };
+                let origin = layout.origin;
+                let edge = &layout.edge;
+                let slice = |left, right| {
+                    Bounds::from_corners(point(left, bounds.top()), point(right, bounds.bottom()))
+                };
+                let mask = ContentMask { bounds: slice(layout.solid.start, layout.solid.end) };
+                window.with_content_mask(Some(mask), |window| {
+                    let _ = line.paint(origin, height, TextAlign::Left, None, window, cx);
+                });
 
-                // Fade the native glyphs themselves so the textured sidebar, selection and
-                // hover backgrounds all show through, including behind color emoji.
-                let fade = (font_size * 1.6).min(bounds.size.width / 2.);
-                let start = window.pixel_snap(bounds.right() - fade);
-                let slice = |left, right| Bounds::from_corners(point(left, bounds.top()), point(right, bounds.bottom()));
-                let solid = ContentMask { bounds: slice(bounds.left(), start) };
-                window.with_content_mask(Some(solid), |window| paint(window, cx));
-                let baseline = bounds.origin + point(px(0.), (height + line.ascent - line.descent) / 2.);
+                // Fade the glyphs themselves so hover and selection show through color emoji too.
+                let baseline = origin + point(px(0.), (height + line.ascent - line.descent) / 2.);
                 let mut edge_glyphs = Vec::new();
                 for run in &line.runs {
                     let extent = window.text_system().bounding_box(run.font_id, font_size);
@@ -1693,7 +1732,7 @@ fn thread_title(
                         // Include a pixel on either side for the native antialiasing fringe.
                         let left = origin.x + extent.left() - px(1.);
                         let right = origin.x + extent.right() + px(1.);
-                        if right > start && left < bounds.right() {
+                        if right > edge.start && left < edge.end {
                             edge_glyphs.push((run.font_id, glyph, origin, left, right));
                         }
                     }
@@ -1702,12 +1741,13 @@ fn thread_title(
                 for i in 0..BANDS {
                     let start_fraction = i as f32 / BANDS as f32;
                     let end_fraction = (i + 1) as f32 / BANDS as f32;
-                    let at = |fraction| window.pixel_snap(start + (bounds.right() - start) * fraction);
+                    let at = |fraction| window.pixel_snap(edge.start + (edge.end - edge.start) * fraction);
                     let clip = slice(at(start_fraction), at(end_fraction));
                     if clip.is_empty() {
                         continue;
                     }
-                    let alpha = 1. - (start_fraction + end_fraction) / 2.;
+                    let midpoint = (start_fraction + end_fraction) / 2.;
+                    let alpha = layout.opacity(midpoint);
                     div().overflow_hidden().opacity(alpha).interactivity().paint(
                         None, None, clip, None, window, cx, |_, window, _| {
                             for &(font, glyph, origin, left, right) in &edge_glyphs {
@@ -1743,4 +1783,33 @@ fn thread_agent_mark(
         .flex_none()
         .child(render_runtime_mark(runtime, ICON, s, cx))
         .tooltip(move |window, cx| Tooltip::new(name.clone()).build(window, cx))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::TitleOverflow;
+    use gpui::{Bounds, point, px, size};
+
+    #[test]
+    fn overflowing_thread_titles_preserve_the_logical_start_in_both_directions() {
+        let bounds = Bounds::new(point(px(40.), px(12.)), size(px(120.), px(20.)));
+        let layout = |title: &str, width| TitleOverflow::layout(title, px(width), bounds, px(20.), |x| x);
+
+        // With the old left-anchored clip, these two titles showed the same suffix.
+        for title in ["שלום פרטי השיחה סיום", "בדיקה פרטי השיחה סיום"] {
+            let clip = layout(title, 270.).unwrap();
+            assert_eq!(clip.origin.x + px(270.), bounds.right());
+            assert_eq!(clip.solid, px(60.)..bounds.right());
+            assert_eq!(clip.edge, bounds.left()..px(60.));
+            assert_eq!((clip.opacity(0.), clip.opacity(1.)), (0., 1.));
+        }
+
+        let mixed = layout("Review בדיקה", 270.).unwrap();
+        assert_eq!(mixed.origin.x, bounds.left());
+        assert_eq!(mixed.solid, bounds.left()..px(140.));
+        assert_eq!(mixed.edge, px(140.)..bounds.right());
+        assert_eq!((mixed.opacity(0.), mixed.opacity(1.)), (1., 0.));
+        assert!(layout("שלום", 120.).is_none());
+    }
 }

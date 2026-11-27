@@ -497,7 +497,7 @@ pub(super) fn branch_header(
 
 impl KarWorkbench {
     pub(super) fn render_tool_run(
-        &mut self,
+        &self,
         turn_id: Uuid,
         calls: &[(usize, &Tool)],
         running: bool,
@@ -621,7 +621,7 @@ impl KarWorkbench {
     }
 
     fn render_activity_detail(
-        &mut self,
+        &self,
         key: (Uuid, usize),
         tool: &Tool,
         kind: Kind,
@@ -833,10 +833,10 @@ impl KarWorkbench {
                 if let Some(strip) = tabs.take() {
                     box_el = box_el.child(div().flex().child(strip));
                 }
-                let viewer = self.tool_json_viewers.entry(id).or_insert_with(|| {
+                let viewer = self.tool_json_viewers.borrow_mut().entry(id).or_insert_with(|| {
                     cx.new(|cx| JsonViewer::new(label, value, window, cx).with_max_height(180.))
-                });
-                box_el = box_el.child(viewer.clone());
+                }).clone();
+                box_el = box_el.child(viewer);
                 continue;
             }
             let copy = copy_text_button(

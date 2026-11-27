@@ -924,6 +924,7 @@ impl KarWorkbench {
                 } else {
                     let pr = self
                         .patch_review_cache
+                        .get_mut()
                         .entry(cache_key)
                         .or_insert_with(|| {
                             let hunks = hunks_data
@@ -1286,6 +1287,7 @@ impl KarWorkbench {
         let patch_entity = if !preview.diff_hunks.is_empty() {
             Some(
                 self.patch_review_cache
+                    .get_mut()
                     .entry(format!("tab-patch-{key}"))
                     .or_insert_with(|| {
                         let hunks = preview

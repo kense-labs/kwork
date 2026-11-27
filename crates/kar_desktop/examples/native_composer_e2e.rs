@@ -1,5 +1,6 @@
-//! Run with `cargo run -p kar_desktop --example native_composer_e2e` on a desktop
-//! with a logged-in Codex runtime. Optionally pass a parent directory for the evidence.
+//! Run `cargo run -p kar_desktop --example native_composer_e2e` on a desktop with a
+//! signed-in Codex runtime. Optionally pass an evidence directory, or `navigation-race DIR`
+//! to replace a draft while its first chat is opening.
 //! On macOS, run `create-review DIR`, `resume-review DIR`, then `draft-review DIR`
 //! with the same new directory to exercise relaunch, file review, follow-up, and drafting.
 #[path = "support/review_workflow.rs"]
@@ -35,8 +36,9 @@ fn main() -> Result<()> {
         return review_workflow::launch(root, phase.to_owned());
     }
     let aster = args.first().and_then(|s| s.to_str()) == Some("aster-plan");
+    let navigation_race = args.first().and_then(|s| s.to_str()) == Some("navigation-race");
     let parent = std::env::args_os()
-        .nth(if aster { 2 } else { 1 })
+        .nth(if aster || navigation_race { 2 } else { 1 })
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
     let root = tempfile::Builder::new()
@@ -71,7 +73,7 @@ fn main() -> Result<()> {
                 let result = if aster {
                     run_aster_plan_test(window, &wb, &root, cx).await
                 } else {
-                    run_composer_test(window, &wb, &root, &chat_dir, cx).await
+                    run_composer_test(window, &wb, &root, &chat_dir, navigation_race, cx).await
                 };
                 let _ = window.update(cx, |_, _, cx| wb.read(cx).bridge.send(KarCommand::Shutdown));
                 if let Err(err) = result {
@@ -116,6 +118,7 @@ async fn run_composer_test(
     wb: &Entity<KarWorkbench>,
     root: &Path,
     chat_dir: &Path,
+    navigation_race: bool,
     cx: &mut AsyncApp,
 ) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -146,6 +149,34 @@ async fn run_composer_test(
         window.dispatch_keystroke(Keystroke::parse(shortcut)?, cx);
         window.refresh();
         window.draw(cx).clear(cx);
+        Ok(())
+    })??;
+    if navigation_race {
+        window.update(cx, |_, window, cx| -> Result<()> {
+            let discarded = Keystroke {
+                key: "x".into(),
+                key_char: Some("Keep this first draft local.".into()),
+                ..Default::default()
+            };
+            ensure!(window.dispatch_keystroke(discarded, cx), "composer did not accept the first draft");
+            Ok(())
+        })??;
+        window.update(cx, |_, window, cx| -> Result<()> {
+            window.dispatch_keystroke(Keystroke::parse("enter")?, cx);
+            Ok(())
+        })??;
+        window.update(cx, |_, window, cx| {
+            wb.update(cx, |wb, cx| wb.start_new_chat(window, cx));
+            window.refresh();
+            window.draw(cx).clear(cx);
+        })?;
+        window.update(cx, |_, window, cx| -> Result<()> {
+            let select_all = if cfg!(target_os = "macos") { "cmd-a" } else { "ctrl-a" };
+            window.dispatch_keystroke(Keystroke::parse(select_all)?, cx);
+            Ok(())
+        })??;
+    }
+    window.update(cx, |_, window, cx| -> Result<()> {
         for c in prompt.chars() {
             let key = if c == ' ' {
                 "space".into()
@@ -165,7 +196,9 @@ async fn run_composer_test(
         }
         Ok(())
     })??;
-    capture(window, cx, &root.join("typed.png")).await?;
+    if !navigation_race {
+        capture(window, cx, &root.join("typed.png")).await?;
+    }
     window.update(cx, |_, window, cx| -> Result<()> {
         window.dispatch_keystroke(Keystroke::parse("enter")?, cx);
         Ok(())
@@ -186,8 +219,16 @@ async fn run_composer_test(
             ensure!(has_message(Role::User, &prompt), "the stored user message differs from the typed text");
             ensure!(has_message(Role::Assistant, &marker), "reply did not match the unique marker");
             let id = state.chat_id.context("missing chat id")?;
-            let history = ChatStore::open(chat_dir)?.history(id)?;
+            let store = ChatStore::open(chat_dir)?;
+            let history = store.history(id)?;
             if history.turns != state.turns { return Ok(false); }
+            if navigation_race {
+                let mut chats = store.list()?;
+                chats.sort_by_key(|info| info.created_ms);
+                ensure!(chats.len() == 2, "expected exactly two created sessions");
+                ensure!(chats[1].id == id, "the window reopened the superseded session");
+                ensure!(store.history(chats[0].id)?.turns.is_empty(), "sent a message to the superseded session");
+            }
             println!("Verified real response {marker}, one completed turn and matching persisted history in {id}.");
             Ok(true)
         })??;

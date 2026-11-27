@@ -194,8 +194,7 @@ impl KarWorkbench {
             {
                 rows.push(self.render_waiting_for_content(&s));
             } else {
-                let turns = self.projected.turns.clone();
-                for (turn_idx, turn) in turns.iter().enumerate() {
+                for (turn_idx, turn) in self.projected.turns.iter().enumerate() {
                     let is_active_match = active_match_turn_ix == Some(turn_idx);
                     let turn_matched = matches.binary_search(&turn_idx).is_ok();
                     let rendered = self
@@ -1357,6 +1356,23 @@ impl KarWorkbench {
         }
     }
 
+    fn step_chat_search(&mut self, previous: bool, cx: &mut Context<Self>) {
+        let query = self.chat_search_query.trim().to_lowercase();
+        let matches = matching_turn_indices(&self.projected.turns, &query);
+        let count = matches.len();
+        if count == 0 {
+            return;
+        }
+        let current = self.chat_search_match_ix % count;
+        self.chat_search_match_ix = if previous {
+            current.checked_sub(1).unwrap_or(count - 1)
+        } else {
+            (current + 1) % count
+        };
+        self.chat_scroll.scroll_to_item(matches[self.chat_search_match_ix]);
+        cx.notify();
+    }
+
     fn render_chat_find_bar(
         &self,
         thread_w: f32,
@@ -1410,17 +1426,7 @@ impl KarWorkbench {
                         }
                         cx.notify();
                     }
-                    EditEvent::Submitted => {
-                        let q_lc = this.chat_search_query.trim().to_lowercase();
-                        let matches = matching_turn_indices(&this.projected.turns, &q_lc);
-                        if !matches.is_empty() {
-                            this.chat_search_match_ix =
-                                (this.chat_search_match_ix + 1) % matches.len();
-                            this.chat_scroll
-                                .scroll_to_item(matches[this.chat_search_match_ix]);
-                            cx.notify();
-                        }
-                    }
+                    EditEvent::Submitted => this.step_chat_search(false, cx),
                     EditEvent::Escape => {
                         this.chat_search_open = false;
                         cx.notify();
@@ -1469,12 +1475,6 @@ impl KarWorkbench {
         } else {
             format!("{cur_ix} / {match_count}")
         };
-        let targets = (!matches.is_empty()).then(|| {
-            let active = self.chat_search_match_ix % matches.len();
-            let prev = (active + matches.len() - 1) % matches.len();
-            let next = (active + 1) % matches.len();
-            [(prev, matches[prev]), (next, matches[next])]
-        });
         let focused = editor.read(cx).focus.is_focused(window);
 
         let bar = div()
@@ -1494,7 +1494,17 @@ impl KarWorkbench {
                     .items_center()
                     .gap(px(4.))
                     .child(
-                        search_input_box("chat-find-input-box", editor, focused, true, s)
+                        search_input_box("chat-find-input-box", editor.clone(), focused, true, s)
+                            .capture_key_down(cx.listener(move |this, ev: &KeyDownEvent, win, cx| {
+                                if ev.keystroke.key == "enter"
+                                    && ev.keystroke.modifiers == Modifiers::shift()
+                                    && !editor.read(cx).is_composing()
+                                {
+                                    this.step_chat_search(true, cx);
+                                    win.prevent_default();
+                                    cx.stop_propagation();
+                                }
+                            }))
                             .flex_1()
                             .min_w_0()
                             .border_0()
@@ -1519,35 +1529,23 @@ impl KarWorkbench {
                         icon_button_sm(
                             "chat-find-prev",
                             ProIcon::ChevronUp,
-                            loc.pick("上一处匹配", "Previous match"),
+                            loc.pick("上一处匹配  ⇧↵", "Previous match  ⇧↵"),
                             s,
                         )
                         .disabled(match_count == 0)
                         .when(!open && match_count > 0, |b| b.inert())
-                        .on_press(cx, move |this, _, cx| {
-                            if let Some([(index, turn), _]) = targets {
-                                this.chat_search_match_ix = index;
-                                this.chat_scroll.scroll_to_item(turn);
-                                cx.notify();
-                            }
-                        }),
+                        .on_press(cx, |this, _, cx| this.step_chat_search(true, cx)),
                     )
                     .child(
                         icon_button_sm(
                             "chat-find-next",
                             ProIcon::ChevronDown,
-                            loc.pick("下一处匹配", "Next match"),
+                            loc.pick("下一处匹配  ↵", "Next match  ↵"),
                             s,
                         )
                         .disabled(match_count == 0)
                         .when(!open && match_count > 0, |b| b.inert())
-                        .on_press(cx, move |this, _, cx| {
-                            if let Some([_, (index, turn)]) = targets {
-                                this.chat_search_match_ix = index;
-                                this.chat_scroll.scroll_to_item(turn);
-                                cx.notify();
-                            }
-                        }),
+                        .on_press(cx, |this, _, cx| this.step_chat_search(false, cx)),
                     )
                     .child(
                         icon_button_sm(
@@ -4111,7 +4109,7 @@ impl KarWorkbench {
     }
 
     fn render_turn(
-        &mut self,
+        &self,
         turn_index: usize,
         turn: &ChatTurn,
         inline_review: bool,
@@ -4750,7 +4748,7 @@ impl KarWorkbench {
             };
             let label = if before { loc.pick("按住撤销改动", "Hold to undo") }
                         else { loc.pick("按住恢复文件", "Hold to restore") };
-            let hold = self.rollback_hold_buttons.entry((chat_id, turn_id, before)).or_insert_with(|| {
+            let hold = self.rollback_hold_buttons.borrow_mut().entry((chat_id, turn_id, before)).or_insert_with(|| {
                 let btn = cx.new(|cx| HoldToConfirm::new(format!("hold-rb-{chat_id}-{turn_id}"), label, window, cx)
                     .with_duration(Duration::from_millis(950))
                     .with_done_label(loc.pick("已确认", "Confirmed"))
@@ -4986,7 +4984,7 @@ impl KarWorkbench {
     }
 
     fn render_diff(
-        &mut self,
+        &self,
         key: (Uuid, usize),
         diff: &str,
         s: &StudioPalette,
@@ -5015,6 +5013,7 @@ impl KarWorkbench {
             let file_for_pr = file.clone();
             let pr = self
                 .patch_review_cache
+                .borrow_mut()
                 .entry(cache_k)
                 .or_insert_with(|| {
                     let hunks = parsed_hunks

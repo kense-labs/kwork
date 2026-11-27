@@ -1,4 +1,4 @@
-//! Two real desktop processes, a persisted Kar session, and pointer hits based on visible text.
+//! Verify file changes, resume, and review drafting across three native desktop processes.
 use super::*;
 use kar_desktop::types::ChatAccessMode;
 use std::process::Command;
@@ -201,11 +201,6 @@ pub(super) fn click_text(
     Ok(())
 }
 
-/// Hit the center of a footer icon in logical window coordinates, just as a pointer does.
-fn click_footer_icon(handle: AnyWindowHandle, cx: &mut AsyncApp, x: f32) -> Result<()> {
-    click_position(handle, cx, |size| point(px(x), size.height - px(24.)))
-}
-
 pub(super) fn click_position(handle: AnyWindowHandle, cx: &mut AsyncApp, target: impl FnOnce(Size<Pixels>) -> Point<Pixels>) -> Result<()> {
     handle.update(cx, |_, window, cx| {
         let size = window.viewport_size();
@@ -255,9 +250,12 @@ async fn run(
             w.providers.iter().any(|p| p.id == "codex" && p.is_ready())
         })
         .await?;
+        handle.update(cx, |_, _, cx| {
+            wb.update(cx, |w, cx| w.select_runtime_by_id("codex", cx))
+        })?;
         let home = root.join("home.png");
         capture(handle, cx, &home).await?;
-        click_footer_icon(handle, cx, 96.)?;
+        click_text(root, &home, "文档", handle, cx)?;
         let library = root.join("documents.png");
         capture(handle, cx, &library).await?;
         click_text(root, &library, "电子表格", handle, cx)?;
@@ -321,7 +319,7 @@ async fn run(
                 );
                 let shot = root.join("00-permission.png");
                 capture(handle, cx, &shot).await?;
-                click_footer_icon(handle, cx, 132.)?;
+                click_text(root, &shot, "收件", handle, cx)?;
                 let inbox = root.join("inbox-request.png");
                 capture(handle, cx, &inbox).await?;
                 // Click the visible request title. Vision can miss the small amber
@@ -377,7 +375,7 @@ async fn run(
         .await?;
         let chat = root.join("06-resumed-again.png");
         capture(handle, cx, &chat).await?;
-        click_footer_icon(handle, cx, 60.)?;
+        click_text(root, &chat, "Git 变更", handle, cx)?;
         wait_for(handle, wb, cx, "Git panel", |w| {
             w.right_surface == kar_desktop::workbench::RightPaneSurface::GitWorkbench
                 && w.layout_mode != kar_desktop::workbench::WorkspaceLayoutMode::ChatFocus

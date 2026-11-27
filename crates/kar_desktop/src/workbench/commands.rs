@@ -15,7 +15,6 @@ pub(super) struct SlashPicker {
     browse: bool,
     dismissed: bool,
     index: usize,
-    pub(super) creating_goal: bool,
     scroll: ScrollHandle,
 }
 
@@ -476,7 +475,7 @@ impl KarWorkbench {
 
     fn slash_choices(&self, query: &str) -> Vec<Choice> {
         let goal =
-            self.can_set_chat_goal() && !self.slash.creating_goal && self.queued_prompt.is_none();
+            self.can_set_chat_goal() && !self.creating_chat_goal() && self.queued_prompt.is_none();
         let session = self.session_commands.as_ref().filter(|(id, _)| {
             self.projected.chat_id == Some(*id)
                 && matches!(self.access_mode, ChatAccessMode::WriteController { chat_id } if chat_id == *id)
@@ -624,7 +623,7 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !self.can_set_chat_goal() || self.queued_prompt.is_some() || self.slash.creating_goal {
+        if !self.can_set_chat_goal() || self.queued_prompt.is_some() || self.creating_chat_goal() {
             self.notify_warning(
                 self.ui_locale.pick(
                     "当前会话无法设置目标",

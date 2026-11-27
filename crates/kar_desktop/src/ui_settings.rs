@@ -275,6 +275,44 @@ const SETTINGS_DEEP_INDEX: &[DeepSettingItem] = &[
     },
 ];
 
+/// Keep the keyboard destination in the same order as the visible search results.
+struct SettingsMatches {
+    pages: Vec<SettingsTab>,
+    items: Vec<&'static DeepSettingItem>,
+}
+
+impl SettingsMatches {
+    fn for_query(query: &str) -> Self {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return Self { pages: Vec::new(), items: Vec::new() };
+        }
+        let matches = |text: &str| text.to_lowercase().contains(&query);
+        let pages = SettingsTab::ALL
+            .into_iter()
+            .filter(|&tab| {
+                [UiLocale::Zh, UiLocale::En].into_iter().any(|locale| {
+                    matches(tab.title(locale))
+                        || (tab == tab.rail_parent() && matches(tab.rail_title(locale)))
+                })
+            })
+            .collect();
+        let items = SETTINGS_DEEP_INDEX
+            .iter()
+            .filter(|item| [item.title_zh, item.title_en, item.keywords].into_iter().any(matches))
+            .take(8)
+            .collect();
+        Self { pages, items }
+    }
+
+    fn first(&self) -> Option<SettingsTab> {
+        self.pages
+            .first()
+            .copied()
+            .or_else(|| self.items.first().map(|item| item.tab))
+    }
+}
+
 impl KarWorkbench {
     pub fn open_settings(&mut self, tab: SettingsTab, cx: &mut Context<Self>) {
         self.close_all_overlays(cx);
@@ -1015,21 +1053,22 @@ impl KarWorkbench {
             editor.set_placeholder(loc.pick("搜索任意设置…", "Search settings…"));
             editor
         });
-        let query = search.read(cx).value().trim().to_lowercase();
-
-        let deep_hits: Vec<&DeepSettingItem> = if query.is_empty() {
-            Vec::new()
-        } else {
-            SETTINGS_DEEP_INDEX
-                .iter()
-                .filter(|it| {
-                    it.title_zh.to_lowercase().contains(&query)
-                        || it.title_en.to_lowercase().contains(&query)
-                        || it.keywords.to_lowercase().contains(&query)
-                })
-                .collect()
+        let input = search.read(cx).value().trim();
+        let searching = !input.is_empty();
+        let matches = SettingsMatches::for_query(input);
+        let pages = if !searching { &SettingsTab::PRIMARY_NAV[..] } else { &matches.pages };
+        let search_editor = search.clone();
+        let search_rail = expanded.clone();
+        let section_focus = modal_focus.clone();
+        let open_result = move |tab, wb: &mut Self, win: &mut Window, cx: &mut Context<Self>| {
+            wb.select_settings_tab(tab, cx);
+            search_editor.update(cx, |editor, cx| editor.set_value("", win, cx));
+            search_rail.update(cx, |open, cx| {
+                *open = false;
+                cx.notify();
+            });
+            win.focus(&section_focus, cx);
         };
-
         let rail_active = active_tab.rail_parent();
         let nav_sensor = pro_selection_sensor();
         let mut nav_items = div()
@@ -1047,17 +1086,10 @@ impl KarWorkbench {
                 false,
             ));
 
-        let mut results = 0usize;
-        for (index, tab) in SettingsTab::PRIMARY_NAV.into_iter().enumerate() {
-            let tab_matches_deep = deep_hits.iter().any(|h| h.tab.rail_parent() == tab);
-            if !query.is_empty()
-                && !tab.rail_title(UiLocale::Zh).to_lowercase().contains(&query)
-                && !tab.rail_title(UiLocale::En).to_lowercase().contains(&query)
-                && !tab_matches_deep
-            {
-                continue;
-            }
-            if !compact && query.is_empty() {
+        for (index, &tab) in pages.iter().enumerate() {
+            let is_primary = tab == tab.rail_parent();
+            let title = if is_primary { tab.rail_title(loc) } else { tab.title(loc) };
+            if !compact && !searching {
                 let group = match tab {
                     SettingsTab::General => Some(loc.pick("日常体验", "Basics")),
                     SettingsTab::Agents => Some(loc.pick("AI 与扩展", "AI & Capabilities")),
@@ -1077,8 +1109,7 @@ impl KarWorkbench {
                     );
                 }
             }
-            results += 1;
-            let selected = tab == rail_active;
+            let selected = if !searching { tab == rail_active } else { tab == active_tab };
             let color = if selected { s.ink } else { s.muted };
             let icon = match tab {
                 SettingsTab::General => pro_icon(ProIcon::Sliders, 15., color),
@@ -1090,9 +1121,7 @@ impl KarWorkbench {
                 SettingsTab::Usage => render_usage_pulse_icon(15., color),
                 _ => pro_icon(ProIcon::Settings, 15., color),
             };
-            let query_editor = search.clone();
-            let fold = expanded.clone();
-            let section_focus = modal_focus.clone();
+            let open = open_result.clone();
             nav_items = nav_items.child(
                 div()
                     .relative()
@@ -1100,14 +1129,14 @@ impl KarWorkbench {
                     .h(px(32.))
                     .when(selected, |d| d.child(pro_mark_selected(&nav_sensor)))
                     .child(
-                        Tactile::ghost(("settings-nav", index), s)
+                        Tactile::ghost(tab.key(), s)
                             .w_full()
                             .h_full()
                             .px(px(10.))
                             .gap(px(8.))
                             .radius(R_SM)
                             .when(compact, |b| b.justify_center())
-                            .tip(tab.rail_title(loc))
+                            .tip(title)
                             .child(icon)
                             .when(!compact, |b| {
                                 b.child(
@@ -1122,24 +1151,16 @@ impl KarWorkbench {
                                             FontWeight::NORMAL
                                         })
                                         .text_color(if selected { s.ink } else { s.text })
-                                        .child(tab.rail_title(loc)),
+                                        .child(title),
                                 )
                             })
-                            .on_press(cx, move |wb, win, cx| {
-                                wb.select_settings_tab(tab, cx);
-                                query_editor.update(cx, |ed, cx| ed.set_value("", win, cx));
-                                fold.update(cx, |open, cx| {
-                                    *open = false;
-                                    cx.notify();
-                                });
-                                win.focus(&section_focus, cx);
-                            }),
+                            .on_press(cx, move |wb, win, cx| open(tab, wb, win, cx)),
                     ),
             );
         }
 
         // Deep item-level search hits directly in the rail so any sub-setting is 1 click away!
-        if !compact && !deep_hits.is_empty() {
+        if !compact && !matches.items.is_empty() {
             nav_items = nav_items.child(
                 div()
                     .px(px(10.))
@@ -1150,10 +1171,9 @@ impl KarWorkbench {
                     .text_color(s.muted)
                     .child(loc.pick("匹配的具体设置项", "Matching settings")),
             );
-            for (hix, hit) in deep_hits.iter().take(8).enumerate() {
+            for (hix, hit) in matches.items.iter().enumerate() {
                 let target_tab = hit.tab;
-                let q_ed = search.clone();
-                let sec_focus = modal_focus.clone();
+                let open = open_result.clone();
                 nav_items = nav_items.child(
                     Tactile::ghost(("settings-deep-hit", hix), s)
                         .w_full()
@@ -1190,16 +1210,12 @@ impl KarWorkbench {
                                         ),
                                 ),
                         )
-                        .on_press(cx, move |wb, win, cx| {
-                            wb.select_settings_tab(target_tab, cx);
-                            q_ed.update(cx, |ed, cx| ed.set_value("", win, cx));
-                            win.focus(&sec_focus, cx);
-                        }),
+                        .on_press(cx, move |wb, win, cx| open(target_tab, wb, win, cx)),
                 );
             }
         }
 
-        if results == 0 && deep_hits.is_empty() {
+        if pages.is_empty() && matches.items.is_empty() {
             nav_items = nav_items.child(
                 div()
                     .px(px(10.))
@@ -1229,7 +1245,7 @@ impl KarWorkbench {
             .gap(px(7.))
             .child(pro_icon(ProIcon::Search, 14., s.muted))
             .child(div().flex_1().min_w_0().h(px(20.)).child(search.clone()))
-            .when(query.is_empty(), |d| d.child(render_kbd("/", s)));
+            .when(!searching, |d| d.child(render_kbd("/", s)));
 
         let rail = div()
             .map(|d| {
@@ -1374,6 +1390,10 @@ impl KarWorkbench {
                 let focus = key_search.focus_handle(cx);
                 let mods = ev.keystroke.modifiers;
                 if ev.keystroke.key == "escape" {
+                    if ev.is_held {
+                        cx.stop_propagation();
+                        return;
+                    }
                     if !key_search.read(cx).value().is_empty() {
                         key_search.update(cx, |ed, cx| ed.set_value("", win, cx));
                         win.focus(&focus, cx);
@@ -1405,31 +1425,9 @@ impl KarWorkbench {
                     win.focus(&focus, cx);
                     cx.stop_propagation();
                 } else if ev.keystroke.key == "enter" && focus.is_focused(win) {
-                    let query = key_search.read(cx).value().trim().to_lowercase();
-                    let next_tab = SettingsTab::ALL
-                        .into_iter()
-                        .find(|tab| {
-                            tab.label().to_lowercase().contains(&query)
-                                || tab.title(UiLocale::En).to_lowercase().contains(&query)
-                        })
-                        .or_else(|| {
-                            SETTINGS_DEEP_INDEX
-                                .iter()
-                                .find(|it| {
-                                    it.title_zh.to_lowercase().contains(&query)
-                                        || it.title_en.to_lowercase().contains(&query)
-                                        || it.keywords.to_lowercase().contains(&query)
-                                })
-                                .map(|it| it.tab)
-                        });
-                    if let Some(first) = next_tab {
-                        wb.select_settings_tab(first, cx);
-                        key_search.update(cx, |ed, cx| ed.set_value("", win, cx));
-                        key_expand.update(cx, |open, cx| {
-                            *open = false;
-                            cx.notify();
-                        });
-                        win.focus(&focus_before_close, cx);
+                    let input = key_search.read(cx).value();
+                    if let Some(tab) = SettingsMatches::for_query(input).first() {
+                        open_result(tab, wb, win, cx);
                     }
                     cx.stop_propagation();
                 }
@@ -1504,5 +1502,24 @@ impl KarWorkbench {
                 )
                 .into_any_element()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SettingsMatches, SettingsTab};
+
+    #[test]
+    fn settings_search_uses_visible_labels_and_has_no_empty_destination() {
+        for (input, target) in [
+            ("  ", None),
+            ("missing-setting-9377", None),
+            ("models & ACCESS", Some(SettingsTab::Agents)),
+            ("工程与维护", Some(SettingsTab::Usage)),
+            ("Voice & Dictation", Some(SettingsTab::Voice)),
+            ("whisper", Some(SettingsTab::Voice)),
+        ] {
+            assert_eq!(SettingsMatches::for_query(input).first(), target, "{input}");
+        }
     }
 }

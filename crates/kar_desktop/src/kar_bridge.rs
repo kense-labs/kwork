@@ -78,8 +78,29 @@ impl std::fmt::Debug for ForgeCredentials {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalChatDestination {
+    Draft,
+    Thread(Uuid),
+    Demo,
+}
+
+impl LocalChatDestination {
+    pub(crate) fn matches(self, mode: &ChatAccessMode) -> bool {
+        match self {
+            Self::Thread(id) => mode.selected_chat_id() == Some(id),
+            Self::Draft => matches!(mode, ChatAccessMode::NoneSelected),
+            Self::Demo => matches!(mode, ChatAccessMode::DemoShowcase),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum KarCommand {
+    Navigate {
+        request: Uuid,
+        destination: LocalChatDestination,
+    },
     Hardware { workspace: PathBuf, request_id: Uuid, cmd: crate::hardware::Command },
     RefreshStoreAndProviders {
         store_dir: PathBuf,
@@ -98,6 +119,7 @@ pub enum KarCommand {
     SetAsterPlanMode { chat_id: Uuid, plan: bool },
     SetChatApprovalMode { chat_id: Uuid, mode: ApprovalMode },
     CreateChat {
+        request: Uuid,
         aster_plan: bool,
         runtime_id: String,
         initial_goal: Option<GoalEdit>,
@@ -435,6 +457,8 @@ pub enum KarBridgeEvent {
     WorkspaceFilesRestored {
         files: Vec<PathBuf>,
     },
+    NavigationStarted(Uuid),
+    NavigationUnavailable(Uuid),
     AccessModeChanged(ChatAccessMode),
     SessionCommandsUpdated {
         chat_id: Uuid,
@@ -460,10 +484,14 @@ pub enum KarBridgeEvent {
     },
     PlanChatCreated { chat_id: Uuid, request_id: Uuid, topic: String },
     GoalChatCreated(Uuid),
+    ChatCreated {
+        request: Uuid,
+        chat_id: Uuid,
+    },
     /// A new chat could not be started, so whatever was waiting to be sent in it never left.
     ChatCreateFailed {
+        request: Uuid,
         plan_request_id: Option<Uuid>,
-        goal_draft: Option<(PathBuf, String)>,
         cause: ChatCreateFailure,
         detail: String,
     },
@@ -854,15 +882,26 @@ impl WorkerState {
     }
 
     fn emit(&self, ev: KarBridgeEvent) {
-        if let KarBridgeEvent::AccessModeChanged(mode)=&ev {
-            let chat=match mode {
-                ChatAccessMode::WriteController {chat_id}=>Some(*chat_id),
-                ChatAccessMode::DemoShowcase=>Some(Uuid::nil()),
-                _=>None,
-            };
-            self.remote_link.lock().unwrap_or_else(|e| e.into_inner()).set_writable_chat(chat);
+        match &ev {
+            KarBridgeEvent::ChatCreated { chat_id, .. } => self.set_remote_writable_chat(Some(*chat_id)),
+            KarBridgeEvent::AccessModeChanged(mode) => {
+                let chat = match mode {
+                    ChatAccessMode::WriteController { chat_id } => Some(*chat_id),
+                    ChatAccessMode::DemoShowcase => Some(Uuid::nil()),
+                    _ => None,
+                };
+                self.set_remote_writable_chat(chat);
+            }
+            _ => {}
         }
         let _ = self.evt_tx.send_blocking(ev);
+    }
+
+    fn set_remote_writable_chat(&self, chat: Option<Uuid>) {
+        self.remote_link
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_writable_chat(chat);
     }
 
     fn emit_remote_telemetry(&self) {
@@ -2608,6 +2647,24 @@ async fn worker_loop(
         // Kar applies ACP modes when attaching a controller. Reattach to the same native
         // session without sending a user turn or moving another window's controller.
         let (cmd, requested_mode) = match cmd {
+            KarCommand::Navigate { request, destination } => {
+                let command = match destination {
+                    LocalChatDestination::Draft => KarCommand::CloseChat,
+                    LocalChatDestination::Demo => KarCommand::EnterDemoShowcase,
+                    LocalChatDestination::Thread(chat_id) => {
+                        if state.store.is_none() {
+                            state.emit(KarBridgeEvent::NavigationUnavailable(request));
+                            continue;
+                        }
+                        KarCommand::SelectLocalChat {
+                            chat_id,
+                            prefer_read_only: false,
+                        }
+                    }
+                };
+                state.emit(KarBridgeEvent::NavigationStarted(request));
+                (command, None)
+            }
             KarCommand::SetAsterPlanMode { chat_id, plan } => {
                 let owns = state.active_controller.as_ref().is_some_and(|s| s.info().id == chat_id && crate::aster::is_aster(&s.info().runtime));
                 if !owns || state.turn_appears_busy() {
@@ -2684,6 +2741,7 @@ async fn worker_loop(
             other => (other, None),
         };
         match cmd {
+            KarCommand::Navigate { .. } => unreachable!("navigation is resolved above"),
             KarCommand::Hardware {workspace, request_id, cmd} => {
                 let host = state.project_engine(&workspace);
                 let output = state.evt_tx.clone();
@@ -2839,6 +2897,7 @@ async fn worker_loop(
                 if switching { let _ = state.cmd_tx.send(KarCommand::SelectLocalChat { chat_id,prefer_read_only:false }).await; }
             }
             KarCommand::CreateChat {
+                request,
                 aster_plan,
                 runtime_id,
                 initial_goal,
@@ -2852,8 +2911,8 @@ async fn worker_loop(
             } => {
                 let Some(store) = state.store.clone() else {
                     state.emit(KarBridgeEvent::ChatCreateFailed {
-                            plan_request_id: initial_plan.as_ref().map(|p| p.0),
-                        goal_draft: initial_goal.map(|edit| (workspace.clone(), edit.command())),
+                        request,
+                        plan_request_id: initial_plan.as_ref().map(|p| p.0),
                         cause: ChatCreateFailure::Store,
                         detail: format!(
                             "无法写入对话存储目录 {}，请检查它的权限。",
@@ -2901,8 +2960,8 @@ async fn worker_loop(
                         }
                         Err(detail) => {
                             state.emit(KarBridgeEvent::ChatCreateFailed {
-                            plan_request_id: initial_plan.as_ref().map(|p| p.0),
-                                goal_draft: initial_goal.map(|edit| (workspace.clone(), edit.command())),
+                                request,
+                                plan_request_id: initial_plan.as_ref().map(|p| p.0),
                                 cause: ChatCreateFailure::Worktree,
                                 detail: detail.to_string(),
                             });
@@ -2964,9 +3023,7 @@ async fn worker_loop(
                         let history = session.history().ok();
                         let session = Arc::new(session);
                         state.active_controller = Some(session.clone());
-                        state.emit(KarBridgeEvent::AccessModeChanged(
-                            ChatAccessMode::WriteController { chat_id },
-                        ));
+                        state.emit(KarBridgeEvent::ChatCreated { request, chat_id });
                         if let Some(h) = history {
                             let queued = active_queued_inputs(Some(&store), chat_id);
                             state.emit(KarBridgeEvent::ChatStateUpdated(state_from_history(
@@ -3002,8 +3059,8 @@ async fn worker_loop(
                         }
                         state.selected_chat_id = None;
                         state.emit(KarBridgeEvent::ChatCreateFailed {
+                            request,
                             plan_request_id: initial_plan.as_ref().map(|p| p.0),
-                            goal_draft: initial_goal.map(|edit| (workspace.clone(), edit.command())),
                             cause: ChatCreateFailure::Runtime(runtime_id),
                             detail,
                         });

@@ -801,6 +801,7 @@ impl KarWorkbench {
                 let jv = (!t.schema_json.is_null()).then(|| {
                     let cache_key = format!("tool-schema-{:?}", (&t.server_id, &t.name));
                     self.tool_json_viewers
+                        .get_mut()
                         .entry(cache_key)
                         .or_insert_with(|| {
                             cx.new(|cx| {

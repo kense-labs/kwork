@@ -6403,6 +6403,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower",
+ "unicode-bidi",
  "unicode-segmentation",
  "ureq",
  "url",
