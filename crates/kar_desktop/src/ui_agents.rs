@@ -1,10 +1,10 @@
-//! Providers, Accounts, Full Model Catalog, Fallback/Quota Routing & Community ACP Registry.
+//! Agent accounts, defaults for new conversations, and custom ACP connections.
 
 use crate::ui_motion::selection::{Group, SelectionStrip};
 use gpui::{prelude::*, *};
 use kar::ApprovalMode;
 use kui::{
-    components::{input::Input, pro_chrome::pro_fold},
+    components::input::Input,
     primitives::{
         editor::{Editor, InputMode},
         pro_icons::{ProIcon, pro_icon},
@@ -16,13 +16,13 @@ use crate::{
     prefs::{CustomAcpAgent, all_approval_modes},
     types::{ProviderAvailability, ProviderReadiness, runtime_display_name},
     ui_motion::{
-        Tactile, disclosure_line, icon_button_sm, primary_button, primary_button_sm, soft_button,
+        Tactile, disclosure_line, icon_button_sm, primary_button_sm, soft_button,
         soft_button_sm, spinner, text_button_sm,
     },
     ui_primitives::{
-        CTRL_SM_H, DotTone, FS_META, FS_TAG, FS_TITLE, FS_UI, ICON_SM, ICON_XS, LH_META, LH_UI,
-        R_PILL, R_SM, StudioPalette, card_box, mono_font, render_provider_color_tile,
-        render_status, search_input_box, settings_divider, settings_page_shell, settings_row_item,
+        FS_META, FS_TITLE, FS_UI, ICON_SM, ICON_XS, LH_META, LH_UI,
+        R_SM, StudioPalette, card_box, mono_font, render_provider_color_tile,
+        search_input_box, settings_divider, settings_page_shell, settings_row_item,
         settings_section_title, sub_card_box, tnum_features,
     },
     workbench::KarWorkbench,
@@ -69,7 +69,7 @@ impl KarWorkbench {
     ) -> AnyElement {
         let loc = self.ui_locale;
         let stacked = f32::from(window.viewport_size().width) < 620.;
-        let mut agents = self.providers.clone();
+        let mut agents = if self.provider_accounts_checked { self.providers.clone() } else { Vec::new() };
         agents.sort_by_key(|a| a.readiness());
 
         let usable: Vec<_> = agents.iter().filter(|a| a.is_ready()).cloned().collect();
@@ -164,81 +164,9 @@ impl KarWorkbench {
                 })
         });
 
-        // ── 1. Default Routing, Autonomy, Fallback & Quota Recovery Card ─────
-        let effort_menu = crate::ui_motion::menu_host(
-            soft_button(
-                "settings-effort",
-                self.selected_effort()
-                    .unwrap_or(loc.pick("使用模型默认值", "Model default"))
-                    .to_owned(),
-                s,
-            )
-            .child(pro_icon(ProIcon::ChevronDown, 12., s.muted))
-            .on_press(cx, |this, _, cx| {
-                this.toggle_menu(crate::workbench::Menu::SettingsEffort, cx)
-            }),
-            self.render_effort_menu(
-                crate::workbench::Menu::SettingsEffort,
-                crate::ui_motion::MenuPlacement::BelowEnd,
-                s,
-                cx,
-            ),
-        );
-        let approval_seg = self.new_chat_approval_picker("settings-approval", s, cx);
-        let wt_seg = SelectionStrip::options(
-            "settings-worktree",
-            loc.pick("工作目录", "Working directory"),
-            Group::Choices,
-            [
-                (false, loc.pick("当前项目目录", "Checkout")),
-                (true, loc.pick("隔离分支目录", "Worktree")),
-            ],
-            self.new_chat_use_worktree,
-            s,
-            cx,
-            |wb, enabled, _, cx| wb.set_new_chat_worktree(enabled, cx),
-        );
+        let mut shell = settings_page_shell().when_some(login_banner, |page, banner| page.child(banner));
 
-        let routing_card = card_box(s)
-            .flex()
-            .flex_col()
-            .child(settings_row_item(
-                loc.pick("新对话默认执行权限", "Default permission mode"),
-                loc.pick("每次确认（推荐，也可在任意对话输入框随时切换）、自动执行或仅只读。", "Ask me, Full auto, or Read-only (also switchable live in any chat)."),
-                approval_seg.into_any_element(),
-                stacked,
-                s,
-            ))
-            .child(settings_divider(s))
-            .child(settings_row_item(
-                loc.pick("新建对话代码修改方式", "New thread isolation"),
-                loc.pick("直接在当前文件夹修改，或自动拉取独立分支避免影响当前工作。", "Edit current folder directly or create an isolated Git branch."),
-                wt_seg.into_any_element(),
-                stacked,
-                s,
-            ))
-            .when(!self.offered_efforts().is_empty(), |d| {
-                d.child(settings_divider(s)).child(settings_row_item(
-                    loc.pick("默认推理思考深度", "Reasoning effort"),
-                    loc.pick("控制模型回答前进行多步推理的深入程度。", "Levels reported by the selected model."),
-                    effort_menu.into_any_element(),
-                    stacked,
-                    s,
-                ))
-            });
-
-        let mut shell = settings_page_shell()
-            .when_some(login_banner, |d, b| d.child(b))
-            .child(
-                div()
-                    .child(settings_section_title(
-                        loc.pick("默认执行权限与对话行为", "Default Permissions & Behavior"),
-                        s,
-                    ))
-                    .child(routing_card),
-            );
-
-        if agents.is_empty() && self.providers_probing {
+        if !self.provider_accounts_checked {
             shell = shell.child(
                 card_box(s)
                     .px(px(16.))
@@ -251,318 +179,228 @@ impl KarWorkbench {
                     .text_color(s.muted)
                     .child(spinner(ICON_SM, s.muted, window, cx))
                     .child(loc.pick(
-                        "正在并行检查本机已安装的智能体与可用模型…",
-                        "Checking installed agents and models…",
+                        "正在检查智能体与账号…",
+                        "Checking agents and accounts…",
                     )),
             );
         }
 
-        // Shared model search & custom model input state
-        let model_search = window.use_keyed_state("agents-model-search", cx, |win, cx| {
-            let mut ed = Editor::new(
-                loc.pick("搜索全部模型…", "Search all models…"),
-                InputMode::Search,
-                win,
-                cx,
+        if self.provider_accounts_checked && agents.is_empty() {
+            shell = shell.child(
+                div()
+                    .text_size(s.font_size(FS_UI))
+                    .text_color(s.muted)
+                    .child(loc.pick("还没有检测到智能体，可以重新扫描。", "No agents detected. Try scanning again.")),
             );
-            ed.set_placeholder(loc.pick("搜索模型名称或 ID…", "Search model name or ID…"));
-            ed.font_size = FS_UI;
-            ed
-        });
-        let show_hidden_models = window.use_keyed_state("agents-show-hidden-models", cx, |_, _| false);
-        let custom_model_inp = window.use_keyed_state("agents-custom-model-inp", cx, |win, cx| {
-            Input::new("custom-model-id", loc.pick("添加自定义模型 ID", "Custom model ID"), win, cx)
-                .with_placeholder("例如：claude-sonnet-4-5 或 gpt-5.1-codex", cx)
-        });
-        let api_key_drawer = window.use_keyed_state("agents-apikey-open", cx, |_, _| None::<String>);
-        let api_key_inp = window.use_keyed_state("agents-apikey-val", cx, |win, cx| {
-            Input::new("agent-api-key", "API Key", win, cx).with_placeholder("sk-...", cx)
-        });
+        }
 
-        // ── 2. Ready Agents Fleet ────────────────────────────────────────────
         if !usable.is_empty() {
-            let mut ready_col = div().flex().flex_col().gap(px(10.));
+            let open_provider =
+                window.use_keyed_state("agents-managed-provider", cx, |_, _| None::<String>);
+            let mut ready_col = card_box(s).flex().flex_col();
 
             for (ix, agent) in usable.iter().enumerate() {
                 let chosen = agent.id == self.selected_runtime;
-                let id = agent.id.clone();
-                let id_for_upd = agent.id.clone();
-                let id_for_upg = agent.id.clone();
-                let id_for_logout = agent.id.clone();
-                let id_for_key_btn = agent.id.clone();
-                let detail = agent.ready_detail_line_in(loc);
-                let store = window.use_keyed_state(
-                    SharedString::from(format!("provider-detail-{}", agent.id)),
-                    cx,
-                    |_, _| false,
-                );
-                let expanded = *store.read(cx);
-                let (status, tone) = match agent.readiness() {
-                    ProviderReadiness::Ready => (loc.pick("已登录就绪", "Signed in"), DotTone::Success),
-                    _ => (loc.pick("已安装", "Installed"), DotTone::Neutral),
+                let expanded = open_provider.read(cx).as_deref() == Some(agent.id.as_str());
+                let name = agent.display_name();
+                let status = if agent.readiness() == ProviderReadiness::Ready {
+                    loc.pick("已登录", "Signed in")
+                } else {
+                    loc.pick("已安装", "Installed")
                 };
-                let status_line = render_status(status, tone, s);
-                let upd_info = self.agent_update_statuses.get(&agent.id).cloned();
-                let supports_key_cfg = matches!(agent.id.as_str(), "opencode" | "pi" | "qwen");
-                let key_open = api_key_drawer.read(cx).as_deref() == Some(agent.id.as_str());
-
-                let mut card = card_box(s)
-                    .p(px(14.))
+                let id = agent.id.clone();
+                let default_action = if chosen {
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .px(px(6.))
+                        .text_size(s.font_size(FS_META))
+                        .text_color(s.muted)
+                        .child(pro_icon(ProIcon::Check, ICON_XS, s.muted))
+                        .child(loc.pick("当前默认", "Default"))
+                        .into_any_element()
+                } else {
+                    soft_button_sm(("agent-usable", ix), loc.pick("设为默认", "Set default"), s)
+                        .aria(format!("{} {name}", loc.pick("设为默认", "Set default")))
+                        .on_press(cx, move |wb, _, cx| {
+                            wb.select_runtime_by_id(&id, cx);
+                            wb.save_agent_choice(cx);
+                        })
+                        .into_any_element()
+                };
+                let manage_label = format!("{} {name}", loc.pick("管理", "Manage"));
+                let manage_id = SharedString::from(format!("provider-det-btn-{}", agent.id));
+                let chevron = if expanded {
+                    ProIcon::ChevronDown
+                } else {
+                    ProIcon::ChevronRight
+                };
+                let manage = if stacked {
+                    icon_button_sm(manage_id, chevron, manage_label.clone(), s)
+                } else {
+                    text_button_sm(manage_id, loc.pick("管理", "Manage"), s)
+                        .child(pro_icon(chevron, ICON_XS, s.muted))
+                };
+                let id = agent.id.clone();
+                let active = open_provider.clone();
+                let header = div()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(render_provider_color_tile(&agent.id, 28., s, cx))
+                    .child(agent_text(name, status.to_owned(), s))
+                    .child(default_action)
+                    .child(manage.aria(manage_label).expanded(expanded).on_press(
+                        cx,
+                        move |_, _, cx| {
+                            active.update(cx, |value, _| *value = (!expanded).then(|| id.clone()));
+                            cx.notify();
+                        },
+                    ));
+                let mut card = div()
+                    .min_w_0()
+                    .px(px(12.))
+                    .py(px(9.))
                     .flex()
                     .flex_col()
                     .gap(px(10.))
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .flex_wrap()
-                            .gap(px(10.))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(11.))
-                                    .child(render_provider_color_tile(&agent.id, 36., s, cx))
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .flex_1()
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(2.))
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap(px(8.))
-                                                    .child(
-                                                        div()
-                                                            .text_size(s.font_size(FS_UI))
-                                                            .font_weight(FontWeight::SEMIBOLD)
-                                                            .text_color(s.ink)
-                                                            .child(agent.display_name()),
-                                                    )
-                                                    .when_some(
-                                                        match &agent.availability {
-                                                            ProviderAvailability::Available {
-                                                                version,
-                                                                ..
-                                                            } if !version.is_empty() => {
-                                                                Some(version.clone())
-                                                            }
-                                                            _ => None,
-                                                        },
-                                                        |d, v| {
-                                                            d.child(
-                                                                div()
-                                                                    .px(px(6.))
-                                                                    .rounded(px(R_PILL))
-                                                                    .bg(s.tray)
-                                                                    .font_family(mono_font(cx))
-                                                                    .text_size(s.font_size(FS_TAG))
-                                                                    .text_color(s.muted)
-                                                                    .child(v),
-                                                            )
-                                                        },
-                                                    )
-                                                    .when_some(upd_info.as_ref(), |d, (summary, _)| {
-                                                        d.child(
-                                                            div()
-                                                                .px(px(6.))
-                                                                .rounded(px(R_PILL))
-                                                                .bg(s.pro.accent_soft)
-                                                                .text_size(s.font_size(FS_TAG))
-                                                                .text_color(s.pro.accent_info)
-                                                                .child(summary.clone()),
-                                                        )
-                                                    }),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap(px(8.))
-                                                    .child(status_line)
-                                                    .when(!detail.is_empty(), |d| {
-                                                        d.child(
-                                                            text_button_sm(
-                                                                SharedString::from(format!("provider-det-btn-{}", agent.id)),
-                                                                loc.pick("连接详情", "Details"),
-                                                                s,
-                                                            )
-                                                            .on_press(cx, move |_, _, cx| {
-                                                                store.update(cx, |o, _| *o = !*o);
-                                                                cx.notify();
-                                                            }),
-                                                        )
-                                                    }),
-                                            ),
-                                    ),
+                    .child(header);
+                if ix > 0 {
+                    ready_col = ready_col.child(settings_divider(s));
+                }
+                if !expanded {
+                    ready_col = ready_col.child(card);
+                    continue;
+                }
+
+                let runtime = kar::runtime(&agent.id).ok();
+                let detail = agent.ready_detail_line_in(loc);
+                let update = self.agent_update_statuses.get(&agent.id);
+                let check_id = agent.id.clone();
+                let upgrade_id = agent.id.clone();
+                let logout_id = agent.id.clone();
+                let supports_key = matches!(agent.id.as_str(), "opencode" | "pi" | "qwen");
+                let actions = div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(6.))
+                    .when(crate::aster::is_aster(&agent.id), |row| {
+                        row.child(
+                            soft_button_sm(
+                                ("aster-model-config", ix),
+                                loc.pick("模型配置文件", "Model configuration"),
+                                s,
                             )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .flex_wrap()
-                                    .gap(px(6.))
-                                    .when(crate::aster::is_aster(&agent.id), |row| {
-                                        row.child(
-                                            soft_button_sm(("aster-model-config", ix), loc.pick("模型配置文件", "Model configuration"), s)
-                                                .tip(loc.pick("在文件管理器中显示 Aster 的模型与凭据配置", "Reveal the Aster model and credential configuration"))
-                                                .on_press(cx, |_, _, cx| {
-                                                    if let Some(path) = crate::aster::config_path() {
-                                                        cx.reveal_path(&path);
-                                                    }
-                                                }),
-                                        )
-                                    })
-                                    .when(supports_key_cfg, |row| {
-                                        let drawer = api_key_drawer.clone();
-                                        row.child(
-                                            soft_button_sm(
-                                                ("agent-cfg-key", ix),
-                                                loc.pick("配置密钥", "API Key"),
-                                                s,
-                                            )
-                                            .on_press(cx, move |_, _, cx| {
-                                                drawer.update(cx, |cur, _| {
-                                                    if cur.as_deref() == Some(id_for_key_btn.as_str()) {
-                                                        *cur = None;
-                                                    } else {
-                                                        *cur = Some(id_for_key_btn.clone());
-                                                    }
-                                                });
-                                                cx.notify();
-                                            }),
-                                        )
-                                    })
-                                    .child(
-                                        soft_button_sm(
-                                            ("agent-check-upd", ix),
-                                            loc.pick("检查更新", "Check update"),
-                                            s,
-                                        )
-                                        .on_press(cx, move |wb, _, _| {
-                                            wb.bridge.send(KarCommand::CheckOrUpgradeAgent {
-                                                runtime_id: id_for_upd.clone(),
-                                                apply_upgrade: false,
-                                            });
-                                        }),
-                                    )
-                                    .when(upd_info.is_some_and(|(_, avail)| avail), |row| {
-                                        row.child(
-                                            primary_button_sm(
-                                                ("agent-apply-upg", ix),
-                                                loc.pick("一键升级", "Upgrade"),
-                                                s,
-                                            )
-                                            .on_press(cx, move |wb, _, _| {
-                                                wb.bridge.send(KarCommand::CheckOrUpgradeAgent {
-                                                    runtime_id: id_for_upg.clone(),
-                                                    apply_upgrade: true,
-                                                });
-                                            }),
-                                        )
-                                    })
-                                    .child(
-                                        text_button_sm(
-                                            ("agent-logout", ix),
-                                            loc.pick("退出账号", "Sign out"),
-                                            s,
-                                        )
-                                        .on_press(cx, move |wb, _, _| {
-                                            wb.bridge.send(KarCommand::LogoutProvider {
-                                                runtime_id: id_for_logout.clone(),
-                                            });
-                                        }),
-                                    )
-                                    .child(if chosen {
-                                        div()
-                                            .h(px(28.))
-                                            .px(px(10.))
-                                            .rounded(px(R_SM))
-                                            .bg(s.tray)
-                                            .border_1()
-                                            .border_color(s.line_soft)
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(5.))
-                                            .text_size(s.font_size(FS_META))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(s.ink)
-                                            .child(pro_icon(ProIcon::Check, 12., s.pro.green_ink))
-                                            .child(loc.pick("当前默认", "Default"))
-                                            .into_any_element()
-                                    } else {
-                                        soft_button_sm(("agent-usable", ix), loc.pick("设为默认", "Set default"), s)
-                                            .on_press(cx, move |this, _, cx| {
-                                                this.select_runtime_by_id(&id, cx);
-                                                this.save_agent_choice(cx);
-                                                this.provider_sheet_open = false;
-                                                cx.notify();
-                                            })
-                                            .into_any_element()
-                                    }),
-                            ),
-                    );
+                            .on_press(cx, |_, _, cx| {
+                                if let Some(path) = crate::aster::config_path() {
+                                    cx.reveal_path(&path);
+                                }
+                            }),
+                        )
+                    })
+                    .when(runtime.is_some(), |row| {
+                        row.child(
+                            soft_button_sm(
+                                ("agent-check-upd", ix),
+                                loc.pick("检查更新", "Check for updates"),
+                                s,
+                            )
+                            .on_press(cx, move |wb, _, _| {
+                                wb.bridge.send(KarCommand::CheckOrUpgradeAgent {
+                                    runtime_id: check_id.clone(),
+                                    apply_upgrade: false,
+                                });
+                            }),
+                        )
+                    })
+                    .when(update.is_some_and(|(_, available)| *available), |row| {
+                        row.child(
+                            soft_button_sm(("agent-apply-upg", ix), loc.pick("升级", "Update"), s)
+                                .on_press(cx, move |wb, _, _| {
+                                    wb.bridge.send(KarCommand::CheckOrUpgradeAgent {
+                                        runtime_id: upgrade_id.clone(),
+                                        apply_upgrade: true,
+                                    });
+                                }),
+                        )
+                    })
+                    .when(runtime.is_some_and(|rt| rt.supports_logout()), |row| {
+                        row.child(
+                            text_button_sm(
+                                ("agent-logout", ix),
+                                loc.pick("退出账号", "Sign out"),
+                                s,
+                            )
+                            .on_press(cx, move |wb, _, _| {
+                                wb.bridge.send(KarCommand::LogoutProvider {
+                                    runtime_id: logout_id.clone(),
+                                });
+                            }),
+                        )
+                    });
+                card = card.child(
+                    div()
+                        .pt(px(8.))
+                        .border_t_1()
+                        .border_color(s.line_soft)
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .text_size(s.font_size(FS_META))
+                        .line_height(s.line_height(LH_META))
+                        .text_color(s.muted)
+                        .when(!detail.is_empty(), |d| d.child(detail))
+                        .when_some(update, |d, (summary, _)| d.child(summary.clone()))
+                        .child(actions),
+                );
 
-                if key_open {
-                    let k_inp = api_key_inp.clone();
-                    let rt_save = agent.id.clone();
-                    let drawer_close = api_key_drawer.clone();
-                    card = card.child(
-                        sub_card_box(s)
-                            .p(px(10.))
-                            .flex()
-                            .items_end()
-                            .gap(px(8.))
-                            .child(div().flex_1().min_w_0().child(api_key_inp.clone()))
-                            .child(
-                                primary_button(("save-rt-key", ix), loc.pick("保存并验证", "Save key"), s)
-                                    .on_press(cx, move |wb, win, cx| {
-                                        let key = k_inp.read(cx).value(cx).trim().to_owned();
-                                        if !key.is_empty() {
-                                            wb.bridge.send(KarCommand::LoginProvider {
-                                                runtime_id: rt_save.clone(),
-                                                sub_provider: None,
-                                                api_key: Some(key),
-                                            });
-                                            k_inp.update(cx, |i, cx| i.set_value("", win, cx));
-                                            drawer_close.update(cx, |v, _| *v = None);
-                                            cx.notify();
-                                        }
-                                    }),
-                            ),
-                    );
+                if supports_key {
+                    card = card.child(self.provider_key_form(&agent.id, s, window, cx));
                 }
 
-                if expanded && !detail.is_empty() {
-                    card = card.child(
-                        div()
-                            .w_full()
-                            .pt(px(8.))
-                            .border_t_1()
-                            .border_color(s.line_soft)
-                            .text_size(s.font_size(FS_META))
-                            .line_height(s.line_height(LH_META))
-                            .text_color(s.text)
-                            .child(detail),
-                    );
-                }
-
-                // Full Searchable + Favoritable + Custom Model Catalog (NO `.take(6)` truncation!)
                 if chosen {
+                    let model_search = window.use_keyed_state(
+                        SharedString::from(format!("model-search-{}", agent.id)),
+                        cx,
+                        |win, cx| {
+                            let mut ed = Editor::new(
+                                loc.pick("搜索全部模型…", "Search all models…"),
+                                InputMode::Search,
+                                win,
+                                cx,
+                            );
+                            ed.set_placeholder(
+                                loc.pick("搜索模型名称或 ID…", "Search model name or ID…"),
+                            );
+                            ed.font_size = FS_UI;
+                            ed
+                        },
+                    );
+                    let show_hidden_models =
+                        window.use_keyed_state("agents-show-hidden-models", cx, |_, _| false);
+                    let custom_model_inp = window.use_keyed_state(
+                        SharedString::from(format!("custom-model-{}", agent.id)),
+                        cx,
+                        |win, cx| {
+                            Input::new(
+                                "custom-model-id",
+                                loc.pick("添加自定义模型 ID", "Custom model ID"),
+                                win,
+                                cx,
+                            )
+                            .with_placeholder("provider/model", cx)
+                        },
+                    );
                     let selected = self.selected_model.clone();
                     let mq = model_search.read(cx).value().trim().to_lowercase();
                     let m_focused = model_search.focus_handle(cx).is_focused(window);
                     let include_hidden = *show_hidden_models.read(cx);
                     let rt_id = agent.id.clone();
 
-                    let mut catalog: Vec<(String, String, bool)> = agent
+                    let mut catalog: Vec<(String, String)> = agent
                         .models
                         .iter()
                         .map(|m| {
@@ -571,18 +409,18 @@ impl KarWorkbench {
                             } else {
                                 m.label.clone()
                             };
-                            (m.id.clone(), lbl, false)
+                            (m.id.clone(), lbl)
                         })
                         .collect();
                     if let Some(customs) = self.prefs.custom_models.get(&rt_id) {
                         for cm in customs {
-                            if !catalog.iter().any(|(id, _, _)| id == cm) {
-                                catalog.push((cm.clone(), format!("{cm} (自定义)"), true));
+                            if !catalog.iter().any(|(id, _)| id == cm) {
+                                catalog.push((cm.clone(), format!("{cm} · {}", loc.pick("自定义", "Custom"))));
                             }
                         }
                     }
                     // Sort favorites to the front
-                    catalog.sort_by_key(|(mid, _, _)| !self.prefs.is_model_favorite(&rt_id, mid));
+                    catalog.sort_by_key(|(mid, _)| !self.prefs.is_model_favorite(&rt_id, mid));
 
                     let mut pills = div().w_full().flex().flex_wrap().gap(px(6.));
                     // Auto-default chip
@@ -598,7 +436,7 @@ impl KarWorkbench {
                                 s.line_strong,
                             )
                             .text_size(s.font_size(FS_META))
-                            .child(loc.pick("自动推荐默认模型", "Agent default"))
+                            .child(loc.pick("使用智能体默认模型", "Agent default"))
                             .on_press(cx, |wb, _, cx| {
                                 wb.selected_model = None;
                                 wb.save_agent_choice(cx);
@@ -606,7 +444,7 @@ impl KarWorkbench {
                             }),
                     );
 
-                    for (mix, (mid, mlbl, _is_custom)) in catalog.into_iter().enumerate() {
+                    for (mix, (mid, mlbl)) in catalog.into_iter().enumerate() {
                         let is_hidden = self.prefs.is_model_hidden(&rt_id, &mid);
                         if is_hidden && !include_hidden && selected.as_ref() != Some(&mid) {
                             continue;
@@ -627,6 +465,7 @@ impl KarWorkbench {
 
                         pills = pills.child(
                             div()
+                                .max_w_full()
                                 .h(px(28.))
                                 .pl(px(8.))
                                 .pr(px(4.))
@@ -653,6 +492,9 @@ impl KarWorkbench {
                                 )
                                 .child(
                                     Tactile::ghost(("model-pick", mix), s)
+                                        .min_w_0()
+                                        .aria(mlbl.clone())
+                                        .tip(mlbl.clone())
                                         .h(px(22.))
                                         .px(px(4.))
                                         .text_size(s.font_size(FS_META))
@@ -662,7 +504,7 @@ impl KarWorkbench {
                                             FontWeight::NORMAL
                                         })
                                         .text_color(if is_hidden { s.muted } else { s.ink })
-                                        .child(mlbl)
+                                        .child(div().min_w_0().truncate().child(mlbl))
                                         .on_press(cx, move |wb, _, cx| {
                                             wb.selected_model = Some(mid_sel.clone());
                                             wb.save_agent_choice(cx);
@@ -711,11 +553,13 @@ impl KarWorkbench {
                                             .text_size(s.font_size(FS_META))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(s.muted)
-                                            .child(loc.pick("全部可用模型（支持 ★ 收藏置顶与自定义模型）", "All models (star favorites or add custom IDs)")),
+                                            .child(loc.pick("默认模型", "Default model")),
                                     )
                                     .child(
                                         div()
+                                            .max_w_full()
                                             .flex()
+                                            .flex_wrap()
                                             .items_center()
                                             .gap(px(8.))
                                             .child(
@@ -734,7 +578,7 @@ impl KarWorkbench {
                                                 }),
                                             )
                                             .child(
-                                                div().w(px(210.)).child(search_input_box(
+                                                div().min_w_0().w(px(if stacked { 128. } else { 210. })).child(search_input_box(
                                                     "agents-model-search-box",
                                                     model_search.clone(),
                                                     m_focused,
@@ -780,256 +624,304 @@ impl KarWorkbench {
             }
             shell = shell.child(
                 div()
-                    .child(settings_section_title(loc.pick("可用智能体与模型矩阵", "Available Providers"), s))
+                    .child(settings_section_title(loc.pick("可用智能体", "Available agents"), s))
                     .child(ready_col),
             );
         }
 
-        // ── 3. Needs Login / Fixable Section (with 1-Click Direct Sign-In!) ──
         if !fixable.is_empty() {
-            let mut fix_col = div().flex().flex_col().gap(px(8.));
+            let mut accounts = card_box(s).flex().flex_col();
             for (ix, agent) in fixable.iter().enumerate() {
-                let rt_login = agent.id.clone();
-                let can_native_login = kar::runtime(&agent.id).is_ok_and(|r| r.supports_login());
+                let name = agent.display_name();
+                let id = &agent.id;
+                let needs_login = agent.readiness() == ProviderReadiness::NeedsLogin;
+                let browser_login = needs_login && kar::runtime(id).is_ok_and(|rt| rt.supports_login());
+                let key_login = needs_login && matches!(id.as_str(), "opencode" | "pi" | "qwen");
                 let detail = match &agent.availability {
                     ProviderAvailability::Failed { reason } => {
-                        format!(
-                            "{}: {reason}",
-                            loc.pick("启动检查未通过", "Startup check failed")
-                        )
+                        format!("{} · {reason}", loc.pick("无法启动", "Could not start"))
                     }
+                    _ if browser_login || key_login => loc.pick("未登录", "Signed out").to_owned(),
                     _ => loc
-                        .pick("已安装 CLI，点击右侧一键登录授权即可使用", "Installed; click Sign in to authorize")
+                        .pick(
+                            "请在智能体客户端登录，然后重新检测。",
+                            "Sign in using the agent’s own client, then check again.",
+                        )
                         .to_owned(),
                 };
-                fix_col = fix_col.child(
-                    card_box(s)
-                        .p(px(12.))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(10.))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .flex_1()
-                                .flex()
-                                .items_center()
-                                .gap(px(10.))
-                                .child(render_provider_color_tile(&agent.id, 34., s, cx))
-                                .child(agent_text(agent.display_name(), detail, s)),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .when(can_native_login, |row| {
-                                    row.child(
-                                        primary_button_sm(("agent-direct-login", ix), loc.pick("直接登录", "Sign in"), s)
-                                            .on_press(cx, move |wb, _, _| {
-                                                wb.bridge.send(KarCommand::LoginProvider {
-                                                    runtime_id: rt_login.clone(),
-                                                    sub_provider: None,
-                                                    api_key: None,
-                                                });
-                                            }),
-                                    )
-                                })
-                                .when_some(agent.fix_command(), |row, command| {
-                                    row.child(self.command_chip(("agent-fix", ix), command, s, cx))
-                                }),
-                        ),
-                );
-            }
-            shell = shell.child(
-                div()
-                    .child(settings_section_title(loc.pick("待登录或修复的智能体", "Sign-in Needed"), s))
-                    .child(fix_col),
-            );
-        }
-
-        // ── 4. Collapsible Installable CLI Agents (`pro_fold`) ───────────────
-        if !absent.is_empty() {
-            let show_absent =
-                self.agents_show_uninstalled || (usable.is_empty() && fixable.is_empty());
-            let absent_count = absent.len();
-            let mut absent_list = div().w_full().pt(px(8.)).flex().flex_col().gap(px(6.));
-            for (ix, agent) in absent.into_iter().enumerate() {
-                let id_for_install = agent.id.clone();
-                let can_install = agent.can_install;
-                let install_lines = agent.install_lines.clone();
-                let subtitle: Option<String> = (!install_lines.is_empty()).then(|| {
-                    install_lines
-                        .iter()
-                        .map(|(l, d)| format!("{l}: {d}"))
-                        .collect::<Vec<_>>()
-                        .join(" · ")
-                });
-                absent_list = absent_list.child(
-                    card_box(s)
-                        .px(px(12.))
-                        .py(px(9.))
-                        .flex()
-                        .items_center()
-                        .gap(px(10.))
-                        .child(
-                            div()
-                                .opacity(0.8)
-                                .child(render_provider_color_tile(&agent.id, 30., s, cx)),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(1.))
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(s.font_size(FS_UI))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(s.text)
-                                        .child(agent.display_name()),
-                                )
-                                .when_some(subtitle, |col, sub| {
-                                    col.child(
-                                        div()
-                                            .truncate()
-                                            .text_size(s.font_size(FS_META))
-                                            .text_color(s.muted)
-                                            .child(sub),
-                                    )
-                                }),
-                        )
-                        .when(can_install && install_lines.is_empty(), |row| {
-                            row.child(
-                                soft_button_sm(("agent-oneclick-install", ix), loc.pick("一键安装", "Install"), s)
-                                    .on_press(cx, move |this, _, _| {
-                                        this.bridge.send(KarCommand::InstallAgent {
-                                            runtime_id: id_for_install.clone(),
-                                            line: None,
-                                        });
-                                    }),
-                            )
-                        })
-                        .when(can_install && !install_lines.is_empty(), |mut row| {
-                            for (lix, (line_val, line_desc)) in install_lines.into_iter().enumerate()
-                            {
-                                let rt_id = agent.id.clone();
-                                let lv = line_val.clone();
-                                row = row.child(
-                                    soft_button_sm(
-                                        ("agent-install-line", ix * 16 + lix),
-                                        format!("{} {line_val}", loc.pick("安装", "Install")),
-                                        s,
-                                    )
-                                    .tip(line_desc)
-                                    .on_press(cx, move |this, _, _| {
-                                        this.bridge.send(KarCommand::InstallAgent {
-                                            runtime_id: rt_id.clone(),
-                                            line: Some(lv.clone()),
-                                        });
-                                    }),
-                                );
-                            }
-                            row
-                        })
-                        .when_some(agent.fix_command(), |row, command| {
-                            row.child(self.command_chip(("agent-install", ix), command, s, cx))
-                        }),
-                );
-            }
-            shell = shell.child(
-                div()
+                let mut row = div()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(render_provider_color_tile(id, 28., s, cx))
+                    .child(agent_text(name.clone(), detail, s));
+                if browser_login {
+                    let id = id.clone();
+                    row = row.child(
+                        soft_button_sm(("agent-direct-login", ix), loc.pick("登录", "Sign in"), s)
+                            .aria(format!("{} {name}", loc.pick("登录", "Sign in to")))
+                            .on_press(cx, move |wb, _, _| {
+                                wb.bridge.send(KarCommand::LoginProvider {
+                                    runtime_id: id.clone(),
+                                    sub_provider: None,
+                                    api_key: None,
+                                });
+                            }),
+                    );
+                } else if !key_login {
+                    row = row.child(
+                        soft_button_sm(("agent-recheck", ix), loc.pick("重新检测", "Check again"), s)
+                            .on_press(cx, |wb, _, _| wb.bridge.send(KarCommand::ProbeProvidersOnly)),
+                    );
+                }
+                let mut entry = div()
+                    .px(px(12.))
+                    .py(px(8.))
                     .flex()
                     .flex_col()
-                    .child(
-                        disclosure_line(
-                            "agents-toggle-absent",
-                            pro_icon(ProIcon::Download, ICON_SM, s.muted),
-                            format!(
-                                "{} ({absent_count})",
-                                loc.pick("更多官方支持的一键安装智能体", "More supported agents to install")
-                            ),
-                            show_absent,
-                            s,
-                        )
-                        .on_press(cx, move |this, _, cx| {
-                            this.agents_show_uninstalled = !show_absent;
-                            cx.notify();
-                        }),
-                    )
-                    .child(pro_fold(
-                        "agents-absent-fold",
-                        show_absent,
-                        absent_count as f32 * 54.,
-                        0.,
-                        move || absent_list.into_any_element(),
-                    )),
+                    .gap(px(6.))
+                    .child(row);
+                if key_login {
+                    entry = entry.child(self.provider_key_form(id, s, window, cx));
+                }
+                if ix > 0 {
+                    accounts = accounts.child(settings_divider(s));
+                }
+                accounts = accounts.child(entry);
+            }
+            shell = shell.child(
+                div()
+                    .child(settings_section_title(if usable.is_empty() { loc.pick("已安装的智能体", "Installed agents") } else { loc.pick("其他已安装的智能体", "Other installed agents") }, s))
+                    .child(accounts),
             );
         }
 
-        // ── 5. Progressive Disclosure: Fallback, Quota Recovery & Custom ACP ──
-        let adv_state = window.use_keyed_state("agents-advanced-open", cx, |_, _| false);
-        let adv_open = *adv_state.read(cx);
-        let adv_toggle = adv_state.clone();
-
-        let mut fb_opts = vec![("none".to_owned(), loc.pick("不启用备用", "None").to_owned())];
-        for ag in &usable {
-            fb_opts.push((ag.id.clone(), ag.display_name()));
+        if !absent.is_empty() {
+            let open = self.agents_show_uninstalled.unwrap_or_else(|| {
+                usable.is_empty()
+                    && !fixable
+                        .iter()
+                        .any(|agent| agent.readiness() == ProviderReadiness::NeedsLogin)
+            });
+            let mut add = div().flex().flex_col().child(
+                disclosure_line(
+                    "agents-toggle-absent",
+                    pro_icon(ProIcon::Plus, ICON_SM, s.muted),
+                    loc.pick("添加智能体", "Add an agent"),
+                    open,
+                    s,
+                )
+                .on_press(cx, move |wb, _, cx| {
+                    wb.agents_show_uninstalled = Some(!open);
+                    cx.notify();
+                }),
+            );
+            if open {
+                let mut list = card_box(s).flex().flex_col();
+                for (ix, agent) in absent.iter().enumerate() {
+                    let name = agent.display_name();
+                    let id = &agent.id;
+                    let mut row = div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(render_provider_color_tile(id, 25., s, cx))
+                        .child(agent_text(name.clone(), String::new(), s));
+                    let mut details = None;
+                    if agent.can_install && agent.install_lines.len() <= 1 {
+                        let id = id.clone();
+                        let line = agent.install_lines.first().map(|(line, _)| line.clone());
+                        row = row.child(
+                            soft_button_sm(("agent-oneclick-install", ix), loc.pick("安装", "Install"), s)
+                                .aria(format!("{} {name}", loc.pick("安装", "Install")))
+                                .on_press(cx, move |wb, _, _| {
+                                    wb.bridge.send(KarCommand::InstallAgent {
+                                        runtime_id: id.clone(),
+                                        line: line.clone(),
+                                    })
+                                }),
+                        );
+                    } else {
+                        let state = window.use_keyed_state(
+                            SharedString::from(format!("agent-install-options-{id}")),
+                            cx,
+                            |_, _| false,
+                        );
+                        let expanded = *state.read(cx);
+                        let action = if agent.can_install {
+                            loc.pick("选择版本", "Choose version")
+                        } else {
+                            loc.pick("手动安装", "Manual setup")
+                        };
+                        row = row.child(
+                            text_button_sm(("agent-install-options", ix), action, s)
+                                .aria(format!("{name} · {action}"))
+                                .expanded(expanded)
+                                .child(pro_icon(
+                                    if expanded {
+                                        ProIcon::ChevronDown
+                                    } else {
+                                        ProIcon::ChevronRight
+                                    },
+                                    ICON_XS,
+                                    s.muted,
+                                ))
+                                .on_press(cx, move |_, _, cx| {
+                                    state.update(cx, |open, _| *open = !expanded);
+                                    cx.notify();
+                                }),
+                        );
+                        if expanded {
+                            let mut body = div().min_w_0().flex().flex_wrap().gap(px(6.));
+                            if agent.can_install {
+                                for (line, description) in &agent.install_lines {
+                                    let id = id.clone();
+                                    let line_id = line.clone();
+                                    body = body.child(
+                                        soft_button_sm(
+                                            SharedString::from(format!("agent-install-line-{id}-{line}")),
+                                            format!("{} {line}", loc.pick("安装", "Install")),
+                                            s,
+                                        )
+                                        .tip(description.clone())
+                                        .on_press(
+                                            cx,
+                                            move |wb, _, _| {
+                                                wb.bridge.send(KarCommand::InstallAgent {
+                                                    runtime_id: id.clone(),
+                                                    line: Some(line_id.clone()),
+                                                });
+                                            },
+                                        ),
+                                    );
+                                }
+                            } else {
+                                body = body
+                                    .text_size(s.font_size(FS_META))
+                                    .text_color(s.muted)
+                                    .child(match loc {
+                                        crate::ui_primitives::UiLocale::Zh => {
+                                            format!("从 {name} 官方渠道安装命令行工具，然后重新检测。")
+                                        }
+                                        crate::ui_primitives::UiLocale::En => {
+                                            format!("Install the CLI from {name}, then check again.")
+                                        }
+                                    })
+                                    .child(
+                                        text_button_sm(
+                                            ("agent-install-recheck", ix),
+                                            loc.pick("重新检测", "Check again"),
+                                            s,
+                                        )
+                                        .on_press(cx, |wb, _, _| {
+                                            wb.bridge.send(KarCommand::ProbeProvidersOnly)
+                                        }),
+                                    );
+                            }
+                            details = Some(body);
+                        }
+                    }
+                    if ix > 0 {
+                        list = list.child(settings_divider(s));
+                    }
+                    list = list.child(
+                        div()
+                            .px(px(12.))
+                            .py(px(8.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.))
+                            .child(row)
+                            .when_some(details, |col, body| col.child(body)),
+                    );
+                }
+                add = add.child(list);
+            }
+            shell = shell.child(add);
         }
-        let fb_current = self
-            .prefs
-            .fallback_runtime
-            .clone()
-            .unwrap_or_else(|| "none".into());
-        let fallback_strip = SelectionStrip::options(
-            "settings-fallback-rt",
-            loc.pick("备用兜底智能体", "Fallback agent"),
+
+        let advanced = window.use_keyed_state("agents-advanced-open", cx, |_, _| false);
+        let advanced_open = *advanced.read(cx);
+        let advanced_button = disclosure_line(
+            "agents-toggle-advanced",
+            pro_icon(ProIcon::Sliders, ICON_SM, s.muted),
+            loc.pick("高级设置", "Advanced settings"),
+            advanced_open,
+            s,
+        )
+        .on_press(cx, move |_, _, cx| {
+            advanced.update(cx, |open, cx| {
+                *open = !*open;
+                cx.notify();
+            });
+        });
+        shell = shell.child(div().child(advanced_button));
+        if !advanced_open {
+            return shell.into_any_element();
+        }
+
+        let effort_menu = crate::ui_motion::menu_host(
+            soft_button(
+                "settings-effort",
+                self.selected_effort()
+                    .unwrap_or(loc.pick("使用模型默认值", "Model default"))
+                    .to_owned(),
+                s,
+            )
+            .child(pro_icon(ProIcon::ChevronDown, 12., s.muted))
+            .on_press(cx, |this, _, cx| {
+                this.toggle_menu(crate::workbench::Menu::SettingsEffort, cx)
+            }),
+            self.render_effort_menu(
+                crate::workbench::Menu::SettingsEffort,
+                crate::ui_motion::MenuPlacement::BelowEnd,
+                s,
+                cx,
+            ),
+        );
+        let approval_seg = self.new_chat_approval_picker("settings-approval", s, cx);
+        let wt_seg = SelectionStrip::options(
+            "settings-worktree",
+            loc.pick("工作目录", "Working directory"),
             Group::Choices,
-            fb_opts,
-            fb_current,
+            [
+                (false, loc.pick("当前项目目录", "Checkout")),
+                (true, loc.pick("隔离分支目录", "Worktree")),
+            ],
+            self.new_chat_use_worktree,
             s,
             cx,
-            |wb, id, _, cx| {
-                wb.prefs.fallback_runtime = (id != "none").then_some(id);
-                wb.save_prefs();
-                cx.notify();
-            },
+            |wb, enabled, _, cx| wb.set_new_chat_worktree(enabled, cx),
         );
-        let auto_resume_sw = Self::settings_switch(
-            "agents-quota-auto-resume",
-            loc.pick("额度冷却恢复后自动提醒继续", "Auto-resume after quota reset"),
-            self.prefs.auto_resume_after_quota_reset,
-            |wb, cx| {
-                wb.prefs.auto_resume_after_quota_reset = !wb.prefs.auto_resume_after_quota_reset;
-                wb.save_prefs();
-                cx.notify();
-            },
-            s,
-            window,
-            cx,
-        );
-        let fallback_card = card_box(s)
+
+        let routing_card = card_box(s)
             .flex()
             .flex_col()
             .child(settings_row_item(
-                loc.pick("备用接力智能体", "Fallback provider"),
-                loc.pick("当主用账号遇到限流或网络波动时，一键切换接力的候选智能体。", "Candidate provider when primary hits rate limits."),
-                fallback_strip.into_any_element(),
+                loc.pick("新对话默认执行权限", "Default permission mode"),
+                loc.pick("选择智能体请求执行操作时的处理方式。", "Choose how to handle action requests."),
+                approval_seg.into_any_element(),
                 stacked,
                 s,
             ))
             .child(settings_divider(s))
             .child(settings_row_item(
-                loc.pick("限额恢复后自动续跑", "Quota cooldown recovery"),
-                loc.pick("遇到账号时段限额时保留上下文，并在额度刷新后提醒继续。", "Preserve context on rate limits and resume when quota resets."),
-                auto_resume_sw,
+                loc.pick("工作目录", "Working directory"),
+                loc.pick("在当前项目或独立的 Git 工作树中修改文件。", "Edit files in this project or a separate Git worktree."),
+                wt_seg.into_any_element(),
                 stacked,
                 s,
-            ));
+            ))
+            .when(!self.offered_efforts().is_empty(), |d| {
+                d.child(settings_divider(s)).child(settings_row_item(
+                    loc.pick("推理深度", "Reasoning effort"),
+                    loc.pick("使用所选模型支持的推理档位。", "Levels reported by the selected model."),
+                    effort_menu.into_any_element(),
+                    stacked,
+                    s,
+                ))
+            });
 
         let acp_name_inp = window.use_keyed_state("acp-custom-name", cx, |win, cx| {
             Input::new("acp-name", loc.pick("智能体显示名", "Agent name"), win, cx)
@@ -1081,12 +973,13 @@ impl KarWorkbench {
         }
         acp_card = acp_card.child(settings_divider(s)).child(
             div()
-                .p(px(16.))
+                .p(px(14.))
                 .flex()
-                .items_end()
+                .flex_col()
+                .items_start()
                 .gap(px(8.))
-                .child(div().w(px(180.)).child(acp_name_inp))
-                .child(div().flex_1().min_w_0().child(acp_cmd_inp))
+                .child(div().w_full().child(acp_name_inp))
+                .child(div().w_full().child(acp_cmd_inp))
                 .child(
                     soft_button("acp-add-custom", loc.pick("添加自定义智能体", "Add ACP"), s)
                         .on_press(cx, move |wb, win, cx| {
@@ -1111,82 +1004,103 @@ impl KarWorkbench {
                 ),
         );
 
-        shell = shell.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(12.))
-                .child(
-                    soft_button(
-                        "agents-toggle-advanced",
-                        if adv_open {
-                            loc.pick("收起容灾切换与第三方智能体接入 ▴", "Hide fallback & custom ACP ▴")
-                        } else {
-                            loc.pick("展开容灾切换与第三方智能体接入（高级） ▾", "Fallback & custom ACP agents ▾")
-                        },
-                        s,
-                    )
-                    .on_press(cx, move |_, _, cx| {
-                        adv_toggle.update(cx, |v, cx| {
-                            *v = !*v;
-                            cx.notify();
-                        });
-                    }),
-                )
-                .when(adv_open, |d| {
-                    d.child(
-                        div()
-                            .child(settings_section_title(
-                                loc.pick("限流兜底与额度恢复", "Fallback & Quota Recovery"),
-                                s,
-                            ))
-                            .child(fallback_card),
-                    )
-                    .child(
-                        div()
-                            .child(settings_section_title(
-                                loc.pick("第三方智能体商店与命令行接入", "Community ACP Registry"),
-                                s,
-                            ))
-                            .child(acp_card),
-                    )
-                }),
-        );
-
-        shell.into_any_element()
-    }
-
-    fn command_chip(
-        &self,
-        id: impl Into<ElementId>,
-        command: String,
-        s: &StudioPalette,
-        cx: &mut Context<Self>,
-    ) -> Tactile {
-        let loc = self.ui_locale;
-        let to_copy = command.clone();
-        let mono = mono_font(cx);
-        Tactile::soft(id, s)
-            .radius(R_SM)
-            .flex_none()
-            .h(px(CTRL_SM_H))
-            .pl(px(8.))
-            .pr(px(7.))
-            .gap(px(6.))
-            .outlined(s.line_soft, s.line_strong)
-            .tip(loc.pick("复制终端命令", "Copy terminal command"))
+        shell
             .child(
                 div()
-                    .text_size(s.font_size(FS_META))
-                    .font_family(mono)
-                    .text_color(s.ink)
-                    .child(command),
+                    .child(settings_section_title(loc.pick("新对话偏好", "New conversation defaults"), s))
+                    .child(routing_card),
             )
-            .child(pro_icon(ProIcon::Copy, ICON_XS, s.muted))
-            .on_press(cx, move |this, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(to_copy.clone()));
-                this.notify_toast(this.ui_locale.pick("已复制终端命令", "Command copied"), cx);
-            })
+            .child(
+                div()
+                    .child(settings_section_title(loc.pick("自定义智能体", "Custom agents"), s))
+                    .child(acp_card),
+            )
+            .into_any_element()
+    }
+
+    fn provider_key_form(
+        &self,
+        id: &str,
+        s: &StudioPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        use kui::components::password_field::PasswordField;
+
+        let loc = self.ui_locale;
+        let open = window.use_keyed_state(SharedString::from(format!("agent-key-open-{id}")), cx, |_, _| {
+            false
+        });
+        if !*open.read(cx) {
+            return div().child(
+                soft_button_sm(
+                    SharedString::from(format!("agent-configure-key-{id}")),
+                    loc.pick("配置密钥", "Set API key"),
+                    s,
+                )
+                .expanded(false)
+                .on_press(cx, move |_, _, cx| {
+                    open.update(cx, |v, _| *v = true);
+                    cx.notify();
+                }),
+            );
+        }
+        let input = window.use_keyed_state(
+            SharedString::from(format!("agent-key-input-{id}")),
+            cx,
+            |win, cx| {
+                PasswordField::new(
+                    SharedString::from(format!("agent-api-key-{id}")),
+                    "OpenAI API Key",
+                    win,
+                    cx,
+                )
+            },
+        );
+        let clear = input.clone();
+        let close = open.clone();
+        let save = input.clone();
+        let runtime_id = id.to_owned();
+        div().min_w_0().flex().flex_col().gap(px(6.)).child(input).child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    soft_button_sm(
+                        SharedString::from(format!("agent-save-key-{id}")),
+                        loc.pick("保存密钥", "Save key"),
+                        s,
+                    )
+                    .on_press(cx, move |wb, win, cx| {
+                        let key = save.read(cx).value(cx).trim();
+                        if key.is_empty() {
+                            save.read(cx).editor().focus_handle(cx).focus(win, cx);
+                            return;
+                        }
+                        wb.bridge.send(KarCommand::LoginProvider {
+                            runtime_id: runtime_id.clone(),
+                            sub_provider: Some("openai".into()),
+                            api_key: Some(key.to_owned()),
+                        });
+                        save.update(cx, |v, cx| v.set_value("", win, cx));
+                        open.update(cx, |v, _| *v = false);
+                        cx.notify();
+                    }),
+                )
+                .child(
+                    text_button_sm(
+                        SharedString::from(format!("agent-cancel-key-{id}")),
+                        loc.pick("取消", "Cancel"),
+                        s,
+                    )
+                    .on_press(cx, move |_, win, cx| {
+                        clear.update(cx, |v, cx| v.set_value("", win, cx));
+                        close.update(cx, |v, _| *v = false);
+                        cx.notify();
+                    }),
+                ),
+        )
     }
 }
 

@@ -517,7 +517,7 @@ pub struct KarWorkbench {
     cmd_scroll: ScrollHandle,
     reveal_cmd_selection: bool,
     pub provider_sheet_open: bool,
-    pub agents_show_uninstalled: bool,
+    pub agents_show_uninstalled: Option<bool>,
     pub(crate) toast: Option<ToastState>,
     pub(crate) notice: Option<Notice>,
     pub(crate) notice_open: bool,
@@ -561,6 +561,7 @@ pub struct KarWorkbench {
 
     /// True while `kar::orientation::orient` is probing CLI agents in the background.
     pub(crate) providers_probing: bool,
+    pub(crate) provider_accounts_checked: bool,
     /// What new chats do when the agent needs permission.
     pub approval_mode: ApprovalMode,
     /// Reasoning effort requested for new chats when the agent supports it.
@@ -1518,7 +1519,7 @@ impl KarWorkbench {
             cmd_scroll: ScrollHandle::new(),
             reveal_cmd_selection: false,
             provider_sheet_open: false,
-            agents_show_uninstalled: false,
+            agents_show_uninstalled: None,
             toast: None,
             notice: None,
             notice_open: false,
@@ -1552,6 +1553,7 @@ impl KarWorkbench {
                 .map_or_else(|| crate::aster::ID.into(), |c| c.runtime.clone()),
             selected_model: agent_choice.as_ref().and_then(|c| c.model.clone()),
             providers_probing: true,
+            provider_accounts_checked: false,
             approval_mode,
             reasoning_effort: agent_choice.and_then(|c| c.effort),
             providers: Vec::new(),
@@ -2517,7 +2519,8 @@ impl KarWorkbench {
             KarBridgeEvent::ProvidersProbing(probing) => {
                 self.providers_probing = probing;
             }
-            KarBridgeEvent::ProvidersUpdated(mut list) => {
+            KarBridgeEvent::ProvidersUpdated { providers: mut list, accounts_checked } => {
+                self.provider_accounts_checked = accounts_checked;
                 crate::registry::merge(&mut list, &self.registry_installed);
                 if crate::aster::is_aster(&self.selected_runtime)
                     && let Some(aster) = list.iter().find(|p| crate::aster::is_aster(&p.id))
@@ -2528,6 +2531,7 @@ impl KarWorkbench {
                     && let Some(agent) = list.iter().find(|p| p.id == self.selected_runtime)
                     && !agent.models.is_empty()
                     && !agent.models.iter().any(|m| &m.id == sel_model)
+                    && !self.prefs.has_custom_model(&agent.id, sel_model)
                 {
                     self.selected_model = None;
                 }
@@ -3641,7 +3645,7 @@ impl KarWorkbench {
                     .iter()
                     .find(|p| p.id == id)
                     .is_some_and(|p| p.models.iter().any(|m| &m.id == sel_model));
-                if !valid {
+                if !valid && !self.prefs.has_custom_model(id, sel_model) {
                     self.selected_model = None;
                 }
             }
@@ -4368,11 +4372,8 @@ impl KarWorkbench {
     }
 
     pub(crate) fn refresh_agents(&mut self, cx: &mut Context<Self>) {
-        self.bridge.send(KarCommand::RefreshStoreAndProviders {
-            store_dir: self.config.chat_dir.clone(),
-            workspace: self.config.workspace_dir.clone(),
-        });
-        self.notify_toast("正在重新检查智能体与模型…", cx);
+        self.bridge.send(KarCommand::ProbeProvidersOnly);
+        cx.notify();
     }
 
     // ── Sharing ─────────────────────────────────────────────────────────────

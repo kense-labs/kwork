@@ -445,7 +445,7 @@ pub enum KarBridgeEvent {
         workspace: PathBuf,
     },
     ProvidersProbing(bool),
-    ProvidersUpdated(Vec<ProviderStatusInfo>),
+    ProvidersUpdated { providers: Vec<ProviderStatusInfo>, accounts_checked: bool },
     ChatsListed(Vec<ChatListEntry>),
     ChatsPatched { dir: PathBuf, changed: Vec<ChatListEntry>, removed: Vec<Uuid> },
     ReadReceiptsChanged { dir: PathBuf, bytes: Vec<u8> },
@@ -1160,15 +1160,13 @@ impl WorkerState {
         }
     }
 
-    fn spawn_provider_probe(&mut self, show_spinner: bool) {
+    fn spawn_provider_probe(&mut self) {
         self.probe_generation = self.probe_generation.wrapping_add(1);
         let generation = self.probe_generation;
         let workspace = self.workspace.clone();
         let cmd_tx = self.cmd_tx.clone();
         let engine = self.engine.clone();
-        if show_spinner {
-            self.emit(KarBridgeEvent::ProvidersProbing(true));
-        }
+        self.emit(KarBridgeEvent::ProvidersProbing(true));
         tokio::spawn(async move {
             let (mut providers, aster) = tokio::join!(
                 probe_all_providers(workspace.clone()),
@@ -2763,7 +2761,7 @@ async fn worker_loop(
                 init_store_and_providers(&mut state, store_dir, workspace);
             }
             KarCommand::ProbeProvidersOnly => {
-                state.spawn_provider_probe(true);
+                state.spawn_provider_probe();
             }
             KarCommand::ApplyProbedProviders {
                 generation,
@@ -2781,7 +2779,7 @@ async fn worker_loop(
                     .map(|p| (p.id.clone(), p.goals_supported))
                     .collect();
                 state.emit(KarBridgeEvent::ProvidersProbing(false));
-                state.emit(KarBridgeEvent::ProvidersUpdated(providers));
+                state.emit(KarBridgeEvent::ProvidersUpdated { providers, accounts_checked: true });
             }
             KarCommand::Registry(action) => {
                 let engine = state.engine.clone();
@@ -5793,7 +5791,6 @@ fn init_store_and_providers(
         state.sidebar_watcher = Some(sidebar::watch(engine.clone(), store_dir.clone(), state.evt_tx.clone()));
     }
     let fast_providers = fast_seed_providers_from_path();
-    let any_fast_ready = fast_providers.iter().any(ProviderStatusInfo::is_ready);
     state.mcp_supported_runtimes = fast_providers
         .iter()
         .map(|p| (p.id.clone(), p.mcp_office_supported))
@@ -5802,13 +5799,10 @@ fn init_store_and_providers(
         .iter()
         .map(|p| (p.id.clone(), p.goals_supported))
         .collect();
-    if any_fast_ready {
-        state.emit(KarBridgeEvent::ProvidersProbing(false));
-    }
-    state.emit(KarBridgeEvent::ProvidersUpdated(fast_providers));
+    state.emit(KarBridgeEvent::ProvidersUpdated { providers: fast_providers, accounts_checked: false });
 
-    // Phase-2 silent enrichment (`Depth::Models`, auth account & quota)
-    state.spawn_provider_probe(!any_fast_ready);
+    // Executable discovery precedes account and model checks.
+    state.spawn_provider_probe();
 
     let cmd_tx = state.cmd_tx.clone();
     let ws = workspace;

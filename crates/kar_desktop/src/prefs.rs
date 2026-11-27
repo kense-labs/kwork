@@ -702,6 +702,12 @@ impl DesktopPreferences {
             .any(|k| k.runtime == runtime && k.model == model)
     }
 
+    pub(crate) fn has_custom_model(&self, runtime: &str, model: &str) -> bool {
+        self.custom_models
+            .get(runtime)
+            .is_some_and(|models| models.iter().any(|id| id == model))
+    }
+
     pub fn toggle_model_hidden(&mut self, runtime: &str, model: &str) {
         let key = ModelKey::new(runtime, model);
         if !self.hidden_models.remove(&key) {

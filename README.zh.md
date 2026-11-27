@@ -13,7 +13,7 @@ Kwrok 是用 Rust 和 GPUI 构建的 Kar 原生桌面工作台。在智能体的
 
 打开 DMG，将 **Kwrok** 拖入「应用程序」。本次预览版适用于搭载 Apple Silicon 的 Mac。发布页提供 SHA-256 校验值和签名说明。[查看发行说明](https://github.com/kense-labs/kwork/releases/tag/v0.23.0-native-preview.1)
 
-选择一个项目文件夹。新对话默认使用 Aster。要使用 Aster，请在「设置 → 智能体与账号」中安装 Aster ACP，然后在 Aster 中配置模型服务。也可以选择已安装的其他智能体。
+选择一个项目文件夹。在「设置 → 智能体与账号」中，找到可用的智能体，点「设为默认」，以后新建对话就会用它。初始默认是 Aster。如需使用，在「添加智能体」中安装 Aster ACP，再到 Aster 中配置模型服务。
 
 ## 审查一次改动
 
