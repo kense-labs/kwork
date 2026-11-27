@@ -13,6 +13,7 @@ mod slash_actions;
 mod planning;
 mod resize;
 mod read_receipts;
+mod provider_sign_in;
 use resize::{Divider, PaneDrag, Span};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -76,10 +77,9 @@ use crate::{
         SelectionTarget, runtime_display_name, strip_selection_envelope,
     },
     ui_brief::BriefWidgetCache,
-    ui_chat::ChatRail,
     ui_motion::{DismissFn, MenuPlacement, ToastState, icon_button_sm, menu_popup, render_toast},
     ui_primitives::{
-        CTRL_SM_H, TITLEBAR_EDGE_INSET, macos_traffic_pad, titlebar_center_y, DOC_MIN_W, FS_META, FS_READ, FS_TAG, FS_UI, ICON_SM, LH_META, LH_UI,
+        CTRL_SM_H, DETAILS_CARD_W, HEADER_H, TITLEBAR_EDGE_INSET, macos_traffic_pad, titlebar_center_y, DOC_MIN_W, FS_META, FS_READ, FS_TAG, FS_UI, ICON_SM, LH_META, LH_UI,
         R_CTRL, R_MODAL, SHEET_GUTTER, SIDEBAR_W, StudioPalette, TERMINAL_MIN_H,
         UiLocale, clean_display_doc_name, render_kbd, ui_font,
     },
@@ -200,6 +200,8 @@ pub enum Menu {
     ComposerProject,
     ContextUsage,
     GitBranch,
+    DetailsBranch,
+    ComposerBranch,
     GitMore,
     SidebarFilter,
     SidebarMore,
@@ -224,6 +226,8 @@ impl Menu {
             Self::ContextUsage => "menu-context-usage",
             Self::ComposerProject => "menu-composer-project",
             Self::GitBranch => "menu-git-branch",
+            Self::DetailsBranch => "menu-details-branch",
+            Self::ComposerBranch => "menu-composer-branch",
             Self::GitMore => "menu-git-more",
             Self::SidebarFilter => "menu-sidebar-filter",
             Self::SidebarMore => "menu-sidebar-more",
@@ -750,7 +754,7 @@ pub struct KarWorkbench {
     pub managed_worktrees: Vec<crate::forge_devices_voice::ManagedWorktreeItem>,
     pub desktop_update_report: Option<crate::forge_devices_voice::DesktopAppUpdateReport>,
     pub agent_update_statuses: BTreeMap<String, (String, bool)>,
-    pub login_prompt: Option<(String, Option<String>, Option<String>, String)>,
+    pub(crate) provider_sign_in: provider_sign_in::ProviderSignIn,
     pub editing_schedule_id: Option<String>,
     pub chat_search_open: bool,
     pub chat_search_query: String,
@@ -1486,7 +1490,11 @@ impl KarWorkbench {
             sidebar_metadata: BTreeMap::new(),
             hosted_writer: None,
             settled_shelf_open: false,
-            thread_details_open: !config.hide_details_card && loaded_prefs.thread_details_open,
+            thread_details_open: !config.hide_details_card && if initial_width < COMPACT_WORKSPACE_WIDTH {
+                loaded_prefs.compact_thread_details_open
+            } else {
+                loaded_prefs.thread_details_open
+            },
             bottom_terminal_open: config.open_bottom_terminal || loaded_prefs.bottom_terminal_open,
             bottom_terminal_h: loaded_prefs.bottom_terminal_h.clamp(TERMINAL_MIN_H, 680.),
             bottom_terminal_anim: Slide::new(
@@ -1727,7 +1735,7 @@ impl KarWorkbench {
             managed_worktrees: Vec::new(),
             desktop_update_report: None,
             agent_update_statuses: BTreeMap::new(),
-            login_prompt: None,
+            provider_sign_in: Default::default(),
             editing_schedule_id: None,
             chat_search_open: false,
             chat_search_query: String::new(),
@@ -1889,14 +1897,23 @@ impl KarWorkbench {
     }
 
     pub fn toggle_thread_details(&mut self, cx: &mut Context<Self>) {
-        self.thread_details_open = self.layout_mode != WorkspaceLayoutMode::ChatFocus
-            || !self.thread_details_open;
-        self.prefs.thread_details_open = self.thread_details_open;
-        self.save_prefs();
-        if self.thread_details_open && self.layout_mode != WorkspaceLayoutMode::ChatFocus {
-            self.set_layout_mode(WorkspaceLayoutMode::ChatFocus, cx);
+        self.thread_details_open = !self.thread_details_open;
+        if self.previous_window_width < COMPACT_WORKSPACE_WIDTH {
+            self.prefs.compact_thread_details_open = self.thread_details_open;
+        } else {
+            self.prefs.thread_details_open = self.thread_details_open;
         }
+        if !self.thread_details_open {
+            self.dismiss_thread_details_menu();
+        }
+        self.save_prefs();
         cx.notify();
+    }
+
+    fn dismiss_thread_details_menu(&mut self) {
+        if matches!(self.open_menu, Some(Menu::DetailsBranch | Menu::DetailsOpenIn | Menu::DetailsScripts)) {
+            self.open_menu = None;
+        }
     }
 
     pub fn set_bottom_terminal_open(&mut self, open: bool, cx: &mut Context<Self>) {
@@ -2521,6 +2538,13 @@ impl KarWorkbench {
             }
             KarBridgeEvent::ProvidersUpdated { providers: mut list, accounts_checked } => {
                 self.provider_accounts_checked = accounts_checked;
+                if accounts_checked {
+                    for provider in &list {
+                        if matches!(provider.auth, crate::types::ProviderAuthState::LoggedIn { .. }) {
+                            self.provider_sign_in.signed_in(&provider.id);
+                        }
+                    }
+                }
                 crate::registry::merge(&mut list, &self.registry_installed);
                 if crate::aster::is_aster(&self.selected_runtime)
                     && let Some(aster) = list.iter().find(|p| crate::aster::is_aster(&p.id))
@@ -3415,15 +3439,13 @@ impl KarWorkbench {
                         self.prefs.prompt_suggestions_enabled.then_some(suggestion).flatten();
                 }
             }
-            KarBridgeEvent::LoginInteractionPrompt {
-                runtime_id,
-                auth_url,
-                device_code,
-                message,
-            } => {
-                self.login_prompt = Some((runtime_id, auth_url, device_code, message.clone()));
-                self.notify_toast(message, cx);
+            KarBridgeEvent::LoginStarted { attempt, runtime_id } => {
+                self.provider_sign_in.start(attempt, runtime_id);
             }
+            KarBridgeEvent::LoginInteractionPrompt { attempt, auth_url, device_code, message } => {
+                self.provider_sign_in.prompt(attempt, auth_url, device_code, message);
+            }
+            KarBridgeEvent::LoginFinished { attempt } => self.provider_sign_in.finish(attempt),
             KarBridgeEvent::AgentUpdateStatus {
                 runtime_id,
                 summary,
@@ -6991,6 +7013,16 @@ impl Render for KarWorkbench {
             self.finish_divider(true, cx);
         }
         let compact = window_w < COMPACT_WORKSPACE_WIDTH;
+        if compact != (self.previous_window_width < COMPACT_WORKSPACE_WIDTH) {
+            self.thread_details_open = if compact {
+                self.prefs.compact_thread_details_open
+            } else {
+                self.prefs.thread_details_open
+            };
+            if !self.thread_details_open {
+                self.dismiss_thread_details_menu();
+            }
+        }
         let crossed_compact = compact && self.previous_window_width >= COMPACT_WORKSPACE_WIDTH;
         let crossed_split = self.layout_mode != WorkspaceLayoutMode::ChatFocus
             && window_w < AUTO_COLLAPSE_RAIL_WIDTH
@@ -7083,17 +7115,17 @@ impl Render for KarWorkbench {
         let dock_w = if single_dock { usable } else { split_span.extent - split_span.value };
         let revealed_width = if show_doc && !single_dock { (dock_w + SHEET_GUTTER) * dock_reveal } else { 0. };
         let chat_w = usable - revealed_width;
-        let (stage_key, inner_stage, chat_rail) = match self.main_stage_view {
-            MainStageView::Conversation if single_dock => ("stage-conversation", div().into_any_element(), None),
+        let (stage_key, inner_stage, review_rail_open) = match self.main_stage_view {
+            MainStageView::Conversation if single_dock => ("stage-conversation", div().into_any_element(), false),
             MainStageView::Conversation => {
                 let (chat, rail) = self.render_chat_pane(chat_w, revealed_width, window, cx);
                 ("stage-conversation", chat, rail)
             }
             MainStageView::TasksInbox => {
-                ("stage-tasks-inbox", self.render_tasks_inbox_screen(usable, window, cx), None)
+                ("stage-tasks-inbox", self.render_tasks_inbox_screen(usable, window, cx), false)
             }
             MainStageView::OfficeGallery => {
-                ("stage-office-gallery", self.render_office_gallery_screen(usable, window, cx), None)
+                ("stage-office-gallery", self.render_office_gallery_screen(usable, window, cx), false)
             }
         };
         let chat_view = pro_view_transition_fill("kar-main-stage-vtx", stage_key, inner_stage);
@@ -7120,7 +7152,7 @@ impl Render for KarWorkbench {
                 Divider::Sidebar, x, span, !self.sidebar_open, document_width, &s, window, cx,
             )
         });
-        let show_right_handle = dividers_ready && in_conversation_stage && chat_rail.is_none() && !drawer_active
+        let show_right_handle = dividers_ready && in_conversation_stage && !review_rail_open && !drawer_active
             && (!compact || dock_closed);
         let right_handle = show_right_handle.then(|| {
             let x = if show_doc { rail_space + chat_w + SHEET_GUTTER * 0.5 * dock_reveal } else { window_w };
@@ -7175,7 +7207,7 @@ impl Render for KarWorkbench {
                 }),
         );
         let right_toggle = in_conversation_stage.then(|| {
-            let review = chat_rail == Some(ChatRail::Review);
+            let review = review_rail_open;
             let open = !dock_closed || review;
             let label = if single_dock {
                 self.ui_locale.pick("收起右侧面板，返回对话  ⌘J", "Hide right panel and return to thread  ⌘J")
@@ -7215,11 +7247,20 @@ impl Render for KarWorkbench {
                         .h_full()
                         .flex_1()
                         .min_w_0()
-                        .bg(s.surface)
                         .flex()
                         .flex_col()
                         .overflow_hidden()
                         .child(div().w(px(dock_w)).h_full().flex_none().overflow_hidden().child(doc)),
+                )
+            })
+            .when(in_conversation_stage && self.thread_details_open, |stage| {
+                let available = if single_dock { usable } else { chat_w };
+                stage.child(
+                    div().absolute()
+                        .top(px(HEADER_H + 4.))
+                        .right(px(revealed_width + 12.))
+                        .w(px(DETAILS_CARD_W.min((available - 24.).max(1.))))
+                        .child(self.render_thread_details_card(&s, cx)),
                 )
             });
 

@@ -231,7 +231,7 @@ impl KarWorkbench {
             .on_press(cx, |this, _, cx| this.toggle_menu(Menu::GitBranch, cx));
 
         let branch_menu =
-            self.render_git_branch_menu(&snap, &branch_name, MenuPlacement::BelowStart, s, cx);
+            self.render_git_branch_menu(Menu::GitBranch, &snap, &branch_name, MenuPlacement::BelowStart, s, cx);
 
         let ws_refresh = ws.clone();
         let ws_pull = ws.clone();
@@ -483,6 +483,7 @@ impl KarWorkbench {
 
     pub(crate) fn render_git_branch_menu(
         &self,
+        menu: Menu,
         snap: &GitWorkspaceSnapshot,
         current: &str,
         placement: MenuPlacement,
@@ -548,7 +549,7 @@ impl KarWorkbench {
             .into_any_element(),
         );
 
-        self.render_menu(Menu::GitBranch, placement, 228., rows, s, cx)
+        self.render_menu(menu, placement, 228., rows, s, cx)
     }
 
     #[allow(clippy::too_many_arguments)]

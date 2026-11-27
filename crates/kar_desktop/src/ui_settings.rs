@@ -1257,7 +1257,11 @@ impl KarWorkbench {
             })
             .h_full()
             .flex_none()
-            .bg(if s.dark { s.tray } else { s.stage })
+            .bg(if s.dark {
+                s.tray
+            } else {
+                crate::ui_primitives::material::surface_ground(s).blend(s.ink.opacity(0.024))
+            })
             .when(inset > 0., |d| {
                 let radius = px(R_MODAL - 1.);
                 d.rounded_l(radius)
@@ -1436,7 +1440,7 @@ impl KarWorkbench {
             .h(px(card_h))
             .max_w_full()
             .when(inset > 0., |d| d.rounded(px(R_MODAL)).border_1())
-            .bg(s.surface)
+            .bg(crate::ui_primitives::material::surface_ground(s))
             .border_color(s.line)
             .shadow(s.popover_shadow())
             .overflow_hidden()

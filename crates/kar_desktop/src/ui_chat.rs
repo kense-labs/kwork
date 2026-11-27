@@ -64,7 +64,7 @@ use crate::{
         pulse_beacon, soft_button, soft_button_sm, spinner, text_button, text_button_sm,
     },
     ui_primitives::{
-        CTRL_H, CTRL_SM_H, DETAILS_CARD_W, DotTone, FS_CONTROL, FS_META, FS_READ, FS_TAG, FS_UI, HEADER_H, ICON,
+        CTRL_H, CTRL_SM_H, DotTone, FS_CONTROL, FS_META, FS_READ, FS_TAG, FS_UI, HEADER_H, ICON,
         ICON_SM, ICON_XS, LH_META, LH_READ, LH_UI, R_CARD, R_CTRL, R_HERO, R_PILL, R_SM, R_XS, ROW_H, StudioPalette, UiLocale,
         THREAD_PAD, TITLEBAR_BUTTON_GAP, TITLEBAR_EDGE_INSET, card_box, clean_display_doc_name, frosted_card, macos_traffic_pad, mono_font,
         render_bg_layers_icon,
@@ -83,12 +83,6 @@ use crate::{
 /// Most lines of a tool's output or a file change shown before it is cut short.
 const DETAIL_MAX_LINES: usize = 24;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ChatRail {
-    Review,
-    Details,
-}
-
 impl KarWorkbench {
     pub(crate) fn pending_decisions(&self) -> impl Iterator<Item = &PendingRequest> {
         self.projected.pending_requests.iter().filter(|request| {
@@ -103,7 +97,7 @@ impl KarWorkbench {
         revealed_dock_width: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> (AnyElement, Option<ChatRail>) {
+    ) -> (AnyElement, bool) {
         let s = StudioPalette::get(cx);
 
         let view_only = !self.access_mode.is_writable()
@@ -145,25 +139,13 @@ impl KarWorkbench {
         let review_width = if show_review_rail {
             (pane_w * (1. - self.split_ratio)).clamp(300., pane_w - 300.)
         } else { 0. };
-        let show_details_rail = !show_review_rail
-            && self.thread_details_open
-            && self.layout_mode == WorkspaceLayoutMode::ChatFocus
-            && pane_w >= 660.;
-        let center_w = if show_review_rail {
-            pane_w - review_width
-        } else if show_details_rail {
-            (pane_w - DETAILS_CARD_W - 12.).max(360.)
-        } else {
-            pane_w
-        };
+        let center_w = pane_w - review_width;
 
         let thread_w = self.prefs.chat_width_mode.width_for_pane(center_w);
         let header = self.render_chat_header(
             pane_w,
             revealed_dock_width,
             on_start_screen,
-            show_details_rail,
-            show_review_rail,
             &s,
             window,
             cx,
@@ -182,7 +164,7 @@ impl KarWorkbench {
         let active_match_turn_ix = active_match.map(|index| matches[index]);
 
         let stage = if on_start_screen {
-            self.render_start_stage(center_w, show_details_rail, &s, window, cx)
+            self.render_start_stage(center_w, &s, window, cx)
                 .into_any_element()
         } else {
             let mut rows = Vec::new();
@@ -332,7 +314,7 @@ impl KarWorkbench {
                 } else {
                     let slash_popup = self.slash_popup(&s, window, cx);
                     self.render_composer(
-                        center_w, show_details_rail, activity_row, slash_popup, &s, window, cx,
+                        center_w, activity_row, slash_popup, &s, window, cx,
                     )
                     .into_any_element()
                 });
@@ -412,7 +394,7 @@ impl KarWorkbench {
                             |_, _, _, _| {},
                         ).absolute().size_0()))
                         .child(scroll)
-                        .child(timeline_top_fade(self.chat_scroll.clone(), s.surface))
+                        .child(timeline_top_fade(self.chat_scroll.clone(), crate::ui_primitives::material::surface_ground(&s)))
                         .children(rail)
                         .when(show_jump_bottom, |lane| lane.child(self.jump_to_latest(activity.is_some(), &s, window, cx))),
                 )
@@ -434,22 +416,6 @@ impl KarWorkbench {
                         .border_l_1()
                         .border_color(s.line_soft)
                         .child(self.render_file_review(review, true, &s, cx)),
-                )
-                .into_any_element()
-        } else if show_details_rail {
-            div()
-                .size_full()
-                .flex()
-                .child(div().flex_1().min_w_0().h_full().child(stage))
-                .child(
-                    div()
-                        .w(px(DETAILS_CARD_W + 12.))
-                        .h_full()
-                        .flex_none()
-                        .pt(px(14.))
-                        .pr(px(16.))
-                        .pl(px(4.))
-                        .child(self.render_thread_details_card(&s, window, cx)),
                 )
                 .into_any_element()
         } else {
@@ -482,12 +448,7 @@ impl KarWorkbench {
                     )),
             )
             .into_any_element();
-        let rail = if show_review_rail {
-            Some(ChatRail::Review)
-        } else {
-            show_details_rail.then_some(ChatRail::Details)
-        };
-        (pane, rail)
+        (pane, show_review_rail)
     }
 
     fn jump_to_latest(
@@ -549,8 +510,6 @@ impl KarWorkbench {
         pane_w: f32,
         revealed_dock_width: f32,
         on_start_screen: bool,
-        show_details_rail: bool,
-        show_review_rail: bool,
         s: &StudioPalette,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -823,29 +782,7 @@ impl KarWorkbench {
                             }),
                         )
                     })
-                    // 1. `SquareMenu` (`[≡]`) -> Toggle `ThreadDetailsCard` (active threads)
-                    .when(pane_w >= 660., |d| {
-                        d.child(
-                            Tactile::ghost("chat-toggle-details-card", s)
-                                .size(px(28.))
-                                .justify_center()
-                                .lit(show_details_rail)
-                                .expanded(show_details_rail)
-                                .tip(loc.pick("会话环境与 Git 详情卡", "Toggle thread details"))
-                                .child(render_square_menu_icon(
-                                    15.5,
-                                    if show_details_rail { s.ink } else { s.muted },
-                                ))
-                                .on_press(cx, move |this, _, cx| {
-                                    if show_review_rail {
-                                        this.turn_review = None;
-                                        this.thread_details_open = false;
-                                    }
-                                    this.toggle_thread_details(cx);
-                                }),
-                        )
-                    })
-                    // 2. `PanelBottom` (`[⬒]`) -> Toggle Bottom Resizable Terminal Drawer
+                    .child(self.thread_details_toggle(s, cx))
                     .child(
                         icon_button_sm("chat-toggle-bottom-terminal", ProIcon::PanelBottom,
                             loc.pick("底部集成终端  ⇧⌘T", "Toggle bottom terminal  ⇧⌘T"), s)
@@ -855,12 +792,22 @@ impl KarWorkbench {
             )
     }
 
-    // ── T3 Code `ThreadDetailsCard` (`280px` Top-Right Floating Card) ────────
+    pub(crate) fn thread_details_toggle(&self, s: &StudioPalette, cx: &mut Context<Self>) -> Tactile {
+        let label = self.ui_locale.pick("会话环境与 Git 详情卡", "Thread environment and Git details");
+        Tactile::ghost("chat-toggle-details-card", s)
+            .size(px(CTRL_SM_H))
+            .justify_center()
+            .lit(self.thread_details_open)
+            .expanded(self.thread_details_open)
+            .aria(label)
+            .tip(label)
+            .child(render_square_menu_icon(15.5, if self.thread_details_open { s.ink } else { s.muted }))
+            .on_press(cx, |this, _, cx| this.toggle_thread_details(cx))
+    }
 
-    fn render_thread_details_card(
+    pub(crate) fn render_thread_details_card(
         &self,
         s: &StudioPalette,
-        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let loc = self.ui_locale;
@@ -954,9 +901,10 @@ impl KarWorkbench {
                         ),
                 )
                 .child(pro_icon(ProIcon::ChevronDown, 11., s.muted))
-                .lit(self.open_menu == Some(Menu::GitBranch))
-                .on_press(cx, |this, _, cx| this.toggle_menu(Menu::GitBranch, cx)),
+                .lit(self.open_menu == Some(Menu::DetailsBranch))
+                .on_press(cx, |this, _, cx| this.toggle_menu(Menu::DetailsBranch, cx)),
             self.render_git_branch_menu(
+                Menu::DetailsBranch,
                 &self.git_snapshot,
                 &branch_name,
                 MenuPlacement::BelowEnd,
@@ -965,7 +913,9 @@ impl KarWorkbench {
             ),
         );
 
-        let card = frosted_card(s)
+        crate::ui_primitives::frosted_panel(s)
+            .id("thread-details-card")
+            .occlude()
             .w_full()
             .p(px(6.))
             .flex()
@@ -999,9 +949,9 @@ impl KarWorkbench {
             )
             .child(open_in_row)
             .child(scripts_row)
-            .child(div().my(px(4.)).mx(px(8.)).h(px(1.)).bg(s.line))
             .when(self.git_snapshot.is_repo, |d| {
-                d.child(branch_row).child(
+                d.child(div().my(px(4.)).mx(px(8.)).h(px(1.)).bg(s.line))
+                    .child(branch_row).child(
                     Tactile::ghost("details-open-changes", s)
                         .w_full()
                         .h(px(32.))
@@ -1061,9 +1011,7 @@ impl KarWorkbench {
                         .on_press(cx, |this, _, cx| this.open_git_workbench_tab(cx)),
                 )
             })
-            .into_any_element();
-
-        pro_presence("kar-thread-details-card", true, 5., 0.985, move |_| card)
+            .into_any_element()
     }
 
     fn render_details_open_in_menu(
@@ -1790,7 +1738,6 @@ impl KarWorkbench {
     fn render_start_stage(
         &self,
         pane_w: f32,
-        show_details_rail: bool,
         s: &StudioPalette,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1912,7 +1859,7 @@ impl KarWorkbench {
         let browsing_commands = slash_popup.is_some();
         let planning = self.planning_here();
         let composer =
-            self.render_composer(pane_w, show_details_rail, None, slash_popup, s, window, cx);
+            self.render_composer(pane_w, None, slash_popup, s, window, cx);
         let content = chat_content_lane(pane_w, thread_w, window)
             .flex_none()
             .flex()
@@ -2090,7 +2037,6 @@ impl KarWorkbench {
     fn render_composer(
         &self,
         pane_w: f32,
-        show_details_rail: bool,
         activity_row: Option<AnyElement>,
         slash_popup: Option<AnyElement>,
         s: &StudioPalette,
@@ -2635,17 +2581,16 @@ impl KarWorkbench {
                                         .truncate()
                                         .child(branch.to_owned()),
                                 );
-                            if self.layout_mode == WorkspaceLayoutMode::ChatFocus
-                                && !show_details_rail
-                            {
+                            if self.layout_mode == WorkspaceLayoutMode::ChatFocus {
                                 row.child(menu_host(
                                     trigger
                                         .tip(loc.pick("切换分支", "Switch branch"))
-                                        .lit(self.open_menu == Some(Menu::GitBranch))
+                                        .lit(self.open_menu == Some(Menu::ComposerBranch))
                                         .on_press(cx, |this, _, cx| {
-                                            this.toggle_menu(Menu::GitBranch, cx)
+                                            this.toggle_menu(Menu::ComposerBranch, cx)
                                         }),
                                     self.render_git_branch_menu(
+                                        Menu::ComposerBranch,
                                         &self.git_snapshot,
                                         branch,
                                         end,

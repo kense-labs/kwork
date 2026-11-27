@@ -576,13 +576,15 @@ pub enum KarBridgeEvent {
         chat_id: Uuid,
         suggestion: Option<kar::PromptSuggestion>,
     },
-    /// Interactive OAuth URL or Device Code emitted during `Runtime::login`.
+    LoginStarted { attempt: Uuid, runtime_id: String },
+    /// The current interactive step of a particular sign-in request.
     LoginInteractionPrompt {
-        runtime_id: String,
-        auth_url: Option<String>,
+        attempt: Uuid,
+        auth_url: String,
         device_code: Option<String>,
         message: String,
     },
+    LoginFinished { attempt: Uuid },
     AgentUpdateStatus {
         runtime_id: String,
         summary: String,
@@ -5275,6 +5277,10 @@ async fn worker_loop(
                 let evt_tx = state.evt_tx.clone();
                 let cmd_tx = state.cmd_tx.clone();
                 let name = runtime_display_name(&runtime_id);
+                let attempt = Uuid::new_v4();
+                if api_key.as_deref().is_none_or(|key| key.trim().is_empty()) && rt.supports_login() {
+                    state.emit(KarBridgeEvent::LoginStarted { attempt, runtime_id: runtime_id.clone() });
+                }
                 tokio::spawn(async move {
                     if let Some(key) = api_key.map(|k| k.trim().to_owned()).filter(|k| !k.is_empty()) {
                         let target_sub = sub_provider.unwrap_or_else(|| "openai".into());
@@ -5347,15 +5353,14 @@ async fn worker_loop(
                     let mut opts = kar::account::LoginOptions::default();
                     opts.open_browser = Some(false);
                     let evt_for_cb = evt_tx.clone();
-                    let rt_for_cb = runtime_id.clone();
                     let mut on_event = move |ev: kar::account::LoginEvent| -> kar::Result<()> {
                         match ev {
                             kar::account::LoginEvent::AuthUrl { url, instructions } => {
                                 let _ = std::process::Command::new("open").arg(&url).status();
                                 let _ = evt_for_cb.send_blocking(
                                     KarBridgeEvent::LoginInteractionPrompt {
-                                        runtime_id: rt_for_cb.clone(),
-                                        auth_url: Some(url),
+                                        attempt,
+                                        auth_url: url,
                                         device_code: None,
                                         message: instructions.unwrap_or_else(|| {
                                             "已在浏览器打开登录页面，请在网页中完成授权".into()
@@ -5372,8 +5377,8 @@ async fn worker_loop(
                                     .status();
                                 let _ = evt_for_cb.send_blocking(
                                     KarBridgeEvent::LoginInteractionPrompt {
-                                        runtime_id: rt_for_cb.clone(),
-                                        auth_url: Some(verification_uri),
+                                        attempt,
+                                        auth_url: verification_uri,
                                         device_code: Some(user_code),
                                         message: "请在打开的验证页面输入上方设备验证码".into(),
                                     },
@@ -5381,18 +5386,15 @@ async fn worker_loop(
                             }
                             kar::account::LoginEvent::Info { message } => {
                                 let _ = evt_for_cb.send_blocking(
-                                    KarBridgeEvent::LoginInteractionPrompt {
-                                        runtime_id: rt_for_cb.clone(),
-                                        auth_url: None,
-                                        device_code: None,
-                                        message,
-                                    },
+                                    KarBridgeEvent::ToastMessage { text: message, warning: false },
                                 );
                             }
                         }
                         Ok(())
                     };
-                    match rt.login(&opts, &mut on_event).await {
+                    let result = rt.login(&opts, &mut on_event).await;
+                    let _ = evt_tx.send(KarBridgeEvent::LoginFinished { attempt }).await;
+                    match result {
                         Ok(kar::account::LoginResult::LoggedIn { .. }) => {
                             let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
                                 text: format!("{name} 登录成功！"),

@@ -828,18 +828,22 @@ pub(crate) fn menu_popup(
             .id(surface_id)
             .role(Role::Menu)
             .w(px(width))
-            .max_h(px(max_height))
-            .overflow_y_scroll()
-            .p(px(4.))
             .opacity(amount)
             .when(open, |d| {
                 d.occlude()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_down_out(move |_, window, cx| dismiss(window, cx))
             })
-            .flex()
-            .flex_col()
-            .children(rows);
+            .child(
+                div()
+                    .id("menu-rows")
+                    .max_h(px((max_height - 2.).max(0.)))
+                    .overflow_y_scroll()
+                    .p(px(4.))
+                    .flex()
+                    .flex_col()
+                    .children(rows),
+            );
 
         div()
             .absolute()

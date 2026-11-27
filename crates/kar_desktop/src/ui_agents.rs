@@ -90,9 +90,8 @@ impl KarWorkbench {
             .collect();
 
         // ── 0. Interactive OAuth / Device-Code Banner (when active) ──────────
-        let login_banner = self.login_prompt.as_ref().map(|(rt_id, url_opt, code_opt, msg)| {
-            let url_clone = url_opt.clone();
-            let code_clone = code_opt.clone();
+        let login_banner = self.provider_sign_in.challenge().map(|(rt_id, challenge)| {
+            let url = challenge.url.clone();
             card_box(s)
                 .p(px(16.))
                 .border_color(s.pro.accent_info)
@@ -119,12 +118,12 @@ impl KarWorkbench {
                         .child(
                             icon_button_sm("dismiss-login-prompt", ProIcon::Close, loc.pick("关闭", "Dismiss"), s)
                                 .on_press(cx, |wb, _, cx| {
-                                    wb.login_prompt = None;
+                                    wb.provider_sign_in.dismiss();
                                     cx.notify();
                                 }),
                         ),
                 )
-                .when_some(code_clone, |d, user_code| {
+                .when_some(challenge.device_code.clone(), |d, user_code| {
                     let to_copy = user_code.clone();
                     d.child(
                         sub_card_box(s)
@@ -151,17 +150,15 @@ impl KarWorkbench {
                             ),
                     )
                 })
-                .child(div().text_size(s.font_size(FS_META)).text_color(s.muted).child(msg.clone()))
-                .when_some(url_clone, |d, url| {
-                    d.child(
-                        div().flex().justify_end().child(
-                            primary_button_sm("reopen-auth-url", loc.pick("在浏览器打开授权页 ↗", "Open sign-in page ↗"), s)
-                                .on_press(cx, move |_, _, _| {
-                                    let _ = std::process::Command::new("open").arg(&url).status();
-                                }),
-                        ),
-                    )
-                })
+                .child(div().text_size(s.font_size(FS_META)).text_color(s.muted).child(challenge.message.clone()))
+                .child(
+                    div().flex().justify_end().child(
+                        primary_button_sm("reopen-auth-url", loc.pick("在浏览器打开授权页 ↗", "Open sign-in page ↗"), s)
+                            .on_press(cx, move |_, _, _| {
+                                let _ = std::process::Command::new("open").arg(&url).status();
+                            }),
+                    ),
+                )
         });
 
         let mut shell = settings_page_shell().when_some(login_banner, |page, banner| page.child(banner));
@@ -657,9 +654,11 @@ impl KarWorkbench {
                     .child(render_provider_color_tile(id, 28., s, cx))
                     .child(agent_text(name.clone(), detail, s));
                 if browser_login {
+                    let pending = self.provider_sign_in.waiting_for(id);
                     let id = id.clone();
                     row = row.child(
-                        soft_button_sm(("agent-direct-login", ix), loc.pick("登录", "Sign in"), s)
+                        soft_button_sm(("agent-direct-login", ix), if pending { loc.pick("登录中…", "Signing in…") } else { loc.pick("登录", "Sign in") }, s)
+                            .disabled(pending)
                             .aria(format!("{} {name}", loc.pick("登录", "Sign in to")))
                             .on_press(cx, move |wb, _, _| {
                                 wb.bridge.send(KarCommand::LoginProvider {

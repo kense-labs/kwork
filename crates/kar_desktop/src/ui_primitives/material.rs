@@ -55,45 +55,68 @@ pub(crate) fn window_tint(s: &StudioPalette) -> Hsla {
     }
 }
 
-/// Tint the macOS window blur once underneath the transcript and its controls.
-pub(crate) fn reading_surface(s: &StudioPalette) -> Hsla {
-    if native_glass() {
-        s.surface.opacity(if s.dark { 0.56 } else { 0.64 })
-    } else {
+/// Leave some tonal room below white glass. The same ground sits under settings
+/// cards and the transcript, so both retain a visible edge on a bright desktop.
+pub(crate) fn surface_ground(s: &StudioPalette) -> Hsla {
+    if s.dark {
         s.surface
+    } else {
+        s.tray.blend(s.ink.opacity(0.055))
+    }
+}
+
+pub(crate) fn reading_surface(s: &StudioPalette) -> Hsla {
+    let ground = surface_ground(s);
+    if native_glass() {
+        ground.opacity(if s.dark { 0.56 } else { 0.72 })
+    } else {
+        ground
     }
 }
 
 pub(crate) fn frosted_card(s: &StudioPalette) -> Div {
-    frost(s, R_CARD, 0.063, 0.76).when(native_glass(), |card| card.child(frost_grain(R_CARD)))
+    frost(s, R_CARD, 0.063, if s.dark { 0.76 } else { 0.84 }).when(native_glass(), |card| {
+        card.child(frost_grain(R_CARD, s.dark))
+    })
 }
 
 pub(crate) fn frosted_composer(s: &StudioPalette) -> Div {
-    frost(s, 16., 0.092, 0.87).when(native_glass(), |card| card.child(frost_grain(16.)))
+    frost(s, 16., 0.092, 0.87).when(native_glass(), |card| card.child(frost_grain(16., s.dark)))
 }
 
 pub(crate) fn frosted_panel(s: &StudioPalette) -> Div {
     // Menus can cover glyphs. Keep their coat dense enough to read over a transcript.
-    frost(s, 14., 0.108, 0.98).shadow(s.popover_shadow())
+    frost(s, 14., 0.108, if s.dark { 0.98 } else { 0.99 })
+        .shadow(s.popover_shadow())
+        .when(native_glass(), |panel| panel.child(frost_grain(14., s.dark)))
 }
 
 fn frost(s: &StudioPalette, radius: f32, lift: f32, density: f32) -> Div {
     let tint = if s.dark {
         s.card.blend(s.ink.opacity(lift))
     } else {
-        s.card.blend(white().opacity(0.40))
+        s.card.blend(s.tray.opacity(0.08))
     };
     let opacity = if native_glass() { density } else { 1. };
     div()
         .rounded(px(radius))
         .bg(tint.opacity(opacity))
         .border_1()
-        .border_color(s.ink.opacity(if s.dark { 0.11 } else { 0.10 }))
+        .border_color(s.ink.opacity(if s.dark { 0.11 } else { 0.105 }))
+        .when(!s.dark, |card| {
+            card.shadow(vec![BoxShadow {
+                color: s.ink.opacity(0.055),
+                offset: point(px(0.), px(2.)),
+                blur_radius: px(6.),
+                spread_radius: px(-2.),
+                inset: false,
+            }])
+        })
 }
 
 // A fixed, low-contrast grain gives even a plain backdrop a little texture.
 // It sits inside the rim, underneath the controls, and never needs an animation frame.
-fn frost_grain(radius: f32) -> impl IntoElement {
+fn frost_grain(radius: f32, dark: bool) -> impl IntoElement {
     static GRAIN: OnceLock<Arc<RenderImage>> = OnceLock::new();
     let grain = GRAIN.get_or_init(|| {
         let mut seed = 0x41c6_ce57_u32;
@@ -123,6 +146,6 @@ fn frost_grain(radius: f32) -> impl IntoElement {
         .absolute()
         .inset(px(1.))
         .overflow_hidden()
-        .opacity(0.026)
+        .opacity(if dark { 0.026 } else { 0.036 })
         .child(texture.absolute().inset_0())
 }

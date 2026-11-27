@@ -44,6 +44,8 @@ impl KarWorkbench {
             is_office_surface && active_tab.as_ref().is_some_and(|t| t.is_demo);
         let active_dirty =
             is_office_surface && active_tab.as_ref().is_some_and(|t| t.is_dirty(cx));
+        let use_reading_ground = !s.dark && (self.right_surface == RightPaneSurface::Files
+            || (is_office_surface && active_tab.is_none()));
         let wide_canvas = self.layout_mode == WorkspaceLayoutMode::CanvasWide;
 
         // ── Unified Right-Dock Strip (`变更` · `文件` · `终端` + Open Docs/Code) ──
@@ -223,7 +225,6 @@ impl KarWorkbench {
                 macos_traffic_pad(window) + CTRL_SM_H + TITLEBAR_BUTTON_GAP
             } else { 10. }))
             .pr(px(TITLEBAR_EDGE_INSET + CTRL_SM_H + TITLEBAR_BUTTON_GAP))
-            .bg(s.surface)
             .justify_between()
             .gap(px(8.))
             .child(
@@ -270,6 +271,7 @@ impl KarWorkbench {
                                 }),
                         )
                     })
+                    .when(single_dock, |d| d.child(self.thread_details_toggle(&s, cx)))
                     .when(!single_dock, |d| {
                         d.child(icon_button_sm(
                             "office-wide-toggle",
@@ -430,7 +432,11 @@ impl KarWorkbench {
 
         div()
             .size_full()
-            .bg(s.surface)
+            .bg(if use_reading_ground {
+                crate::ui_primitives::material::reading_surface(&s)
+            } else {
+                s.surface
+            })
             .flex()
             .flex_col()
             .overflow_hidden()

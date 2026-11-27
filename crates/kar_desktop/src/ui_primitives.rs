@@ -305,7 +305,7 @@ impl StudioPalette {
         let tone = |light, night| Hsla::from(rgb(if dark { night } else { light }));
         let ink = tone(0x18181b, 0xf5f5f5);
         let card = tone(0xffffff, 0x0e0e0e);
-        let muted = tone(0x71717a, 0xa3a3a3);
+        let muted = tone(0x5f5f68, 0xa3a3a3);
         let line = tone(0xe4e4e7, 0x18181b);
         let primary = tone(0x1447e6, 0x4779e9);
         Self {
@@ -329,7 +329,7 @@ impl StudioPalette {
             ink,
             text: tone(0x3f3f46, 0xd4d4d8),
             muted,
-            faint: tone(0x75757e, 0x8e8e96),
+            faint: tone(0x61616b, 0x8e8e96),
             primary,
             on_primary: white(),
             brand_action: primary,

@@ -774,7 +774,7 @@ impl KarWorkbench {
             return None;
         }
         let selected = self.slash.index.min(choices.len().saturating_sub(1));
-        let mut menu = frosted_panel(s)
+        let mut menu = div()
             .id("composer-slash-picker")
             .role(Role::ListBox)
             .aria_label(self.ui_locale.pick("对话指令", "Chat commands"))
@@ -878,15 +878,16 @@ impl KarWorkbench {
 
         // Size against the actual writing card after layout. This remains accurate
         // in the centered start page, in a split pane and above a growing draft.
+        let surface = frosted_panel(s);
         Some(
             deferred(
                 canvas(
                     move |anchor, win, cx| {
                         let bottom = anchor.top() - px(4.);
                         let max_height = (bottom - px(HEADER_H + 4.)).max(px(0.)).min(px(360.));
-                        let mut menu = menu
+                        let mut menu = surface
                             .w(anchor.size.width)
-                            .max_h(max_height)
+                            .child(menu.max_h((max_height - px(2.)).max(px(0.))))
                             .into_any_element();
                         let space = size(
                             AvailableSpace::Definite(anchor.size.width),
