@@ -1323,7 +1323,17 @@ pub fn settings_row_item(
         .child(div().max_w_full().flex_none().child(control))
 }
 
-/// Unified `32px` (`CTRL_H`) single-line search / text input box with focus border feedback.
+/// Keep a labelled field and its action together at a readable width.
+pub(crate) fn settings_input_action_row() -> Div {
+    div()
+        .w_full()
+        .max_w(px(520.))
+        .flex()
+        .items_end()
+        .gap(px(8.))
+}
+
+/// A single-line editor with an optional leading search icon.
 pub fn search_input_box(
     id: impl Into<ElementId>,
     editor: Entity<kui::primitives::editor::Editor>,

@@ -487,6 +487,7 @@ pub struct KarWorkbench {
     pub(crate) sidebar_metadata: BTreeMap<Uuid, crate::kar_bridge::SidebarMetadata>,
     pub settled_shelf_open: bool,
     pub thread_details_open: bool,
+    pub(crate) thread_details_margin_available: bool,
     pub bottom_terminal_open: bool,
     pub bottom_terminal_h: f32,
     pub(crate) bottom_terminal_anim: Slide,
@@ -1490,11 +1491,8 @@ impl KarWorkbench {
             sidebar_metadata: BTreeMap::new(),
             hosted_writer: None,
             settled_shelf_open: false,
-            thread_details_open: !config.hide_details_card && if initial_width < COMPACT_WORKSPACE_WIDTH {
-                loaded_prefs.compact_thread_details_open
-            } else {
-                loaded_prefs.thread_details_open
-            },
+            thread_details_open: false,
+            thread_details_margin_available: false,
             bottom_terminal_open: config.open_bottom_terminal || loaded_prefs.bottom_terminal_open,
             bottom_terminal_h: loaded_prefs.bottom_terminal_h.clamp(TERMINAL_MIN_H, 680.),
             bottom_terminal_anim: Slide::new(
@@ -1898,16 +1896,24 @@ impl KarWorkbench {
 
     pub fn toggle_thread_details(&mut self, cx: &mut Context<Self>) {
         self.thread_details_open = !self.thread_details_open;
-        if self.previous_window_width < COMPACT_WORKSPACE_WIDTH {
-            self.prefs.compact_thread_details_open = self.thread_details_open;
-        } else {
+        self.config.hide_details_card = false;
+        // An explicit peek in the compact title bar is local to this layout.
+        if self.thread_details_margin_available {
             self.prefs.thread_details_open = self.thread_details_open;
+            self.save_prefs();
         }
         if !self.thread_details_open {
             self.dismiss_thread_details_menu();
         }
-        self.save_prefs();
         cx.notify();
+    }
+
+    pub(crate) fn set_thread_details_space(&mut self, available: bool) {
+        if self.thread_details_margin_available != available {
+            self.thread_details_margin_available = available;
+            self.thread_details_open = available && !self.config.hide_details_card && self.prefs.thread_details_open;
+            self.dismiss_thread_details_menu();
+        }
     }
 
     fn dismiss_thread_details_menu(&mut self) {
@@ -5655,6 +5661,9 @@ impl KarWorkbench {
         {
             self.close_all_overlays(cx);
             cx.stop_propagation();
+        } else if key == "escape" && self.thread_details_open && !self.thread_details_margin_available {
+            self.toggle_thread_details(cx);
+            cx.stop_propagation();
         } else if key == "escape" && self.turn_review.is_some() {
             self.close_file_review(window, cx);
             cx.stop_propagation();
@@ -7013,16 +7022,6 @@ impl Render for KarWorkbench {
             self.finish_divider(true, cx);
         }
         let compact = window_w < COMPACT_WORKSPACE_WIDTH;
-        if compact != (self.previous_window_width < COMPACT_WORKSPACE_WIDTH) {
-            self.thread_details_open = if compact {
-                self.prefs.compact_thread_details_open
-            } else {
-                self.prefs.thread_details_open
-            };
-            if !self.thread_details_open {
-                self.dismiss_thread_details_menu();
-            }
-        }
         let crossed_compact = compact && self.previous_window_width >= COMPACT_WORKSPACE_WIDTH;
         let crossed_split = self.layout_mode != WorkspaceLayoutMode::ChatFocus
             && window_w < AUTO_COLLAPSE_RAIL_WIDTH

@@ -333,15 +333,6 @@ impl KarWorkbench {
             },
         );
 
-        let hhmm_inp = window.use_keyed_state("sched-custom-hhmm", cx, |win, cx| {
-            Input::new("sched-hhmm", loc.pick("触发时间 (HH:MM)", "Time (HH:MM)"), win, cx)
-                .with_value("09:30", win, cx)
-        });
-        let mins_inp = window.use_keyed_state("sched-custom-mins", cx, |win, cx| {
-            Input::new("sched-mins", loc.pick("间隔分钟数", "Every N minutes"), win, cx)
-                .with_value("30", win, cx)
-        });
-
         let mut extra_cadence: Option<AnyElement> = None;
         match &self.schedule_draft_cadence {
             ScheduleCadence::CustomTime {
@@ -352,6 +343,12 @@ impl KarWorkbench {
                 let h_cur = *hour;
                 let m_cur = *minute;
                 let mask_cur = if *weekdays_mask == 0 { 0x7F } else { *weekdays_mask };
+                let hhmm_inp = window.use_keyed_state(
+                    SharedString::from(format!("sched-time-{:?}-{h_cur}-{m_cur}", self.editing_schedule_id)),
+                    cx,
+                    |win, cx| Input::new("sched-hhmm", loc.pick("触发时间 (HH:MM)", "Time (HH:MM)"), win, cx)
+                        .with_value(format!("{h_cur:02}:{m_cur:02}"), win, cx),
+                );
                 let hhmm_apply = hhmm_inp.clone();
                 let mut days_row = div().flex().items_center().flex_wrap().gap(px(6.));
                 for (bit, name) in ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -391,10 +388,12 @@ impl KarWorkbench {
                             div()
                                 .flex()
                                 .items_end()
+                                .max_w_full()
+                                .flex_wrap()
                                 .gap(px(8.))
-                                .child(div().w(px(140.)).child(hhmm_inp))
+                                .child(div().w(px(120.)).max_w_full().min_w_0().child(hhmm_inp))
                                 .child(
-                                    soft_button_sm("sched-apply-hhmm", loc.pick("应用时刻", "Set time"), s)
+                                    soft_button("sched-apply-hhmm", loc.pick("应用时刻", "Set time"), s)
                                         .on_press(cx, move |wb, _, cx| {
                                             let raw = hhmm_apply.read(cx).value(cx).trim().to_owned();
                                             let mut sp = raw.split(':');
@@ -414,17 +413,24 @@ impl KarWorkbench {
                 );
             }
             ScheduleCadence::EveryMinutes(cur_m) => {
-                let mins_apply = mins_inp.clone();
                 let cm = *cur_m;
+                let mins_inp = window.use_keyed_state(
+                    SharedString::from(format!("sched-minutes-{:?}-{cm}", self.editing_schedule_id)),
+                    cx,
+                    |win, cx| Input::new("sched-mins", loc.pick("间隔分钟数", "Every N minutes"), win, cx)
+                        .with_value(cm.to_string(), win, cx),
+                );
+                let mins_apply = mins_inp.clone();
                 extra_cadence = Some(
                     sub_card_box(s)
                         .p(px(12.))
                         .flex()
                         .items_end()
+                        .flex_wrap()
                         .gap(px(8.))
-                        .child(div().w(px(160.)).child(mins_inp))
+                        .child(div().w(px(120.)).max_w_full().min_w_0().child(mins_inp))
                         .child(
-                            soft_button_sm("sched-apply-mins", format!("当前：每 {cm} 分钟（点击更新）"), s)
+                            soft_button("sched-apply-mins", loc.pick("应用间隔", "Set interval"), s)
                                 .on_press(cx, move |wb, _, cx| {
                                     let val = mins_apply
                                         .read(cx)

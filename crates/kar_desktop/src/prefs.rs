@@ -414,7 +414,6 @@ pub struct DesktopPreferences {
     // 1. Persisted workspace shell state
     pub sidebar_open: Option<bool>,
     pub thread_details_open: bool,
-    pub compact_thread_details_open: bool,
     pub tree_show_hidden: bool,
     pub bottom_terminal_open: bool,
     #[serde(default = "default_terminal_h")]
@@ -536,7 +535,6 @@ impl Default for DesktopPreferences {
         Self {
             sidebar_open: None,
             thread_details_open: true,
-            compact_thread_details_open: false,
             tree_show_hidden: false,
             bottom_terminal_open: false,
             bottom_terminal_h: default_terminal_h(),
@@ -1100,13 +1098,11 @@ mod tests {
         .expect("write preferences from an earlier version");
         let mut prefs = DesktopPreferences::load(dir.path());
         assert!(prefs.thread_details_open);
-        assert!(!prefs.compact_thread_details_open);
         assert_eq!(prefs.sidebar_open, Some(false));
         let cid = Uuid::new_v4();
         prefs.settled_chats.insert(cid);
         prefs.tree_show_hidden = true;
         prefs.thread_details_open = false;
-        prefs.compact_thread_details_open = true;
         prefs.ui_font_scale = FontScale::Large;
         prefs.chat_width_mode = ChatWidthMode::Full;
         prefs.code_font_family = Some("Monaco".into());
@@ -1122,7 +1118,6 @@ mod tests {
         assert!(loaded.tree_show_hidden);
         assert_eq!(loaded.sidebar_open, Some(false));
         assert!(!loaded.thread_details_open);
-        assert!(loaded.compact_thread_details_open);
         assert_eq!(loaded.ui_font_scale, FontScale::Large);
         assert_eq!(loaded.chat_width_mode, ChatWidthMode::Full);
         assert_eq!(loaded.code_font_family.as_deref(), Some("Monaco"));

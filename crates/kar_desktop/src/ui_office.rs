@@ -35,6 +35,9 @@ impl KarWorkbench {
     ) -> AnyElement {
         let s = StudioPalette::get(cx);
 
+        if single_dock {
+            self.set_thread_details_space(false);
+        }
         let is_office_surface = self.right_surface == RightPaneSurface::Office;
         let active_tab = self
             .active_office_tab
@@ -219,24 +222,41 @@ impl KarWorkbench {
             self.render_office_more_menu(&s, cx),
         );
 
+        let has_more = is_office_surface && active_tab.is_some() && !active_is_demo;
+        let left_pad = if single_dock {
+            macos_traffic_pad(window) + CTRL_SM_H + TITLEBAR_BUTTON_GAP
+        } else {
+            10.
+        };
+        let right_pad = TITLEBAR_EDGE_INSET + CTRL_SM_H + TITLEBAR_BUTTON_GAP;
+        let header_content = if single_dock && self.thread_details_open {
+            // Leave the document's Save and More actions in their usual slots.
+            let mut controls_w = pane_w - left_pad - right_pad - CTRL_SM_H - 8.;
+            if has_more {
+                controls_w -= CTRL_SM_H + TITLEBAR_BUTTON_GAP;
+            }
+            if active_dirty || active_is_demo {
+                controls_w -= 80.;
+            }
+            self.details_titlebar_controls(controls_w, &s, cx).into_any_element()
+        } else {
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(tabs_scroll)
+                .child(add_doc_menu)
+                .into_any_element()
+        };
         let header = crate::ui_primitives::titlebar_row(window)
             .relative()
-            .pl(px(if single_dock {
-                macos_traffic_pad(window) + CTRL_SM_H + TITLEBAR_BUTTON_GAP
-            } else { 10. }))
-            .pr(px(TITLEBAR_EDGE_INSET + CTRL_SM_H + TITLEBAR_BUTTON_GAP))
+            .pl(px(left_pad))
+            .pr(px(right_pad))
             .justify_between()
             .gap(px(8.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .child(tabs_scroll)
-                    .child(add_doc_menu),
-            )
+            .child(header_content)
             .child(
                 div()
                     .flex_none()
@@ -286,7 +306,7 @@ impl KarWorkbench {
                         .lit(wide_canvas)
                         .on_press(cx, |this, _, cx| this.toggle_wide_document(cx)))
                     })
-                    .when(is_office_surface && active_tab.is_some() && !active_is_demo, |d| {
+                    .when(has_more, |d| {
                         d.child(more_doc_menu)
                     }),
             )
@@ -441,7 +461,6 @@ impl KarWorkbench {
             .flex_col()
             .overflow_hidden()
             .child(header)
-            .when(single_dock, |pane| pane.child(self.compact_document_details(pane_w, &s, window, cx)))
             .child(div().flex_1().min_h_0().overflow_hidden().child(body))
             .into_any_element()
     }

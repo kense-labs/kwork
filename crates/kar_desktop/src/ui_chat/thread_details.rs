@@ -9,48 +9,34 @@ use crate::{
     workbench::{KarWorkbench, Menu},
 };
 use gpui::{prelude::*, *};
+use gpui_kit::component::tooltip::Tooltip;
 use kui::{
     components::pro_chrome::pro_spring_f32,
     primitives::pro_icons::{ProIcon, pro_icon},
 };
 
 const EDGE: f32 = 12.;
-const STRIP_H: f32 = 40.;
+// Only re-open after there is a little extra room. A divider resting on the
+// fit boundary can move a point in either direction as the window is resized.
+const REOPEN_CLEARANCE: f32 = 12.;
 
-#[derive(Clone, Copy)]
-pub(super) enum Placement {
+enum Placement {
     Margin { width: f32 },
-    Strip { width: f32 },
+    Titlebar { width: f32 },
 }
 
-impl Placement {
-    pub(super) fn for_thread(pane: f32, reading: f32, font_scale: f32) -> Self {
-        // The outer gutter is symmetric. Keep clearance on both sides of the card.
-        let space = (pane - reading) / 2. - 2. * EDGE;
-        let min_width = 208. * font_scale;
-        if space >= min_width {
-            Self::Margin {
-                width: space.min(DETAILS_CARD_W.max(min_width)),
-            }
-        } else {
-            Self::Strip { width: pane }
-        }
-    }
-
-    pub(super) fn strip_height(self, reveal: f32) -> f32 {
-        if matches!(self, Self::Strip { .. }) {
-            STRIP_H * reveal
-        } else {
-            0.
-        }
-    }
+pub(super) fn margin_width(pane: f32, reading: f32, scale: f32, already_fits: bool) -> Option<f32> {
+    let space = (pane - reading) / 2. - 2. * EDGE;
+    let min = 208. * scale;
+    let threshold = min + if already_fits { 0. } else { REOPEN_CLEARANCE };
+    (space >= threshold).then(|| space.min(DETAILS_CARD_W.max(min)))
 }
 
 impl KarWorkbench {
     pub(super) fn thread_details_reveal(&self, window: &mut Window, cx: &mut Context<Self>) -> f32 {
         pro_spring_f32(
             "thread-details-reveal",
-            f32::from(self.thread_details_open),
+            f32::from(self.thread_details_margin_available && self.thread_details_open),
             0.15,
             window,
             cx,
@@ -61,75 +47,80 @@ impl KarWorkbench {
     pub(super) fn thread_body_with_details(
         &self,
         body: AnyElement,
-        placement: Placement,
+        margin: Option<f32>,
+        height_fits: Entity<bool>,
         reveal: f32,
         s: &StudioPalette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // The body is measured after the search bar, notices and bottom drawer
+        // take their space. Neither this probe nor the card participates in flow.
+        let required = 4.
+            + 2. * 6.
+            + 32.
+            + 2. * (CTRL_SM_H + 2.)
+            + EDGE
+            + if self.git_snapshot.is_repo {
+                2. * (CTRL_SM_H + 2.) + 7.
+            } else {
+                0.
+            };
         div()
             .relative()
             .size_full()
-            .flex()
-            .flex_col()
-            .map(|pane| match placement {
-                Placement::Strip { width } => pane.child(self.details_strip(width, reveal, s, cx)),
-                Placement::Margin { .. } => pane,
-            })
-            .child(div().w_full().flex_1().min_h_0().child(body))
-            .when(reveal > 0.001, |pane| match placement {
-                Placement::Margin { width } => pane.child(
+            .overflow_hidden()
+            .child(body)
+            .child(
+                canvas(
+                    move |bounds, window, cx| {
+                        let room = f32::from(bounds.size.height);
+                        let was_visible = *height_fits.read(cx);
+                        let fits =
+                            room >= required + if was_visible { 0. } else { REOPEN_CLEARANCE };
+                        if fits != was_visible {
+                            height_fits.update(cx, |value, _| *value = fits);
+                            window.refresh();
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .when_some(margin.filter(|_| reveal > 0.001), |pane, width| {
+                pane.child(
                     div()
                         .absolute()
                         .right(px(EDGE))
                         .top(px(4. + (1. - reveal) * -3.))
                         .w(px(width))
                         .opacity(reveal)
-                        .child(self.details_controls(placement, s, cx)),
-                ),
-                Placement::Strip { .. } => pane,
+                        .child(self.details_controls(Placement::Margin { width }, s, cx)),
+                )
             })
             .into_any_element()
     }
 
-    pub(crate) fn compact_document_details(
+    /// In a narrow pane an explicit inspection borrows the existing title bar.
+    /// The toggle stays in place, and the document and transcript keep their viewport.
+    pub(crate) fn details_titlebar_controls(
         &self,
         width: f32,
         s: &StudioPalette,
-        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Div {
-        let reveal = self.thread_details_reveal(window, cx);
-        self.details_strip(width, reveal, s, cx)
-    }
-
-    fn details_strip(
-        &self,
-        width: f32,
-        reveal: f32,
-        s: &StudioPalette,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> Stateful<Div> {
         div()
-            .w_full()
-            .flex_none()
-            .h(px(STRIP_H * reveal))
-            .overflow_hidden()
-            .when(reveal > 0.001, |slot| {
-                slot.child(
-                    div()
-                        .w_full()
-                        .mx_auto()
-                        .max_w(px(
-                            self.prefs.chat_width_mode.width_for_pane(width) + 2. * EDGE
-                        ))
-                        .h(px(STRIP_H))
-                        .flex()
-                        .items_center()
-                        .px(px(EDGE))
-                        .opacity(reveal)
-                        .child(self.details_controls(Placement::Strip { width }, s, cx)),
-                )
-            })
+            .id("thread-details-titlebar-controls")
+            .flex_1()
+            .min_w_0()
+            .overflow_x_scroll()
+            .child(self.details_controls(
+                Placement::Titlebar {
+                    width: width.max(1.),
+                },
+                s,
+                cx,
+            ))
     }
 
     fn details_controls(
@@ -140,10 +131,11 @@ impl KarWorkbench {
     ) -> AnyElement {
         let (strip, width) = match placement {
             Placement::Margin { width } => (false, width),
-            Placement::Strip { width } => (true, width),
+            Placement::Titlebar { width } => (true, width),
         };
         let scale = f32::from(s.font_size(FS_UI)) / FS_UI;
         let small = strip && width < 540. * scale;
+        let icons_only = strip && width < 244. * scale;
         let loc = self.ui_locale;
         let host = match &self.access_mode {
             ChatAccessMode::RemoteController { host_name, .. } => host_name.clone(),
@@ -152,14 +144,20 @@ impl KarWorkbench {
         };
         let label = |text: String| div().min_w_0().truncate().child(text);
         let host_label = div()
-            .min_w_0()
+            .flex_none()
+            .id("thread-details-host")
+            .aria_label(host.clone())
             .flex()
             .items_center()
             .gap(px(6.))
             .when(strip, |row| row.max_w(px((width * 0.22).min(168.))))
             .when(!strip, |row| row.h(px(32.)).px(px(10.)))
             .child(render_machine_icon(14., s.muted))
-            .child(label(host));
+            .when(icons_only, |row| {
+                let tip = host.clone();
+                row.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            })
+            .when(!icons_only, |row| row.child(label(host)));
         let button = |id, title: &'static str| {
             Tactile::ghost(id, s)
                 .h(px(CTRL_SM_H))
@@ -232,11 +230,13 @@ impl KarWorkbench {
             let branch_row = menu_host(
                 button("details-branch-btn", switch_branch)
                     .child(render_git_branch_icon(14., s.muted))
-                    .child(label(branch.to_owned()).max_w(px(if strip {
-                        (width * 0.22).min(150.)
-                    } else {
-                        width - 72.
-                    })))
+                    .when(!icons_only, |b| {
+                        b.child(label(branch.to_owned()).max_w(px(if strip {
+                            (width * 0.22).min(150.)
+                        } else {
+                            width - 72.
+                        })))
+                    })
                     .when(!small, |b| {
                         b.child(pro_icon(ProIcon::ChevronDown, 10., s.muted))
                     })
@@ -269,9 +269,10 @@ impl KarWorkbench {
                     b.child(div().text_color(s.pro.green_ink).child(format!("+{added}")))
                         .child(div().text_color(s.pro.red_ink).child(format!("-{deleted}")))
                 })
-                .when(strip || (added == 0 && deleted == 0), |b| {
-                    b.child(count.to_string())
-                })
+                .when(
+                    !icons_only && (strip || (added == 0 && deleted == 0)),
+                    |b| b.child(count.to_string()),
+                )
                 .on_press(cx, |this, _, cx| this.open_git_workbench_tab(cx));
             controls = controls
                 .when(!strip, |r| {
@@ -290,7 +291,7 @@ impl KarWorkbench {
 
 #[cfg(test)]
 mod tests {
-    use super::{EDGE, Placement};
+    use super::{EDGE, REOPEN_CLEARANCE, margin_width};
 
     #[test]
     fn side_card_fits_entirely_outside_text_at_every_reading_width() {
@@ -299,19 +300,27 @@ mod tests {
             for mode in ChatWidthMode::ALL {
                 let reading = mode.width_for_pane(pane);
                 for scale in [0.9, 1., 1.25] {
-                    match Placement::for_thread(pane, reading, scale) {
-                        Placement::Margin { width } => {
-                            let text_end = (pane + reading) / 2.;
-                            assert!(pane - EDGE - width >= text_end + EDGE);
-                            assert!(width >= 208. * scale);
-                        }
-                        Placement::Strip { width } => {
-                            assert_eq!(width, pane);
-                            assert!((pane - reading) / 2. < 208. * scale + 2. * EDGE);
-                        }
+                    if let Some(width) = margin_width(pane, reading, scale, false) {
+                        let text_end = (pane + reading) / 2.;
+                        assert!(pane - EDGE - width >= text_end + EDGE);
+                        assert!(width >= 208. * scale);
+                    } else {
+                        assert!(
+                            (pane - reading) / 2. < 208. * scale + 2. * EDGE + REOPEN_CLEARANCE
+                        );
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn resizing_one_point_back_does_not_reopen_a_retracted_card() {
+        let reading = 720.;
+        let minimum = reading + 2. * (208. + 2. * EDGE);
+        assert!(margin_width(minimum, reading, 1., true).is_some());
+        assert!(margin_width(minimum - 1., reading, 1., true).is_none());
+        assert!(margin_width(minimum + 1., reading, 1., false).is_none());
+        assert!(margin_width(minimum + 2. * REOPEN_CLEARANCE, reading, 1., false).is_some());
     }
 }

@@ -33,7 +33,7 @@ use crate::{
     ui_primitives::{
         CTRL_H, CTRL_SM_H, FS_META, FS_TAG, FS_TITLE, FS_UI, ICON_XS, R_CTRL, R_PILL, R_SM, R_XS,
         StudioPalette, card_box, mono_font, render_kar_brand_lockup, render_kbd, search_input_box,
-        settings_divider, settings_page_shell, settings_row_item, settings_section_title,
+        settings_divider, settings_input_action_row, settings_page_shell, settings_row_item, settings_section_title,
         sub_card_box, tnum_features,
     },
     workbench::KarWorkbench,
@@ -1111,10 +1111,12 @@ impl KarWorkbench {
                     .py(px(12.))
                     .flex()
                     .items_center()
-                    .gap(px(10.))
+                    .flex_wrap()
+                    .gap(px(8.))
                     .child(
                         div()
                             .flex_1()
+                            .flex_basis(px(140.))
                             .min_w_0()
                             .h(px(CTRL_H))
                             .px(px(10.))
@@ -1362,11 +1364,9 @@ impl KarWorkbench {
             .flex_col()
             .gap(px(12.))
             .child(
-                div()
-                    .flex()
-                    .items_end()
-                    .gap(px(10.))
-                    .child(div().flex_1().min_w_0().child(vocab_input))
+                settings_input_action_row()
+                    .flex_wrap()
+                    .child(div().flex_1().flex_basis(px(144.)).min_w_0().child(vocab_input))
                     .child(
                         soft_button("voice-vocab-submit", loc.pick("添加词条", "Add term"), s)
                             .on_press(cx, move |wb, win, cx| {
@@ -1561,12 +1561,9 @@ impl KarWorkbench {
                     .py(px(12.))
                     .flex()
                     .items_end()
-                    .gap(px(10.))
-                    .child(div().flex_1().min_w_0().child(clone_url_inp))
-                    .child(
-                        soft_button("proj-pick-local", loc.pick("添加本地目录…", "Add folder…"), s)
-                            .on_press(cx, |wb, win, cx| wb.pick_workspace(win, cx)),
-                    )
+                    .flex_wrap()
+                    .gap(px(8.))
+                    .child(div().flex_1().flex_basis(px(180.)).min_w_0().child(clone_url_inp))
                     .child(
                         primary_button("proj-clone-btn", loc.pick("克隆并导入", "Clone"), s)
                             .on_press(cx, move |wb, win, cx| {
@@ -1584,6 +1581,10 @@ impl KarWorkbench {
                                 wb.notify_toast("正在后台克隆 Git 仓库…", cx);
                                 wb.bridge.send(KarCommand::CloneGitRepo { url, parent_dir: parent });
                             }),
+                    )
+                    .child(
+                        soft_button("proj-pick-local", loc.pick("添加本地目录…", "Add folder…"), s)
+                            .on_press(cx, |wb, win, cx| wb.pick_workspace(win, cx)),
                     ),
             );
 
@@ -1618,16 +1619,19 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap(px(10.))
+                    .flex_wrap()
+                    .gap(px(8.))
                     .child(
                         div()
                             .min_w_0()
                             .flex_1()
+                            .flex_basis(px(176.))
                             .flex()
-                            .items_center()
-                            .gap(px(10.))
+                            .flex_col()
+                            .gap(px(2.))
                             .child(
                                 div()
+                                    .truncate()
                                     .text_size(s.font_size(FS_UI))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(s.ink)
@@ -1673,9 +1677,10 @@ impl KarWorkbench {
             div()
                 .flex()
                 .items_end()
+                .flex_wrap()
                 .gap(px(8.))
-                .child(div().w(px(180.)).child(sc_name_inp))
-                .child(div().flex_1().min_w_0().child(sc_cmd_inp))
+                .child(div().flex_1().flex_basis(px(132.)).min_w_0().child(sc_name_inp))
+                .child(div().flex_1().flex_basis(px(180.)).min_w_0().child(sc_cmd_inp))
                 .child(
                     soft_button("sc-add-btn", loc.pick("保存快捷脚本", "Add script"), s).on_press(
                         cx,
@@ -1856,14 +1861,11 @@ impl KarWorkbench {
             )
             .child(settings_divider(s))
             .child(
-                div()
+                settings_input_action_row()
                     .px(px(16.))
                     .py(px(12.))
-                    .flex()
-                    .items_end()
-                    .justify_between()
-                    .gap(px(10.))
-                    .child(div().w(px(260.)).child(wt_prefix_inp))
+                    .flex_wrap()
+                    .child(div().flex_1().flex_basis(px(144.)).min_w_0().child(wt_prefix_inp))
                     .child(
                         soft_button("wt-save-prefix", loc.pick("保存分支前缀", "Save prefix"), s)
                             .on_press(cx, move |wb, _, cx| {
@@ -1905,13 +1907,14 @@ impl KarWorkbench {
                             .child(
                                 soft_button(
                                     "projects-toggle-forge-adv",
-                                    if git_adv_open {
-                                        loc.pick("收起代码托管令牌与高级前缀设置 ▴", "Hide tokens & branch prefix ▴")
-                                    } else {
-                                        loc.pick("配置 GitHub / GitLab / Linear 访问令牌与分支前缀（高级） ▾", "Configure GitHub / GitLab / Linear tokens & prefix ▾")
-                                    },
+                                    loc.pick("访问令牌与分支前缀", "Access tokens & branch prefix"),
                                     s,
                                 )
+                                .child(pro_icon(
+                                    if git_adv_open { ProIcon::ChevronUp } else { ProIcon::ChevronDown },
+                                    ICON_XS,
+                                    s.muted,
+                                ))
                                 .on_press(cx, move |_, _, cx| {
                                     git_adv_toggle.update(cx, |v, cx| {
                                         *v = !*v;
@@ -2198,9 +2201,10 @@ impl KarWorkbench {
                 div()
                     .flex()
                     .items_end()
+                    .flex_wrap()
                     .gap(px(8.))
-                    .child(div().w(px(180.)).child(ssh_label_inp))
-                    .child(div().flex_1().min_w_0().child(ssh_dest_inp))
+                    .child(div().flex_1().flex_basis(px(132.)).min_w_0().child(ssh_label_inp))
+                    .child(div().flex_1().flex_basis(px(180.)).min_w_0().child(ssh_dest_inp))
                     .child(
                         soft_button("dev-ssh-add", loc.pick("添加 SSH 主机", "Add SSH host"), s)
                             .on_press(cx, move |wb, win, cx| {

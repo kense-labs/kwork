@@ -20,9 +20,9 @@ use crate::{
         soft_button_sm, spinner, text_button_sm,
     },
     ui_primitives::{
-        FS_META, FS_TITLE, FS_UI, ICON_SM, ICON_XS, LH_META, LH_UI,
+        FS_CONTROL, FS_META, FS_TITLE, FS_UI, ICON_SM, ICON_XS, LH_META, LH_UI,
         R_SM, StudioPalette, card_box, mono_font, render_provider_color_tile,
-        search_input_box, settings_divider, settings_page_shell, settings_row_item,
+        search_input_box, settings_divider, settings_input_action_row, settings_page_shell, settings_row_item,
         settings_section_title, sub_card_box, tnum_features,
     },
     workbench::KarWorkbench,
@@ -369,10 +369,8 @@ impl KarWorkbench {
                                 win,
                                 cx,
                             );
-                            ed.set_placeholder(
-                                loc.pick("搜索模型名称或 ID…", "Search model name or ID…"),
-                            );
-                            ed.font_size = FS_UI;
+                            ed.set_placeholder(loc.pick("搜索模型", "Search models"));
+                            ed.font_size = FS_CONTROL;
                             ed
                         },
                     );
@@ -384,7 +382,7 @@ impl KarWorkbench {
                         |win, cx| {
                             Input::new(
                                 "custom-model-id",
-                                loc.pick("添加自定义模型 ID", "Custom model ID"),
+                                loc.pick("自定义模型 ID", "Custom model ID"),
                                 win,
                                 cx,
                             )
@@ -587,10 +585,7 @@ impl KarWorkbench {
                             )
                             .child(pills)
                             .child(
-                                div()
-                                    .flex()
-                                    .items_end()
-                                    .gap(px(8.))
+                                settings_input_action_row()
                                     .child(div().flex_1().min_w_0().child(custom_model_inp.clone()))
                                     .child(
                                         soft_button("add-custom-model-btn", loc.pick("添加并选用", "Add model"), s)
@@ -938,11 +933,8 @@ impl KarWorkbench {
         });
         let query = search.clone();
         let mut acp_card = card_box(s).flex().flex_col().child(
-            div()
-                .flex()
-                .items_end()
+            settings_input_action_row()
                 .p(px(14.))
-                .gap(px(8.))
                 .child(div().flex_1().min_w_0().child(search))
                 .child(
                     soft_button("acp-search-submit", loc.pick("搜索", "Search"), s).on_press(

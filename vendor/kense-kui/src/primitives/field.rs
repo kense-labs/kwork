@@ -33,6 +33,18 @@ fn resize_grip() -> impl IntoElement {
 pub trait FieldStyle: 'static {
     const MODE: InputMode;
 }
+
+/// Host control metrics for labelled single-line fields. The editor keeps its
+/// native input handling and adds the current theme's text-size offset.
+#[derive(Clone, Copy)]
+pub struct SingleLineFieldMetrics {
+    pub height: f32,
+    pub radius: f32,
+    pub text_size: f32,
+    pub label_size: f32,
+}
+impl Global for SingleLineFieldMetrics {}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FieldEvent {
     Changed(SharedString),
@@ -73,7 +85,17 @@ impl<S: FieldStyle> Field<S> {
         cx: &mut Context<Self>,
     ) -> Self {
         let label = label.into();
-        let editor = cx.new(|cx| Editor::new(label.clone(), S::MODE, w, cx));
+        let metrics = cx
+            .try_global::<SingleLineFieldMetrics>()
+            .filter(|_| S::MODE != InputMode::Multi)
+            .copied();
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::new(label.clone(), S::MODE, w, cx);
+            if let Some(metrics) = metrics {
+                editor.font_size = metrics.text_size;
+            }
+            editor
+        });
         let sub = cx.subscribe_in(&editor, w, |s, ed, ev: &EditEvent, w, cx| {
             match ev {
                 EditEvent::Changed => {
@@ -224,11 +246,25 @@ impl<S: FieldStyle> Render for Field<S> {
             cx,
         );
         let slide = self.action_motion.get(w, cx).clamp(0., 1.);
+        let compact = self.compact_bar;
+        let form = cx
+            .try_global::<SingleLineFieldMetrics>()
+            .filter(|_| !multi && !compact)
+            .copied();
+        let (height, radius, padding, trailing_size) = if let Some(metrics) = form {
+            (metrics.height, px(metrics.radius), 10., (metrics.height - 4.).min(30.))
+        } else if compact {
+            (self.height, px(7.5), 8.5, 20.)
+        } else {
+            (self.height, r.md, 12., 30.)
+        };
+        let offset = Theme::global(cx).text_size_offset;
         let selection = self.editor.clone();
         let label = div()
             .id("label")
             .cursor(CursorStyle::IBeam)
-            .text_size(px(14.))
+            .text_size(px(form.map_or(14., |m| m.label_size + offset)))
+            .when(form.is_some(), |el| el.text_color(p.secondary))
             .font_weight(FontWeight::MEDIUM)
             .child(self.label.clone())
             .on_click(move |_, w, cx| {
@@ -236,7 +272,6 @@ impl<S: FieldStyle> Render for Field<S> {
                 w.request_virtual_keyboard()
             });
         let content = self.editor.clone();
-        let compact = self.compact_bar;
         let mut shell = div()
             .relative()
             .flex()
@@ -244,22 +279,22 @@ impl<S: FieldStyle> Render for Field<S> {
             .gap(px(if compact { 6. } else { 8. }))
             .w_full()
             .min_w_0()
-            .h(px(self.height))
+            .h(px(height))
             .flex_none()
-            .rounded(if compact { px(7.5) } else { r.md })
+            .rounded(radius)
             .border_1()
             .bg(p.panel)
             .border_color(if !self.error.is_empty() {
                 p.danger
             } else if focused {
-                if compact { p.secondary } else { p.ink }
+                if compact || form.is_some() { p.secondary } else { p.ink }
             } else {
                 p.line
             })
             .when(!disabled && !focused && self.error.is_empty(), |e| {
                 e.hover(move |s| s.border_color(p.faint))
             })
-            .px(px(if compact { 8.5 } else { 12. }))
+            .px(px(padding))
             .when(compact, |e| e.text_size(px(12.5)))
             .when(multi, |e| e.py(px(10.)))
             .on_mouse_down(MouseButton::Left, move |_, w, cx| {
@@ -284,10 +319,9 @@ impl<S: FieldStyle> Render for Field<S> {
             } else {
                 l.text("Show password", "显示密码")
             };
-            let slot_sz = if compact { 20. } else { 30. };
             if secret || has_value || slide > 0.01 {
-                let mut slot = div().relative().size(px(slot_sz)).flex_none();
-                let action = face("trailing", name, slot_sz, r.md.into(), Tone::Clear, cx)
+                let mut slot = div().relative().size(px(trailing_size)).flex_none();
+                let action = face("trailing", name, trailing_size, r.md.into(), Tone::Clear, cx)
                     .tab_stop(!disabled && (secret || has_value))
                     .w_full()
                     .when(compact, |e| e.px_0())
@@ -356,7 +390,7 @@ impl<S: FieldStyle> Render for Field<S> {
                         .child(hint),
                 );
             } else if !compact {
-                shell = shell.child(div().relative().size(px(slot_sz)).flex_none());
+                shell = shell.child(div().relative().size(px(trailing_size)).flex_none());
             }
         }
         if multi && !disabled {
@@ -437,7 +471,7 @@ impl<S: FieldStyle> Render for Field<S> {
             .when(!compact, |e| e.child(label))
             .child(
                 div()
-                    .when(!compact, |d| d.mt(px(7.)))
+                    .when(!compact, |d| d.mt(px(if form.is_some() { 4. } else { 7. })))
                     .on_children_prepainted({
                         let width = self.width.clone();
                         move |b, _, _| {

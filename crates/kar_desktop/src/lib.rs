@@ -86,6 +86,12 @@ pub fn init_runtime_ui(cx: &mut App) {
     slides_ui::init(cx);
     pdf_ui::init(cx);
     kui::init(cx);
+    cx.set_global(kui::primitives::field::SingleLineFieldMetrics {
+        height: ui_primitives::CTRL_H,
+        radius: ui_primitives::R_CTRL,
+        text_size: ui_primitives::FS_CONTROL,
+        label_size: ui_primitives::FS_META,
+    });
     ui_primitives::material::init_window_glass(cx);
     cx.set_global(ui_primitives::ActiveNamedTheme::default());
     cx.set_global(ui_primitives::ActiveTypography::default());

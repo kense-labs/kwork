@@ -144,9 +144,12 @@ impl KarWorkbench {
         let center_w = pane_w - review_width;
 
         let thread_w = self.prefs.chat_width_mode.width_for_pane(center_w);
-        let details = thread_details::Placement::for_thread(center_w, thread_w, f32::from(s.font_size(FS_UI)) / FS_UI);
+        let height_fits = window.use_keyed_state("thread-detail-height-fits", cx, |_, _| false);
+        let margin = thread_details::margin_width(
+            center_w, thread_w, f32::from(s.font_size(FS_UI)) / FS_UI, self.thread_details_margin_available,
+        ).filter(|_| *height_fits.read(cx));
+        self.set_thread_details_space(margin.is_some());
         let reveal = self.thread_details_reveal(window, cx);
-        let details_height = details.strip_height(reveal);
         let header = self.render_chat_header(
             pane_w,
             revealed_dock_width,
@@ -342,13 +345,12 @@ impl KarWorkbench {
                 }
                 recent.is_some_and(|(id, at)| Some(id) == tail && at.elapsed() < Duration::from_secs(2))
             }) && pending_count == 0 && !self.chat_search_open && !self.chat_follow_paused;
-            let geometry = (self.current_chat_id(), center_w, details_height);
+            let geometry = (self.current_chat_id(), center_w);
             let previous = window.use_keyed_state("thread-reading-geometry", cx, |_, _| geometry);
-            let (previous_chat, previous_width, previous_shelf) =
+            let (previous_chat, previous_width) =
                 previous.update(cx, |last, _| std::mem::replace(last, geometry));
             let same_thread = previous_chat == geometry.0;
             let reflow = same_thread && (previous_width - center_w).abs() > 0.01;
-            let shelf_resized = same_thread && (previous_shelf - details_height).abs() > 0.01;
             let anchor = (reflow && scroll_remaining > 1. && !reveal_question)
                 .then(|| reading_anchor::ReadingAnchor::capture(&self.chat_scroll)).flatten();
             let handle = self.chat_scroll.clone();
@@ -403,7 +405,7 @@ impl KarWorkbench {
                         .flex_1()
                         .min_h_0()
                         .overflow_hidden()
-                        .when(follow_layout || reflow || shelf_resized, |d| d.child(canvas(
+                        .when(follow_layout || reflow, |d| d.child(canvas(
                             move |viewport, window, _| {
                                 if let Some(anchor) = anchor {
                                     anchor.restore(viewport, &handle, window);
@@ -423,7 +425,7 @@ impl KarWorkbench {
 
             center_lane.into_any_element()
         };
-        let stage = self.thread_body_with_details(stage, details, reveal, &s, cx);
+        let stage = self.thread_body_with_details(stage, margin, height_fits, reveal, &s, cx);
         let stage = if show_review_rail && let Some(review) = self.turn_review.as_ref() {
             div()
                 .size_full()
@@ -588,6 +590,23 @@ impl KarWorkbench {
         let title_lane = pane_w - left_pad - collapsed_slot_w;
         let compact_crumb = title_lane < if on_start_screen { 232. } else { 272. };
 
+        let right_pad = TITLEBAR_EDGE_INSET + (CTRL_SM_H + TITLEBAR_BUTTON_GAP - revealed_dock_width).max(0.);
+        let terminal = icon_button_sm("chat-toggle-bottom-terminal", ProIcon::PanelBottom,
+                loc.pick("底部集成终端  ⇧⌘T", "Toggle bottom terminal  ⇧⌘T"), s)
+            .expanded(self.bottom_terminal_open)
+            .on_press(cx, |this, _, cx| this.toggle_bottom_terminal(cx));
+        if self.thread_details_open && !self.thread_details_margin_available {
+            let left = left_pad + (CTRL_SM_H + TITLEBAR_BUTTON_GAP) * rail_hidden;
+            let controls_w = pane_w - left - right_pad - 2. * (CTRL_SM_H + TITLEBAR_BUTTON_GAP);
+            return crate::ui_primitives::titlebar_row(window)
+                .pl(px(left))
+                .pr(px(right_pad))
+                .gap(px(TITLEBAR_BUTTON_GAP))
+                .child(self.details_titlebar_controls(controls_w, s, cx))
+                .child(self.thread_details_toggle(s, cx))
+                .child(terminal);
+        }
+
         let ws = self.effective_workspace_dir();
         let proj_name = if matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
             "kar-studio".to_owned()
@@ -658,7 +677,7 @@ impl KarWorkbench {
 
         crate::ui_primitives::titlebar_row(window)
             .pl(px(left_pad))
-            .pr(px(TITLEBAR_EDGE_INSET + (CTRL_SM_H + TITLEBAR_BUTTON_GAP - revealed_dock_width).max(0.)))
+            .pr(px(right_pad))
             .justify_between()
             .gap(px(12.))
             .child(
@@ -804,12 +823,7 @@ impl KarWorkbench {
                         )
                     })
                     .child(self.thread_details_toggle(s, cx))
-                    .child(
-                        icon_button_sm("chat-toggle-bottom-terminal", ProIcon::PanelBottom,
-                            loc.pick("底部集成终端  ⇧⌘T", "Toggle bottom terminal  ⇧⌘T"), s)
-                            .expanded(self.bottom_terminal_open)
-                            .on_press(cx, |this, _, cx| this.toggle_bottom_terminal(cx)),
-                    ),
+                    .child(terminal),
             )
     }
 
