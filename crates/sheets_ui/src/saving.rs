@@ -58,6 +58,8 @@ impl SheetsView {
     /// only has to wait for it).
     pub fn save_holds_all_changes(&self, cx: &App) -> bool {
         self.busy.is_none()
+            && self.alert.is_none()
+            && !self.has_pending_cell_change(cx)
             && self.saving.as_ref().is_some_and(|s| {
                 !s.again && s.revision == self.table.read(cx).delegate().book.revision()
             })

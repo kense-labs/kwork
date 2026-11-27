@@ -431,6 +431,10 @@ pub enum SelectionLocator {
     WordParagraph {
         start_para: usize,
         end_para: usize,
+        /// UTF-8 byte offsets in the first and last paragraphs for an explicit text selection.
+        /// A caret or a locator from an earlier version refers to whole paragraphs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        byte_offsets: Option<(usize, usize)>,
         total_paras: usize,
         style: String,
     },
@@ -490,6 +494,7 @@ impl SelectionLocator {
                     format!("{sheet_name}!{range}")
                 }
             }
+            Self::PptObject { slide_count: 0, .. } => "暂无幻灯片".into(),
             Self::PptObject {
                 slide_index,
                 shape_id,

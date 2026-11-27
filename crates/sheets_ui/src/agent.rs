@@ -120,6 +120,9 @@ impl SheetsView {
         if self.busy.is_some() {
             bail!("this workbook is still opening or recalculating; try again in a moment");
         }
+        if self.alert.is_some() {
+            bail!("a cell validation decision is pending; try again after the user resolves it");
+        }
         match self.editing {
             Some((row, col)) => bail!(
                 "the user is typing in cell {} of this workbook; try again in a moment",
@@ -129,7 +132,7 @@ impl SheetsView {
         }
     }
 
-    fn agent_show(&mut self, sheet: u32, range: CellRange, cx: &mut Context<Self>) {
+    pub(crate) fn agent_show(&mut self, sheet: u32, range: CellRange, cx: &mut Context<Self>) {
         if self.grid_sheet(cx) != sheet {
             self.show_sheet(sheet, cx);
         }

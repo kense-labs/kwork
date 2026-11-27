@@ -1,7 +1,7 @@
 //! Window glass for navigation chrome, with a denser finish for text over the conversation.
 use super::{R_CARD, StudioPalette};
 use gpui::{prelude::*, *};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 fn reduce_transparency() -> bool {
     static REDUCED: OnceLock<bool> = OnceLock::new();
@@ -78,20 +78,17 @@ pub(crate) fn reading_surface(s: &StudioPalette) -> Hsla {
 }
 
 pub(crate) fn frosted_card(s: &StudioPalette) -> Div {
-    frost(s, R_CARD, 0.063, if s.dark { 0.76 } else { 0.84 }).when(native_glass(), |card| {
-        card.child(frost_grain(R_CARD, s.dark))
-    })
+    frost(s, R_CARD, 0.063, if s.dark { 0.76 } else { 0.84 })
 }
 
 pub(crate) fn frosted_composer(s: &StudioPalette) -> Div {
-    frost(s, 16., 0.092, 0.87).when(native_glass(), |card| card.child(frost_grain(16., s.dark)))
+    frost(s, 16., 0.092, 0.87)
 }
 
 pub(crate) fn frosted_panel(s: &StudioPalette) -> Div {
     // Menus can cover glyphs. Keep their coat dense enough to read over a transcript.
     frost(s, 14., 0.108, if s.dark { 0.98 } else { 0.99 })
         .shadow(s.popover_shadow())
-        .when(native_glass(), |panel| panel.child(frost_grain(14., s.dark)))
 }
 
 fn frost(s: &StudioPalette, radius: f32, lift: f32, density: f32) -> Div {
@@ -115,40 +112,4 @@ fn frost(s: &StudioPalette, radius: f32, lift: f32, density: f32) -> Div {
                 inset: false,
             }])
         })
-}
-
-// A fixed, low-contrast grain gives even a plain backdrop a little texture.
-// It sits inside the rim, underneath the controls, and never needs an animation frame.
-fn frost_grain(radius: f32, dark: bool) -> impl IntoElement {
-    static GRAIN: OnceLock<Arc<RenderImage>> = OnceLock::new();
-    let grain = GRAIN.get_or_init(|| {
-        let mut seed = 0x41c6_ce57_u32;
-        let pixels = image::RgbaImage::from_fn(512, 384, |_, _| {
-            seed ^= seed << 13;
-            seed ^= seed >> 17;
-            seed ^= seed << 5;
-            let grey = (seed >> 24) as u8;
-            image::Rgba([grey, grey, grey, 255])
-        });
-        Arc::new(RenderImage::new([image::Frame::new(pixels)]))
-    });
-    let texture = canvas(
-        |_, _, _| (),
-        move |bounds, (), window, _| {
-            let _ = window.paint_image(
-                bounds,
-                bounds,
-                px(radius - 1.).into(),
-                grain.clone(),
-                0,
-                false,
-            );
-        },
-    );
-    div()
-        .absolute()
-        .inset(px(1.))
-        .overflow_hidden()
-        .opacity(if dark { 0.026 } else { 0.036 })
-        .child(texture.absolute().inset_0())
 }

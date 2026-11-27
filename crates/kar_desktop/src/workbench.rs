@@ -4556,44 +4556,19 @@ impl KarWorkbench {
         cx: &mut Context<Self>,
     ) -> bool {
         self.open_menu = None;
-        let saved_variant = filename.replace('.', ".saved.");
-        let candidate = if self.config.docs_dir.join(filename).is_file() {
-            self.config.docs_dir.join(filename)
-        } else if self.config.docs_dir.join(&saved_variant).is_file() {
-            self.config.docs_dir.join(&saved_variant)
-        } else {
-            let corpus = |rel: &str| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .and_then(|p| p.parent())
-                    .map(|root| root.join("tests/corpus").join(rel))
-            };
-            let source = match filename {
-                "sample_minutes.docx" => corpus("docx/minutes.docx"),
-                "sample_formulas.xlsx" => corpus("xlsx/01_formulas.xlsx"),
-                "sample_deck.pptx" => corpus("pptx/deck.pptx"),
-                _ => None,
-            };
-            let dst = self.config.docs_dir.join(filename);
-            if let Some(src) = source.filter(|p| p.is_file()) {
-                let _ = std::fs::create_dir_all(&self.config.docs_dir);
-                let _ = std::fs::copy(&src, &dst);
+        let candidate = match crate::office_host::working_sample(&self.config.docs_dir, filename) {
+            Ok(path) => path,
+            Err(err) => {
+                self.notify_warning(format!("无法打开示例 {filename}：{err:#}"), cx);
+                return false;
             }
-            dst
         };
-
-        if candidate.is_file() {
-            let path = candidate.canonicalize().unwrap_or(candidate);
-            self.open_office_file_tab(path.clone(), false, None, window, cx);
-            self.active_office_tab
-                .and_then(|index| self.office_tabs.get(index))
-                .and_then(|tab| tab.path(cx))
-                .as_ref()
-                == Some(&path)
-        } else {
-            self.notify_warning("这份示例文档不在当前安装中", cx);
-            false
-        }
+        let path = candidate.canonicalize().unwrap_or(candidate);
+        self.open_office_file_tab(path.clone(), false, None, window, cx);
+        self.active_office_tab
+            .and_then(|index| self.office_tabs.get(index))
+            .and_then(|tab| tab.path(cx))
+            .as_ref() == Some(&path)
     }
 
     pub fn open_office_file_tab(
@@ -4656,7 +4631,7 @@ impl KarWorkbench {
         cx.notify();
     }
 
-    pub fn activate_office_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
+    pub fn activate_office_tab(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
         if idx >= self.office_tabs.len() {
             return;
         }
@@ -4666,6 +4641,7 @@ impl KarWorkbench {
         }
         self.right_surface = RightPaneSurface::Office;
         self.active_office_tab = Some(idx);
+        self.office_tabs[idx].focus(window, cx);
         if let Some(key) = self.office_tabs[idx].demo_scenario_key {
             let scenario = scenario_for_key(key);
             self.coedit_panel_open = true;
@@ -4681,7 +4657,7 @@ impl KarWorkbench {
             return;
         };
         if tab.is_demo || !tab.is_dirty(cx) {
-            self.remove_office_tab(tab_id, cx);
+            self.remove_office_tab(tab_id, window, cx);
             return;
         }
         let name = clean_display_doc_name(&tab.doc_name(cx));
@@ -4701,13 +4677,13 @@ impl KarWorkbench {
                     if tab.needs_save_as(cx) {
                         this.save_as_and_then_close(tab, tab_id, window, cx);
                     } else {
-                        match tab.save_in_place(window, cx) {
-                            Ok(_) => this.remove_office_tab(tab_id, cx),
+                        match tab.save_in_place_from_ui(window, cx) {
+                            Ok(_) => this.remove_office_tab(tab_id, window, cx),
                             Err(err) => this.notify_warning(format!("没有保存成功：{err:#}"), cx),
                         }
                     }
                 }
-                1 => this.remove_office_tab(tab_id, cx),
+                1 => this.remove_office_tab(tab_id, window, cx),
                 _ => {}
             });
         })
@@ -4734,7 +4710,7 @@ impl KarWorkbench {
             let _ = this.update_in(cx, |this, window, cx| {
                 match tab.save_copy_to(&dest, window, cx) {
                     Ok(_) => {
-                        this.remove_office_tab(tab_id, cx);
+                        this.remove_office_tab(tab_id, window, cx);
                         this.notify_toast("已保存并关闭", cx);
                     }
                     Err(err) => this.notify_warning(format!("没有保存成功：{err:#}"), cx),
@@ -4744,10 +4720,11 @@ impl KarWorkbench {
         .detach();
     }
 
-    fn remove_office_tab(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+    fn remove_office_tab(&mut self, tab_id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(idx) = self.office_tabs.iter().position(|t| t.id == tab_id) else {
             return;
         };
+        let removed_active = self.active_office_tab == Some(idx) && self.right_surface == RightPaneSurface::Office;
         self.office_tabs.remove(idx);
         self.active_office_tab = match self.active_office_tab {
             _ if self.office_tabs.is_empty() => None,
@@ -4762,6 +4739,9 @@ impl KarWorkbench {
                 .cloned()
                 .map(RightPaneSurface::CodeFile)
                 .unwrap_or_else(|| self.remaining_dock_surface());
+        }
+        if removed_active && let Some(active) = self.active_office_tab {
+            self.office_tabs[active].focus(window, cx);
         }
         if !self.office_tabs.iter().any(|t| t.is_demo) {
             self.coedit_panel_open = false;
@@ -4786,14 +4766,14 @@ impl KarWorkbench {
             self.prompt_save_as_active_document(window, cx);
             return;
         }
-        match tab.save_in_place(window, cx) {
+        match tab.save_in_place_from_ui(window, cx) {
             Ok(_) => {
                 let doc_key = clean_display_doc_name(&tab.doc_name(cx));
                 let _ = self
                     .fence_ledger
                     .bump_human_edit(&doc_key, &format!("saved@{}", now_epoch_ms()));
                 self.fence_ledger.save(&self.config.docs_dir);
-                self.notify_toast("已保存（Revision Fence 已递进）", cx);
+                self.notify_toast(format!("{} {doc_key}", self.ui_locale.pick("已保存", "Saved")), cx);
             }
             Err(err) => self.notify_warning(format!("没有保存成功：{err:#}"), cx),
         }
@@ -4917,42 +4897,28 @@ impl KarWorkbench {
             self.open_workspace_code_tab(rel_path.clone(), cx);
             return;
         }
-        let found_idx = self
-            .office_tabs
-            .iter()
-            .position(|t| t.id == target.tab_id)
-            .or_else(|| {
-                let target_path = target.file_path.as_ref()?;
-                let canon = target_path
-                    .canonicalize()
-                    .unwrap_or_else(|_| target_path.clone());
-                self.office_tabs.iter().position(|t| {
-                    t.path(cx)
-                        .map(|p| p.canonicalize().unwrap_or(p) == canon)
-                        .unwrap_or(false)
-                })
-            });
-
-        let tab_idx = match found_idx {
-            Some(i) => Some(i),
-            None => match &target.file_path {
-                Some(path) if path.is_file() => {
-                    self.open_office_file_tab(path.clone(), false, None, window, cx);
-                    self.active_office_tab
-                }
-                _ => None,
-            },
+        let find_tab = |this: &Self, cx: &App| {
+            this.office_tabs.iter().position(|tab| tab.matches_target(target, cx))
         };
-
-        match tab_idx.and_then(|i| self.office_tabs.get(i).cloned().map(|tab| (i, tab))) {
-            Some((i, tab)) => {
-                self.right_surface = RightPaneSurface::Office;
-                self.active_office_tab = Some(i);
-                tab.reveal_locator(&target.locator, window, cx);
-                cx.notify();
+        let idx = match find_tab(self, cx) {
+            Some(idx) => idx,
+            None => {
+                let Some(path) = target.file_path.as_ref() else {
+                    self.notify_warning("这份文档所在的标签页已关闭", cx);
+                    return;
+                };
+                if !path.is_file() || OfficeKind::for_path(path) != Some(target.kind) {
+                    self.notify_warning("这份文档已经不在原来的位置了", cx);
+                    return;
+                }
+                self.open_office_file_tab(path.clone(), false, None, window, cx);
+                // A failed open may leave a different tab active.
+                let Some(idx) = find_tab(self, cx) else { return };
+                idx
             }
-            None => self.notify_warning("这份文档已经不在原来的位置了", cx),
-        }
+        };
+        self.activate_office_tab(idx, window, cx);
+        self.office_tabs[idx].reveal_locator(&target.locator, window, cx);
     }
 
     pub(crate) fn open_quick_edit_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4977,7 +4943,10 @@ impl KarWorkbench {
         let sel = tab.capture_selection(cx);
         let (content, place) = match &sel.locator {
             SelectionLocator::WordParagraph { start_para, .. } => {
-                (sel.excerpt.clone(), format!("{}", start_para + 1))
+                // This dialog replaces one whole paragraph at the specified number.
+                let OfficeEditorView::Word(view) = &tab.view else { return };
+                let paragraph = view.read(cx).agent_read(|doc, _| clean_doc_para_text(doc, *start_para));
+                (paragraph, (start_para + 1).to_string())
             }
             SelectionLocator::ExcelRange {
                 active_cell,

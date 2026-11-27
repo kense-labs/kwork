@@ -130,47 +130,79 @@ pub(crate) fn render(view: &SlidesView, cx: &mut Context<SlidesView>) -> Div {
         .child(crate::paint_menu::paint_button(view, PaintKind::Fill, cx))
         .child(crate::paint_menu::paint_button(view, PaintKind::Line, cx))
         .child(separator(cx))
-        .child(tool(
-            "slides-bold",
-            Lucide::Bold,
-            i18n::t("Bold · Ctrl+B"),
-            view.is_on(Toggle::Bold),
-            |v, w, cx| v.toggle_doc(Toggle::Bold, w, cx),
-            cx,
-        ))
-        .child(tool(
-            "slides-italic",
-            Lucide::Italic,
-            i18n::t("Italic · Ctrl+I"),
-            view.is_on(Toggle::Italic),
-            |v, w, cx| v.toggle_doc(Toggle::Italic, w, cx),
-            cx,
-        ))
-        .child(tool(
-            "slides-underline",
-            Lucide::Underline,
-            i18n::t("Underline · Ctrl+U"),
-            view.is_on(Toggle::Underline),
-            |v, w, cx| v.toggle_doc(Toggle::Underline, w, cx),
-            cx,
-        ))
-        .child(separator(cx))
-        .child(tool(
-            "slides-bullets",
-            Lucide::List,
-            i18n::t("Bulleted list · Tab / Shift+Tab change the level"),
-            view.is_list(false),
-            |v, w, cx| v.toggle_list_doc(false, w, cx),
-            cx,
-        ))
-        .child(tool(
-            "slides-numbering",
-            Lucide::ListOrdered,
-            i18n::t("Numbered list"),
-            view.is_list(true),
-            |v, w, cx| v.toggle_list_doc(true, w, cx),
-            cx,
-        ))
+        .map(|bar| {
+            // Insertion and drawing controls stay visible while text
+            // formatting moves into a menu in a narrow document pane.
+            let formats: [(&str, Lucide, &'static str, bool, Run); 5] = [
+                (
+                    "slides-bold",
+                    Lucide::Bold,
+                    i18n::t("Bold · Ctrl+B"),
+                    view.is_on(Toggle::Bold),
+                    |v, w, cx| v.toggle_doc(Toggle::Bold, w, cx),
+                ),
+                (
+                    "slides-italic",
+                    Lucide::Italic,
+                    i18n::t("Italic · Ctrl+I"),
+                    view.is_on(Toggle::Italic),
+                    |v, w, cx| v.toggle_doc(Toggle::Italic, w, cx),
+                ),
+                (
+                    "slides-underline",
+                    Lucide::Underline,
+                    i18n::t("Underline · Ctrl+U"),
+                    view.is_on(Toggle::Underline),
+                    |v, w, cx| v.toggle_doc(Toggle::Underline, w, cx),
+                ),
+                (
+                    "slides-bullets",
+                    Lucide::List,
+                    i18n::t("Bulleted list · Tab / Shift+Tab change the level"),
+                    view.is_list(false),
+                    |v, w, cx| v.toggle_list_doc(false, w, cx),
+                ),
+                (
+                    "slides-numbering",
+                    Lucide::ListOrdered,
+                    i18n::t("Numbered list"),
+                    view.is_list(true),
+                    |v, w, cx| v.toggle_list_doc(true, w, cx),
+                ),
+            ];
+            if view.compact {
+                let editor = cx.entity().downgrade();
+                let menu = icon_button("slides-more-formatting", Lucide::Ellipsis, false, cx)
+                    .tab_stop(true)
+                    .tooltip(i18n::t("More formatting"))
+                    .dropdown_menu(move |mut menu, _, _| {
+                        for (_, icon, label, active, run) in formats.iter() {
+                            let editor = editor.clone();
+                            let run = *run;
+                            menu = menu.item(
+                                PopupMenuItem::new(*label)
+                                    .icon(icon.clone())
+                                    .checked(*active)
+                                    .on_click(move |_, window, cx| {
+                                        let _ = editor.update(cx, |view, cx| {
+                                            run(view, window, cx);
+                                            view.focus(window, cx);
+                                        });
+                                    }),
+                            );
+                        }
+                        menu
+                    });
+                bar.child(menu)
+            } else {
+                formats
+                    .into_iter()
+                    .fold(bar, |bar, (id, icon, label, active, run)| {
+                        bar.when(id == "slides-bullets", |b| b.child(separator(cx)))
+                            .child(tool(id, icon, label, active, run, cx))
+                    })
+            }
+        })
         .child(div().flex_1())
         .child(tool(
             "slides-notes",

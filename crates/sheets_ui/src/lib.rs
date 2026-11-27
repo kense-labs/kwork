@@ -1498,6 +1498,8 @@ pub struct SheetsView {
     editing: Option<(u32, u32)>,
     /// Whether arrows move the caret or commit (Excel's Edit / Enter mode).
     edit_mode: EditMode,
+    /// Restore the same input and caret when the workspace reactivates this tab.
+    editing_in_formula_bar: bool,
     /// The sheet of the cell being edited (the grid may show another one
     /// while pointing).
     edit_sheet: u32,
@@ -1652,6 +1654,7 @@ impl SheetsView {
             selected: (0, 0),
             editing: None,
             edit_mode: EditMode::Edit,
+            editing_in_formula_bar: false,
             edit_sheet: 0,
             point: None,
             completion: None,
@@ -1832,17 +1835,19 @@ impl SheetsView {
         cx: &mut Context<Self>,
     ) {
         match event {
-            InputEvent::Focus => {
+            InputEvent::Focus | InputEvent::Change => {
+                self.editing_in_formula_bar = true;
                 if self.editing.is_none() {
                     self.edit_mode = EditMode::Edit;
                     self.set_editing(Some(self.selected), cx);
-                    let text = self.formula.read(cx).value();
-                    self.cell_input
-                        .update(cx, |input, cx| input.set_value(text, window, cx));
+                }
+                Self::mirror(&self.formula, &self.cell_input, window, cx);
+                if matches!(event, InputEvent::Change) {
+                    self.on_edit_changed(window, cx);
+                } else {
                     self.refresh_refs(cx);
                 }
             }
-            InputEvent::Change => self.mirror_formula(window, cx),
             // Ctrl+Enter (Enter itself is `CommitDown`).
             InputEvent::PressEnter { .. } => self.commit_edit(Some((1, 0)), window, cx),
             // Clicking elsewhere (e.g. another cell) commits, like a spreadsheet.
@@ -1955,7 +1960,6 @@ impl SheetsView {
         };
         let value = self.edit_value(window, cx);
         let sheet = self.edit_sheet;
-        self.set_editing(None, cx);
         let changed = self
             .table
             .read(cx)
@@ -1966,22 +1970,22 @@ impl SheetsView {
         // A number typed with the display locale's separators (`1.234,5`).
         let value = sheets_engine::delocalize_typed(&value).into_owned();
         if changed {
-            let result = self.set_cell(sheet, row, col, &value, cx);
-            let manual = self.table.read(cx).delegate().book.calc_mode() == CalcMode::Manual;
-            let stored = result.is_ok();
-            self.status = match result {
-                Ok(()) if manual => {
-                    let msg = i18n::t("{} updated — manual calculation, press F9 to recalculate");
-                    i18n::fill(msg, &[&cell_name(row, col)]).into()
-                }
-                Ok(()) => tf("{} updated", &[&cell_name(row, col)]).into(),
-                Err(err) => format!("{err:#}").into(),
-            };
-            // A value its data validation rejects waits for the alert.
-            if stored && self.check_typed_value(sheet, (row, col), &value, step, window, cx) {
-                self.update_title(window, cx);
+            if let Err(err) = self.set_cell(sheet, row, col, &value, cx) {
+                self.status = format!("{err:#}").into();
+                cx.notify();
                 return;
             }
+            self.status = if self.table.read(cx).delegate().book.calc_mode() == CalcMode::Manual {
+                let msg = i18n::t("{} updated — manual calculation, press F9 to recalculate");
+                i18n::fill(msg, &[&cell_name(row, col)]).into()
+            } else {
+                tf("{} updated", &[&cell_name(row, col)]).into()
+            };
+        }
+        self.set_editing(None, cx);
+        if changed && self.check_typed_value(sheet, (row, col), &value, step, window, cx) {
+            self.update_title(window, cx);
+            return;
         }
         self.finish_commit(sheet, (row, col), step, window, cx);
     }
@@ -2692,12 +2696,51 @@ impl SheetsView {
         if let Some(busy) = &self.busy {
             return busy.dirty;
         }
-        self.table.read(cx).delegate().book.is_dirty()
+        self.table.read(cx).delegate().book.is_dirty() || self.has_pending_cell_change(cx)
     }
 
-    /// Give keyboard focus to the grid.
+    fn has_pending_cell_change(&self, cx: &App) -> bool {
+        self.editing.is_some_and(|(row, col)| {
+            let book = &self.table.read(cx).delegate().book;
+            let input = self.cell_input.read(cx).value();
+            book.input_for_editing(self.edit_sheet, row, col) != input.as_str()
+        })
+    }
+
+    /// Finish the user's current cell entry before a user-initiated save.
+    /// Keep the same cell selected and let any validation alert be answered first.
+    pub fn prepare_user_save(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        if self.blocked(cx) || self.alert.is_some() {
+            anyhow::bail!("{}", self.status);
+        }
+        if self.editing.is_some() {
+            self.commit_edit(Some((0, 0)), window, cx);
+            if self.alert.is_some() || self.editing.is_some() {
+                anyhow::bail!("{}", self.status);
+            }
+        }
+        self.commit_note(false, window, cx);
+        Ok(())
+    }
+
+    /// Resume a suspended cell or formula-bar edit at its caret when switching tabs.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus_grid(window, cx);
+        if self.editing.is_some() {
+            let editor = if self.editing_in_formula_bar {
+                &self.formula
+            } else {
+                &self.cell_input
+            };
+            editor.update(cx, |input, cx| input.focus(window, cx));
+        } else if self.busy.is_some() {
+            window.focus(&self.busy_focus, cx);
+        } else {
+            self.focus_grid(window, cx);
+        }
     }
 
     /// The grid's focus (typing there starts a cell edit).
@@ -2737,11 +2780,9 @@ impl SheetsView {
     }
 
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
-        if self.blocked(cx) {
+        if self.prepare_user_save(window, cx).is_err() {
             return;
         }
-        // A note being written is part of what gets saved.
-        self.commit_note(false, window, cx);
         let Some(target) = self
             .table
             .read(cx)
@@ -2750,7 +2791,7 @@ impl SheetsView {
             .path()
             .map(|p| p.to_path_buf())
         else {
-            self.save_as(&SaveAs, window, cx);
+            self.save_as_task(window, cx).detach();
             return;
         };
         if self.ask_before_overwrite(&target, window, cx) {
@@ -2760,8 +2801,9 @@ impl SheetsView {
     }
 
     fn save_as(&mut self, _: &SaveAs, window: &mut Window, cx: &mut Context<Self>) {
-        self.commit_note(false, window, cx);
-        self.save_as_task(window, cx).detach();
+        if self.prepare_user_save(window, cx).is_ok() {
+            self.save_as_task(window, cx).detach();
+        }
     }
 
     /// Save before the document closes (waiting for a save already
@@ -2783,11 +2825,11 @@ impl SheetsView {
     }
 
     fn save_now_for_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
-        if !self.is_dirty(cx) && self.busy.is_none() {
-            return Task::ready(true);
-        }
-        if self.blocked(cx) {
+        if self.prepare_user_save(window, cx).is_err() {
             return Task::ready(false);
+        }
+        if !self.is_dirty(cx) {
+            return Task::ready(true);
         }
         let Some(target) = self
             .table
@@ -3027,8 +3069,8 @@ impl Render for SheetsView {
         let chart_sheet = self.shown_chart_sheet(cx);
         let editing = self.editing.is_some();
         let width = self.width.get();
-        let compact = width > px(0.) && width < COMPACT_WIDTH;
-        let toolbar_compact = width > px(0.) && width < TOOLBAR_COMPACT_WIDTH;
+        let compact = width < COMPACT_WIDTH;
+        let toolbar_compact = width < TOOLBAR_COMPACT_WIDTH;
         // Measure our width after layout; re-render when crossing either threshold.
         let measure = {
             let cell = self.width.clone();

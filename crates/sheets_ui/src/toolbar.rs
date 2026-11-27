@@ -144,6 +144,40 @@ pub(crate) const SWATCHES: [[Rgb; 8]; 3] = [
     ],
 ];
 
+struct InsertTool {
+    id: &'static str,
+    label: &'static str,
+    icon: Lucide,
+    menu: fn(PopupMenu, &WeakEntity<SheetsView>) -> PopupMenu,
+}
+
+const INSERT_TOOLS: [InsertTool; 4] = [
+    InsertTool {
+        id: "table-menu",
+        label: tk("Table"),
+        icon: Lucide::Table,
+        menu: table_items,
+    },
+    InsertTool {
+        id: "chart-menu",
+        label: tk("Insert Chart"),
+        icon: Lucide::ChartColumn,
+        menu: crate::chart_ui::chart_menu,
+    },
+    InsertTool {
+        id: "shape-menu",
+        label: tk("Shapes"),
+        icon: Lucide::Shapes,
+        menu: crate::shape_ui::shape_menu,
+    },
+    InsertTool {
+        id: "pivot-menu",
+        label: tk("PivotTable"),
+        icon: Lucide::TableProperties,
+        menu: pivot_items,
+    },
+];
+
 /// Number of font tools kept as buttons in a narrow pane (B, I, U).
 const COMPACT_FONT_TOOLS: usize = 3;
 
@@ -498,38 +532,39 @@ pub(crate) fn render(active: &Active, compact: bool, cx: &mut Context<SheetsView
                 )
             }),
     );
-    // Tables.
-    let table_view = cx.entity().downgrade();
-    row = row.child(separator(cx)).child(
-        icon_button("table-menu", Lucide::Table, false, cx)
-            .tab_stop(true)
-            .tooltip(i18n::t("Table"))
-            .dropdown_menu(move |menu, _, _| table_items(menu, &table_view)),
-    );
-    // Charts.
-    let chart_view = cx.entity().downgrade();
-    row = row.child(
-        icon_button("chart-menu", Lucide::ChartColumn, false, cx)
-            .tab_stop(true)
-            .tooltip(i18n::t("Insert Chart"))
-            .dropdown_menu(move |menu, _, _| crate::chart_ui::chart_menu(menu, &chart_view)),
-    );
-    // Text box and shapes.
-    let shape_view = cx.entity().downgrade();
-    row = row.child(
-        icon_button("shape-menu", Lucide::Shapes, false, cx)
-            .tab_stop(true)
-            .tooltip(i18n::t("Shapes"))
-            .dropdown_menu(move |menu, _, _| crate::shape_ui::shape_menu(menu, &shape_view)),
-    );
-    // PivotTables.
-    let pivot_view = cx.entity().downgrade();
-    row = row.child(separator(cx)).child(
-        icon_button("pivot-menu", Lucide::TableProperties, false, cx)
-            .tab_stop(true)
-            .tooltip(i18n::t("PivotTable"))
-            .dropdown_menu(move |menu, _, _| pivot_items(menu, &pivot_view)),
-    );
+    row = row.child(separator(cx));
+    if compact {
+        // One Insert button leaves room for Notes and Print at the minimum dock width.
+        let view = cx.entity().downgrade();
+        row = row.child(
+            icon_button("sheet-insert", Lucide::Plus, false, cx)
+                .tab_stop(true)
+                .tooltip(i18n::t("Insert"))
+                .dropdown_menu(move |mut menu, window, cx| {
+                    for tool in INSERT_TOOLS {
+                        let view = view.clone();
+                        menu = menu.submenu_with_icon(
+                            Some(tool.icon.into()),
+                            i18n::t(tool.label),
+                            window,
+                            cx,
+                            move |menu, _, _| (tool.menu)(menu, &view),
+                        );
+                    }
+                    menu
+                }),
+        );
+    } else {
+        for tool in INSERT_TOOLS {
+            let view = cx.entity().downgrade();
+            row = row.child(
+                icon_button(tool.id, tool.icon, false, cx)
+                    .tab_stop(true)
+                    .tooltip(i18n::t(tool.label))
+                    .dropdown_menu(move |menu, _, _| (tool.menu)(menu, &view)),
+            );
+        }
+    }
     // Review > Spelling.
     let spell_view = cx.entity().downgrade();
     row = row.child(separator(cx)).child(

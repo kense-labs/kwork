@@ -45,11 +45,16 @@ impl SheetsView {
     /// Whether autosave may save this workbook (an `.xlsx` with a file, not
     /// changed on disk by someone else, not busy or saving).
     pub fn can_autosave(&self, cx: &App) -> bool {
-        if self.busy.is_some() || self.saving.is_some() || self.pending_save.is_some() {
+        if self.busy.is_some()
+            || self.saving.is_some()
+            || self.pending_save.is_some()
+            || self.alert.is_some()
+        {
             return false;
         }
         let book = &self.table.read(cx).delegate().book;
-        book.can_autosave()
+        book.is_dirty()
+            && book.can_autosave()
             && !book
                 .path()
                 .is_some_and(|p| self.disk_guard.as_ref().is_some_and(|g| g.changed(p)))
@@ -122,6 +127,7 @@ impl SheetsView {
             what: Job::Opening {
                 name: name.clone(),
                 bytes,
+                reveal: None,
             },
             started: Instant::now(),
             name,

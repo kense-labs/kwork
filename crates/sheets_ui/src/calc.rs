@@ -21,7 +21,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use kantor_ui::i18n::{self, tf};
 use kantor_ui::{metrics::*, tokens};
-use sheets_engine::{CalcMode, Workbook};
+use sheets_engine::{CalcMode, CellRange, Workbook};
 
 use crate::{GRID_CONTEXT, KEY_CONTEXT, SheetGrid, SheetsView, opened_status};
 
@@ -54,6 +54,7 @@ pub(crate) enum Job {
     Opening {
         name: String,
         bytes: u64,
+        reveal: Option<(u32, CellRange)>,
     },
     Calculating,
     /// An edit IronCalc follows with a recalculation in any mode (fill).
@@ -115,6 +116,27 @@ impl SheetsView {
         self.busy.is_some()
     }
 
+    /// Navigate to a cited range when the workbook is ready. A second
+    /// click during the same open replaces the first destination.
+    pub fn reveal_range(
+        &mut self,
+        sheet: u32,
+        range: CellRange,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(Busy {
+            what: Job::Opening { reveal, .. },
+            ..
+        }) = &mut self.busy
+        {
+            *reveal = Some((sheet, range));
+        } else if let Err(err) = self.agent_select(sheet, range, window, cx) {
+            self.status = err.to_string().into();
+            cx.notify();
+        }
+    }
+
     /// Parse `path` on the background executor, then show it.
     pub(crate) fn start_open(
         &mut self,
@@ -149,6 +171,7 @@ impl SheetsView {
         let what = Job::Opening {
             name: name.clone(),
             bytes,
+            reveal: None,
         };
         self.busy = Some(Busy {
             what,
@@ -168,7 +191,8 @@ impl SheetsView {
         cx: &mut Context<Self>,
     ) {
         let had_focus = self.busy_focus.is_focused(window);
-        let took = self.busy.take().map(|b| b.started.elapsed());
+        let busy = self.busy.take();
+        let took = busy.as_ref().map(|b| b.started.elapsed());
         match result {
             Ok(book) => {
                 log::info!(
@@ -194,7 +218,19 @@ impl SheetsView {
                     table.refresh(cx);
                     cx.notify();
                 });
-                self.select_cell(0, 0, cx);
+                if let Some(Busy {
+                    what:
+                        Job::Opening {
+                            reveal: Some((sheet, range)),
+                            ..
+                        },
+                    ..
+                }) = busy
+                {
+                    self.agent_show(sheet, range, cx);
+                } else {
+                    self.select_cell(0, 0, cx);
+                }
                 self.load_selected_into_formula(window, cx);
                 let path = self.path(cx);
                 self.web_after_open(path, cx);

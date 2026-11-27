@@ -236,6 +236,8 @@ pub fn chinese(en: &str) -> Option<&'static str> {
             ("Zoom Out", "缩小"),
             ("Font", "字体"),
             ("Font size", "字号"),
+            ("Insert", "插入"),
+            ("Shapes", "形状"),
             ("Table", "表格"),
             ("Picture", "图片"),
             ("Comment", "批注"),

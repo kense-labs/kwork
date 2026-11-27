@@ -224,9 +224,15 @@ impl RenderOnce for SelectionStrip {
                 button.focus = Some(focus.clone());
             }
             let press_focus = focus.clone();
-            button.on_click = Some(Rc::new(move |_, win, cx| {
-                (item.select)(win, cx);
-                press_focus.focus(win, cx);
+            button.on_click = Some(Rc::new(move |event, win, cx| {
+                if dock && !matches!(event, ClickEvent::Keyboard(_)) {
+                    // Give the destination editor the final say on pointer activation.
+                    press_focus.focus(win, cx);
+                    (item.select)(win, cx);
+                } else {
+                    (item.select)(win, cx);
+                    press_focus.focus(win, cx);
+                }
             }));
             strip = strip.child(
                 div()

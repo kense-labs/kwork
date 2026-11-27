@@ -361,6 +361,7 @@ pub struct SlidesView {
     painter: Rc<Painter>,
     /// Canvas bounds from the last paint.
     viewport: Rc<Cell<Bounds<Pixels>>>,
+    compact: bool,
     drag: Option<Drag>,
     /// Live position of a shape being dragged (committed on mouse up).
     preview: Option<(usize, Inner, Xfrm)>,
@@ -478,6 +479,7 @@ impl SlidesView {
             editing: None,
             painter: Rc::new(Painter::new(engine, bridge)),
             viewport: Rc::default(),
+            compact: false,
             drag: None,
             preview: None,
             preview_many: Vec::new(),
@@ -592,7 +594,7 @@ impl SlidesView {
         if let Some((_, x)) = self.preview_many.iter().find(|(j, _)| *j == i) {
             return Some(*x);
         }
-        let shape = self.pres.slide(self.current).shapes.get(i)?;
+        let shape = self.pres.slides().get(self.current)?.shapes.get(i)?;
         self.pres.effective_xfrm(self.current, shape)
     }
 
@@ -755,7 +757,7 @@ impl SlidesView {
     /// Topmost slide shape under a screen point.
     fn shape_at(&self, p: Point<Pixels>) -> Option<usize> {
         let (x, y) = self.view().to_emu(p);
-        let slide = self.pres.slide(self.current);
+        let slide = self.pres.slides().get(self.current)?;
         (0..slide.shapes.len())
             .rev()
             .find(|&i| self.shape_xfrm(i).is_some_and(|b| b.contains(x, y)))
@@ -821,10 +823,7 @@ impl SlidesView {
 
     fn go_to(&mut self, slide: usize, cx: &mut Context<Self>) {
         let n = self.pres.len();
-        if n == 0 {
-            return;
-        }
-        let slide = slide.min(n - 1);
+        let slide = slide.min(n.saturating_sub(1));
         if slide != self.current {
             self.pres.seal_history();
         }
@@ -836,8 +835,10 @@ impl SlidesView {
         self.preview = None;
         self.preview_many.clear();
         self.drag = None;
-        self.strip_scroll
-            .scroll_to_item(slide, ScrollStrategy::Center);
+        if n > 0 {
+            self.strip_scroll
+                .scroll_to_item(slide, ScrollStrategy::Center);
+        }
         cx.notify();
     }
 
@@ -845,7 +846,11 @@ impl SlidesView {
     fn apply_focus(&mut self, f: Focus, cx: &mut Context<Self>) {
         let n = self.pres.len();
         self.current = f.slide.min(n.saturating_sub(1));
-        let shapes = self.pres.slide(self.current).shapes.len();
+        let shapes = self
+            .pres
+            .slides()
+            .get(self.current)
+            .map_or(0, |s| s.shapes.len());
         self.selected = f.shape.filter(|&s| s < shapes);
         self.also.clear();
         self.inner = Inner::TOP;
@@ -1287,7 +1292,11 @@ impl SlidesView {
             }
             return;
         }
-        let n = self.pres.slide(self.current).shapes.len();
+        let n = self
+            .pres
+            .slides()
+            .get(self.current)
+            .map_or(0, |s| s.shapes.len());
         if n == 0 {
             return;
         }
@@ -1566,12 +1575,7 @@ impl SlidesView {
         let res = self.pres.delete_slide(self.current);
         if self.report(res, cx).is_some() {
             // The slide index stays; it now shows the next slide.
-            let next = self.current.min(self.pres.len().saturating_sub(1));
-            self.selected = None;
-            self.editing = None;
-            self.current = next;
-            self.strip_scroll
-                .scroll_to_item(next, ScrollStrategy::Center);
+            self.go_to(self.current, cx);
             self.after_edit(window, cx);
         }
     }
@@ -1781,7 +1785,10 @@ impl SlidesView {
 
     /// For the status bar: `Slide 2 of 12`.
     pub fn location(&self) -> String {
-        tf("Slide {} of {}", &[&(self.current + 1), &self.pres.len()])
+        tf(
+            "Slide {} of {}",
+            &[&(self.current + 1).min(self.pres.len()), &self.pres.len()],
+        )
     }
 
     pub fn info(&self) -> SlidesInfo {
@@ -2537,18 +2544,24 @@ impl SlidesView {
 
     // ── thumbnail strip ────────────────────────────────────────────────────
 
-    fn thumb_size(&self) -> Size<Pixels> {
+    fn thumb_size(&self, strip_width: Pixels, row_height: Pixels) -> Size<Pixels> {
         let s = self.pres.size;
-        let max_w = f32::from(SLIDE_STRIP_WIDTH) - 2.0 * f32::from(SPACE_7) - f32::from(SPACE_4);
-        let max_h = f32::from(SLIDE_THUMB_ROW) - 2.0 * f32::from(SPACE_4);
+        let max_w = f32::from(strip_width) - 2.0 * f32::from(SPACE_7) - f32::from(SPACE_4);
+        let max_h = f32::from(row_height) - 2.0 * f32::from(SPACE_4);
         let k = (max_w / s.cx as f32).min(max_h / s.cy as f32);
         size_px(s.cx as f32 * k, s.cy as f32 * k)
     }
 
-    fn render_strip(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_strip(
+        &self,
+        t: &Tokens,
+        width: Pixels,
+        row_height: Pixels,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let view = cx.entity().downgrade();
         let n = self.pres.len();
-        let thumb = self.thumb_size();
+        let thumb = self.thumb_size(width, row_height);
         let t = *t;
         uniform_list("slides-strip", n, move |range, _window, cx| {
             let Some(this) = view.upgrade() else {
@@ -2582,7 +2595,7 @@ impl SlidesView {
                     // border; the current one gets an accent ring and row.
                     h_flex()
                         .id(("slide-thumb", i))
-                        .h(SLIDE_THUMB_ROW)
+                        .h(row_height)
                         .w_full()
                         .px(SPACE_4)
                         .gap(SPACE_3)
@@ -2930,17 +2943,42 @@ impl Render for SlidesView {
                 move |menu, window, cx| spell::context_menu(menu, &view, window, cx)
             });
 
+        let (strip_width, row_height) = if self.compact {
+            (px(96.), px(52.))
+        } else {
+            (SLIDE_STRIP_WIDTH, SLIDE_THUMB_ROW)
+        };
         let strip = div()
             .flex_none()
-            .w(SLIDE_STRIP_WIDTH)
+            .w(strip_width)
             .h_full()
             .py(SPACE_4)
             .bg(t.chrome)
             .border_r_1()
             .border_color(t.border)
-            .child(self.render_strip(&t, cx));
+            .child(self.render_strip(&t, strip_width, row_height, cx));
 
+        // Use this editor's pane rather than the window: the chat and the
+        // presentation can be open side by side in a very wide window.
+        let view = cx.entity().downgrade();
+        let compact = self.compact;
+        let measure = canvas(
+            move |bounds, _, cx| {
+                let next = bounds.size.width < px(560.);
+                if next != compact {
+                    let _ = view.update(cx, |view, cx| {
+                        view.compact = next;
+                        cx.notify();
+                    });
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
         let root = v_flex()
+            .relative()
+            .child(measure)
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
             .size_full()

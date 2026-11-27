@@ -70,7 +70,7 @@ impl KarWorkbench {
             };
             list = list.child(
                 document_row(("library-tab", idx), tab.kind, name, status.to_owned(), &s)
-                    .on_press(cx, move |this, _, cx| this.activate_office_tab(idx, cx)),
+                    .on_press(cx, move |this, win, cx| this.activate_office_tab(idx, win, cx)),
             );
             count += 1;
         }

@@ -60,13 +60,39 @@ impl OfficeTab {
                 OfficeEditorView::Pdf(cx.new(|cx| PdfView::new(Some(path), window, cx)))
             }
         };
-        Ok(Self {
+        let tab = Self {
             id,
             kind,
             view,
             is_demo,
             demo_scenario_key,
-        })
+        };
+        // The standalone editors fall back to a new document on a decode
+        // error. An embedded file tab must identify the requested document.
+        if tab.path(cx).is_none() {
+            bail!("{}", tab.status(cx));
+        }
+        Ok(tab)
+    }
+
+    pub(crate) fn matches_target(&self, target: &SelectionTarget, cx: &App) -> bool {
+        if self.kind != target.kind {
+            return false;
+        }
+        let path = self.path(cx);
+        if let Some(expected) = target.file_path.as_deref() {
+            return !self.is_demo && path.is_some_and(|p| {
+                p == expected
+                    || p.canonicalize()
+                        .ok()
+                        .zip(expected.canonicalize().ok())
+                        .is_some_and(|(a, b)| a == b)
+            });
+        }
+        // Untitled documents and demo copies have no durable file path.
+        self.id == target.tab_id
+            && (self.is_demo || path.is_none())
+            && self.doc_name(cx) == target.doc_name
     }
 
     pub fn new_blank(id: u64, kind: OfficeKind, window: &mut Window, cx: &mut App) -> Self {
@@ -193,6 +219,13 @@ impl OfficeTab {
         }
     }
 
+    pub fn save_in_place_from_ui(&self, window: &mut Window, cx: &mut App) -> Result<String> {
+        if let OfficeEditorView::Excel(sheet) = &self.view {
+            sheet.update(cx, |view, cx| view.prepare_user_save(window, cx))?;
+        }
+        self.save_in_place(window, cx)
+    }
+
     pub fn save_in_place(&self, window: &mut Window, cx: &mut App) -> Result<String> {
         if self.is_demo {
             bail!("演示模式文档仅用于人机双写演示，不会写回真实用户文件");
@@ -218,7 +251,10 @@ impl OfficeTab {
         match &self.view {
             OfficeEditorView::Word(e) => e.update(cx, |v, cx| v.agent_save(Some(dest), window, cx)),
             OfficeEditorView::Excel(e) => {
-                e.update(cx, |v, cx| v.agent_save(Some(dest), window, cx))
+                e.update(cx, |v, cx| {
+                    v.prepare_user_save(window, cx)?;
+                    v.agent_save(Some(dest), window, cx)
+                })
             }
             OfficeEditorView::Ppt(e) => e.update(cx, |v, cx| v.agent_save(Some(dest), window, cx)),
             OfficeEditorView::Pdf(e) => {
@@ -240,19 +276,17 @@ impl OfficeTab {
 
         match &self.view {
             OfficeEditorView::Word(e) => e.read(cx).agent_read(|doc, sel| {
-                let (start, end) = sel.ordered();
-                let start_para = start.para.min(doc.len().saturating_sub(1));
-                let end_para = end.para.min(doc.len().saturating_sub(1));
+                let (start, end) = doc.clamp_selection(sel).ordered();
+                let (start_para, end_para) = (start.para, end.para);
+                let byte_offsets = (start != end).then_some((start.offset, end.offset));
                 let style = doc
                     .paragraph(start_para)
                     .props
                     .style
                     .as_deref()
                     .map_or_else(|| "Normal".to_owned(), |s| doc.styles.display_name(s));
-                let excerpt = (start_para..=end_para)
-                    .map(|idx| clean_doc_para_text(doc, idx))
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let range = word_target_range(doc, start_para, end_para, byte_offsets);
+                let excerpt = doc.text_in(range.anchor, range.head);
                 SelectionTarget {
                     tab_id: self.id,
                     file_path,
@@ -262,6 +296,7 @@ impl OfficeTab {
                     locator: SelectionLocator::WordParagraph {
                         start_para,
                         end_para,
+                        byte_offsets,
                         total_paras: doc.len(),
                         style,
                     },
@@ -308,14 +343,13 @@ impl OfficeTab {
             }
             OfficeEditorView::Ppt(e) => {
                 let v = e.read(cx);
-                let (slide_idx, mut selected_ix) = v.agent_selected_shape();
+                let (slide_idx, selected_ix) = v.agent_selected_shape();
                 v.agent_read(|pres, _| {
-                    let slide = pres.slide(slide_idx);
-                    if selected_ix.is_none() && !slide.shapes.is_empty() {
-                        selected_ix = Some(0);
-                    }
+                    let shapes = pres.slides().get(slide_idx).map(|s| s.shapes.as_slice()).unwrap_or_default();
+                    let selected_ix = selected_ix.filter(|&ix| ix < shapes.len())
+                        .or_else(|| (!shapes.is_empty()).then_some(0));
                     let (shape_id, shape_name, shape_kind, bounds_cm, excerpt) = match selected_ix
-                        .and_then(|ix| slide.shapes.get(ix).map(|s| (ix, s)))
+                        .map(|ix| (ix, &shapes[ix]))
                     {
                         Some((ix, s)) => {
                             let xfrm = s
@@ -413,19 +447,12 @@ impl OfficeTab {
                 SelectionLocator::WordParagraph {
                     start_para,
                     end_para,
+                    byte_offsets,
                     ..
                 },
             ) => {
                 e.update(cx, |v, cx| {
-                    let sel = v.agent_read(|doc, _| {
-                        let s = (*start_para).min(doc.len().saturating_sub(1));
-                        let e_idx = (*end_para).min(doc.len().saturating_sub(1));
-                        let end_off = doc.paragraph(e_idx).text.len();
-                        DocSel {
-                            anchor: DocPos::new(s, 0),
-                            head: DocPos::new(e_idx, end_off),
-                        }
-                    });
+                    let sel = v.agent_read(|doc, _| word_target_range(doc, *start_para, *end_para, *byte_offsets));
                     v.agent_select(sel, window, cx);
                     v.focus(window, cx);
                 });
@@ -438,7 +465,7 @@ impl OfficeTab {
             ) => {
                 if let Some(parsed) = parse_range(range) {
                     e.update(cx, |v, cx| {
-                        let _ = v.agent_select(*sheet_index, parsed, window, cx);
+                        v.reveal_range(*sheet_index, parsed, window, cx);
                         v.focus(window, cx);
                     });
                 }
@@ -575,6 +602,19 @@ impl OfficeTab {
     }
 }
 
+fn word_target_range(
+    doc: &Document,
+    first: usize,
+    last: usize,
+    byte_offsets: Option<(usize, usize)>,
+) -> DocSel {
+    let (from, to) = byte_offsets.unwrap_or((0, usize::MAX));
+    doc.clamp_selection(DocSel {
+        anchor: DocPos::new(first, from),
+        head: DocPos::new(last, to),
+    })
+}
+
 pub fn clean_doc_para_text(doc: &Document, idx: usize) -> String {
     doc.paragraph(idx)
         .text
@@ -592,6 +632,10 @@ pub fn replace_doc_paragraph_preserving_anchors(
     text: &str,
     sel: DocSel,
 ) -> Result<DocSel> {
+    anyhow::ensure!(para_idx < doc.len(), "段落索引越界: {para_idx}");
+    if clean_doc_para_text(doc, para_idx) == text {
+        return Ok(sel);
+    }
     if let Ok(r) = doc.replace_paragraph_text(para_idx, text, sel) {
         let end = doc.paragraph(r.end - 1).text.len();
         return Ok(DocSel {
@@ -599,7 +643,6 @@ pub fn replace_doc_paragraph_preserving_anchors(
             head: DocPos::new(r.end - 1, end),
         });
     }
-    anyhow::ensure!(para_idx < doc.len(), "段落索引越界: {para_idx}");
     let raw = &doc.paragraph(para_idx).text;
     let first_non_obj = raw.char_indices().find(|&(_, c)| c != OBJECT).map(|(i, _)| i);
     let last_non_obj_end = raw
@@ -633,6 +676,55 @@ fn describe_shape_kind(s: &slides_engine::Shape) -> String {
         ShapeKind::Other { .. } if s.is_group() => "组合".into(),
         ShapeKind::Other { .. } if s.is_chart() => "图表".into(),
         ShapeKind::Other { what, .. } => what.clone(),
+    }
+}
+
+/// Create an editable sample on first use. Existing user edits take precedence,
+/// including copies written by older versions. Installed apps do not need the source tree.
+pub(crate) fn working_sample(dir: &Path, filename: &str) -> Result<PathBuf> {
+    use std::io::{ErrorKind, Write};
+
+    let bytes: &[u8] = match filename {
+        "sample_minutes.docx" => include_bytes!("../../../tests/corpus/docx/minutes.docx"),
+        "sample_formulas.xlsx" => include_bytes!("../../../tests/corpus/xlsx/01_formulas.xlsx"),
+        "sample_deck.pptx" => include_bytes!("../../../tests/corpus/pptx/deck.pptx"),
+        _ => bail!("未知示例文件 {filename}"),
+    };
+    let path = dir.join(filename);
+    let previous = dir.join(filename.replace('.', ".saved."));
+    if path.is_file() {
+        return Ok(path);
+    }
+    if previous.is_file() {
+        return Ok(previous);
+    }
+    std::fs::create_dir_all(dir)?;
+    let mut pending = tempfile::NamedTempFile::new_in(dir)?;
+    pending.write_all(bytes)?;
+    match pending.persist_noclobber(&path) {
+        Ok(_) => Ok(path),
+        Err(error) if error.error.kind() == ErrorKind::AlreadyExists && path.is_file() => Ok(path),
+        Err(error) => Err(error.error.into()),
+    }
+}
+
+#[cfg(test)]
+mod sample_tests {
+    use super::working_sample;
+
+    #[test]
+    fn editable_samples_keep_saved_work_when_opened_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("Documents");
+        for filename in ["sample_minutes.docx", "sample_formulas.xlsx", "sample_deck.pptx"] {
+            let path = working_sample(&dir, filename).unwrap();
+            let edited = b"previously saved contents";
+            std::fs::write(&path, edited).unwrap();
+            assert_eq!(std::fs::read(working_sample(&dir, filename).unwrap()).unwrap(), edited);
+            let older = dir.join(filename.replace('.', ".saved."));
+            std::fs::rename(path, &older).unwrap();
+            assert_eq!(working_sample(&dir, filename).unwrap(), older);
+        }
     }
 }
 
@@ -903,4 +995,30 @@ pub fn verify_pptx_roundtrip(
             reopened.len()
         ),
     })
+}
+
+#[cfg(test)]
+mod word_target_tests {
+    use super::{Document, Paragraph, SelectionLocator, word_target_range};
+
+    #[test]
+    fn quoted_text_roundtrips_across_paragraphs_and_old_locators_still_select_the_paragraph() {
+        let doc = Document::from_paragraphs(vec![Paragraph::new("甲📄乙"), Paragraph::new("丙丁")]);
+        let source = serde_json::json!({"WordParagraph": {
+            "start_para": 0, "end_para": 1, "total_paras": 2, "style": "Normal"
+        }});
+        let read = |encoded| {
+            let SelectionLocator::WordParagraph { start_para, end_para, byte_offsets, .. } =
+                serde_json::from_value(encoded).unwrap() else { unreachable!() };
+            let s = word_target_range(&doc, start_para, end_para, byte_offsets);
+            doc.text_in(s.anchor, s.head)
+        };
+        assert_eq!(read(source.clone()), "甲📄乙\n丙丁");
+        let mut quoted = source;
+        quoted["WordParagraph"]["byte_offsets"] = serde_json::json!([3, 3]);
+        assert_eq!(read(quoted.clone()), "📄乙\n丙");
+        // A later edit may leave a saved offset in the middle of a character or past the end.
+        quoted["WordParagraph"]["byte_offsets"] = serde_json::json!([5, 999]);
+        assert_eq!(read(quoted), "📄乙\n丙丁");
+    }
 }

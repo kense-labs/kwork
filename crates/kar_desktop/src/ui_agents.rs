@@ -28,6 +28,8 @@ use crate::{
     workbench::KarWorkbench,
 };
 
+const AGENT_TILE: f32 = 28.;
+
 impl crate::ui_primitives::UiLocale {
     pub(crate) fn approval_label(self, mode: ApprovalMode) -> &'static str {
         #[allow(unreachable_patterns)]
@@ -247,7 +249,7 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .child(render_provider_color_tile(&agent.id, 28., s, cx))
+                    .child(render_provider_color_tile(&agent.id, AGENT_TILE, s, cx))
                     .child(agent_text(name, status.to_owned(), s))
                     .child(default_action)
                     .child(manage.aria(manage_label).expanded(expanded).on_press(
@@ -646,7 +648,7 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .child(render_provider_color_tile(id, 28., s, cx))
+                    .child(render_provider_color_tile(id, AGENT_TILE, s, cx))
                     .child(agent_text(name.clone(), detail, s));
                 if browser_login {
                     let pending = self.provider_sign_in.waiting_for(id);
@@ -698,10 +700,10 @@ impl KarWorkbench {
                         .iter()
                         .any(|agent| agent.readiness() == ProviderReadiness::NeedsLogin)
             });
-            let mut add = div().flex().flex_col().child(
-                disclosure_line(
+            let mut add = div().flex().flex_col().items_start().gap(px(8.)).child(
+                agent_disclosure(
                     "agents-toggle-absent",
-                    pro_icon(ProIcon::Plus, ICON_SM, s.muted),
+                    ProIcon::Plus,
                     loc.pick("添加智能体", "Add an agent"),
                     open,
                     s,
@@ -712,7 +714,7 @@ impl KarWorkbench {
                 }),
             );
             if open {
-                let mut list = card_box(s).flex().flex_col();
+                let mut list = card_box(s).w_full().flex().flex_col();
                 for (ix, agent) in absent.iter().enumerate() {
                     let name = agent.display_name();
                     let id = &agent.id;
@@ -720,7 +722,7 @@ impl KarWorkbench {
                         .flex()
                         .items_center()
                         .gap(px(8.))
-                        .child(render_provider_color_tile(id, 25., s, cx))
+                        .child(render_provider_color_tile(id, AGENT_TILE, s, cx))
                         .child(agent_text(name.clone(), String::new(), s));
                     let mut details = None;
                     if agent.can_install && agent.install_lines.len() <= 1 {
@@ -837,9 +839,9 @@ impl KarWorkbench {
 
         let advanced = window.use_keyed_state("agents-advanced-open", cx, |_, _| false);
         let advanced_open = *advanced.read(cx);
-        let advanced_button = disclosure_line(
+        let advanced_button = agent_disclosure(
             "agents-toggle-advanced",
-            pro_icon(ProIcon::Sliders, ICON_SM, s.muted),
+            ProIcon::Sliders,
             loc.pick("高级设置", "Advanced settings"),
             advanced_open,
             s,
@@ -850,7 +852,7 @@ impl KarWorkbench {
                 cx.notify();
             });
         });
-        shell = shell.child(div().child(advanced_button));
+        shell = shell.child(div().flex().items_start().child(advanced_button));
         if !advanced_open {
             return shell.into_any_element();
         }
@@ -1093,6 +1095,20 @@ impl KarWorkbench {
                 ),
         )
     }
+}
+
+// Use the same icon and label columns for disclosure controls and account rows.
+fn agent_disclosure(id: &'static str, glyph: ProIcon, label: &'static str, open: bool, s: &StudioPalette) -> Tactile {
+    let leading = div()
+        .size(px(AGENT_TILE))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(pro_icon(glyph, ICON_SM, s.muted));
+    disclosure_line(id, leading.into_any_element(), label, open, s)
+        .ml_0()
+        .px(px(13.))
 }
 
 fn agent_text(name: String, detail: String, s: &StudioPalette) -> Div {

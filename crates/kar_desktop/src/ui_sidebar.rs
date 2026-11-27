@@ -662,7 +662,7 @@ impl KarWorkbench {
                                 )
                                 .when(dirty, |row| row.child(status_dot(s.pro.amber)))
                                 .when(tab.is_demo, |row| row.child(render_sample_tag(&s)))
-                                .on_press(cx, move |this, _, cx| this.activate_office_tab(idx, cx)),
+                                .on_press(cx, move |this, win, cx| this.activate_office_tab(idx, win, cx)),
                         )
                         .child(
                             div()

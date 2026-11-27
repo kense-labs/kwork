@@ -411,15 +411,7 @@ impl SheetsView {
             // Ctrl+Enter (Enter itself is our `CommitDown`).
             InputEvent::PressEnter { .. } => self.commit_edit(Some((1, 0)), window, cx),
             InputEvent::Blur => self.on_editor_blur(window, cx),
-            _ => {}
-        }
-    }
-
-    /// Typing in the formula bar shows up in the cell editor.
-    pub(crate) fn mirror_formula(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_some() {
-            Self::mirror(&self.formula, &self.cell_input, window, cx);
-            self.on_edit_changed(window, cx);
+            InputEvent::Focus => self.editing_in_formula_bar = false,
         }
     }
 

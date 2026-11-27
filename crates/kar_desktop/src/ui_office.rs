@@ -143,7 +143,7 @@ impl KarWorkbench {
                     name,
                     selected,
                     cx,
-                    move |wb, _, cx| wb.activate_office_tab(idx, cx),
+                    move |wb, win, cx| wb.activate_office_tab(idx, win, cx),
                 )
                 .content(label)
                 .close(
@@ -322,7 +322,7 @@ impl KarWorkbench {
                 Some(tab) => {
                     let selection = tab.capture_selection(cx);
                     let already_pinned = self.pinned_target.as_ref().is_some_and(|p| {
-                        p.tab_id == selection.tab_id && p.locator == selection.locator
+                        p.locator == selection.locator && tab.matches_target(p, cx)
                     });
                     let place = selection.locator.target_label();
                     let excerpt = selection.excerpt.replace('\n', " ");
@@ -334,9 +334,9 @@ impl KarWorkbench {
                             .h(px(CTRL_SM_H))
                             .px(px(10.))
                             .gap(px(5.))
-                            .text_size(px(FS_META))
+                            .text_size(s.font_size(FS_META))
                             .text_color(s.pro.green_ink)
-                            .tip("已关联在对话输入框上方，点击可更新快照")
+                            .tip(loc.pick("已引用到对话，点击更新选区", "Update the selection attached to the chat draft"))
                             .child(pro_icon(ProIcon::Check, ICON_XS, s.pro.green_ink))
                             .child(loc.pick("已引用", "Added to chat"))
                             .on_press(cx, |this, window, cx| {
@@ -349,10 +349,10 @@ impl KarWorkbench {
                             .pl(px(8.))
                             .pr(px(10.))
                             .gap(px(5.))
-                            .text_size(px(FS_META))
+                            .text_size(s.font_size(FS_META))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(s.ink)
-                            .tip(loc.pick("将当前选中的段落、单元格、幻灯片对象或 PDF 页放入对话", "Add the selected paragraph, cell, slide object, or PDF page to the chat draft"))
+                            .tip(loc.pick("将选中的文字、单元格、幻灯片对象或 PDF 页放入对话", "Add selected text, cells, a slide object, or a PDF page to the chat draft"))
                             .child(pro_icon(ProIcon::Pin, ICON_XS, s.muted))
                             .child(loc.pick("引用到对话", "Add to chat"))
                             .on_press(cx, |this, window, cx| {
@@ -381,7 +381,7 @@ impl KarWorkbench {
                         .flex()
                         .items_center()
                         .gap(px(8.))
-                        .child(
+                        .when(active_is_demo || !live_conflicts.is_empty(), |row| row.child(
                             div()
                                 .flex_none()
                                 .px(px(6.))
@@ -393,11 +393,13 @@ impl KarWorkbench {
                                 .text_size(px(FS_TAG))
                                 .text_color(s.muted)
                                 .child(format!("rev #{live_rev}")),
-                        )
+                        ))
                         .child(
                             div()
-                                .flex_none()
-                                .text_size(px(FS_META))
+                                .min_w_0()
+                                .max_w(px((pane_w * 0.46).min(320.)))
+                                .truncate()
+                                .text_size(s.font_size(FS_META))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(s.ink)
                                 .child(place),
@@ -407,7 +409,7 @@ impl KarWorkbench {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(px(FS_META))
+                                .text_size(s.font_size(FS_META))
                                 .text_color(s.muted)
                                 .child(if !view_status.is_empty() && view_status.as_ref() != "就绪" {
                                     format!("{view_status} · {excerpt}")

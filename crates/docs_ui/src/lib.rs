@@ -111,6 +111,8 @@ actions!(
         Delete,
         DeleteWordBack,
         DeleteWordForward,
+        DeleteToLineStart,
+        DeleteToLineEnd,
         Newline,
         LineBreak,
         Tab,
@@ -175,6 +177,7 @@ pub fn init(cx: &mut App) {
 /// The Docs view's key bindings.
 fn key_bindings() -> Vec<KeyBinding> {
     let c = Some(KEY_CONTEXT);
+    let word_key = |mac, other| if cfg!(target_os = "macos") { mac } else { other };
     let mut keys = vec![
         KeyBinding::new("left", MoveLeft, c),
         KeyBinding::new("right", MoveRight, c),
@@ -184,15 +187,15 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-right", SelectRight, c),
         KeyBinding::new("shift-up", SelectUp, c),
         KeyBinding::new("shift-down", SelectDown, c),
-        KeyBinding::new(kantor_ui::keys::primary("ctrl-left"), MoveWordLeft, c),
-        KeyBinding::new(kantor_ui::keys::primary("ctrl-right"), MoveWordRight, c),
+        KeyBinding::new(word_key("alt-left", "ctrl-left"), MoveWordLeft, c),
+        KeyBinding::new(word_key("alt-right", "ctrl-right"), MoveWordRight, c),
         KeyBinding::new(
-            kantor_ui::keys::primary("ctrl-shift-left"),
+            word_key("alt-shift-left", "ctrl-shift-left"),
             SelectWordLeft,
             c,
         ),
         KeyBinding::new(
-            kantor_ui::keys::primary("ctrl-shift-right"),
+            word_key("alt-shift-right", "ctrl-shift-right"),
             SelectWordRight,
             c,
         ),
@@ -217,12 +220,12 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-backspace", Backspace, c),
         KeyBinding::new("delete", Delete, c),
         KeyBinding::new(
-            kantor_ui::keys::primary("ctrl-backspace"),
+            word_key("alt-backspace", "ctrl-backspace"),
             DeleteWordBack,
             c,
         ),
         KeyBinding::new(
-            kantor_ui::keys::primary("ctrl-delete"),
+            word_key("alt-delete", "ctrl-delete"),
             DeleteWordForward,
             c,
         ),
@@ -245,6 +248,19 @@ fn key_bindings() -> Vec<KeyBinding> {
             c,
         ),
     ];
+    #[cfg(target_os = "macos")]
+    keys.extend([
+        KeyBinding::new("cmd-left", MoveLineStart, c),
+        KeyBinding::new("cmd-right", MoveLineEnd, c),
+        KeyBinding::new("cmd-shift-left", SelectLineStart, c),
+        KeyBinding::new("cmd-shift-right", SelectLineEnd, c),
+        KeyBinding::new("cmd-up", MoveDocStart, c),
+        KeyBinding::new("cmd-down", MoveDocEnd, c),
+        KeyBinding::new("cmd-shift-up", SelectDocStart, c),
+        KeyBinding::new("cmd-shift-down", SelectDocEnd, c),
+        KeyBinding::new("cmd-backspace", DeleteToLineStart, c),
+        KeyBinding::new("cmd-delete", DeleteToLineEnd, c),
+    ]);
     // Shortcuts with the primary modifier: Ctrl, and Super as Mac-style Cmd.
     macro_rules! primary {
         ($($key:literal => $action:expr),* $(,)?) => {
@@ -945,6 +961,14 @@ impl DocsView {
         self.move_to(Position::new(head.para, offset), extend, cx);
     }
 
+    fn delete_to_line_edge(&mut self, end: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sel.is_empty() {
+            self.line_edge(end, true, cx);
+        }
+        let sel = self.doc.delete_selection(self.sel);
+        self.edited(sel, window, cx);
+    }
+
     fn page_move(&mut self, down: bool, extend: bool, cx: &mut Context<Self>) {
         if self.laid.editing_part() {
             let pos = if down {
@@ -985,11 +1009,11 @@ impl DocsView {
     fn toggle(&mut self, toggle: Toggle, window: &mut Window, cx: &mut Context<Self>) {
         if self.sel.is_empty() {
             // Applies to the next typed text, like Word.
+            let on = !self.is_on(toggle);
             let mut props = self
                 .typing_props
                 .take()
                 .unwrap_or_else(|| self.doc.run_props_at(self.sel.head));
-            let on = !self.is_on(toggle);
             toggle.set(&mut props, on);
             self.typing_props = Some(props);
             cx.notify();
@@ -2965,6 +2989,8 @@ impl Render for DocsView {
                 let s = this.doc.delete_selection(this.sel);
                 this.edited(s, w, cx)
             },
+            DeleteToLineStart => |this, w, cx| this.delete_to_line_edge(false, w, cx),
+            DeleteToLineEnd => |this, w, cx| this.delete_to_line_edge(true, w, cx),
             Newline => |this, w, cx| {
                 let props = this.typing_props.take();
                 let s = this.doc.newline(this.sel, props);
