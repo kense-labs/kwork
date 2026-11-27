@@ -360,12 +360,9 @@ impl KarWorkbench {
             )
         });
         let keyboard_focus = focus.is_focused(window) && window.last_input_was_keyboard();
-        let track = if checked { s.brand_action } else { s.line_strong };
-        let track = if hovered {
-            track.blend(s.ink.opacity(0.12))
-        } else {
-            track
-        };
+        let (ink, thumb) = if s.dark { (white(), black()) } else { (black(), white()) };
+        let hover_tint = if hovered { 0.12 } else { 0. };
+        let track = hsla(0., 0., 0.5, 1.).blend(ink.opacity(0.78 * phase + hover_tint));
         let control = div()
             .id(id)
             .role(Role::Switch)
@@ -394,16 +391,19 @@ impl KarWorkbench {
                             .w(px(14. + stretch))
                             .h(px(14.))
                             .rounded_full()
-                            .bg(if checked { s.on_brand_action } else { s.surface }),
+                            .bg(thumb),
                     )
                     .when(keyboard_focus, |track| {
                         track.child(
                             div()
                                 .absolute()
-                                .inset_0()
+                                .top(px(-2.))
+                                .bottom(px(-2.))
+                                .left(px(-2.))
+                                .right(px(-2.))
                                 .rounded_full()
                                 .border_1()
-                                .border_color(s.ink),
+                                .border_color(ink),
                         )
                     }),
             )

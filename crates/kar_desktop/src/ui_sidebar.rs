@@ -445,12 +445,10 @@ impl KarWorkbench {
                             ),
                     )
                     .child(
-                        div()
-                            .text_size(s.font_size(FS_UI))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(s.ink)
-                            .truncate()
-                            .child(format!("{} {host_name}", loc.pick("远端主机：", "Remote:"))),
+                        thread_title("remote-thread-title", format!("{} {host_name}", loc.pick("远端主机：", "Remote:")), &s)
+                            .w_full()
+                            .flex_none()
+                            .font_weight(FontWeight::MEDIUM),
                     ),
             );
         } else if self.access_mode.is_http_read_only() {
@@ -470,13 +468,8 @@ impl KarWorkbench {
                         None => pro_icon(ProIcon::Link, ICON_SM, s.text),
                     })
                     .child(
-                        div()
-                            .flex_1()
-                            .truncate()
-                            .text_size(s.font_size(FS_UI))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(s.ink)
-                            .child(loc.pick("共享的实时对话", "Shared live thread")),
+                        thread_title("shared-thread-title", loc.pick("共享的实时对话", "Shared live thread"), &s)
+                            .font_weight(FontWeight::MEDIUM),
                     ),
             );
         }
@@ -1064,16 +1057,9 @@ impl KarWorkbench {
         .child(thread_agent_mark(
             SharedString::from(format!("thread-agent-{prefix}-{chat_id}")), runtime, s, cx,
         ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_size(s.font_size(FS_UI))
-                .line_height(s.line_height(LH_UI))
-                .text_color(s.ink)
-                .child(display_title.clone()),
-        )
+        .child(thread_title(
+            SharedString::from(format!("thread-title-{prefix}-{chat_id}")), display_title.clone(), s,
+        ))
         .when(pinned, |row| row.child(pro_icon(ProIcon::Pin, ICON_SM, s.muted)))
         .when(has_assoc, |row| row.child(render_schedule_repeat_icon(ICON_SM, s.muted)))
         .child({
@@ -1645,18 +1631,99 @@ fn demo_static_card(
         .gap(px(10.))
         .child(thread_agent_mark(SharedString::from(format!("{id}-agent")), runtime, s, cx))
         .child(
-            div()
-                .id(SharedString::from(format!("{id}-title")))
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_size(s.font_size(FS_UI))
-                .line_height(s.line_height(LH_UI))
-                .text_color(s.ink)
-                .child(title.to_owned())
+            thread_title(SharedString::from(format!("{id}-title")), title.to_owned(), s)
                 .tooltip(move |window, cx| Tooltip::new(context.clone()).build(window, cx)),
         )
         .child(right_status)
+}
+
+fn thread_title(
+    id: impl Into<ElementId>,
+    title: impl Into<SharedString>,
+    s: &StudioPalette,
+) -> Stateful<Div> {
+    let title = title.into();
+    let font_size = s.font_size(FS_UI);
+    let ink = s.ink;
+    div()
+        .id(id)
+        .role(Role::Label)
+        .aria_label(title.clone())
+        .flex_1()
+        .min_w_0()
+        .h(s.line_height(LH_UI))
+        .text_color(ink)
+        .child(canvas(
+            move |bounds, window, _| {
+                if bounds.is_empty() || !bounds.intersects(&window.content_mask().bounds) {
+                    return None;
+                }
+                let title = if title.contains(['\r', '\n']) {
+                    title.replace(['\r', '\n'], " ").into()
+                } else {
+                    title
+                };
+                let run = window.text_style().to_run(title.len());
+                Some(window.text_system().shape_line(title, font_size, &[run], None))
+            },
+            move |bounds, line, window, cx| {
+                let Some(line) = line else { return };
+                let height = bounds.size.height;
+                let paint = |window: &mut Window, cx: &mut App| {
+                    let _ = line.paint(bounds.origin, height, TextAlign::Left, None, window, cx);
+                };
+                if line.width() <= bounds.size.width {
+                    window.with_content_mask(Some(ContentMask { bounds }), |window| paint(window, cx));
+                    return;
+                }
+
+                // Fade the native glyphs themselves so the textured sidebar, selection and
+                // hover backgrounds all show through, including behind color emoji.
+                let fade = (font_size * 1.6).min(bounds.size.width / 2.);
+                let start = window.pixel_snap(bounds.right() - fade);
+                let slice = |left, right| Bounds::from_corners(point(left, bounds.top()), point(right, bounds.bottom()));
+                let solid = ContentMask { bounds: slice(bounds.left(), start) };
+                window.with_content_mask(Some(solid), |window| paint(window, cx));
+                let baseline = bounds.origin + point(px(0.), (height + line.ascent - line.descent) / 2.);
+                let mut edge_glyphs = Vec::new();
+                for run in &line.runs {
+                    let extent = window.text_system().bounding_box(run.font_id, font_size);
+                    for glyph in &run.glyphs {
+                        let origin = baseline + glyph.position;
+                        // Include a pixel on either side for the native antialiasing fringe.
+                        let left = origin.x + extent.left() - px(1.);
+                        let right = origin.x + extent.right() + px(1.);
+                        if right > start && left < bounds.right() {
+                            edge_glyphs.push((run.font_id, glyph, origin, left, right));
+                        }
+                    }
+                }
+                const BANDS: u32 = 16;
+                for i in 0..BANDS {
+                    let start_fraction = i as f32 / BANDS as f32;
+                    let end_fraction = (i + 1) as f32 / BANDS as f32;
+                    let at = |fraction| window.pixel_snap(start + (bounds.right() - start) * fraction);
+                    let clip = slice(at(start_fraction), at(end_fraction));
+                    if clip.is_empty() {
+                        continue;
+                    }
+                    let alpha = 1. - (start_fraction + end_fraction) / 2.;
+                    div().overflow_hidden().opacity(alpha).interactivity().paint(
+                        None, None, clip, None, window, cx, |_, window, _| {
+                            for &(font, glyph, origin, left, right) in &edge_glyphs {
+                                if right > clip.left() && left < clip.right() {
+                                    let _ = if glyph.is_emoji {
+                                        window.paint_emoji(origin, font, glyph.id, font_size)
+                                    } else {
+                                        window.paint_glyph(origin, font, glyph.id, font_size, ink)
+                                    };
+                                }
+                            }
+                        },
+                    );
+                }
+            },
+        ).size_full())
 }
 
 fn status_dot(color: Hsla) -> Div {
