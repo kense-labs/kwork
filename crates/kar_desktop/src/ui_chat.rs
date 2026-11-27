@@ -2714,8 +2714,10 @@ impl KarWorkbench {
             });
         }
         let cursor = nav.read(cx).cursor.min(count);
-        let mut rows: Vec<AnyElement> =
-            vec![menu_caption(loc.pick("切换活跃项目", "Switch project"), s).into_any_element()];
+        let caption = menu_caption(loc.pick("切换活跃项目", "Switch project"), s)
+            .pt(px(4.))
+            .line_height(s.line_height(LH_META));
+        let mut rows = vec![caption.into_any_element()];
 
         for (ix, proj) in self.project_registry.projects.iter().enumerate() {
             rows.push(
