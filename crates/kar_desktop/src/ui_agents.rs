@@ -30,6 +30,10 @@ use crate::{
 
 const AGENT_TILE: f32 = 28.;
 
+pub(crate) fn accepts_provider_key(id: &str) -> bool {
+    matches!(id, "opencode" | "pi" | "qwen")
+}
+
 impl crate::ui_primitives::UiLocale {
     pub(crate) fn approval_label(self, mode: ApprovalMode) -> &'static str {
         #[allow(unreachable_patterns)]
@@ -93,7 +97,6 @@ impl KarWorkbench {
 
         // ── 0. Interactive OAuth / Device-Code Banner (when active) ──────────
         let login_banner = self.provider_sign_in.challenge().map(|(rt_id, challenge)| {
-            let url = challenge.url.clone();
             card_box(s)
                 .p(px(16.))
                 .border_color(s.pro.accent_info)
@@ -125,42 +128,7 @@ impl KarWorkbench {
                                 }),
                         ),
                 )
-                .when_some(challenge.device_code.clone(), |d, user_code| {
-                    let to_copy = user_code.clone();
-                    d.child(
-                        sub_card_box(s)
-                            .px(px(14.))
-                            .py(px(10.))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .font_family(mono_font(cx))
-                                    .font_features(tnum_features())
-                                    .text_size(s.font_size(FS_TITLE))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(s.ink)
-                                    .child(user_code),
-                            )
-                            .child(
-                                soft_button_sm("copy-device-code", loc.pick("复制验证码", "Copy code"), s)
-                                    .on_press(cx, move |wb, _, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(to_copy.clone()));
-                                        wb.notify_toast("已复制设备验证码", cx);
-                                    }),
-                            ),
-                    )
-                })
-                .child(div().text_size(s.font_size(FS_META)).text_color(s.muted).child(challenge.message.clone()))
-                .child(
-                    div().flex().justify_end().child(
-                        primary_button_sm("reopen-auth-url", loc.pick("在浏览器打开授权页 ↗", "Open sign-in page ↗"), s)
-                            .on_press(cx, move |_, _, _| {
-                                let _ = std::process::Command::new("open").arg(&url).status();
-                            }),
-                    ),
-                )
+                .child(self.provider_challenge_content(&challenge.url, challenge.device_code.as_deref(), &challenge.message, s, cx))
         });
 
         let mut shell = settings_page_shell().when_some(login_banner, |page, banner| page.child(banner));
@@ -281,7 +249,7 @@ impl KarWorkbench {
                 let check_id = agent.id.clone();
                 let upgrade_id = agent.id.clone();
                 let logout_id = agent.id.clone();
-                let supports_key = matches!(agent.id.as_str(), "opencode" | "pi" | "qwen");
+                let supports_key = accepts_provider_key(&agent.id);
                 let actions = div()
                     .flex()
                     .flex_wrap()
@@ -631,7 +599,7 @@ impl KarWorkbench {
                 let id = &agent.id;
                 let needs_login = agent.readiness() == ProviderReadiness::NeedsLogin;
                 let browser_login = needs_login && kar::runtime(id).is_ok_and(|rt| rt.supports_login());
-                let key_login = needs_login && matches!(id.as_str(), "opencode" | "pi" | "qwen");
+                let key_login = needs_login && accepts_provider_key(id);
                 let detail = match &agent.availability {
                     ProviderAvailability::Failed { reason } => {
                         format!("{} · {reason}", loc.pick("无法启动", "Could not start"))
@@ -1012,7 +980,54 @@ impl KarWorkbench {
             .into_any_element()
     }
 
-    fn provider_key_form(
+    pub(crate) fn provider_challenge_content(
+        &self,
+        url: &str,
+        device_code: Option<&str>,
+        message: &str,
+        s: &StudioPalette,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let loc = self.ui_locale;
+        let url = url.to_owned();
+        let instructions = if !message.is_empty() {
+            message
+        } else if device_code.is_some() {
+            loc.pick("请在打开的验证页面输入上方设备验证码。", "Enter this code on the verification page.")
+        } else {
+            loc.pick("请在浏览器中完成授权。", "Finish signing in using your browser.")
+        };
+
+        div().w_full().flex().flex_col().gap(px(10.))
+            .when_some(device_code.map(str::to_owned), |d, user_code| {
+                let to_copy = user_code.clone();
+                d.child(
+                    sub_card_box(s)
+                        .px(px(14.)).py(px(10.)).flex().items_center().justify_between()
+                        .child(
+                            div().font_family(mono_font(cx)).font_features(tnum_features())
+                                .text_size(s.font_size(FS_TITLE)).font_weight(FontWeight::BOLD)
+                                .text_color(s.ink).child(user_code),
+                        )
+                        .child(
+                            soft_button_sm("copy-device-code", loc.pick("复制验证码", "Copy code"), s)
+                                .on_press(cx, move |wb, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(to_copy.clone()));
+                                    wb.notify_toast(loc.pick("已复制设备验证码", "Device code copied"), cx);
+                                }),
+                        ),
+                )
+            })
+            .child(div().text_size(s.font_size(FS_META)).text_color(s.muted).child(instructions.to_owned()))
+            .child(
+                div().flex().justify_end().child(
+                    primary_button_sm("reopen-auth-url", loc.pick("在浏览器打开授权页 ↗", "Open sign-in page ↗"), s)
+                        .on_press(cx, move |_, _, cx| cx.open_url(&url)),
+                ),
+            )
+    }
+
+    pub(crate) fn provider_key_form(
         &self,
         id: &str,
         s: &StudioPalette,

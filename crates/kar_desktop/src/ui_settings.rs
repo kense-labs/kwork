@@ -838,6 +838,14 @@ impl KarWorkbench {
                     )
                     .child(
                         div()
+                            .child(settings_section_title(loc.pick("首次登录", "First sign-in"), s))
+                            .child(div().flex().child(
+                                text_button("general-replay-intro", loc.pick("重播登录动画", "Replay sign-in intro"), s)
+                                    .on_press(cx, |wb, window, cx| wb.play_intro(window, cx)),
+                            )),
+                    )
+                    .child(
+                        div()
                             .child(settings_section_title(loc.pick("对话列表与侧边栏", "Sidebar"), s))
                             .child(sidebar_box),
                     )

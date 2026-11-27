@@ -5362,9 +5362,7 @@ async fn worker_loop(
                                         attempt,
                                         auth_url: url,
                                         device_code: None,
-                                        message: instructions.unwrap_or_else(|| {
-                                            "已在浏览器打开登录页面，请在网页中完成授权".into()
-                                        }),
+                                        message: instructions.unwrap_or_default(),
                                     },
                                 );
                             }
@@ -5380,7 +5378,7 @@ async fn worker_loop(
                                         attempt,
                                         auth_url: verification_uri,
                                         device_code: Some(user_code),
-                                        message: "请在打开的验证页面输入上方设备验证码".into(),
+                                        message: String::new(),
                                     },
                                 );
                             }

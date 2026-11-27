@@ -74,6 +74,7 @@ OPTIONS:
 ";
 
 struct CliOptions {
+    ordinary_launch: bool,
     workbench: WorkbenchConfig,
     smoke_integration: bool,
     coedit_steps: Vec<&'static str>,
@@ -142,8 +143,12 @@ fn parse_cli() -> CliOptions {
     let mut screenshot_out = None;
     let mut screenshot_delay_ms = 1200u64;
 
+    let mut ordinary_launch = true;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
+        // Storage, appearance and window size do not request a particular destination.
+        ordinary_launch &= matches!(arg.as_str(), "--chat-dir" | "--workspace" | "--docs-dir"
+            | "--lang" | "--light" | "--dark" | "--window-size") || arg.starts_with("-psn_");
         match arg.as_str() {
             "-h" | "--help" => {
                 print!("{USAGE}");
@@ -392,6 +397,7 @@ fn parse_cli() -> CliOptions {
     }
 
     CliOptions {
+        ordinary_launch,
         workbench: wb,
         smoke_integration,
         coedit_steps,
@@ -475,7 +481,11 @@ fn main() {
             None
         };
         let (window, entity) = match gpui_kit::open_window(window_options, cx, move |window, cx| {
-            cx.new(|cx| KarWorkbench::new(wb_cfg, window, cx))
+            cx.new(|cx| if opts.ordinary_launch {
+                KarWorkbench::new_primary(wb_cfg, window, cx)
+            } else {
+                KarWorkbench::new(wb_cfg, window, cx)
+            })
         }) {
             Ok(o) => o,
             Err(err) => {

@@ -754,6 +754,8 @@ pub struct KarWorkbench {
     pub managed_worktrees: Vec<crate::forge_devices_voice::ManagedWorktreeItem>,
     pub desktop_update_report: Option<crate::forge_devices_voice::DesktopAppUpdateReport>,
     pub agent_update_statuses: BTreeMap<String, (String, bool)>,
+    pub(crate) onboarding: crate::ui_onboarding::Onboarding,
+    pub(crate) onboarding_provider: Option<String>,
     pub(crate) provider_sign_in: provider_sign_in::ProviderSignIn,
     pub editing_schedule_id: Option<String>,
     pub chat_search_open: bool,
@@ -1732,6 +1734,8 @@ impl KarWorkbench {
             managed_worktrees: Vec::new(),
             desktop_update_report: None,
             agent_update_statuses: BTreeMap::new(),
+            onboarding: Default::default(),
+            onboarding_provider: None,
             provider_sign_in: Default::default(),
             editing_schedule_id: None,
             chat_search_open: false,
@@ -6994,6 +6998,9 @@ impl KarWorkbench {
 
 impl Render for KarWorkbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(screen) = self.onboarding_view(window, cx) {
+            return screen;
+        }
         let overlay_open = self.settings_open || self.handoff_sheet_open || self.side_question_open;
         if overlay_open && self.overlay_return_focus.is_none() {
             self.overlay_return_focus = Some(
@@ -7400,6 +7407,7 @@ impl Render for KarWorkbench {
             .when_some(delete_undo, |root, banner| root.child(
                 div().absolute().top(px(52.)).left(px(2.)).w_full().max_w(px(380.)).child(banner),
             ))
+            .into_any_element()
     }
 }
 
