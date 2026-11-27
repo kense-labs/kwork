@@ -2531,6 +2531,35 @@ impl KarWorkbench {
                 let old = match index { 0 => &mut self.prefs.github_token, 1 => &mut self.prefs.gitlab_token, _ => &mut self.prefs.linear_token };
                 if !old.is_empty() { old.clear(); self.save_prefs(); }
             }
+            KarBridgeEvent::UndoFinished { chat_id, result } => {
+                use crate::kar_bridge::{UndoFailure, UndoOutcome};
+                if self.current_chat_id() == Some(chat_id) && !self.chat_selection_pending() {
+                    let loc = self.ui_locale;
+                    match result {
+                        Ok(UndoOutcome::Archived) => {
+                            self.select_project_and_new_chat(self.effective_workspace_dir(), window, cx);
+                            self.notify_toast(loc.pick("原对话已归档，可在此开始新对话", "Chat archived. You can start a new chat here."), cx);
+                        }
+                        Ok(UndoOutcome::Rewound(count)) => {
+                            let message = match loc {
+                                UiLocale::Zh => format!("已撤回 {count} 轮对话，工作区文件已保留"),
+                                UiLocale::En if count == 1 => "Removed 1 turn. Workspace files were kept.".into(),
+                                UiLocale::En => format!("Removed {count} turns. Workspace files were kept."),
+                            };
+                            self.notify_toast(message, cx);
+                        }
+                        Err(error) => {
+                            let detail = match error {
+                                UndoFailure::NotWriter => loc.pick("当前窗口没有这段对话的写入权限", "This window no longer controls the chat").to_owned(),
+                                UndoFailure::Changed => loc.pick("对话状态已改变，请在任务结束后重新选择轮次", "The chat changed. Select the turn again when the chat is idle").to_owned(),
+                                UndoFailure::StoreUnavailable => loc.pick("对话存储不可用", "Chat storage is unavailable").to_owned(),
+                                UndoFailure::Backend(detail) => detail,
+                            };
+                            self.notify_warning(format!("{}{detail}", loc.pick("未能撤回对话：", "Couldn't undo messages: ")), cx);
+                        }
+                    }
+                }
+            }
             KarBridgeEvent::StoreReady { .. } => {
                 self.bridge.send(KarCommand::Registry(crate::registry::Action::List));
                 for agent in self.prefs.custom_acp_agents.iter().filter(|agent| agent.enabled) {

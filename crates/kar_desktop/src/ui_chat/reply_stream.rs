@@ -51,12 +51,26 @@ fn next_boundary(source: &str, painted: usize, desired: usize) -> usize {
         return desired.clamp(painted, source.len());
     }
     let suffix = &source[painted..];
-    painted
+    let end = painted
         + suffix
             .grapheme_indices(true)
             .map(|(offset, g)| offset + g.len())
             .find(|&end| painted + end >= desired)
-            .unwrap_or(suffix.len())
+            .unwrap_or(suffix.len());
+    // Revealing half a citation would momentarily paint its raw Markdown and URL.
+    if let Some(open) = source[painted..end].rfind('[') {
+        let start = painted + open;
+        let label = &source[start + 1..];
+        let domain_len = label.bytes().take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-')).count();
+        if domain_len != 0 && let Some(destination) = label[domain_len..].strip_prefix("](<")
+            && (destination.starts_with("https://") || destination.starts_with("http://"))
+            && let Some(close) = destination.find(">)")
+            && end < source.len() - destination.len() + close + 2
+        {
+            return start;
+        }
+    }
+    end
 }
 
 struct ReplyStream {
@@ -326,6 +340,16 @@ mod tests {
         assert_eq!(reveal.position(start + REVEAL), 62);
         assert_eq!(reveal.position(start + REVEAL + REVEAL / 2), 72);
         assert!(reveal.arrivals.is_empty());
+    }
+
+    #[test]
+    fn frames_show_a_resolved_citation_as_one_link() {
+        let link = "[example.org](<https://example.org/report_(2026)>)";
+        let source = format!("A {link} B");
+        for cut in 3..2 + link.len() {
+            assert_eq!(next_boundary(&source, 2, cut), 2);
+        }
+        assert_eq!(next_boundary(&source, 2, 2 + link.len()), 2 + link.len());
     }
 
     #[test]

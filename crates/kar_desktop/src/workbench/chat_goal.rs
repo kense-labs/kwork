@@ -102,7 +102,7 @@ impl KarWorkbench {
             });
     }
 
-    fn current_goal(&self) -> Option<&GoalSnapshot> {
+    pub(crate) fn current_goal(&self) -> Option<&GoalSnapshot> {
         let id = self.current_chat_id()?;
         (self.projected.chat_id == Some(id)).then_some(())?;
         self.projected.goal.as_ref()?.as_ref()

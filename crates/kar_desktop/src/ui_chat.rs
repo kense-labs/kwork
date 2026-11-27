@@ -50,7 +50,7 @@ use kui::{
 use uuid::Uuid;
 
 use crate::{
-    kar_bridge::KarCommand,
+    kar_bridge::{KarCommand, UndoTarget},
     studio_hub::parse_unified_diff_hunks,
     types::{
         ChatAccessMode, DiffLine, FeedConnectionState, OfficeKind, ProviderReadiness, ProviderStatusInfo,
@@ -178,13 +178,14 @@ impl KarWorkbench {
         let active_match = (!matches.is_empty()).then(|| self.chat_search_match_ix % matches.len());
         let find_bar = self.render_chat_find_bar(thread_w, &matches, &s, window, cx);
         let share_bar = self.render_share_bar(thread_w, &s, cx);
-        let goal_bar = self.render_goal_bar(thread_w, &s, cx);
+        let writing_width = (center_w - 2. * chat_lane_gutter(center_w, window)).min(thread_w);
+        let composer_status = self.render_composer_status(activity, writing_width, &s, window, cx);
         let notice = self.render_notice(thread_w, &s, cx);
 
         let active_match_turn_ix = active_match.map(|index| matches[index]);
 
         let stage = if on_start_screen {
-            self.render_start_stage(center_w, &s, window, cx)
+            self.render_start_stage(center_w, composer_status, &s, window, cx)
                 .into_any_element()
         } else {
             let mut rows = Vec::new();
@@ -311,9 +312,6 @@ impl KarWorkbench {
             if reveal_question {
                 self.chat_scroll.scroll_to_item(rows.len());
             }
-            let activity_row = activity.map(|phase| {
-                self.render_composer_activity(phase, &s, window, cx)
-            });
             let foot = chat_content_lane(center_w, thread_w, window)
                 .relative()
                 .pt(px(8.))
@@ -321,7 +319,7 @@ impl KarWorkbench {
                 .flex_none()
                 .child(if view_only {
                     div()
-                        .children(activity_row)
+                        .children(composer_status)
                         .when(self.recoverable_archived_plan(), |row| row.child(
                             Tactile::soft("resume-archived-proposal", &s)
                                 .h(px(CTRL_H))
@@ -334,7 +332,7 @@ impl KarWorkbench {
                 } else {
                     let slash_popup = self.slash_popup(&s, window, cx);
                     self.render_composer(
-                        center_w, activity_row, slash_popup, &s, window, cx,
+                        center_w, composer_status, slash_popup, &s, window, cx,
                     )
                     .into_any_element()
                 });
@@ -469,7 +467,6 @@ impl KarWorkbench {
             .child(header)
             .child(find_bar)
             .child(share_bar)
-            .child(goal_bar)
             .child(notice)
             .child(
                 div()
@@ -1476,58 +1473,6 @@ impl KarWorkbench {
         })
     }
 
-    fn render_goal_bar(
-        &self,
-        thread_w: f32,
-        s: &StudioPalette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        use crate::kar_bridge::GoalAction;
-        let chat = self.current_chat_id().filter(|id| self.projected.chat_id == Some(*id));
-        let goal = chat.and_then(|_| self.projected.goal.as_ref()?.as_ref());
-        let loc = self.ui_locale;
-        let bar = goal.map(|g| {
-            let budget = g.token_budget.flatten();
-            let owner = chat.filter(|_| self.can_set_chat_goal());
-            let control = match g.status.as_str() {
-                "active" => Some((GoalAction::Pause, ProIcon::Pause, loc.pick("暂停目标", "Pause goal"))),
-                "paused" | "blocked" | "budgetLimited" | "usageLimited" => Some((GoalAction::Resume, ProIcon::ArrowRight, loc.pick("继续目标", "Resume goal"))),
-                _ => None,
-            };
-            let mut row = div().w_full().min_w_0().h(px(ROW_H)).px(px(8.))
-                .rounded(px(R_CTRL)).bg(s.soft).flex().items_center().gap(px(6.));
-            if let Some((used, limit)) = g.tokens_used.zip(budget).filter(|(_, limit)| *limit > 0) {
-                row = row.child(pro_progress_ring((used as f64 / limit as f64).min(1.) as f32, 14., 2., s.ink, s.line_strong));
-            } else {
-                row = row.child(pro_icon(ProIcon::Tasks, ICON_SM, s.muted));
-            }
-            row = row.child(div().flex_1().min_w_0().truncate()
-                    .text_color(s.ink).text_size(s.font_size(FS_CONTROL)).child(g.objective.clone()))
-                .child(div().flex_none().text_size(s.font_size(FS_META)).text_color(s.muted).child(self.goal_status_label(&g.status)));
-            if thread_w >= 520. && let Some(seconds) = g.time_used_seconds.filter(|s| *s > 0) {
-                row = row.child(div().flex_none().font_features(tnum_features()).text_size(s.font_size(FS_META)).text_color(s.muted)
-                    .child(worked_duration(seconds.saturating_mul(1000), loc)));
-            }
-            if let Some(id) = owner {
-                if let Some((action, icon, label)) = control {
-                    row = row.child(icon_button_sm("goal-toggle", icon, label, s)
-                        .disabled(self.goal_request_pending(id))
-                        .on_press(cx, move |this, _, cx| { this.request_chat_goal(id, action.clone(), cx); }));
-                }
-                row = row.child(text_button_sm("goal-edit", loc.pick("管理", "Manage"), s)
-                    .on_press(cx, move |this, window, cx| {
-                        if this.current_chat_id() == Some(id) { this.open_goal_dialog(window, cx); }
-                    }));
-            }
-            div().w_full().max_w(px(thread_w)).mx_auto().px(px(THREAD_PAD)).pt(px(6.)).pb(px(2.))
-                .child(row).into_any_element()
-        });
-        let open = bar.is_some();
-        pro_fold("kar-goal-bar", open, 42., 0., move || {
-            bar.unwrap_or_else(|| div().into_any_element())
-        })
-    }
-
     fn render_notice(
         &self,
         thread_w: f32,
@@ -1631,6 +1576,7 @@ impl KarWorkbench {
     fn render_start_stage(
         &self,
         pane_w: f32,
+        composer_status: Option<AnyElement>,
         s: &StudioPalette,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1752,7 +1698,7 @@ impl KarWorkbench {
         let browsing_commands = slash_popup.is_some();
         let planning = self.planning_here();
         let composer =
-            self.render_composer(pane_w, None, slash_popup, s, window, cx);
+            self.render_composer(pane_w, composer_status, slash_popup, s, window, cx);
         let content = chat_content_lane(pane_w, thread_w, window)
             .flex_none()
             .flex()
@@ -1930,7 +1876,7 @@ impl KarWorkbench {
     fn render_composer(
         &self,
         pane_w: f32,
-        activity_row: Option<AnyElement>,
+        composer_status: Option<AnyElement>,
         slash_popup: Option<AnyElement>,
         s: &StudioPalette,
         window: &mut Window,
@@ -2385,7 +2331,7 @@ impl KarWorkbench {
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, win, cx| {
                 this.navigate_slash_picker(ev, win, cx);
             }))
-            .children(activity_row)
+            .children(composer_status)
             .children(self.render_aster_mode(s, cx))
             .children(self.render_planning_panel(pane_w, window, s, cx))
             .child(
@@ -3710,13 +3656,12 @@ impl KarWorkbench {
         asked.child(user_bubble("queued", &queued.text, None, self.ui_locale, s, window, cx))
     }
 
-    fn render_composer_activity(
+    fn composer_mascot(
         &self,
         activity: composer_activity::Activity,
-        s: &StudioPalette,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> (Entity<AiMascot>, String) {
         use composer_activity::Activity;
         let loc = self.ui_locale;
         let (pose, label) = match activity {
@@ -3728,9 +3673,18 @@ impl KarWorkbench {
                 };
                 (MascotStatus::Listening, label)
             }
-            Activity::Thinking => (MascotStatus::Thinking, loc.pick("正在思考", "Thinking").into()),
-            Activity::Working => (MascotStatus::Thinking, loc.pick("正在处理", "Working").into()),
-            Activity::Replying => (MascotStatus::Writing, loc.pick("正在回复", "Replying").into()),
+            Activity::Thinking => (
+                MascotStatus::Thinking,
+                loc.pick("正在思考", "Thinking").into(),
+            ),
+            Activity::Working => (
+                MascotStatus::Thinking,
+                loc.pick("正在处理", "Working").into(),
+            ),
+            Activity::Replying => (
+                MascotStatus::Writing,
+                loc.pick("正在回复", "Replying").into(),
+            ),
         };
         // Keep the animated views as children so their frame notifications stay local.
         let mascot = window
@@ -3747,32 +3701,162 @@ impl KarWorkbench {
         if mascot.read(cx).status() != pose {
             mascot.update(cx, |view, cx| view.set_status(pose, cx));
         }
-        let shimmer = activity::shimmer(
-            "composer-activity-label".into(),
-            label.clone().into(),
-            FS_CONTROL,
-            window,
-            cx,
-        );
-        div()
+        (mascot, label)
+    }
+
+    fn render_composer_status(
+        &self,
+        activity: Option<composer_activity::Activity>,
+        writing_width: f32,
+        s: &StudioPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        use crate::kar_bridge::GoalAction;
+
+        let goal = self.current_goal();
+        if activity.is_none() && goal.is_none() {
+            return None;
+        }
+        let loc = self.ui_locale;
+        let width = writing_width * FS_CONTROL / f32::from(s.font_size(FS_CONTROL));
+        let mut row = div()
             .id("composer-activity")
-            .role(Role::Status)
-            .aria_label(label)
-            .h(px(24.))
+            .w_full()
+            .min_w_0()
+            .h(px(if goal.is_some() { CTRL_SM_H } else { 24. }))
             .pl(px(6.))
             .mb(px(6.))
             .flex()
             .items_center()
             .gap(px(7.))
             .text_size(s.font_size(FS_CONTROL))
-            .text_color(s.muted)
-            .child(mascot)
-            .child(shimmer)
-            .children(self.projected.turns.last().filter(|turn| {
-                turn.status == TurnStatus::Running && turn.started_ms > 0 &&
-                composer_activity::selected_projection(&self.access_mode, &self.projected)
-            }).map(|turn| message_time::live_clock(turn.id, turn.started_ms, window, cx)))
-            .into_any_element()
+            .text_color(s.muted);
+
+        let phase = if let Some(activity) = activity {
+            let (mascot, label) = self.composer_mascot(activity, window, cx);
+            row = row.child(div().flex_none().size(px(24.)).child(mascot));
+            Some(label)
+        } else {
+            None
+        };
+
+        if let Some(g) = goal {
+            // The objective yields space first; the state and controls stay reachable.
+            if let Some((used, limit)) = g
+                .tokens_used
+                .zip(g.token_budget.flatten())
+                .filter(|(_, n)| *n > 0)
+            {
+                row = row.child(pro_progress_ring(
+                    (used as f64 / limit as f64).min(1.) as f32,
+                    14.,
+                    2.,
+                    s.ink,
+                    s.line_strong,
+                ));
+            } else if phase.is_none() {
+                row = row.child(pro_icon(ProIcon::Tasks, ICON_SM, s.muted));
+            }
+            row = row.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(s.text)
+                    .child(g.objective.clone()),
+            );
+            let status = self.goal_status_label(&g.status);
+            if g.status == "active"
+                && let Some(label) = phase.as_ref()
+            {
+                row = row.child(activity::shimmer(
+                    "composer-activity-label".into(),
+                    label.clone().into(),
+                    FS_META,
+                    window,
+                    cx,
+                ));
+            } else {
+                row = row.child(
+                    div()
+                        .flex_none()
+                        .text_size(s.font_size(FS_META))
+                        .child(status),
+                );
+            }
+            if width >= 520.
+                && let Some(seconds) = g.time_used_seconds.filter(|n| *n > 0)
+            {
+                row = row.child(
+                    div()
+                        .flex_none()
+                        .font_features(tnum_features())
+                        .text_size(s.font_size(FS_META))
+                        .child(worked_duration(seconds.saturating_mul(1000), loc)),
+                );
+            }
+            if let Some(id) = self.current_chat_id().filter(|_| self.can_set_chat_goal()) {
+                let toggle = match g.status.as_str() {
+                    "active" => Some((
+                        GoalAction::Pause,
+                        ProIcon::Pause,
+                        loc.pick("暂停目标", "Pause goal"),
+                    )),
+                    "paused" | "blocked" | "budgetLimited" | "usageLimited" => Some((
+                        GoalAction::Resume,
+                        ProIcon::ArrowRight,
+                        loc.pick("继续目标", "Resume goal"),
+                    )),
+                    _ => None,
+                };
+                if let Some((action, icon, label)) = toggle {
+                    row = row.child(
+                        icon_button_sm("goal-toggle", icon, label, s)
+                            .disabled(self.goal_request_pending(id))
+                            .on_press(cx, move |this, _, cx| {
+                                this.request_chat_goal(id, action.clone(), cx);
+                            }),
+                    );
+                }
+                row = row.child(
+                    text_button_sm("goal-edit", loc.pick("管理", "Manage"), s)
+                        .aria(loc.pick("管理目标", "Manage goal"))
+                        .on_press(cx, move |this, win, cx| {
+                            if this.current_chat_id() == Some(id) {
+                                this.open_goal_dialog(win, cx);
+                            }
+                        }),
+                );
+            }
+        } else if let Some(label) = phase {
+            let shimmer = activity::shimmer(
+                "composer-activity-label".into(),
+                label.clone().into(),
+                FS_CONTROL,
+                window,
+                cx,
+            );
+            row = row
+                .role(Role::Status)
+                .aria_label(label)
+                .child(shimmer)
+                .children(
+                    self.projected
+                        .turns
+                        .last()
+                        .filter(|turn| {
+                            turn.status == TurnStatus::Running
+                                && turn.started_ms > 0
+                                && composer_activity::selected_projection(
+                                    &self.access_mode,
+                                    &self.projected,
+                                )
+                        })
+                        .map(|turn| message_time::live_clock(turn.id, turn.started_ms, window, cx)),
+                );
+        }
+        Some(row.into_any_element())
     }
 
     fn render_target_reference(
@@ -4464,7 +4548,9 @@ impl KarWorkbench {
             .then(|| self.copy_buttons.get(&turn_id).cloned())
             .flatten();
 
-        let can_rewind_context = !running && idle && writable_real;
+        let can_rewind_context = !running && idle && writable_real
+            && self.projected.pending_requests.is_empty()
+            && !self.projected.queued_inputs.iter().any(crate::kar_bridge::input_outstanding);
         let show_hold_rollback = (can_rollback_after && has_checkpoint_changes) || can_undo_turn;
         let show_extra_actions = show_hold_rollback || can_rewind_context;
         let extra_actions_key = (turn_id, usize::MAX);
@@ -4472,6 +4558,42 @@ impl KarWorkbench {
         let rewind_context_btn = current_cid
             .filter(|_| can_rewind_context && extra_actions_open)
             .map(|chat_id| {
+                let turns = &self.projected.turns;
+                let head = turns.last().expect("rendered turn").id;
+                let (target, count) = if self.projected.info.as_ref().is_some_and(|info| info.process_only) {
+                    (UndoTarget::ArchiveAndRestart, turns.len())
+                } else {
+                    UndoTarget::before(turns, turn_index)
+                };
+                let confirmation = window.use_keyed_state(
+                    SharedString::from(format!("confirm-undo-{chat_id}-{turn_id}-{head}")), cx, |_, _| false,
+                );
+                let armed = *confirmation.read(cx);
+                let (label, confirm, hint) = match target {
+                    UndoTarget::ArchiveAndRestart => (
+                        loc.pick("归档并重新开始", "Archive and start over"),
+                        loc.pick("确认归档并新建", "Confirm archive and restart").to_string(),
+                        loc.pick("归档整个对话，在同一工作区开始新对话。原对话和文件均保留。",
+                            "Archive this conversation and start a new chat in this workspace. Your history and files are kept.").to_string(),
+                    ),
+                    UndoTarget::KeepThrough(_) => {
+                        let earlier_cut = count > turns.len() - turn_index;
+                        let label = if earlier_cut { loc.pick("退回上一已完成轮", "Return to last completed turn") }
+                            else { loc.pick("仅撤回对话", "Undo messages") };
+                        let confirm = match loc {
+                            UiLocale::Zh => format!("确认撤回 {count} 轮"),
+                            UiLocale::En if count == 1 => "Undo 1 turn?".into(),
+                            UiLocale::En => format!("Undo {count} turns?"),
+                        };
+                        let hint = match loc {
+                            UiLocale::Zh => format!("退回上一已完成轮，将撤回 {count} 轮对话。工作区文件保留。"),
+                            UiLocale::En if count == 1 => "Remove this turn and keep the workspace files.".into(),
+                            UiLocale::En => format!("Return to the preceding completed turn and remove {count} turns. Workspace files are kept."),
+                        };
+                        (label, confirm, hint)
+                    }
+                };
+                let text = if armed { confirm } else { label.to_owned() };
                 Tactile::soft(format!("rewind-ctx-{turn_id}"), s)
                     .h(px(CTRL_SM_H))
                     .px(px(10.))
@@ -4480,30 +4602,20 @@ impl KarWorkbench {
                     .text_size(s.font_size(FS_META))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(s.ink)
-                    .tip(loc.pick(
-                        "仅撤回此轮之后的对话上下文，完整保留磁盘代码改动",
-                        "Rewind conversation history only and keep all workspace file edits",
-                    ))
+                    .aria(text.clone())
+                    .tip(hint)
                     .child(pro_icon(ProIcon::Undo, ICON_XS, s.muted))
-                    .child(loc.pick("仅撤回对话", "Rewind context"))
+                    .child(text)
                     .on_press(cx, move |this, _, cx| {
-                        this.part_open.insert(extra_actions_key, false);
-                        this.confirm_or_run(
-                            format!("rewind-ctx-{turn_id}"),
-                            true,
-                            loc.pick(
-                                "再次点击“仅撤回对话”以确认撤回对话记录（文件改动将完整保留）",
-                                "Click again to rewind conversation history (workspace files stay intact)",
-                            ),
-                            cx,
-                            move |wb, _| {
-                                wb.bridge.send(KarCommand::RewindChat {
-                                    chat_id,
-                                    turn_id,
-                                    restore_files: false,
-                                });
-                            },
-                        );
+                        if !armed {
+                            confirmation.update(cx, |pending, cx| { *pending = true; cx.notify(); });
+                        } else {
+                            this.part_open.insert(extra_actions_key, false);
+                            this.bridge.send(KarCommand::UndoChatTurns {
+                                chat_id, expected_head: head, target,
+                            });
+                        }
+                        cx.notify();
                     })
                     .into_any_element()
             });

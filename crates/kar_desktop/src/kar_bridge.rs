@@ -7,7 +7,11 @@
 pub(crate) mod session_commands;
 mod planner;
 mod sidebar;
+mod undo;
+pub use undo::{UndoFailure, UndoOutcome, UndoTarget};
+pub(crate) use undo::input_outstanding;
 mod sidebar_journals;
+mod citations;
 mod hosted;
 #[cfg(all(test,unix))]
 mod side_question_test;
@@ -361,11 +365,10 @@ pub enum KarCommand {
         runtime_id: String,
         apply_upgrade: bool,
     },
-    /// Rewind conversation context to a completed turn (`restore_files = false` keeps working files untouched).
-    RewindChat {
+    UndoChatTurns {
         chat_id: Uuid,
-        turn_id: Uuid,
-        restore_files: bool,
+        expected_head: Uuid,
+        target: UndoTarget,
     },
     /// Issue or revoke a time-bounded read-only Guest Web Share link on the local host server.
     IssueGuestShare {
@@ -457,6 +460,7 @@ pub enum KarBridgeEvent {
     WorkspaceFilesRestored {
         files: Vec<PathBuf>,
     },
+    UndoFinished { chat_id: Uuid, result: Result<UndoOutcome, UndoFailure> },
     NavigationStarted(Uuid),
     NavigationUnavailable(Uuid),
     AccessModeChanged(ChatAccessMode),
@@ -1749,11 +1753,12 @@ fn state_from_replica(
     replica: &ChatReplica,
     caps: Option<Capabilities>,
     queued_inputs: Vec<QueuedInput>,
+    citations: &mut citations::CitationCache,
 ) -> ProjectedChatState {
     ProjectedChatState {
         chat_id: Some(replica.chat().id),
         info: Some(replica.chat().clone()),
-        turns: replica.turns().to_vec(),
+        turns: citations.display_turns(replica.turns().to_vec()),
         pending_requests: replica.pending_requests().to_vec(),
         queued_inputs,
         context_usage: replica.context_usage().cloned(),
@@ -1782,7 +1787,7 @@ fn state_from_history(
     ProjectedChatState {
         chat_id,
         info: Some(history.chat),
-        turns: history.turns,
+        turns: citations::CitationCache::default().display_turns(history.turns),
         pending_requests: history.pending_requests,
         queued_inputs,
         context_usage: history.context_usage,
@@ -1957,6 +1962,7 @@ fn spawn_local_follower(
         let mut queue_stamp = None;
         let mut queued = Vec::new();
         let mut last_activity = replica.turns().last().map(|turn| (turn.id, turn.status));
+        let mut citations = citations::CitationCache::default();
         let mut publish = |replica: &ChatReplica, text_only: bool, duplicates_ignored, gaps_recovered| {
             let activity = replica.turns().last().map(|turn| (turn.id, turn.status));
             if activity != last_activity {
@@ -1970,7 +1976,7 @@ fn spawn_local_follower(
                 queued = active_queued_inputs(Some(&store), chat_id);
                 queue_stamp = stamp;
             }
-            let mut projected = state_from_replica(replica, caps, queued.clone());
+            let mut projected = state_from_replica(replica, caps, queued.clone(), &mut citations);
             if let Some(override_mode) = saved_chat_approval_override(&store_dir, chat_id)
                 && let Some(ref mut info) = projected.info
             {
@@ -2262,8 +2268,9 @@ async fn run_http_subscriber_loop(
         },
     };
     let _ = evt_tx.send_blocking(KarBridgeEvent::AccessModeChanged(access_mode));
-    let publish = |replica: &ChatReplica, duplicates_ignored, gaps_recovered| {
-        let mut projection = state_from_replica(replica, None, Vec::new());
+    let mut citations = citations::CitationCache::default();
+    let mut publish = |replica: &ChatReplica, duplicates_ignored, gaps_recovered| {
+        let mut projection = state_from_replica(replica, None, Vec::new(), &mut citations);
         projection.can_steer = paired.as_ref().is_some_and(|remote| remote.role.can_mutate());
         let _ = evt_tx.send_blocking(KarBridgeEvent::ChatStateUpdated(projection));
         let _ = evt_tx.send_blocking(KarBridgeEvent::ConnectionStateChanged(
@@ -2665,6 +2672,22 @@ async fn worker_loop(
                 state.emit(KarBridgeEvent::NavigationStarted(request));
                 (command, None)
             }
+            KarCommand::UndoChatTurns { chat_id, expected_head, target } => {
+                let store = match undo::validate(&state, chat_id, expected_head) {
+                    Ok(store) => store,
+                    Err(error) => {
+                        state.emit(KarBridgeEvent::UndoFinished { chat_id, result: Err(error) });
+                        continue;
+                    }
+                };
+                let result = undo::apply(&mut state, store, chat_id, target, expected_head)
+                    .await.map_err(|error| UndoFailure::Backend(error.to_string()));
+                let archived = matches!(result, Ok(UndoOutcome::Archived));
+                state.emit(KarBridgeEvent::UndoFinished { chat_id, result });
+                if archived { continue; }
+                // Rebind before accepting the next command; a queued navigation must win.
+                (KarCommand::SelectLocalChat { chat_id, prefer_read_only: false }, None)
+            }
             KarCommand::SetAsterPlanMode { chat_id, plan } => {
                 let owns = state.active_controller.as_ref().is_some_and(|s| s.info().id == chat_id && crate::aster::is_aster(&s.info().runtime));
                 if !owns || state.turn_appears_busy() {
@@ -2753,7 +2776,7 @@ async fn worker_loop(
                     let _ = output.send(KarBridgeEvent::Hardware {workspace,request_id,result}).await;
                 });
             }
-            KarCommand::SetAsterPlanMode { .. } | KarCommand::SetChatApprovalMode { .. } => {
+            KarCommand::UndoChatTurns { .. } | KarCommand::SetAsterPlanMode { .. } | KarCommand::SetChatApprovalMode { .. } => {
                 unreachable!("normalized above")
             }
             KarCommand::RefreshStoreAndProviders {
@@ -5194,72 +5217,6 @@ async fn worker_loop(
                         state.emit_remote_telemetry();
                     }
                     Err(error) => state.emit(KarBridgeEvent::ToastMessage { text: format!("无法撤销访客链接：{error}"), warning: true }),
-                }
-            }
-            KarCommand::RewindChat {
-                chat_id,
-                turn_id,
-                restore_files,
-            } => {
-                let Some(store) = state.store.clone() else {
-                    continue;
-                };
-                let req = kar::chat::RewindRequest {
-                    id: Uuid::new_v4(),
-                    turn: turn_id,
-                    expected_head: None,
-                    policy: kar::chat::ForkPolicy::PreferNative,
-                    restore_files,
-                };
-                if let Some(host)=state.hosted_chat.as_ref().filter(|h|h.chat==chat_id) {
-                    match host.post("rewinds",serde_json::json!(req)).await {
-                        Ok(_) => { let _=state.cmd_tx.send(KarCommand::SelectLocalChat{chat_id,prefer_read_only:false}).await; }
-                        Err(e) => state.emit(KarBridgeEvent::ToastMessage{text:format!("未能回退对话：{e}"),warning:true}),
-                    }
-                    continue;
-                }
-                if state.selected_chat_id == Some(chat_id) {
-                    state.stop_feed();
-                    state.close_controller(false).await;
-                }
-                match store.rewind(chat_id, req).await {
-                    Ok(receipt) => {
-                        let msg = if restore_files {
-                            format!(
-                                "已将对话记录与 {} 个工作区文件同时回滚到此步",
-                                receipt.files.len()
-                            )
-                        } else {
-                            format!(
-                                "已撤回后续 {} 轮对话记录（本地文件改动已完整保留）",
-                                receipt.removed_turns.len()
-                            )
-                        };
-                        state.emit(KarBridgeEvent::ToastMessage {
-                            text: msg,
-                            warning: false,
-                        });
-                        let _ = state
-                            .cmd_tx
-                            .send(KarCommand::SelectLocalChat {
-                                chat_id,
-                                prefer_read_only: false,
-                            })
-                            .await;
-                    }
-                    Err(err) => {
-                        state.emit(KarBridgeEvent::ToastMessage {
-                            text: format!("撤回对话失败：{err}"),
-                            warning: true,
-                        });
-                        let _ = state
-                            .cmd_tx
-                            .send(KarCommand::SelectLocalChat {
-                                chat_id,
-                                prefer_read_only: false,
-                            })
-                            .await;
-                    }
                 }
             }
             KarCommand::LoginProvider {
