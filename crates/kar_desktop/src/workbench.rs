@@ -79,7 +79,7 @@ use crate::{
     ui_brief::BriefWidgetCache,
     ui_motion::{DismissFn, MenuPlacement, ToastState, icon_button_sm, menu_popup, render_toast},
     ui_primitives::{
-        CTRL_SM_H, DETAILS_CARD_W, HEADER_H, TITLEBAR_EDGE_INSET, macos_traffic_pad, titlebar_center_y, DOC_MIN_W, FS_META, FS_READ, FS_TAG, FS_UI, ICON_SM, LH_META, LH_UI,
+        CTRL_SM_H, TITLEBAR_EDGE_INSET, macos_traffic_pad, titlebar_center_y, DOC_MIN_W, FS_META, FS_READ, FS_TAG, FS_UI, ICON_SM, LH_META, LH_UI,
         R_CTRL, R_MODAL, SHEET_GUTTER, SIDEBAR_W, StudioPalette, TERMINAL_MIN_H,
         UiLocale, clean_display_doc_name, render_kbd, ui_font,
     },
@@ -7251,16 +7251,6 @@ impl Render for KarWorkbench {
                         .flex_col()
                         .overflow_hidden()
                         .child(div().w(px(dock_w)).h_full().flex_none().overflow_hidden().child(doc)),
-                )
-            })
-            .when(in_conversation_stage && self.thread_details_open, |stage| {
-                let available = if single_dock { usable } else { chat_w };
-                stage.child(
-                    div().absolute()
-                        .top(px(HEADER_H + 4.))
-                        .right(px(revealed_width + 12.))
-                        .w(px(DETAILS_CARD_W.min((available - 24.).max(1.))))
-                        .child(self.render_thread_details_card(&s, cx)),
                 )
             });
 

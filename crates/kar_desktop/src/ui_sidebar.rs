@@ -21,10 +21,9 @@ use crate::{
         menu_host, menu_icon_item, menu_item, soft_button,
     },
     ui_primitives::{
-        CTRL_H, CTRL_SM_H, FS_META, FS_TAG, FS_UI, ICON, ICON_SM, LH_UI, R_CTRL, R_PILL, StudioPalette, TITLEBAR_BUTTON_GAP,
+        CTRL_H, CTRL_SM_H, FS_META, FS_TAG, FS_UI, ICON, ICON_SM, LH_UI, R_CTRL, StudioPalette, TITLEBAR_BUTTON_GAP,
         clean_display_doc_name, macos_traffic_pad, render_approval_hand,
         render_circle_check_icon,
-        render_folder_icon,
         sidebar_texture, render_office_chip, render_project_mark,
         render_radar_link_icon, render_runtime_mark, render_sample_tag,
         render_schedule_repeat_icon,
@@ -166,20 +165,6 @@ impl KarWorkbench {
                 .on_press(cx, |this, win, cx| this.navigate_history(true, win, cx)),
             );
 
-        let projects = menu_host(
-            Tactile::ghost("side-project-scope", &s)
-                .size(px(28.))
-                .radius(6.)
-                .justify_center()
-                .lit(
-                    self.open_menu == Some(Menu::SidebarFilter)
-                        || self.sidebar_project_filter.is_some(),
-                )
-                .tip(loc.pick("按项目筛选对话", "Filter chats by project"))
-                .child(render_folder_icon(16., s.muted))
-                .on_press(cx, |this, _, cx| this.toggle_menu(Menu::SidebarFilter, cx)),
-            self.render_sidebar_filter_menu(&s, cx),
-        );
         let search_focused = self.sidebar_search.read(cx).focus.is_focused(window);
         let search_group = "sidebar-thread-search";
         let search = div()
@@ -252,61 +237,20 @@ impl KarWorkbench {
             .h(px(CTRL_H))
             .mt(px(if has_query { 2. } else { 12. }))
             .pl(px(9.))
+            .gap(px(6.))
             .flex()
             .items_center()
             .justify_between()
-            .text_size(s.font_size(FS_META))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(s.muted)
-            .child(if has_query { loc.pick("搜索结果", "Search results") } else { loc.pick("对话", "Chats") })
-            .child(projects);
-
-        // Active project filter pill if user filtered to a single repo
-        let active_proj_chip = self.sidebar_project_filter.clone().map(|proj_path| {
-            let pname = proj_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map_or("Kwork", crate::studio_hub::project_display_name)
-                .to_owned();
-            div().px(px(10.)).pb(px(6.)).flex_none().child(
+            .child(
                 div()
-                    .h(px(24.))
-                    .pl(px(7.))
-                    .pr(px(4.))
-                    .rounded(px(R_PILL))
-                    .bg(s.soft)
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .gap(px(5.))
-                            .child(render_project_mark(&pname, 14., &s, cx))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(s.font_size(FS_TAG))
-                                    .text_color(s.ink)
-                                    .child(pname),
-                            ),
-                    )
-                    .child(
-                        close_button(
-                            "side-clear-proj-filter",
-                            loc.pick("清除项目筛选", "Clear project filter"),
-                            &s,
-                        )
-                        .on_press(cx, |this, _, cx| {
-                            this.sidebar_project_filter = None;
-                            cx.notify();
-                        }),
-                    ),
+                    .min_w_0()
+                    .truncate()
+                    .text_size(s.font_size(FS_META))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(s.muted)
+                    .child(if has_query { loc.pick("搜索结果", "Search results") } else { loc.pick("对话", "Chats") }),
             )
-        });
+            .child(self.sidebar_project_picker(&s, window, cx));
 
         let undo_banner = self.sidebar_open.then(|| self.render_delete_undo(&s, cx)).flatten();
 
@@ -321,22 +265,20 @@ impl KarWorkbench {
             if deferred_del_id == Some(e.info.id) {
                 return false;
             }
+            if proj_filter_norm.is_none() && query.is_empty() {
+                return true;
+            }
+            let owner = self.project_registry.project_for_chat(&e.info.workspace, e.info.id);
             if let Some(ref pf) = proj_filter_norm {
-                let ws_norm = e
-                    .info
-                    .workspace
-                    .canonicalize()
-                    .unwrap_or_else(|_| e.info.workspace.clone());
-                if &ws_norm != pf {
+                let root = owner.map_or(&e.info.workspace, |project| &project.root_path);
+                if root != pf && root.canonicalize().as_ref().ok() != Some(pf) {
                     return false;
                 }
             }
             if query.is_empty() {
                 return true;
             }
-            let proj_match = self
-                .project_registry
-                .project_for_chat(&e.info.workspace, e.info.id)
+            let proj_match = owner
                 .is_some_and(|p| {
                     crate::studio_hub::project_display_name(&p.name)
                         .to_lowercase()
@@ -944,7 +886,6 @@ impl KarWorkbench {
             .pb(px(8.))
             .when(!has_query, |d| d.child(navigation))
             .child(thread_header)
-            .when_some(active_proj_chip, |d, chip| d.child(chip))
             .when_some(undo_banner, |d, b| d.child(b))
             .child(list_col)
             .when_some(settled_shelf, |d, sh| d.child(sh));
@@ -1447,84 +1388,184 @@ impl KarWorkbench {
         col
     }
 
-    fn render_sidebar_filter_menu(&self, s: &StudioPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn set_sidebar_project_filter(
+        &mut self,
+        root: Option<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar_project_filter.clone_from(&root);
+        self.prefs.active_project_filter = root;
+        self.save_prefs();
+        self.open_menu = None;
+        cx.notify();
+    }
+
+    fn sidebar_project_picker(
+        &self,
+        s: &StudioPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let loc = self.ui_locale;
-        let cur_filter = self
-            .sidebar_project_filter
-            .as_ref()
-            .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()));
-        let mut rows: Vec<AnyElement> = vec![
-            menu_caption(loc.pick("按项目筛选", "Filter by project"), s).into_any_element(),
-            menu_item(
-                "side-flt-all",
-                Some(render_folder_icon(ICON, s.muted)),
-                loc.pick("全部项目对话", "All projects"),
-                s,
+        let filter_path = self.sidebar_project_filter.as_deref();
+        let active_project = filter_path.and_then(|root| {
+            self.project_registry
+                .projects
+                .iter()
+                .find(|project| project.root_path == root)
+        });
+        let scope = active_project
+            .map(|project| project.name.as_str())
+            .or_else(|| filter_path.and_then(|p| p.file_name()?.to_str()))
+            .map(crate::studio_hub::project_display_name)
+            .unwrap_or_else(|| loc.pick("全部项目", "All projects"));
+        let open = self.open_menu == Some(Menu::SidebarFilter);
+        let scope_label = format!(
+            "{} · {scope}",
+            loc.pick("按项目筛选对话", "Filter chats by project")
+        );
+        let trigger = Tactile::ghost("side-project-scope", s)
+            .max_w_full()
+            .min_w_0()
+            .h(px(CTRL_SM_H))
+            .px(px(6.))
+            .gap(px(4.))
+            .radius(R_CTRL)
+            .lit(open)
+            .expanded(open)
+            .ink(
+                if filter_path.is_some() {
+                    s.text
+                } else {
+                    s.muted
+                },
+                s.ink,
             )
-            .when(cur_filter.is_none(), |r| r.child(menu_check(s)))
-            .on_press(cx, |this, _, cx| {
-                this.sidebar_project_filter = None;
-                this.prefs.active_project_filter = None;
-                this.save_prefs();
-                this.open_menu = None;
-                cx.notify();
-            })
-            .into_any_element(),
-            menu_divider(s).into_any_element(),
-        ];
+            .aria(scope_label.clone())
+            .when(!open, |button| button.tip(scope_label))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(s.font_size(FS_META))
+                    .child(scope.to_owned()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .child(pro_icon(ProIcon::ChevronDown, 11., s.muted)),
+            )
+            .on_press(cx, |this, _, cx| this.toggle_menu(Menu::SidebarFilter, cx));
 
         let mut projects = self.project_registry.projects.clone();
         if self.prefs.sidebar_project_order == crate::prefs::ProjectSortOrder::Alphabetical {
-            projects.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            projects.sort_by_key(|project| project.name.to_lowercase());
         }
-        for (ix, proj) in projects.iter().enumerate() {
-            let p_norm = proj
-                .root_path
-                .canonicalize()
-                .unwrap_or_else(|_| proj.root_path.clone());
-            let is_sel = cur_filter.as_ref() == Some(&p_norm);
-            let root = proj.root_path.clone();
-            rows.push(
+        let current = projects
+            .iter()
+            .position(|p| Some(p.root_path.as_path()) == filter_path)
+            .map_or(0, |index| index + 1);
+        let last = projects.len() + 1;
+        let navigation = window.use_keyed_state("side-project-options", cx, |_, _| {
+            (None::<usize>, ScrollHandle::new())
+        });
+        if !open && navigation.read(cx).0.is_some() {
+            navigation.update(cx, |state, _| state.0 = None);
+        }
+        let (cursor, scroll) = navigation.read(cx).clone();
+        let all = menu_icon_item(
+            "side-flt-all",
+            ProIcon::List,
+            loc.pick("全部项目", "All projects"),
+            s,
+        )
+        .lit(cursor == Some(0))
+        .when(filter_path.is_none(), |row| row.child(menu_check(s)))
+        .on_press(cx, |this, _, cx| this.set_sidebar_project_filter(None, cx));
+        let mut rows = div()
+            .id("side-project-options-list")
+            .max_h(px(
+                (f32::from(window.viewport_size().height) - 32.).clamp(36., 348.)
+            ))
+            .overflow_y_scroll()
+            .track_scroll(&scroll)
+            .child(all)
+            .child(menu_divider(s));
+        for (index, project) in projects.iter().enumerate() {
+            let root = project.root_path.clone();
+            let name = crate::studio_hub::project_display_name(&project.name);
+            rows = rows.child(
                 menu_item(
-                    ("side-flt-proj", ix),
-                    Some(render_project_mark(crate::studio_hub::project_display_name(&proj.name), 16., s, cx).into_any_element()),
-                    crate::studio_hub::project_display_name(&proj.name).to_owned(),
+                    ("side-flt-proj", index),
+                    Some(render_project_mark(name, 16., s, cx).into_any_element()),
+                    name.to_owned(),
                     s,
                 )
-                .when(is_sel, |r| r.child(menu_check(s)))
+                .lit(cursor == Some(index + 1))
+                .when(index + 1 == current, |row| row.child(menu_check(s)))
                 .on_press(cx, move |this, _, cx| {
-                    this.sidebar_project_filter = Some(root.clone());
-                    this.prefs.active_project_filter = Some(root.clone());
-                    this.save_prefs();
-                    this.open_menu = None;
-                    cx.notify();
-                })
-                .into_any_element(),
+                    this.set_sidebar_project_filter(Some(root.clone()), cx)
+                }),
             );
         }
-
-        rows.push(menu_divider(s).into_any_element());
-        rows.push(
+        rows = rows.child(menu_divider(s)).child(
             menu_icon_item(
                 "side-add-project",
                 ProIcon::FolderPlus,
                 loc.pick("添加项目…", "Add project…"),
                 s,
             )
+            .lit(cursor == Some(last))
             .on_press(cx, |this, win, cx| {
                 this.open_menu = None;
                 this.add_project_folder(win, cx);
-            })
-            .into_any_element(),
+            }),
         );
-        self.render_menu(
+        let menu = self.render_menu(
             Menu::SidebarFilter,
             MenuPlacement::BelowEnd,
-            220.,
-            rows,
+            228.,
+            vec![rows.into_any_element()],
             s,
             cx,
-        )
+        );
+        menu_host(trigger, menu)
+            .max_w(relative(0.66))
+            .capture_key_down(cx.listener(move |this, ev: &KeyDownEvent, win, cx| {
+                if this.open_menu != Some(Menu::SidebarFilter) || ev.keystroke.modifiers.modified()
+                {
+                    return;
+                }
+                let selected = cursor.unwrap_or(current).min(last);
+                let next = match ev.keystroke.key.as_str() {
+                    "down" => (selected + 1) % (last + 1),
+                    "up" => (selected + last) % (last + 1),
+                    "home" => 0,
+                    "end" => last,
+                    "enter" | "space" => {
+                        if selected == last {
+                            this.open_menu = None;
+                            this.add_project_folder(win, cx);
+                        } else {
+                            let root = selected
+                                .checked_sub(1)
+                                .map(|index| projects[index].root_path.clone());
+                            this.set_sidebar_project_filter(root, cx);
+                        }
+                        win.prevent_default();
+                        cx.stop_propagation();
+                        return;
+                    }
+                    _ => return,
+                };
+                navigation.update(cx, |(cursor, scroll), _| {
+                    *cursor = Some(next);
+                    scroll.scroll_to_item(next + usize::from(next > 0) + usize::from(next == last));
+                });
+                win.prevent_default();
+                cx.stop_propagation();
+                cx.notify();
+            }))
     }
 
     fn render_sidebar_more_menu(

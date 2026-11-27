@@ -7,7 +7,9 @@ mod composer_activity;
 mod composer_controls;
 mod message_time;
 mod reply_stream;
+mod reading_anchor;
 mod turn_outline;
+mod thread_details;
 mod turn_rail;
 pub(crate) mod turn_navigation;
 pub(crate) mod turn_steps;
@@ -68,8 +70,8 @@ use crate::{
         ICON_SM, ICON_XS, LH_META, LH_READ, LH_UI, R_CARD, R_CTRL, R_HERO, R_PILL, R_SM, R_XS, ROW_H, StudioPalette, UiLocale,
         THREAD_PAD, TITLEBAR_BUTTON_GAP, TITLEBAR_EDGE_INSET, card_box, clean_display_doc_name, frosted_card, macos_traffic_pad, mono_font,
         render_bg_layers_icon,
-        render_file_diff_icon, render_folder_git_icon, render_folder_icon, render_git_branch_icon,
-        render_machine_icon, render_office_chip,
+        render_file_diff_icon, render_folder_icon, render_git_branch_icon,
+        render_office_chip,
         render_runtime_mark, render_schedule_repeat_icon,
         render_skills_puzzle_icon, render_square_menu_icon, render_status,
         render_steer_merge_icon, search_input_box, tnum_features,
@@ -142,6 +144,9 @@ impl KarWorkbench {
         let center_w = pane_w - review_width;
 
         let thread_w = self.prefs.chat_width_mode.width_for_pane(center_w);
+        let details = thread_details::Placement::for_thread(center_w, thread_w, f32::from(s.font_size(FS_UI)) / FS_UI);
+        let reveal = self.thread_details_reveal(window, cx);
+        let details_height = details.strip_height(reveal);
         let header = self.render_chat_header(
             pane_w,
             revealed_dock_width,
@@ -337,6 +342,15 @@ impl KarWorkbench {
                 }
                 recent.is_some_and(|(id, at)| Some(id) == tail && at.elapsed() < Duration::from_secs(2))
             }) && pending_count == 0 && !self.chat_search_open && !self.chat_follow_paused;
+            let geometry = (self.current_chat_id(), center_w, details_height);
+            let previous = window.use_keyed_state("thread-reading-geometry", cx, |_, _| geometry);
+            let (previous_chat, previous_width, previous_shelf) =
+                previous.update(cx, |last, _| std::mem::replace(last, geometry));
+            let same_thread = previous_chat == geometry.0;
+            let reflow = same_thread && (previous_width - center_w).abs() > 0.01;
+            let shelf_resized = same_thread && (previous_shelf - details_height).abs() > 0.01;
+            let anchor = (reflow && scroll_remaining > 1. && !reveal_question)
+                .then(|| reading_anchor::ReadingAnchor::capture(&self.chat_scroll)).flatten();
             let handle = self.chat_scroll.clone();
             let count = rows.len();
             let scroll = div()
@@ -364,12 +378,16 @@ impl KarWorkbench {
                     }
                 }))
                 .children(rows.into_iter().enumerate().map(|(index, row)| {
-                    chat_content_lane(center_w, thread_w, window)
+                    let row = chat_content_lane(center_w, thread_w, window)
                         .flex_none()
                         .pt(px(if index == 0 { 24. } else { 32. }))
                         .when(index + 1 == count, |d| d.pb(px(32.)))
                         .when(show_rail, |d| d.pl(px(rail_padding)))
-                        .child(row)
+                        .child(row).into_any_element();
+                    match &anchor {
+                        Some(anchor) => anchor.track(index, row),
+                        None => row,
+                    }
                 }))
                 .children(question);
             let center_lane = div()
@@ -385,16 +403,18 @@ impl KarWorkbench {
                         .flex_1()
                         .min_h_0()
                         .overflow_hidden()
-                        .when(follow_layout, |d| d.child(canvas(
-                            move |_, _, _| {
-                                if handle.max_offset().y + handle.offset().y <= px(1.) {
+                        .when(follow_layout || reflow || shelf_resized, |d| d.child(canvas(
+                            move |viewport, window, _| {
+                                if let Some(anchor) = anchor {
+                                    anchor.restore(viewport, &handle, window);
+                                } else if handle.max_offset().y + handle.offset().y <= px(1.) {
                                     handle.scroll_to_bottom();
                                 }
                             },
                             |_, _, _, _| {},
-                        ).absolute().size_0()))
+                        ).absolute().inset_0()))
                         .child(scroll)
-                        .child(timeline_top_fade(self.chat_scroll.clone(), crate::ui_primitives::material::surface_ground(&s)))
+                        .child(timeline_top_fade(self.chat_scroll.clone(), crate::ui_primitives::material::reading_surface(&s)))
                         .children(rail)
                         .when(show_jump_bottom, |lane| lane.child(self.jump_to_latest(activity.is_some(), &s, window, cx))),
                 )
@@ -403,6 +423,7 @@ impl KarWorkbench {
 
             center_lane.into_any_element()
         };
+        let stage = self.thread_body_with_details(stage, details, reveal, &s, cx);
         let stage = if show_review_rail && let Some(review) = self.turn_review.as_ref() {
             div()
                 .size_full()
@@ -803,215 +824,6 @@ impl KarWorkbench {
             .tip(label)
             .child(render_square_menu_icon(15.5, if self.thread_details_open { s.ink } else { s.muted }))
             .on_press(cx, |this, _, cx| this.toggle_thread_details(cx))
-    }
-
-    pub(crate) fn render_thread_details_card(
-        &self,
-        s: &StudioPalette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let loc = self.ui_locale;
-        let chat_id = self.current_chat_id();
-        let host_label = match &self.access_mode {
-            ChatAccessMode::RemoteController { host_name, .. } => host_name.clone(),
-            ChatAccessMode::DemoShowcase => "MacStudio".into(),
-            _ => loc.pick("本机", "Local computer").into(),
-        };
-
-        let wt_branch = chat_id
-            .and_then(|cid| self.project_registry.worktree_for(cid))
-            .map(|wt| wt.branch.clone());
-        let branch_name = if matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
-            "feat/offline-sync".to_owned()
-        } else {
-            wt_branch
-                .or_else(|| self.git_snapshot.current_branch.clone())
-                .unwrap_or_else(|| "HEAD".into())
-        };
-        let (added_n, deleted_n) = if matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
-            (71usize, 2usize)
-        } else {
-            self.git_snapshot.line_stats()
-        };
-        let dirty_count = self.git_snapshot.dirty_count();
-
-        let open_in_row = menu_host(
-            Tactile::ghost("details-open-in-btn", s)
-                .w_full()
-                .h(px(32.))
-                .px(px(10.))
-                .justify_between()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(9.))
-                        .child(pro_icon(ProIcon::ExternalArrow, 14., s.muted))
-                        .child(
-                            div()
-                                .text_size(s.font_size(FS_UI))
-                                .text_color(s.text)
-                                .child(loc.pick("在编辑器或画布打开", "Open in editor")),
-                        ),
-                )
-                .child(pro_icon(ProIcon::ChevronDown, 11., s.muted))
-                .lit(self.open_menu == Some(Menu::DetailsOpenIn))
-                .on_press(cx, |this, _, cx| this.toggle_menu(Menu::DetailsOpenIn, cx)),
-            self.render_details_open_in_menu(s, cx),
-        );
-
-        let scripts_row = menu_host(
-            Tactile::ghost("details-scripts-btn", s)
-                .w_full()
-                .h(px(32.))
-                .px(px(10.))
-                .gap(px(9.))
-                .child(pro_icon(ProIcon::Plus, 14., s.muted))
-                .child(
-                    div()
-                        .text_size(s.font_size(FS_UI))
-                        .text_color(s.text)
-                        .child(loc.pick("运行项目脚本", "Add project script")),
-                )
-                .lit(self.open_menu == Some(Menu::DetailsScripts))
-                .on_press(cx, |this, _, cx| this.toggle_menu(Menu::DetailsScripts, cx)),
-            self.render_details_scripts_menu(s, cx),
-        );
-
-        let branch_row = menu_host(
-            Tactile::ghost("details-branch-btn", s)
-                .w_full()
-                .h(px(32.))
-                .px(px(10.))
-                .justify_between()
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex()
-                        .items_center()
-                        .gap(px(9.))
-                        .child(render_git_branch_icon(14., s.muted))
-                        .child(
-                            div()
-                                .truncate()
-                                .text_size(s.font_size(FS_UI))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(s.ink)
-                                .child(branch_name.clone()),
-                        ),
-                )
-                .child(pro_icon(ProIcon::ChevronDown, 11., s.muted))
-                .lit(self.open_menu == Some(Menu::DetailsBranch))
-                .on_press(cx, |this, _, cx| this.toggle_menu(Menu::DetailsBranch, cx)),
-            self.render_git_branch_menu(
-                Menu::DetailsBranch,
-                &self.git_snapshot,
-                &branch_name,
-                MenuPlacement::BelowEnd,
-                s,
-                cx,
-            ),
-        );
-
-        crate::ui_primitives::frosted_panel(s)
-            .id("thread-details-card")
-            .occlude()
-            .w_full()
-            .p(px(6.))
-            .flex()
-            .flex_col()
-            .gap(px(1.))
-            .child(
-                div()
-                    .w_full()
-                    .h(px(32.))
-                    .px(px(10.))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .gap(px(9.))
-                            .child(render_machine_icon(14.5, s.muted))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(s.font_size(FS_UI))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(s.ink)
-                                    .child(host_label),
-                            ),
-                    )
-                    .child(render_folder_git_icon(14., s.muted)),
-            )
-            .child(open_in_row)
-            .child(scripts_row)
-            .when(self.git_snapshot.is_repo, |d| {
-                d.child(div().my(px(4.)).mx(px(8.)).h(px(1.)).bg(s.line))
-                    .child(branch_row).child(
-                    Tactile::ghost("details-open-changes", s)
-                        .w_full()
-                        .h(px(32.))
-                        .px(px(10.))
-                        .justify_between()
-                        .tip(loc.pick("在右侧打开完整差异审查  ⇧⌘G", "Open diff panel  ⇧⌘G"))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .child(render_file_diff_icon(14., s.muted))
-                                .child(
-                                    div()
-                                        .text_size(s.font_size(FS_UI))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(s.ink)
-                                        .child(loc.pick("变更", "Changes")),
-                                )
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(s.font_size(FS_META))
-                                        .text_color(s.muted)
-                                        .child(loc.pick("工作区", "Working tree")),
-                                ),
-                        )
-                        .child(if added_n > 0 || deleted_n > 0 {
-                            div()
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .gap(px(5.))
-                                .font_features(tnum_features())
-                                .text_size(s.font_size(FS_META))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(
-                                    div()
-                                        .text_color(s.pro.green_ink)
-                                        .child(format!("+{added_n}")),
-                                )
-                                .child(
-                                    div()
-                                        .text_color(s.pro.red_ink)
-                                        .child(format!("-{deleted_n}")),
-                                )
-                                .into_any_element()
-                        } else {
-                            div()
-                                .font_features(tnum_features())
-                                .text_size(s.font_size(FS_META))
-                                .text_color(s.muted)
-                                .child(format!("{dirty_count}"))
-                                .into_any_element()
-                        })
-                        .on_press(cx, |this, _, cx| this.open_git_workbench_tab(cx)),
-                )
-            })
-            .into_any_element()
     }
 
     fn render_details_open_in_menu(
@@ -5677,12 +5489,22 @@ fn timeline_top_fade(scroll: ScrollHandle, surface: Hsla) -> impl IntoElement {
         move |bounds, _, window, _| {
             let opacity = (-f32::from(scroll.offset().y) / LH_READ).clamp(0., 1.);
             if opacity > 0. {
-                let gradient = linear_gradient(
-                    180.,
-                    linear_color_stop(surface.opacity(opacity), 0.),
-                    linear_color_stop(surface.opacity(0.), 1.),
+                // A feather in the reading surface's own color only softens the scrolling
+                // ink. A color gradient also dithers the empty pixels across the whole pane.
+                let height = bounds.size.height;
+                let feather = Bounds::new(
+                    point(bounds.left() - height, bounds.top() - height),
+                    size(bounds.size.width + 2. * height, 1.5 * height),
                 );
-                window.paint_quad(fill(bounds, gradient));
+                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                    window.paint_drop_shadows(feather, Corners::default(), &[BoxShadow {
+                        color: surface.opacity(opacity),
+                        blur_radius: height / 6.,
+                        offset: Point::default(),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }]);
+                });
             }
         },
     )

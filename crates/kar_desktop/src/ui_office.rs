@@ -441,6 +441,7 @@ impl KarWorkbench {
             .flex_col()
             .overflow_hidden()
             .child(header)
+            .when(single_dock, |pane| pane.child(self.compact_document_details(pane_w, &s, window, cx)))
             .child(div().flex_1().min_h_0().overflow_hidden().child(body))
             .into_any_element()
     }

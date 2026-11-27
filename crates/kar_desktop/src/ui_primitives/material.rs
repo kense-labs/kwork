@@ -55,8 +55,7 @@ pub(crate) fn window_tint(s: &StudioPalette) -> Hsla {
     }
 }
 
-/// Leave some tonal room below white glass. The same ground sits under settings
-/// cards and the transcript, so both retain a visible edge on a bright desktop.
+/// Leave some tonal room below white glass so cards keep a visible edge.
 pub(crate) fn surface_ground(s: &StudioPalette) -> Hsla {
     if s.dark {
         s.surface
@@ -65,10 +64,14 @@ pub(crate) fn surface_ground(s: &StudioPalette) -> Hsla {
     }
 }
 
+/// The titlebar and the fade over scrolling ink must resolve to the same color.
+/// Flatten the window tints here so a desktop behind the window cannot reveal a seam.
 pub(crate) fn reading_surface(s: &StudioPalette) -> Hsla {
     let ground = surface_ground(s);
     if native_glass() {
-        ground.opacity(if s.dark { 0.56 } else { 0.72 })
+        black()
+            .blend(window_tint(s))
+            .blend(ground.opacity(if s.dark { 0.56 } else { 0.72 }))
     } else {
         ground
     }
