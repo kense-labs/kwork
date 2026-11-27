@@ -123,7 +123,8 @@ fn is_unversioned_folder(workspace: &Path, error: &kar::Error) -> bool {
     };
     let no_repository = stderr == "fatal: not a git repository (or any of the parent directories): .git"
         || stderr.starts_with("fatal: not a git repository (or any parent up to mount point ");
-    no_repository && workspace.ancestors().all(|dir| {
+    let Ok(folder) = workspace.canonicalize() else { return false };
+    no_repository && folder.ancestors().all(|dir| {
         std::fs::symlink_metadata(dir.join(".git"))
             .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
     })
@@ -3060,6 +3061,11 @@ mod git_discovery_tests {
         let folder = tempfile::tempdir().unwrap();
         let plain = discover_git_workspace(folder.path());
         assert!(!plain.is_repo && plain.error.is_none(), "{plain:?}");
+        // A path from a repository through ".." may lead to an ordinary documents folder.
+        let repo = folder.path().join("project");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let via_project = discover_git_workspace(&repo.join(".."));
+        assert!(!via_project.is_repo && via_project.error.is_none(), "{via_project:?}");
         std::fs::create_dir(folder.path().join(".git")).unwrap();
         let damaged = discover_git_workspace(folder.path());
         assert!(!damaged.is_repo && damaged.error.is_some(), "{damaged:?}");
