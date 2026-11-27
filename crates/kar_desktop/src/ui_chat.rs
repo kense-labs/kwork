@@ -2039,8 +2039,14 @@ impl KarWorkbench {
         {
             let default = loc.pick("运行时默认", "Runtime default");
             let mut metadata = div().px(px(8.)).py(px(6.)).flex().flex_col().gap(px(6.));
+            if !crate::aster::is_aster(&info.runtime) {
+                metadata = metadata.child(context_usage::detail_row(
+                    loc.pick("智能体", "Agent"),
+                    runtime_display_name(&info.runtime),
+                    s,
+                ));
+            }
             for (label, value) in [
-                (loc.pick("智能体", "Agent"), runtime_display_name(&info.runtime)),
                 (loc.pick("模型", "Model"), info.model.as_deref().unwrap_or(default).to_owned()),
                 (loc.pick("推理档位", "Reasoning"), info.settings.effort.as_deref().map(|level| effort_label(level, loc)).unwrap_or(default).to_owned()),
             ] {
@@ -2170,7 +2176,20 @@ impl KarWorkbench {
             catalogue
                 .filter(|_| !chat_open)
                 .and_then(|p| p.models.iter().find(|entry| entry.is_default))
-                .map_or_else(|| runtime_display_name(&runtime_id), |entry| entry.label.clone())
+                .map_or_else(
+                    || {
+                        if crate::aster::is_aster(&runtime_id) {
+                            if chat_open {
+                                loc.pick("默认模型", "Default model").to_owned()
+                            } else {
+                                loc.pick("选择模型", "Select model").to_owned()
+                            }
+                        } else {
+                            runtime_display_name(&runtime_id)
+                        }
+                    },
+                    |entry| entry.label.clone(),
+                )
         };
         let agent_button = Tactile::ghost("cmp-agent", s)
             .min_w_0()
@@ -3276,7 +3295,8 @@ impl KarWorkbench {
             .iter()
             .filter(|p| p.readiness() != ProviderReadiness::NotInstalled)
             .collect();
-        installed.sort_by_key(|p| p.readiness());
+        installed.sort_by_key(|p| (!crate::aster::is_aster(&p.id), p.readiness()));
+        let show_rail = installed.iter().any(|p| !crate::aster::is_aster(&p.id));
 
         let mut rail = div()
             .id("picker-agents")
@@ -3435,7 +3455,7 @@ impl KarWorkbench {
             .flex_1()
             .min_h_0()
             .flex()
-            .child(rail)
+            .when(show_rail, |d| d.child(rail))
             .child(model_list);
         // Keep the list in place when neighboring models offer different reasoning controls.
         if provider.is_some_and(|p| {
@@ -6209,7 +6229,17 @@ impl KarWorkbench {
             .then_some(self.selected_model.as_deref())
             .flatten();
         let loc = self.ui_locale;
-        let default_label = loc.pick("智能体默认模型", "Agent default model");
+        let is_builtin = crate::aster::is_aster(runtime);
+        let default_label = if is_builtin {
+            loc.pick("默认模型", "Default model")
+        } else {
+            loc.pick("智能体默认模型", "Agent default model")
+        };
+        let default_prefix = if is_builtin {
+            loc.pick("默认", "Default")
+        } else {
+            loc.pick("智能体默认", "Agent default")
+        };
         let mut choices = Vec::new();
         // Typing a model's own name should select that explicit model rather than the default alias.
         if query.is_empty() || default_label.to_lowercase().contains(query) {
@@ -6217,13 +6247,7 @@ impl KarWorkbench {
                 .models
                 .iter()
                 .find(|model| model.is_default)
-                .map(|model| {
-                    format!(
-                        "{} · {}",
-                        loc.pick("智能体默认", "Agent default"),
-                        model.label
-                    )
-                })
+                .map(|model| format!("{default_prefix} · {}", model.label))
                 .unwrap_or_else(|| default_label.to_owned());
             choices.push((None, label));
         }

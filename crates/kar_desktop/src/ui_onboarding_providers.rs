@@ -27,10 +27,11 @@ impl KarWorkbench {
         let Some(id) = &self.onboarding_provider else {
             return false;
         };
-        if self
-            .providers
-            .iter()
-            .any(|p| p.id == *id && p.readiness() == ProviderReadiness::Ready)
+        if !crate::aster::is_aster(id)
+            && self
+                .providers
+                .iter()
+                .any(|p| p.id == *id && p.readiness() == ProviderReadiness::Ready)
         {
             let id = id.clone();
             self.select_runtime_by_id(&id, cx);
@@ -47,11 +48,9 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(agent) = self
-            .providers
-            .iter()
-            .find(|p| p.id == id && self.provider_accounts_checked)
-        else {
+        let Some(agent) = self.providers.iter().find(|p| {
+            p.id == id && !crate::aster::is_aster(&p.id) && self.provider_accounts_checked
+        }) else {
             return;
         };
         if agent.is_ready() {
@@ -201,7 +200,10 @@ impl KarWorkbench {
             let mut installed: Vec<_> = self
                 .providers
                 .iter()
-                .filter(|p| p.readiness() != ProviderReadiness::NotInstalled)
+                .filter(|p| {
+                    !crate::aster::is_aster(&p.id)
+                        && p.readiness() != ProviderReadiness::NotInstalled
+                })
                 .collect();
             installed.sort_by_key(|p| (p.readiness(), p.id != self.selected_runtime));
             if installed.is_empty() {

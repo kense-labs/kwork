@@ -13,7 +13,7 @@ Kwrok is a native Rust and GPUI desktop for coding with Kar. Click a filename in
 
 Open the DMG and drag **Kwrok** to **Applications**. This preview is for Apple Silicon Macs. The release page includes the SHA-256 checksum and signing details. [Release notes](https://github.com/kense-labs/kwork/releases/tag/v0.23.0-native-preview.1)
 
-Choose a project folder. In **Settings → Agents & Accounts**, click **Set default** next to an available agent to use it for new chats. The initial default is Aster. To set it up, choose **Add an agent**, install Aster ACP, then configure its model provider in Aster.
+Choose a project folder. Kwrok includes a built-in default agent runtime out of the box; you can also connect external agents in **Settings → Agents & Accounts** and click **Set default** to use one for new chats.
 
 ## Review a change
 

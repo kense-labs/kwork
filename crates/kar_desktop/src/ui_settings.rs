@@ -211,7 +211,7 @@ const SETTINGS_DEEP_INDEX: &[DeepSettingItem] = &[
         tab: SettingsTab::Agents,
         title_zh: "选择默认智能体、登录和管理账号",
         title_en: "Default agent, sign-in and accounts",
-        keywords: "login logout oauth api key update upgrade codex claude gemini aster 登录 退出 账号 默认 密钥 升级 安装",
+        keywords: "login logout oauth api key update upgrade codex claude gemini 登录 退出 账号 默认 密钥 升级 安装",
     },
     DeepSettingItem {
         tab: SettingsTab::Agents,

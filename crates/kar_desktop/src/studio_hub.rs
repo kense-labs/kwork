@@ -2066,11 +2066,16 @@ pub fn compute_usage_analytics(
     {
         total_chats = infos.len();
         for info in infos {
+            let key = if crate::aster::is_aster(&info.runtime) {
+                crate::aster::ID.to_owned()
+            } else {
+                info.runtime.clone()
+            };
             let entry = rows
-                .entry(info.runtime.clone())
+                .entry(key.clone())
                 .or_insert_with(|| RuntimeTokenRow {
-                    runtime_id: info.runtime.clone(),
-                    display_name: runtime_display_name(&info.runtime),
+                    display_name: runtime_display_name(&key),
+                    runtime_id: key,
                     ..Default::default()
                 });
             entry.chat_count += 1;
@@ -2107,10 +2112,15 @@ pub fn compute_usage_analytics(
     for (turn, owner) in turn_owners {
         *turns_by_chat.entry(owner.chat).or_default() += 1;
         if let Some(runtime_id) = owner.runtime {
-            rows.entry(runtime_id.clone())
+            let key = if crate::aster::is_aster(&runtime_id) {
+                crate::aster::ID.to_owned()
+            } else {
+                runtime_id
+            };
+            rows.entry(key.clone())
                 .or_insert_with(|| RuntimeTokenRow {
-                    display_name: runtime_display_name(&runtime_id),
-                    runtime_id,
+                    display_name: runtime_display_name(&key),
+                    runtime_id: key,
                     ..Default::default()
                 })
                 .turn_count += 1;
@@ -2155,10 +2165,15 @@ pub fn compute_usage_analytics(
     // Attach live provider quota summaries
     for prov in providers {
         if let Some(ref q) = prov.quota_summary {
+            let key = if crate::aster::is_aster(&prov.id) {
+                crate::aster::ID.to_owned()
+            } else {
+                prov.id.clone()
+            };
             let row = rows
-                .entry(prov.id.clone())
+                .entry(key.clone())
                 .or_insert_with(|| RuntimeTokenRow {
-                    runtime_id: prov.id.clone(),
+                    runtime_id: key,
                     display_name: prov.display_name(),
                     ..Default::default()
                 });

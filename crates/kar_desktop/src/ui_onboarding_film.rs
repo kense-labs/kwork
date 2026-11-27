@@ -116,9 +116,9 @@ const MARKS: &[AgentSpec] = &[
         kind: MarkKind::Symbol,
     },
     AgentSpec {
-        svg: include_bytes!("../../../assets/icons/aster-light.svg"),
-        aura: 0x8b7cff,
-        ink_hex: None,
+        svg: include_bytes!("../../../assets/icons/agents/factory.svg"),
+        aura: 0xfb923c,
+        ink_hex: Some("#1c1917"),
         kind: MarkKind::Symbol,
     },
 ];

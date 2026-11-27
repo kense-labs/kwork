@@ -756,8 +756,14 @@ fn decode_percent_svg_data_uri(data_uri: &str, dark_bg: bool) -> Option<Vec<u8>>
 type BrandImageCache = LazyLock<Mutex<HashMap<(String, bool), Arc<Image>>>>;
 
 /// Draw the same provider identity at every size, using GPUI's device-scale SVG cache.
-pub fn render_runtime_mark(runtime_id: &str, side: f32, s: &StudioPalette, _cx: &App) -> AnyElement {
+pub fn render_runtime_mark(runtime_id: &str, side: f32, s: &StudioPalette, cx: &App) -> AnyElement {
     static BRAND_CACHE: BrandImageCache = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    if crate::aster::is_aster(runtime_id)
+        && let Some(mark) = pro_app_artwork("kense", side, cx)
+    {
+        return mark;
+    }
 
     let brand_id = runtime_brand_id(runtime_id);
     if let Some(data_uri) = runtime_brand_svg(brand_id, s.dark) {

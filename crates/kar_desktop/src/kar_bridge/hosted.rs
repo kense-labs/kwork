@@ -86,7 +86,7 @@ impl Hosted {
                     .files
                     .iter()
                     .any(|f| crate::aster::runtime_artifact(&f.path)),
-                "恢复会覆盖 Aster 会话记录，请先检查文件差异"
+                "恢复会覆盖当前会话记录，请先检查文件差异"
             );
         }
         let report: kar::chat::RollbackReport = serde_json::from_value(
@@ -197,7 +197,7 @@ pub(super) async fn transfer(
         _ => Hosted::new(state, chat).await?,
     };
     if runtime == crate::aster::ID {
-        let binary = crate::aster::find_binary().context("请先安装 Aster")?;
+        let binary = crate::aster::find_binary().context("内置智能体运行环境不可用")?;
         runtime = crate::aster::register(&hosted.engine, &binary).await?;
     }
     let command = Uuid::new_v4();

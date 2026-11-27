@@ -3727,6 +3727,13 @@ impl KarWorkbench {
         cx.notify();
     }
 
+    pub(crate) fn builtin_runtime_id(&self) -> String {
+        self.providers
+            .iter()
+            .find(|p| crate::aster::is_aster(&p.id))
+            .map_or_else(|| crate::aster::ID.to_owned(), |p| p.id.clone())
+    }
+
     /// Choose the agent new chats start with.
     pub fn select_runtime_by_id(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.selected_runtime != id {

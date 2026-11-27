@@ -23,8 +23,9 @@ jobs:
           --skip workbench_guest_link_stays_bound_to_its_chat_and_revokes
       - name: Package the app
         run: scripts/macos-kwrok-app.sh target/debug/kar-desktop target
-      - name: Verify packaged dictation
+      - name: Verify packaged dictation and runtime helpers
         run: |
           target/Kwrok.app/Contents/Helpers/kwrok-dictation --list-devices | grep 'type=cpu'
+          test -x target/Kwrok.app/Contents/Helpers/aster-acp
           test -s target/Kwrok.app/Contents/Resources/Dictation/whisper-base-Q8_0.gguf
           codesign --verify --deep --strict target/Kwrok.app

@@ -15,7 +15,10 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::{
     engine::Engine,
-    types::{ModelCatalogState, ProviderAuthState, ProviderAvailability, ProviderModelOption, ProviderStatusInfo},
+    types::{
+        ModelCatalogState, ProviderAuthState, ProviderAvailability, ProviderModelOption,
+        ProviderStatusInfo,
+    },
 };
 
 pub(crate) const ID: &str = "aster";
@@ -72,14 +75,15 @@ pub(crate) fn find_binary() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("ASTER_ACP_AGENT_BIN").map(PathBuf::from) {
         return path.is_absolute().then_some(path).filter(|p| executable(p));
     }
-    let bundle = std::env::current_exe().ok().and_then(|p| {
-        p.parent()?
-            .parent()
-            .map(|d| d.join("Resources").join(filename()))
-    });
+    let contents = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent()?.parent().map(Path::to_path_buf));
+    let bundle = contents
+        .iter()
+        .flat_map(|dir| [dir.join("Helpers"), dir.join("Resources")])
+        .map(|dir| dir.join(filename()));
     let path = crate::kar_bridge::augmented_path_os();
     bundle
-        .into_iter()
         .chain(
             std::env::split_paths(&path)
                 .filter(|dir| dir.is_absolute())
@@ -120,19 +124,19 @@ pub(crate) async fn register(engine: &Engine, binary: &Path) -> Result<String> {
             Method::PUT,
             "/acp-registry/profiles/kwork-aster",
             Some(json!({
-                "source": "local", "name": "Aster", "command_path": binary, "command_args": []
+                "source": "local", "name": crate::APP_NAME, "command_path": binary, "command_args": []
             })),
         )
         .await?;
     Ok(profile["runtime"]
         .as_str()
         .filter(|id| id.starts_with(PREFIX))
-        .context("Kar 未返回 Aster 启动配置")?
+        .context("Kar 未返回内置运行环境启动配置")?
         .into())
 }
 
-// Aster publishes the active model and catalogue during ACP initialize. This probe never opens
-// a chat, executes a prompt or imports another application's credentials.
+// The built-in ACP helper publishes the active model and catalogue during ACP initialize. This
+// probe never opens a chat, executes a prompt or imports another application's credentials.
 async fn metadata(binary: &Path, workspace: &Path) -> Result<Value> {
     let mut child = tokio::process::Command::new(binary)
         .current_dir(workspace)
@@ -154,14 +158,14 @@ async fn metadata(binary: &Path, workspace: &Path) -> Result<Value> {
                 continue;
             }
             let meta = &reply["result"]["_meta"];
-            ensure!(meta["asterCode"] == true, "启动程序没有返回 Aster ACP 能力");
+            ensure!(meta["asterCode"] == true, "启动程序未返回所需的 ACP 能力");
             return Ok(meta.clone());
         }
-        bail!("Aster ACP 在初始化完成前退出")
+        bail!("内置运行环境在初始化完成前退出")
     };
     let result = tokio::time::timeout(Duration::from_secs(8), reply).await;
     let _ = child.kill().await;
-    result.context("Aster ACP 初始化超时")?
+    result.context("内置运行环境初始化超时")?
 }
 
 fn catalog_models(catalog: &Value) -> Vec<ProviderModelOption> {
@@ -175,7 +179,7 @@ fn catalog_models(catalog: &Value) -> Vec<ProviderModelOption> {
                 id: id.into(),
                 label: row["name"].as_str().unwrap_or(id).into(),
                 is_default: catalog["currentModelId"] == id,
-                // Aster's effort-setting wire contract differs from Kar's generic ACP adapters.
+                // Effort-setting wire contract differs from Kar's generic ACP adapters.
                 effort_levels: vec![],
             })
         })
@@ -183,7 +187,7 @@ fn catalog_models(catalog: &Value) -> Vec<ProviderModelOption> {
 }
 
 pub(crate) async fn read_models(workspace: &Path) -> Result<Vec<ProviderModelOption>> {
-    let binary = find_binary().context("Aster is unavailable")?;
+    let binary = find_binary().context("Built-in runtime is unavailable")?;
     let meta = metadata(&binary, workspace).await?;
     Ok(catalog_models(&meta["modelState"]))
 }
@@ -205,7 +209,7 @@ pub(crate) async fn probe(engine: Option<&Engine>, workspace: &Path) -> Provider
             provider.id = id;
             provider.workspace_commands = crate::kar_bridge::session_commands::advertised_commands(
                 &meta["availableCommands"],
-                "Aster",
+                crate::APP_NAME,
             )
             .map(|commands| (workspace.to_owned(), commands));
             let catalog = &meta["modelState"];
@@ -214,7 +218,7 @@ pub(crate) async fn probe(engine: Option<&Engine>, workspace: &Path) -> Provider
                 command: Some(binary),
             };
             provider.auth = ProviderAuthState::Unknown {
-                note: "模型认证由 Aster 配置管理".into(),
+                note: "模型认证由本地配置管理".into(),
             };
             provider.models = catalog_models(catalog);
             provider.model_catalog = ModelCatalogState::Available;
@@ -254,7 +258,7 @@ fn release() -> Option<(&'static str, &'static str)> {
 /// Fetch only the pinned release on explicit installation. Publish the executable atomically;
 /// running and previously saved sessions can continue using their resolved binary.
 pub(crate) fn install() -> Result<()> {
-    let (platform, expected) = release().context("Aster 尚未提供适用于此平台的安装包")?;
+    let (platform, expected) = release().context("当前平台暂未提供内置运行环境安装包")?;
     let dir = managed_dir().context("未找到用户目录")?;
     std::fs::create_dir_all(&dir)?;
     let url = format!(
@@ -282,7 +286,7 @@ pub(crate) fn install() -> Result<()> {
         .iter()
         .map(|v| format!("{v:02x}"))
         .collect();
-    ensure!(actual == expected, "Aster 安装包校验失败");
+    ensure!(actual == expected, "内置运行环境安装包校验失败");
     use std::io::{Seek, copy};
     archive.rewind()?;
     let mut output = tempfile::NamedTempFile::new_in(&dir)?;
@@ -297,12 +301,12 @@ pub(crate) fn install() -> Result<()> {
             if file.header().entry_type().is_file()
                 && file.path()?.file_name() == Some(OsStr::new(filename()))
             {
-                ensure!(!found, "Aster 安装包包含重复程序");
+                ensure!(!found, "内置运行环境安装包包含重复程序");
                 copy(&mut file, &mut output)?;
                 found = true;
             }
         }
-        ensure!(found, "Aster 安装包缺少 ACP 程序");
+        ensure!(found, "内置运行环境安装包缺少启动程序");
     }
     #[cfg(unix)]
     {

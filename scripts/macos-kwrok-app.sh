@@ -28,6 +28,7 @@ install -m644 "$root/LICENSE-MIT" "$root/LICENSE" "$root/NOTICE" "$app/Contents/
 mkdir -p "$app/Contents/Resources/Licenses/AgentArtwork"
 install -m644 "$root/assets/icons/agents/SOURCES.md" "$root/assets/icons/agents/LICENSE-ACP" "$app/Contents/Resources/Licenses/AgentArtwork/"
 "$root/scripts/macos-dictation.sh" "$app"
+"$root/scripts/macos-aster.sh" "$app"
 python3 "$root/scripts/third-party-licenses.py" "$app/Contents/Resources/Licenses/THIRD_PARTY_LICENSES.txt" kar_desktop kwrok_dictation
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

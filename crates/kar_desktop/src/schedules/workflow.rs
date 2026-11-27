@@ -129,7 +129,7 @@ fn definition(task: &ScheduledTask, root: &Path) -> Result<Value> {
 async fn resolved_definition(engine: &Engine, task: &ScheduledTask, root: &Path) -> Result<Value> {
     let mut value = definition(task, root)?;
     if task.runtime_id == crate::aster::ID {
-        let binary = crate::aster::find_binary().context("请先在智能体设置中安装 Aster")?;
+        let binary = crate::aster::find_binary().context("内置智能体运行环境不可用")?;
         let runtime = crate::aster::register(engine, &binary).await?;
         if let Some(step) = value["steps"]
             .as_array_mut()

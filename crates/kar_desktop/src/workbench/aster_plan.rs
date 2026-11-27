@@ -156,7 +156,7 @@ impl KarWorkbench {
         let label = if switching {
             loc.pick("正在切换模式…", "Switching mode…")
         } else {
-            loc.pick("Aster 计划模式", "Aster plan mode")
+            loc.pick("计划模式", "Plan mode")
         };
         let can_leave = !switching
             && !self.turn_in_progress()

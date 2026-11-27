@@ -63,7 +63,9 @@ pub(crate) fn runtime_brand_id(runtime: &str) -> &str {
 
 /// Product name of a Kar runtime, sourced from `kar::brands::runtime_brands()` with fallback.
 pub fn runtime_display_name(id: &str) -> String {
-    if crate::aster::is_aster(id) { return "Aster".into(); }
+    if crate::aster::is_aster(id) {
+        return crate::APP_NAME.into();
+    }
     if let Some(name) = crate::registry::name(id) { return name; }
     let id = runtime_brand_id(id);
     if let Some(brand) = kar::brands::runtime_brands().get(id) {
@@ -114,9 +116,10 @@ pub fn runtime_brand_svg(runtime: &str, dark_bg: bool) -> Option<&'static str> {
     }
 
     let id = runtime_brand_id(runtime);
+    if id == "aster" {
+        return None;
+    }
     Some(match id {
-        "aster" if dark_bg => svg!("aster-dark.svg"),
-        "aster" => svg!("aster-light.svg"),
         "antigravity" => svg!("agents/antigravity.svg"),
         "claude" => svg!("agents/claude.svg"),
         "codebuddy" => svg!("agents/codebuddy.svg"),
@@ -998,8 +1001,10 @@ impl ProviderStatusInfo {
     /// One sentence on why a chat cannot start, or `None` when it can.
     pub fn diagnostic_reason(&self) -> Option<String> {
         let name = self.display_name();
-        if crate::aster::is_aster(&self.id) && matches!(self.availability, ProviderAvailability::Missing) {
-            return Some("在「智能体」中安装 Aster，或将官方 aster-acp 加入 PATH。".into());
+        if crate::aster::is_aster(&self.id)
+            && matches!(self.availability, ProviderAvailability::Missing)
+        {
+            return Some("内置智能体运行环境不可用，请重新安装 Kwrok。".into());
         }
         match (&self.availability, self.readiness()) {
             (_, ProviderReadiness::NotInstalled) => Some(format!(
@@ -1382,5 +1387,19 @@ mod tests {
         assert!(!mode.is_writable());
         assert!(!mode.is_http_read_only());
         assert_eq!(mode.selected_chat_id(), Some(cid));
+    }
+
+    #[test]
+    fn builtin_default_harness_uses_native_kwrok_identity_without_aster_branding() {
+        for id in ["aster", "acp-profile:kwork-aster:9f12ab"] {
+            assert_eq!(runtime_display_name(id), crate::APP_NAME);
+            assert!(runtime_brand_svg(id, false).is_none());
+            assert!(runtime_brand_svg(id, true).is_none());
+        }
+        let mut missing = crate::aster::seed();
+        missing.availability = ProviderAvailability::Missing;
+        let diag = missing.diagnostic_reason().unwrap_or_default();
+        assert!(!diag.to_ascii_lowercase().contains("aster"), "{diag}");
+        assert!(missing.fix_command().is_none());
     }
 }

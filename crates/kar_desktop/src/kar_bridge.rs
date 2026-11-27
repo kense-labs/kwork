@@ -879,7 +879,7 @@ impl WorkerState {
     ) -> kar::Result<ChatSession> {
         if runtime == crate::aster::ID {
             let engine = self.engine.as_ref().ok_or_else(|| KarError::Refused("Kar 工作台服务不可用".into()))?;
-            let binary = crate::aster::find_binary().ok_or_else(|| KarError::Refused("请先在「智能体」中安装 Aster".into()))?;
+            let binary = crate::aster::find_binary().ok_or_else(|| KarError::Refused("内置智能体运行环境不可用，请重新安装 Kwrok".into()))?;
             let pinned = crate::aster::register(engine, &binary).await.map_err(|e| KarError::Refused(e.to_string()))?;
             return store.create(&pinned, None, opts).await;
         }
@@ -3253,7 +3253,7 @@ async fn worker_loop(
                 let mut applied_mode = requested_mode;
                 let mut resumed = store.resume_with(chat_id, |opts| configure(opts, requested_mode)).await;
                 if let (Some(_), Err(error)) = (requested_mode, &resumed) {
-                    state.emit(KarBridgeEvent::AsterModeReady { chat_id, result: Err(format!("Aster 模式切换失败：{error}")) });
+                    state.emit(KarBridgeEvent::AsterModeReady { chat_id, result: Err(format!("模式切换失败：{error}")) });
                     applied_mode = None;
                     resumed = store.resume_with(chat_id, |opts| configure(opts, None)).await;
                 }
@@ -3897,7 +3897,7 @@ async fn worker_loop(
                         if crate::aster::is_aster(&session.info().runtime) {
                             let preview = session.rollback(pt.clone(), true).await?;
                             if preview.files.iter().any(|file| crate::aster::runtime_artifact(&file.path)) {
-                                return Err(KarError::Refused("恢复这个检查点会覆盖 Aster 的会话记录。请在文件差异中检查项目改动。".into()));
+                                return Err(KarError::Refused("恢复这个检查点会覆盖当前会话记录。请在文件差异中检查项目改动。".into()));
                             }
                         }
                         session.rollback(pt, false).await
@@ -4139,15 +4139,15 @@ async fn worker_loop(
             }
             KarCommand::InstallAgent { runtime_id, line } => {
                 if runtime_id == crate::aster::ID {
-                    state.emit(KarBridgeEvent::ToastMessage { text: "正在安装 Aster ACP…".into(), warning: false });
+                    state.emit(KarBridgeEvent::ToastMessage { text: "正在准备内置运行环境…".into(), warning: false });
                     let cmd = state.cmd_tx.clone();
                     let events = state.evt_tx.clone();
                     tokio::spawn(async move {
                         let result = tokio::task::spawn_blocking(crate::aster::install).await;
                         let (text, warning) = match result {
-                            Ok(Ok(())) => ("Aster ACP 安装完成".into(), false),
-                            Ok(Err(e)) => (format!("Aster 安装失败：{e}"), true),
-                            Err(e) => (format!("Aster 安装中断：{e}"), true),
+                            Ok(Ok(())) => ("内置运行环境准备完成".into(), false),
+                            Ok(Err(e)) => (format!("内置运行环境安装失败：{e}"), true),
+                            Err(e) => (format!("内置运行环境安装中断：{e}"), true),
                         };
                         let _ = events.send(KarBridgeEvent::ToastMessage { text, warning }).await;
                         let _ = cmd.send(KarCommand::ProbeProvidersOnly).await;

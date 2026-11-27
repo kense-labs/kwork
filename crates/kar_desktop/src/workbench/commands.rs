@@ -486,7 +486,9 @@ impl KarWorkbench {
                 if (self.hosted_writer.is_some() || matches!(self.access_mode,ChatAccessMode::NoneSelected))
                     && crate::aster::is_aster(self.active_or_selected_runtime_id()) => {
                 let workspace = self.effective_workspace_dir();
-                self.providers.iter().find(|p| p.id == crate::aster::ID)
+                self.providers
+                    .iter()
+                    .find(|p| crate::aster::is_aster(&p.id))
                     .and_then(|p| p.workspace_commands.as_ref())
                     .filter(|(owner, _)| *owner == workspace)
                     .map_or(&[][..], |(_, commands)| commands.as_slice())
@@ -500,7 +502,7 @@ impl KarWorkbench {
             self.slash_action_available(action)
         });
         if aster_plan && let Some(plan) = choices.iter_mut().find(|choice| choice.action == Command::PlanMode) {
-            plan.description = self.ui_locale.pick("切换 Aster 原生计划模式", "Switch to Aster's native plan mode").into();
+            plan.description = self.ui_locale.pick("切换原生计划模式", "Switch to native plan mode").into();
         }
         choices
     }

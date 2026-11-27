@@ -448,7 +448,11 @@ impl KarWorkbench {
                 let warm_icons = elapsed.as_secs_f32() > 5.4 || *reduced;
                 let mut prewarm = div().absolute().left(px(-200.)).top(px(-200.)).opacity(0.);
                 if warm_icons {
-                    for p in &self.providers {
+                    for p in self
+                        .providers
+                        .iter()
+                        .filter(|p| !crate::aster::is_aster(&p.id))
+                    {
                         prewarm = prewarm.child(render_provider_color_tile(&p.id, 30., &s, cx));
                     }
                 }

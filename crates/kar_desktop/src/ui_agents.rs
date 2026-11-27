@@ -67,6 +67,7 @@ impl KarWorkbench {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let loc = self.ui_locale;
+        let is_builtin = crate::aster::is_aster(&provider.id);
         let (message, retry) = match provider.model_catalog {
             ModelCatalogState::Loading => (loc.pick("正在读取模型列表…", "Loading models…"), false),
             ModelCatalogState::Failed => {
@@ -79,6 +80,9 @@ impl KarWorkbench {
                 ),
                 false,
             ),
+            ModelCatalogState::Available if provider.models.is_empty() && is_builtin => {
+                (loc.pick("尚未配置模型", "No models configured"), true)
+            }
             ModelCatalogState::Available if provider.models.is_empty() => (
                 loc.pick(
                     "此智能体未列出其他模型",
@@ -89,10 +93,16 @@ impl KarWorkbench {
             ModelCatalogState::Available => return None,
         };
         let runtime = provider.id.clone();
+        let show_config = is_builtin
+            && matches!(
+                provider.model_catalog,
+                ModelCatalogState::Failed | ModelCatalogState::Available
+            );
         Some(
             div()
                 .min_w_0()
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .gap(px(6.))
                 .px(px(8.))
@@ -100,6 +110,23 @@ impl KarWorkbench {
                 .text_size(s.font_size(FS_META))
                 .text_color(s.muted)
                 .child(div().min_w_0().child(message))
+                .when(show_config, |row| {
+                    row.child(
+                        text_button_sm(
+                            "open-builtin-model-config",
+                            loc.pick("打开配置", "Configure"),
+                            s,
+                        )
+                        .on_press(cx, |_, _, cx| {
+                            if let Some(path) = crate::aster::config_path() {
+                                if let Some(parent) = path.parent() {
+                                    let _ = std::fs::create_dir_all(parent);
+                                }
+                                cx.reveal_path(&path);
+                            }
+                        }),
+                    )
+                })
                 .when(retry, |row| {
                     row.child(
                         text_button_sm("retry-model-catalog", loc.pick("重试", "Retry"), s)
@@ -139,7 +166,15 @@ impl KarWorkbench {
     ) -> AnyElement {
         let loc = self.ui_locale;
         let stacked = f32::from(window.viewport_size().width) < 620.;
-        let mut agents = if self.provider_accounts_checked { self.providers.clone() } else { Vec::new() };
+        let mut agents: Vec<_> = if self.provider_accounts_checked {
+            self.providers
+                .iter()
+                .filter(|a| !crate::aster::is_aster(&a.id))
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
         agents.sort_by_key(|a| a.readiness());
 
         let usable: Vec<_> = agents.iter().filter(|a| a.is_ready()).cloned().collect();
@@ -221,7 +256,10 @@ impl KarWorkbench {
                 div()
                     .text_size(s.font_size(FS_UI))
                     .text_color(s.muted)
-                    .child(loc.pick("还没有检测到智能体，可以重新扫描。", "No agents detected. Try scanning again.")),
+                    .child(loc.pick(
+                        "还没有检测到外部智能体，可以在下方添加或重新扫描。",
+                        "No external agents detected. Add one below or scan again.",
+                    )),
             );
         }
 
@@ -245,12 +283,31 @@ impl KarWorkbench {
                         .flex_none()
                         .flex()
                         .items_center()
-                        .gap(px(5.))
-                        .px(px(6.))
-                        .text_size(s.font_size(FS_META))
-                        .text_color(s.muted)
-                        .child(pro_icon(ProIcon::Check, ICON_XS, s.muted))
-                        .child(loc.pick("当前默认", "Default"))
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(5.))
+                                .px(px(6.))
+                                .text_size(s.font_size(FS_META))
+                                .text_color(s.muted)
+                                .child(pro_icon(ProIcon::Check, ICON_XS, s.muted))
+                                .child(loc.pick("当前默认", "Default")),
+                        )
+                        .child(
+                            text_button_sm(
+                                ("agent-unset-default", ix),
+                                loc.pick("取消默认", "Reset"),
+                                s,
+                            )
+                            .tip(loc.pick("恢复内置默认运行环境", "Restore built-in default"))
+                            .on_press(cx, |wb, _, cx| {
+                                let builtin = wb.builtin_runtime_id();
+                                wb.select_runtime_by_id(&builtin, cx);
+                                wb.save_agent_choice(cx);
+                            }),
+                        )
                         .into_any_element()
                 } else {
                     soft_button_sm(("agent-usable", ix), loc.pick("设为默认", "Set default"), s)
@@ -321,20 +378,6 @@ impl KarWorkbench {
                     .flex()
                     .flex_wrap()
                     .gap(px(6.))
-                    .when(crate::aster::is_aster(&agent.id), |row| {
-                        row.child(
-                            soft_button_sm(
-                                ("aster-model-config", ix),
-                                loc.pick("模型配置文件", "Model configuration"),
-                                s,
-                            )
-                            .on_press(cx, |_, _, cx| {
-                                if let Some(path) = crate::aster::config_path() {
-                                    cx.reveal_path(&path);
-                                }
-                            }),
-                        )
-                    })
                     .when(runtime.is_some(), |row| {
                         row.child(
                             soft_button_sm(
@@ -924,6 +967,31 @@ impl KarWorkbench {
                     loc.pick("推理深度", "Reasoning effort"),
                     loc.pick("使用所选模型支持的推理档位。", "Levels reported by the selected model."),
                     effort_menu.into_any_element(),
+                    stacked,
+                    s,
+                ))
+            })
+            .when(crate::aster::config_path().is_some(), |d| {
+                let btn = soft_button(
+                    "settings-builtin-model-config",
+                    loc.pick("打开配置文件", "Open config"),
+                    s,
+                )
+                .on_press(cx, |_, _, cx| {
+                    if let Some(path) = crate::aster::config_path() {
+                        if let Some(parent) = path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        cx.reveal_path(&path);
+                    }
+                });
+                d.child(settings_divider(s)).child(settings_row_item(
+                    loc.pick("内置模型配置", "Model configuration"),
+                    loc.pick(
+                        "管理默认内置运行环境的模型服务地址与密钥。",
+                        "Configure model providers and API keys for the built-in runtime.",
+                    ),
+                    btn.into_any_element(),
                     stacked,
                     s,
                 ))
