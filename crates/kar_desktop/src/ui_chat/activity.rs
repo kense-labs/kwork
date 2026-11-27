@@ -471,10 +471,12 @@ pub(super) fn branch_header(
     let fold = Fold::get(SharedString::from(format!("{key}-body")), open, 50., 0.18, window, cx);
     let name = path.last().filter(|id| Uuid::parse_str(id).is_err()).map(|id| short(id));
     let label = loc.pick("子任务", "Subagent");
+    let caption = name.map_or_else(|| label.to_owned(), |name| format!("{label} · {name}"));
     let full = format!("{label} · {}", path.join(" › "));
+    let show_path = !path.is_empty() && full != caption;
     let header = Tactile::inline(key.clone(), s)
         .aria(full.clone())
-        .tip(full)
+        .when(show_path, |button| button.tip(full))
         .expanded(open)
         .h(px(CTRL_SM_H))
         .max_w_full()
@@ -483,8 +485,11 @@ pub(super) fn branch_header(
         .gap(px(6.))
         .ink(s.muted, s.ink)
         .child(pro_icon(ProIcon::GitBranch, ICON_SM, s.muted))
-        .child(div().min_w_0().truncate().text_size(s.font_size(FS_UI))
-            .child(name.map_or_else(|| label.to_owned(), |name| format!("{label} · {name}"))))
+        .child(div().min_w_0().truncate().text_size(s.font_size(FS_UI)).child(if show_path {
+            caption.into_any_element()
+        } else {
+            crate::ui_motion::overflow_label("subagent-name", caption).into_any_element()
+        }))
         .child(chevron(format!("{key}-chevron").into(), open, s.faint, window, cx))
         .on_press(cx, move |_, _, cx| {
             state.update(cx, |open, cx| {

@@ -245,7 +245,6 @@ pub(crate) fn render(view: &PdfView, cx: &mut Context<PdfView>) -> Div {
                 .icon(Lucide::Wrench)
                 .label(i18n::t("Tools"))
                 .dropdown_caret(true)
-                .tooltip(i18n::t("Page tools"))
                 .dropdown_menu(move |menu, window, cx| tool_items(menu, &weak, window, cx))
         })
         .child(div().flex_1())

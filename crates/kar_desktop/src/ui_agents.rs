@@ -16,7 +16,7 @@ use crate::{
     prefs::{CustomAcpAgent, all_approval_modes},
     types::{ProviderAvailability, ProviderReadiness, runtime_display_name},
     ui_motion::{
-        Tactile, disclosure_line, icon_button_sm, primary_button_sm, soft_button,
+        Tactile, disclosure_line, icon_button_sm, overflow_label, primary_button_sm, soft_button,
         soft_button_sm, spinner, text_button_sm,
     },
     ui_primitives::{
@@ -491,7 +491,6 @@ impl KarWorkbench {
                                     Tactile::ghost(("model-pick", mix), s)
                                         .min_w_0()
                                         .aria(mlbl.clone())
-                                        .tip(mlbl.clone())
                                         .h(px(22.))
                                         .px(px(4.))
                                         .text_size(s.font_size(FS_META))
@@ -501,7 +500,9 @@ impl KarWorkbench {
                                             FontWeight::NORMAL
                                         })
                                         .text_color(if is_hidden { s.muted } else { s.ink })
-                                        .child(div().min_w_0().truncate().child(mlbl))
+                                        .child(
+                                            div().min_w_0().truncate().child(overflow_label("model-name", mlbl)),
+                                        )
                                         .on_press(cx, move |wb, _, cx| {
                                             wb.selected_model = Some(mid_sel.clone());
                                             wb.save_agent_choice(cx);

@@ -288,6 +288,9 @@ impl KarWorkbench {
             if !options.is_empty() {
                 let mut buttons = div().w_full().flex().flex_wrap().gap(px(5.));
                 for (j, (label, value, description)) in options.into_iter().enumerate() {
+                    let description = description.filter(|hint| {
+                        !hint.trim().is_empty() && hint.trim() != label.trim()
+                    });
                     let selected = !(field.kind == FieldKind::Select
                         && draft.read(cx).editors[i]
                             .as_ref()

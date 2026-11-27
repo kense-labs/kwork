@@ -1,7 +1,7 @@
 //! Native workspace chrome and thread navigation.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     ops::Range,
     path::{Path, PathBuf},
     time::Duration,
@@ -23,7 +23,7 @@ use crate::{
         ChatAccessMode, ChatListEntry, localized_relative_age, runtime_display_name,
     },
     ui_motion::{
-        MenuPlacement, Tactile, close_button, icon_button_sm, menu_caption, menu_divider, menu_hint,
+        MenuPlacement, Tactile, close_button, icon_button_sm, menu_caption, menu_check, menu_divider, menu_hint,
         menu_host, menu_icon_item, soft_button,
     },
     ui_primitives::{
@@ -58,6 +58,13 @@ impl SidebarFolder<'_> {
             name: project_display_name(name).to_owned(),
             last_activity: 0,
             entries: Vec::new(),
+        }
+    }
+
+    fn label(&self, parents: &HashMap<PathBuf, String>) -> String {
+        match parents.get(&self.root) {
+            Some(parent) => format!("{} · {parent}", self.name),
+            None => self.name.clone(),
         }
     }
 }
@@ -96,6 +103,46 @@ fn folder_disambiguators(folders: &[SidebarFolder<'_>]) -> HashMap<PathBuf, Stri
         }
     }
     labels
+}
+
+/// A search includes settled chats. Outside search they appear only on the settled shelf.
+fn filter_sidebar_folders<'a>(
+    folders: &mut Vec<SidebarFolder<'a>>,
+    scope: Option<&Path>,
+    query: &str,
+    parents: &HashMap<PathBuf, String>,
+    settled: &BTreeSet<uuid::Uuid>,
+    live: Option<&kar::chat::ChatInfo>,
+) -> Vec<&'a ChatListEntry> {
+    let mut shelf = Vec::new();
+    folders.retain_mut(|folder| {
+        if scope.is_some_and(|path| path != folder.root) {
+            return false;
+        }
+        if query.is_empty() {
+            folder.entries.retain(|&entry| {
+                if settled.contains(&entry.info.id) {
+                    shelf.push(entry);
+                    false
+                } else {
+                    true
+                }
+            });
+            return true;
+        }
+        if scope.is_none() && (folder.name.to_lowercase().contains(query)
+            || parents.get(&folder.root).is_some_and(|p| p.to_lowercase().contains(query)))
+        {
+            return true;
+        }
+        folder.entries.retain(|e| {
+            e.title.to_lowercase().contains(query)
+                || runtime_display_name(e.runtime(live)).to_lowercase().contains(query)
+        });
+        !folder.entries.is_empty()
+    });
+    shelf.sort_by_key(|entry| std::cmp::Reverse(entry.last_activity_ms.unwrap_or(0)));
+    shelf
 }
 
 impl KarWorkbench {
@@ -294,33 +341,6 @@ impl KarWorkbench {
             .px(px(8.))
             .pb(px(4.))
             .child(search);
-        let thread_header = div()
-            .w_full()
-            .h(px(CTRL_H))
-            .mt(px(if has_query { 2. } else { 12. }))
-            .pl(px(9.))
-            .flex()
-            .items_center()
-            .justify_between()
-            .text_size(s.font_size(FS_META))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(s.muted)
-            .child(if has_query {
-                loc.pick("搜索结果", "Search results")
-            } else {
-                loc.pick("项目", "Projects")
-            })
-            .when(!has_query, |row| {
-                row.child(
-                    icon_button_sm(
-                        "side-add-project",
-                        ProIcon::FolderPlus,
-                        loc.pick("添加项目文件夹…", "Add project folder…"),
-                        &s,
-                    )
-                    .on_press(cx, |this, window, cx| this.add_project_folder(window, cx)),
-                )
-            });
         let undo_banner = self
             .sidebar_open
             .then(|| self.render_delete_undo(&s, cx))
@@ -339,17 +359,14 @@ impl KarWorkbench {
             .enumerate()
             .map(|(i, folder)| (folder.root.clone(), i))
             .collect();
-        let mut settled_entries = Vec::new();
+        let scope = self.prefs.active_project_filter.as_deref();
+        let grouped = scope.is_none();
         for entry in &self.chat_list {
             if self
                 .deferred_delete_chat
                 .as_ref()
                 .is_some_and(|(id, _, _)| *id == entry.info.id)
             {
-                continue;
-            }
-            if !has_query && self.settled_chats.contains(&entry.info.id) {
-                settled_entries.push(entry.clone());
                 continue;
             }
             let root = self
@@ -382,23 +399,6 @@ impl KarWorkbench {
             folder.entries.push(entry);
         }
         let parents = folder_disambiguators(&folders);
-        if has_query {
-            folders.retain_mut(|folder| {
-                let matches_folder = folder.name.to_lowercase().contains(&query)
-                    || parents
-                        .get(&folder.root)
-                        .is_some_and(|p| p.to_lowercase().contains(&query));
-                if !matches_folder {
-                    folder.entries.retain(|e| {
-                        e.title.to_lowercase().contains(&query)
-                            || runtime_display_name(e.runtime(self.projected.info.as_ref()))
-                                .to_lowercase()
-                                .contains(&query)
-                    });
-                }
-                matches_folder || !folder.entries.is_empty()
-            });
-        }
         match self.prefs.sidebar_project_order {
             crate::prefs::ProjectSortOrder::Recent => {
                 folders.sort_by_key(|f| std::cmp::Reverse(f.last_activity))
@@ -408,6 +408,29 @@ impl KarWorkbench {
             }
             crate::prefs::ProjectSortOrder::Manual => {}
         }
+        let thread_header = div()
+            .w_full()
+            .h(px(CTRL_H))
+            .mt(px(if has_query { 2. } else { 12. }))
+            .pl(px(9.))
+            .gap(px(6.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(s.font_size(FS_META))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(s.muted)
+                    .child(if has_query { loc.pick("搜索结果", "Search results") } else { loc.pick("对话", "Chats") }),
+            )
+            .child(self.sidebar_project_picker(&folders, &parents, &s, window, cx));
+
+        let settled_entries = filter_sidebar_folders(
+            &mut folders, scope, &query, &parents, &self.settled_chats, self.projected.info.as_ref(),
+        );
         let inbox_attention_count = self.projected.pending_requests.len();
         let mut list_col = div().relative().flex().flex_col().gap(px(1.)).when(
             show_chat_selection,
@@ -426,9 +449,9 @@ impl KarWorkbench {
         // ── Special active Demo / Shared / Remote thread cards ──────────────
         let shared_agent = self.projected.info.as_ref()
             .filter(|info| Some(info.id) == self.access_mode.selected_chat_id());
-        if matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
+        if grouped && matches!(self.access_mode, ChatAccessMode::DemoShowcase) {
             list_col = list_col.child(self.render_demo_showcase_cards(in_conv.then_some(&nav_sensor), &s, cx));
-        } else if let ChatAccessMode::RemoteController { ref host_name, .. } = self.access_mode {
+        } else if grouped && let ChatAccessMode::RemoteController { ref host_name, .. } = self.access_mode {
             list_col = list_col.child(
                 div()
                     .relative()
@@ -475,7 +498,7 @@ impl KarWorkbench {
                             .font_weight(FontWeight::MEDIUM),
                     ),
             );
-        } else if self.access_mode.is_http_read_only() {
+        } else if grouped && self.access_mode.is_http_read_only() {
             list_col = list_col.child(
                 div()
                     .relative()
@@ -508,7 +531,7 @@ impl KarWorkbench {
                 folded.clear();
             });
         }
-        let has_folders = !folders.is_empty();
+        let has_results = folders.iter().any(|folder| grouped || !folder.entries.is_empty());
         for mut folder in folders {
             let collapsed = if has_query {
                 search_folds.read(cx).1.contains(&folder.id)
@@ -516,98 +539,97 @@ impl KarWorkbench {
                 self.project_registry.is_collapsed(&folder.id)
             };
             let parent = parents.get(&folder.root);
-            let name = match parent {
-                Some(parent) => format!("{} · {parent}", folder.name),
-                None => folder.name.clone(),
-            };
-            let group = SharedString::from(format!("project-folder-{}", folder.id));
-            let focus = window.use_keyed_state(group.clone(), cx, |_, cx| cx.focus_handle());
-            let focus = focus.read(cx).clone();
-            let show_action = folder.entries.is_empty()
-                || window.last_input_was_touch()
-                || window.last_input_was_keyboard() && focus.contains_focused(window, cx);
-            let id = folder.id.clone();
-            let search_state = search_folds.clone();
-            let toggle = Tactile::ghost(SharedString::from(format!("side-folder-{id}")), &s)
-                .flex_1()
-                .min_w_0()
-                .h(px(30.))
-                .px(px(8.))
-                .gap(px(8.))
-                .expanded(!collapsed)
-                .aria(name.clone())
-                .child(pro_icon(
-                    if collapsed {
-                        ProIcon::Folder
-                    } else {
-                        ProIcon::FolderOpen
-                    },
-                    ICON,
-                    s.muted,
-                ))
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(s.font_size(FS_UI))
-                        .text_color(s.text)
-                        .child(folder.name.clone()),
-                )
-                .when_some(parent, |row, parent| {
-                    row.child(
+            let name = folder.label(&parents);
+            if grouped {
+                let group = SharedString::from(format!("project-folder-{}", folder.id));
+                let focus = window.use_keyed_state(group.clone(), cx, |_, cx| cx.focus_handle());
+                let focus = focus.read(cx).clone();
+                let show_action = folder.entries.is_empty()
+                    || window.last_input_was_touch()
+                    || window.last_input_was_keyboard() && focus.contains_focused(window, cx);
+                let id = folder.id.clone();
+                let search_state = search_folds.clone();
+                let toggle = Tactile::ghost(SharedString::from(format!("side-folder-{id}")), &s)
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(30.))
+                    .px(px(8.))
+                    .gap(px(8.))
+                    .expanded(!collapsed)
+                    .aria(name.clone())
+                    .child(pro_icon(
+                        if collapsed {
+                            ProIcon::Folder
+                        } else {
+                            ProIcon::FolderOpen
+                        },
+                        ICON,
+                        s.muted,
+                    ))
+                    .child(
                         div()
                             .min_w_0()
                             .truncate()
-                            .text_size(s.font_size(FS_META))
-                            .text_color(s.muted)
-                            .child(parent.clone()),
+                            .text_size(s.font_size(FS_UI))
+                            .text_color(s.text)
+                            .child(folder.name.clone()),
                     )
-                })
-                .on_press(cx, move |wb, _, cx| {
-                    if has_query {
-                        search_state.update(cx, |(_, folded), _| {
-                            if !folded.remove(&id) {
-                                folded.insert(id.clone());
-                            }
-                        });
-                        cx.notify();
-                    } else {
-                        wb.toggle_project_folder_collapsed(&id, cx);
-                    }
+                    .when_some(parent, |row, parent| {
+                        row.child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(s.font_size(FS_META))
+                                .text_color(s.muted)
+                                .child(parent.clone()),
+                        )
+                    })
+                    .on_press(cx, move |wb, _, cx| {
+                        if has_query {
+                            search_state.update(cx, |(_, folded), _| {
+                                if !folded.remove(&id) {
+                                    folded.insert(id.clone());
+                                }
+                            });
+                            cx.notify();
+                        } else {
+                            wb.toggle_project_folder_collapsed(&id, cx);
+                        }
+                    });
+                let new_label = format!(
+                    "{} · {name}",
+                    loc.pick("在此项目中新建对话", "New chat in project")
+                );
+                let add = icon_button_sm(
+                    SharedString::from(format!("side-folder-new-{}", folder.id)),
+                    ProIcon::NewChat,
+                    new_label,
+                    &s,
+                )
+                .on_press(cx, move |wb, win, cx| {
+                    wb.select_project_and_new_chat(folder.root.clone(), win, cx)
                 });
-            let new_label = format!(
-                "{} · {name}",
-                loc.pick("在此项目中新建对话", "New chat in project")
-            );
-            let add = icon_button_sm(
-                SharedString::from(format!("side-folder-new-{}", folder.id)),
-                ProIcon::NewChat,
-                new_label,
-                &s,
-            )
-            .on_press(cx, move |wb, win, cx| {
-                wb.select_project_and_new_chat(folder.root.clone(), win, cx)
-            });
-            list_col = list_col.child(
-                div()
-                    .group(group.clone())
-                    .track_focus(&focus)
-                    .w_full()
-                    .mt(px(3.))
-                    .flex()
-                    .items_center()
-                    .child(toggle)
-                    .child(
-                        div()
-                            .flex_none()
-                            .when(!show_action, |d| {
-                                d.opacity(0.).group_hover(group, |s| s.opacity(1.))
-                            })
-                            .child(add),
-                    ),
-            );
-            if collapsed {
-                continue;
+                list_col = list_col.child(
+                    div()
+                        .group(group.clone())
+                        .track_focus(&focus)
+                        .w_full()
+                        .mt(px(3.))
+                        .flex()
+                        .items_center()
+                        .child(toggle)
+                        .child(
+                            div()
+                                .flex_none()
+                                .when(!show_action, |d| {
+                                    d.opacity(0.).group_hover(group, |s| s.opacity(1.))
+                                })
+                                .child(add),
+                        ),
+                );
+                if collapsed {
+                    continue;
+                }
             }
             folder.entries.sort_by_key(|e| {
                 let snoozed = self
@@ -646,10 +668,17 @@ impl KarWorkbench {
                 .contains(&query)
         };
         let has_docs = self.office_tabs.iter().any(doc_matches);
-        if has_query && !has_folders && !has_docs {
+        if !has_results && (has_query && !has_docs || !grouped && !has_query) {
+            let message = if has_query {
+                loc.pick("未找到匹配项", "No matches")
+            } else if settled_entries.is_empty() {
+                loc.pick("此项目还没有对话", "No chats in this project yet")
+            } else {
+                loc.pick("此项目没有活跃对话", "No active chats in this project")
+            };
             list_col = list_col.child(
                 div().px(px(9.)).py(px(16.)).text_size(s.font_size(FS_META)).text_color(s.muted)
-                    .child(loc.pick("未找到匹配项", "No matches")),
+                    .child(message),
             );
         }
         if has_docs {
@@ -753,7 +782,7 @@ impl KarWorkbench {
             for entry in settled_entries {
                 settled_body = settled_body.child(self.render_sidebar_thread_card(
                     running_threads.contains(&entry.info.id),
-                    entry,
+                    entry.clone(),
                     "set",
                     active_chat_id,
                     now_ms,
@@ -868,7 +897,13 @@ impl KarWorkbench {
                     loc.pick("新建对话", "New chat"),
                     on_start_screen && !git_selected && !self.settings_open,
                 )
-                .on_press(cx, |this, win, cx| this.start_new_chat(win, cx)),
+                .on_press(cx, |this, win, cx| {
+                    if let Some(root) = this.prefs.active_project_filter.clone() {
+                        this.select_project_and_new_chat(root, win, cx);
+                    } else {
+                        this.start_new_chat(win, cx);
+                    }
+                }),
             )
             .child(
                 nav_row(
@@ -926,11 +961,12 @@ impl KarWorkbench {
         // Keep search pinned. On short windows scrolling reaches both navigation and history;
         // a search brings matching threads directly beneath the field.
         let scroll = window.use_keyed_state("sidebar-query-scroll", cx, |_, _| {
-            (String::new(), ScrollHandle::new())
+            (String::new(), None::<PathBuf>, ScrollHandle::new())
         });
-        let scroll = scroll.update(cx, |(previous, scroll), _| {
-            if previous != &query {
+        let scroll = scroll.update(cx, |(previous, previous_scope, scroll), _| {
+            if previous != &query || previous_scope.as_deref() != scope {
                 previous.clone_from(&query);
+                *previous_scope = scope.map(Path::to_owned);
                 scroll.set_offset(point(px(0.), px(0.)));
             }
             scroll.clone()
@@ -1450,6 +1486,174 @@ impl KarWorkbench {
         col
     }
 
+    fn set_sidebar_project_filter(
+        &mut self,
+        root: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        self.prefs.active_project_filter = root;
+        self.save_prefs();
+        self.open_menu = None;
+        cx.notify();
+    }
+
+    fn sidebar_project_picker(
+        &self,
+        folders: &[SidebarFolder<'_>],
+        parents: &HashMap<PathBuf, String>,
+        s: &StudioPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let loc = self.ui_locale;
+        let filter_path = self.prefs.active_project_filter.as_deref();
+        let active = folders.iter().position(|folder| Some(folder.root.as_path()) == filter_path);
+        let scope = active.map(|i| folders[i].label(parents)).unwrap_or_else(|| {
+            filter_path.and_then(|path| path.file_name()?.to_str())
+                .map(project_display_name).unwrap_or(loc.pick("全部项目", "All projects")).to_owned()
+        });
+        let open = self.open_menu == Some(Menu::SidebarFilter);
+        let scope_label = format!(
+            "{} · {scope}",
+            loc.pick("按项目筛选对话", "Filter chats by project")
+        );
+        let trigger = Tactile::ghost("side-project-scope", s)
+            .max_w_full()
+            .min_w_0()
+            .h(px(CTRL_SM_H))
+            .px(px(6.))
+            .gap(px(4.))
+            .radius(R_CTRL)
+            .lit(open)
+            .expanded(open)
+            .ink(
+                if filter_path.is_some() {
+                    s.text
+                } else {
+                    s.muted
+                },
+                s.ink,
+            )
+            .aria(scope_label)
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(s.font_size(FS_META))
+                    .child(scope),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .child(pro_icon(ProIcon::ChevronDown, 11., s.muted)),
+            )
+            .on_press(cx, |this, _, cx| this.toggle_menu(Menu::SidebarFilter, cx));
+
+        let current = active.map_or(0, |index| index + 1);
+        let last = folders.len() + 1;
+        let navigation = window.use_keyed_state("side-project-options", cx, |_, _| {
+            (None::<usize>, ScrollHandle::new())
+        });
+        if !open && navigation.read(cx).0.is_some() {
+            navigation.update(cx, |state, _| state.0 = None);
+        }
+        let (cursor, scroll) = navigation.read(cx).clone();
+        let all = menu_icon_item(
+            "side-flt-all",
+            ProIcon::List,
+            loc.pick("全部项目", "All projects"),
+            s,
+        )
+        .lit(cursor == Some(0))
+        .when(filter_path.is_none(), |row| row.child(menu_check(s)))
+        .on_press(cx, |this, _, cx| this.set_sidebar_project_filter(None, cx));
+        let mut rows = div()
+            .id("side-project-options-list")
+            .max_h(px(
+                (f32::from(window.viewport_size().height) - 32.).clamp(36., 348.)
+            ))
+            .overflow_y_scroll()
+            .track_scroll(&scroll)
+            .child(all)
+            .child(menu_divider(s));
+        for (index, folder) in folders.iter().enumerate() {
+            let root = folder.root.clone();
+            rows = rows.child(
+                menu_icon_item(("side-flt-proj", index), ProIcon::Folder, folder.label(parents), s)
+                    .lit(cursor == Some(index + 1))
+                    .when(index + 1 == current, |row| row.child(menu_check(s)))
+                    .on_press(cx, move |this, _, cx| {
+                        this.set_sidebar_project_filter(Some(root.clone()), cx)
+                    }),
+            );
+        }
+        rows = rows.child(menu_divider(s)).child(
+            menu_icon_item(
+                "side-add-project",
+                ProIcon::FolderPlus,
+                loc.pick("添加项目…", "Add project…"),
+                s,
+            )
+            .lit(cursor == Some(last))
+            .on_press(cx, |this, win, cx| {
+                this.open_menu = None;
+                this.add_project_folder(win, cx);
+            }),
+        );
+        let menu = self.render_menu(
+            Menu::SidebarFilter,
+            MenuPlacement::BelowEnd,
+            228.,
+            vec![rows.into_any_element()],
+            s,
+            cx,
+        );
+        let paths: Vec<_> = folders.iter().map(|folder| folder.root.clone()).collect();
+        menu_host(trigger, menu)
+            .max_w(relative(0.66))
+            .capture_key_down(cx.listener(move |this, ev: &KeyDownEvent, win, cx| {
+                if this.open_menu != Some(Menu::SidebarFilter) || ev.keystroke.modifiers.modified()
+                {
+                    return;
+                }
+                let selected = cursor.unwrap_or(current).min(last);
+                let next = match ev.keystroke.key.as_str() {
+                    "escape" => {
+                        this.close_menu(cx);
+                        win.prevent_default();
+                        cx.stop_propagation();
+                        return;
+                    }
+                    "down" => (selected + 1) % (last + 1),
+                    "up" => (selected + last) % (last + 1),
+                    "home" => 0,
+                    "end" => last,
+                    "enter" | "space" => {
+                        if selected == last {
+                            this.open_menu = None;
+                            this.add_project_folder(win, cx);
+                        } else {
+                            let root = selected
+                                .checked_sub(1)
+                                .map(|index| paths[index].clone());
+                            this.set_sidebar_project_filter(root, cx);
+                        }
+                        win.prevent_default();
+                        cx.stop_propagation();
+                        return;
+                    }
+                    _ => return,
+                };
+                navigation.update(cx, |(cursor, scroll), _| {
+                    *cursor = Some(next);
+                    scroll.scroll_to_item(next + usize::from(next > 0) + usize::from(next == last));
+                });
+                win.prevent_default();
+                cx.stop_propagation();
+                cx.notify();
+            }))
+    }
+
     fn render_sidebar_more_menu(
         &self,
         s: &StudioPalette,
@@ -1738,6 +1942,60 @@ mod tests {
         assert_eq!(Path::new(&labels[Path::new(dirs[1])]), Path::new("b/src"));
         assert_eq!(labels[Path::new(dirs[2])], "docs");
         assert!(!labels.contains_key(Path::new(dirs[3])));
+    }
+
+    #[test]
+    fn project_scope_limits_search_and_settled_rows_without_hiding_empty_folders() {
+        use super::{ChatListEntry, SidebarFolder, filter_sidebar_folders, folder_disambiguators};
+        use std::{collections::BTreeSet, path::Path};
+        use uuid::Uuid;
+
+        let entry = |title: &str, workspace: &str| {
+            let info = serde_json::from_value(serde_json::json!({
+                "id": Uuid::new_v4(), "runtime": "codex", "protocol": "codex", "native_id": "session",
+                "workspace": workspace, "created_ms": 1, "program": "/test/codex", "approvals": "host"
+            })).unwrap();
+            ChatListEntry::from_info_and_turns_with_title(info, &[], Some(title))
+        };
+        let a = "/clients/a/app";
+        let b = "/clients/b/app";
+        let empty = "/clients/empty";
+        let active = entry("active", a);
+        let old_a = entry("old A", a);
+        let old_b = entry("old B", b);
+        let settled = BTreeSet::from([old_a.info.id, old_b.info.id]);
+
+        let visible = |scope: Option<&str>, query: &str| {
+            let mut folders = [
+                (a, vec![&active, &old_a]),
+                (b, vec![&old_b]),
+                (empty, vec![]),
+            ].into_iter().map(|(root, entries)| {
+                let path = Path::new(root);
+                let mut folder = SidebarFolder::new(root.into(), path, path.file_name().unwrap().to_str().unwrap());
+                folder.entries = entries;
+                folder
+            }).collect::<Vec<_>>();
+            let parents = folder_disambiguators(&folders);
+            let shelf = filter_sidebar_folders(&mut folders, scope.map(Path::new), query, &parents, &settled, None);
+            let folders = folders.into_iter().map(|f| {
+                (f.root, f.entries.into_iter().map(|e| e.info.id).collect::<Vec<_>>())
+            }).collect::<Vec<_>>();
+            (folders, shelf.into_iter().map(|e| e.info.id).collect::<Vec<_>>())
+        };
+        let (all, shelf) = visible(None, "");
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].1, [active.info.id]);
+        assert!(all[1].1.is_empty() && all[2].1.is_empty());
+        assert_eq!(shelf.len(), 2);
+        let (single, shelf) = visible(Some(a), "");
+        assert_eq!(single, [(a.into(), vec![active.info.id])]);
+        assert_eq!(shelf, [old_a.info.id]);
+        assert_eq!(visible(Some(empty), ""), (vec![(empty.into(), vec![])], vec![]));
+        assert_eq!(visible(Some(a), "old"), (vec![(a.into(), vec![old_a.info.id])], vec![]));
+        assert_eq!(visible(Some(b), "active"), (vec![], vec![]));
+        assert_eq!(visible(Some(a), "app"), (vec![], vec![]));
+        assert_eq!(visible(None, "app").0.len(), 2);
     }
 
     #[test]

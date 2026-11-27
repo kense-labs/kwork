@@ -656,7 +656,11 @@ impl KarWorkbench {
             .id(view_id)
             .relative()
             .size_full()
-            .bg(s.surface)
+            .bg(if drawer {
+                s.surface
+            } else {
+                crate::ui_primitives::material::panel_surface(s)
+            })
             .flex()
             .flex_col()
             .overflow_hidden()

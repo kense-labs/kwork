@@ -47,8 +47,6 @@ impl KarWorkbench {
             is_office_surface && active_tab.as_ref().is_some_and(|t| t.is_demo);
         let active_dirty =
             is_office_surface && active_tab.as_ref().is_some_and(|t| t.is_dirty(cx));
-        let use_reading_ground = !s.dark && (self.right_surface == RightPaneSurface::Files
-            || (is_office_surface && active_tab.is_none()));
         let wide_canvas = self.layout_mode == WorkspaceLayoutMode::CanvasWide;
 
         // ── Unified Right-Dock Strip (`变更` · `文件` · `终端` + Open Docs/Code) ──
@@ -454,11 +452,7 @@ impl KarWorkbench {
 
         div()
             .size_full()
-            .bg(if use_reading_ground {
-                crate::ui_primitives::material::reading_surface(&s)
-            } else {
-                s.surface
-            })
+            .bg(crate::ui_primitives::material::panel_surface(&s))
             .flex()
             .flex_col()
             .overflow_hidden()

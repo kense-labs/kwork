@@ -17,7 +17,7 @@ use kui::{
 use crate::{
     kar_bridge::KarCommand,
     prefs::{DesktopPreferences, NotificationLevel, ProjectSortOrder, QuitShortcutMode},
-    ui_motion::{Tactile, icon_button, outline_button, soft_button, text_button},
+    ui_motion::{Tactile, icon_button, outline_button, overflow_label, soft_button, text_button},
     ui_primitives::{
         FS_META, FS_TAG, FS_UI, R_MODAL, R_PILL, R_SM, StudioPalette, UiLocale, card_box,
         render_kbd, render_schedule_repeat_icon, render_skills_puzzle_icon,
@@ -1114,8 +1114,8 @@ impl KarWorkbench {
                             .px(px(10.))
                             .gap(px(8.))
                             .radius(R_SM)
-                            .when(compact, |b| b.justify_center())
-                            .tip(title)
+                            .aria(title)
+                            .when(compact, |b| b.justify_center().tip(title))
                             .child(icon)
                             .when(!compact, |b| {
                                 b.child(
@@ -1130,7 +1130,7 @@ impl KarWorkbench {
                                             FontWeight::NORMAL
                                         })
                                         .text_color(if selected { s.ink } else { s.text })
-                                        .child(title),
+                                        .child(overflow_label("settings-nav-label", title)),
                                 )
                             })
                             .on_press(cx, move |wb, win, cx| open(tab, wb, win, cx)),

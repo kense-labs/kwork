@@ -1,7 +1,7 @@
 //! Place thread controls outside the reading column at every panel width.
 use crate::{
     types::ChatAccessMode,
-    ui_motion::{MenuPlacement, Tactile, menu_host},
+    ui_motion::{MenuPlacement, Tactile, menu_host, overflow_label},
     ui_primitives::{
         CTRL_SM_H, DETAILS_CARD_W, FS_META, FS_UI, StudioPalette, frosted_card,
         render_file_diff_icon, render_git_branch_icon, render_machine_icon, tnum_features,
@@ -142,7 +142,9 @@ impl KarWorkbench {
             ChatAccessMode::DemoShowcase => "MacStudio".into(),
             _ => loc.pick("本机", "Local computer").to_owned(),
         };
-        let label = |text: String| div().min_w_0().truncate().child(text);
+        let label = |id: &'static str, text: String| {
+            div().min_w_0().truncate().child(overflow_label(id, text))
+        };
         let host_label = div()
             .flex_none()
             .id("thread-details-host")
@@ -157,7 +159,7 @@ impl KarWorkbench {
                 let tip = host.clone();
                 row.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             })
-            .when(!icons_only, |row| row.child(label(host)));
+            .when(!icons_only, |row| row.child(label("details-host-name", host)));
         let button = |id, title: &'static str| {
             Tactile::ghost(id, s)
                 .h(px(CTRL_SM_H))
@@ -165,13 +167,13 @@ impl KarWorkbench {
                 .gap(px(6.))
                 .when(strip, |b| b.px(px(6.)).justify_center())
                 .when(!strip, |b| b.w_full().px(px(10.)))
-                .tip(title)
                 .aria(title)
         };
 
         let open_label = loc.pick("在编辑器或画布打开", "Open in editor");
         let open = menu_host(
             button("details-open-in-btn", open_label)
+                .when(strip, |b| b.tip(open_label))
                 .child(pro_icon(ProIcon::ExternalArrow, 14., s.muted))
                 .when(!small, |b| {
                     b.child(if strip {
@@ -187,6 +189,7 @@ impl KarWorkbench {
         let scripts_label = loc.pick("运行项目脚本", "Run project script");
         let scripts = menu_host(
             button("details-scripts-btn", scripts_label)
+                .when(strip, |b| b.tip(scripts_label))
                 .child(pro_icon(ProIcon::Play, 14., s.muted))
                 .when(!small, |b| {
                     b.child(if strip {
@@ -231,7 +234,7 @@ impl KarWorkbench {
                 button("details-branch-btn", switch_branch)
                     .child(render_git_branch_icon(14., s.muted))
                     .when(!icons_only, |b| {
-                        b.child(label(branch.to_owned()).max_w(px(if strip {
+                        b.child(label("details-branch-name", branch.to_owned()).max_w(px(if strip {
                             (width * 0.22).min(150.)
                         } else {
                             width - 72.
@@ -241,7 +244,7 @@ impl KarWorkbench {
                         b.child(pro_icon(ProIcon::ChevronDown, 10., s.muted))
                     })
                     .aria(format!("{switch_branch} · {branch}"))
-                    .tip(branch.to_owned())
+                    .when(icons_only, |b| b.tip(format!("{switch_branch} · {branch}")))
                     .lit(self.open_menu == Some(Menu::DetailsBranch))
                     .on_press(cx, |this, _, cx| this.toggle_menu(Menu::DetailsBranch, cx)),
                 self.render_git_branch_menu(
@@ -261,6 +264,7 @@ impl KarWorkbench {
             let changes_title = loc.pick("查看工作区变更", "View working tree changes");
             let count = self.git_snapshot.dirty_count();
             let changes = button("details-open-changes", changes_title)
+                .when(small, |b| b.tip(changes_title))
                 .child(render_file_diff_icon(14., s.muted))
                 .when(!small, |b| b.child(loc.pick("变更", "Changes")))
                 .when(!strip, |b| b.child(div().flex_1()))

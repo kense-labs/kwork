@@ -5066,11 +5066,10 @@ impl KarWorkbench {
             .w_full()
             .min_w_0()
             .overflow_hidden()
-            .when(in_rail, |d| d.h_full())
+            .when(in_rail, |d| d.h_full().bg(crate::ui_primitives::material::panel_surface(s)))
             .when(!in_rail, |d| {
-                d.rounded(px(12.)).border_1().border_color(s.line)
+                d.rounded(px(12.)).border_1().border_color(s.line).bg(s.surface)
             })
-            .bg(s.surface)
             .flex()
             .flex_col()
             .child(

@@ -64,16 +64,22 @@ pub(crate) fn surface_ground(s: &StudioPalette) -> Hsla {
     }
 }
 
+/// A shared ground for navigation and inspectors, including named light themes.
+pub(crate) fn panel_surface(s: &StudioPalette) -> Hsla {
+    if s.dark {
+        s.surface
+    } else {
+        s.tray.blend(s.ink.opacity(0.025))
+    }
+}
+
 /// The titlebar and the fade over scrolling ink must resolve to the same color.
 /// Flatten the window tints here so a desktop behind the window cannot reveal a seam.
 pub(crate) fn reading_surface(s: &StudioPalette) -> Hsla {
-    let ground = surface_ground(s);
-    if native_glass() {
-        black()
-            .blend(window_tint(s))
-            .blend(ground.opacity(if s.dark { 0.56 } else { 0.72 }))
+    if s.dark && native_glass() {
+        black().blend(window_tint(s)).blend(s.surface.opacity(0.56))
     } else {
-        ground
+        s.surface
     }
 }
 

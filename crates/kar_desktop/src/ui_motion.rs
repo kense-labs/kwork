@@ -28,6 +28,20 @@ use crate::ui_primitives::{
     CTRL_H, CTRL_SM_H, CTRL_XS_H, FS_CONTROL, FS_META, FS_UI, ICON, ICON_SM, ICON_XS, LH_CONTROL,
     LH_META, R_CTRL, R_PILL, R_SM, ROW_H, StudioPalette,
 };
+
+/// Show the full label on hover only when GPUI actually ellipsized its single line.
+pub(crate) fn overflow_label(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+) -> InteractiveText {
+    let label = label.into();
+    let text = StyledText::new(label.clone());
+    let layout = text.layout().clone();
+    InteractiveText::new(id, text).tooltip(move |_, window, cx| {
+        (layout.text() != label.as_ref()).then(|| Tooltip::new(label.clone()).build(window, cx))
+    })
+}
+
 pub(crate) fn copy_with_hint(
     id: String,
     label: impl Into<SharedString>,

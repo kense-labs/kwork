@@ -665,6 +665,14 @@ pub(crate) fn sidebar_texture(s: &StudioPalette, width: f32, running: bool, wind
         .absolute()
         .inset_0()
         .overflow_hidden()
+        .when(!s.dark, |layer| {
+            let ground = material::panel_surface(s);
+            layer.bg(if material::native_glass() {
+                ground.opacity(0.86)
+            } else {
+                ground
+            })
+        })
         .child(
             img(grain.clone())
                 .opacity(if material::native_glass() { 0.14 } else { 0.50 })

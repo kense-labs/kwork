@@ -418,6 +418,7 @@ pub struct DesktopPreferences {
     pub bottom_terminal_open: bool,
     #[serde(default = "default_terminal_h")]
     pub bottom_terminal_h: f32,
+    pub active_project_filter: Option<PathBuf>,
     pub settled_chats: BTreeSet<Uuid>,
     pub snoozed_chats: BTreeMap<Uuid, u64>,
     #[serde(default = "default_true")]
@@ -536,6 +537,7 @@ impl Default for DesktopPreferences {
             tree_show_hidden: false,
             bottom_terminal_open: false,
             bottom_terminal_h: default_terminal_h(),
+            active_project_filter: None,
             settled_chats: BTreeSet::new(),
             snoozed_chats: BTreeMap::new(),
             time_format_24h: true,
@@ -624,6 +626,8 @@ impl DesktopPreferences {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
+        prefs.active_project_filter = prefs.active_project_filter.as_deref()
+            .map(crate::studio_hub::normalize_project_path);
         prefs.code_font_size = prefs.code_font_size.clamp(11.0, 18.0);
         prefs.bottom_terminal_h = prefs.bottom_terminal_h.clamp(176.0, 640.0);
 
@@ -1095,6 +1099,8 @@ mod tests {
         let mut prefs = DesktopPreferences::load(dir.path());
         assert!(prefs.thread_details_open);
         assert_eq!(prefs.sidebar_open, Some(false));
+        assert_eq!(prefs.active_project_filter, None);
+        prefs.active_project_filter = Some(dir.path().join("."));
         let cid = Uuid::new_v4();
         prefs.settled_chats.insert(cid);
         prefs.tree_show_hidden = true;
@@ -1111,6 +1117,7 @@ mod tests {
 
         let loaded = DesktopPreferences::load(dir.path());
         assert!(loaded.settled_chats.contains(&cid));
+        assert_eq!(loaded.active_project_filter, Some(dir.path().canonicalize().unwrap()));
         assert!(loaded.tree_show_hidden);
         assert_eq!(loaded.sidebar_open, Some(false));
         assert!(!loaded.thread_details_open);
