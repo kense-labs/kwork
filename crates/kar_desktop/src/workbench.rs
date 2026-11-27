@@ -507,8 +507,8 @@ pub struct KarWorkbench {
     pub(crate) split_anim: Slide,
     /// Fraction of the open document pane currently revealed.
     dock_reveal: Slide,
-    /// How much of the rail is showing this frame, 0 to 1.
-    pub(crate) sidebar_reveal: f32,
+    /// Fraction of the inline sidebar present in the layout. Overlay drawers reserve no space.
+    pub(crate) inline_sidebar_reveal: f32,
 
     // ── Overlays ────────────────────────────────────────────────────────────
     pub open_menu: Option<Menu>,
@@ -1514,7 +1514,7 @@ impl KarWorkbench {
             sidebar_width,
             split_anim: Slide::new(split_ratio),
             dock_reveal: Slide::new(if initial_layout == WorkspaceLayoutMode::ChatFocus { 0. } else { 1. }),
-            sidebar_reveal: if initial_sidebar_open { 1.0 } else { 0.0 },
+            inline_sidebar_reveal: if initial_sidebar_open { 1.0 } else { 0.0 },
             open_menu: config.open_context_popover.then_some(Menu::ContextUsage),
             palette_return_focus: None,
             command_palette_open: false,
@@ -7077,9 +7077,9 @@ impl Render for KarWorkbench {
         } else {
             self.sidebar_width.min(sidebar_limit)
         };
-        self.sidebar_reveal =
-            (self.sidebar_anim.get(window, cx) / self.sidebar_width).clamp(0., 1.);
-        let sidebar_w = self.sidebar_reveal * rail_width;
+        let rail_reveal = (self.sidebar_anim.get(window, cx) / self.sidebar_width).clamp(0., 1.);
+        self.inline_sidebar_reveal = if compact { 0. } else { rail_reveal };
+        let sidebar_w = rail_reveal * rail_width;
         let in_conversation_stage = self.main_stage_view == MainStageView::Conversation;
         let show_doc = in_conversation_stage
             && (self.layout_mode != WorkspaceLayoutMode::ChatFocus
@@ -7117,7 +7117,7 @@ impl Render for KarWorkbench {
         let (stage_key, inner_stage, review_rail_open) = match self.main_stage_view {
             MainStageView::Conversation if single_dock => ("stage-conversation", div().into_any_element(), false),
             MainStageView::Conversation => {
-                let (chat, rail) = self.render_chat_pane(chat_w, revealed_width, window, cx);
+                let (chat, rail) = self.render_chat_pane(rail_space, chat_w, revealed_width, window, cx);
                 ("stage-conversation", chat, rail)
             }
             MainStageView::TasksInbox => {
@@ -7131,7 +7131,7 @@ impl Render for KarWorkbench {
         let term_drawer =
             (term_drawer_h > 0.5).then(|| self.render_bottom_terminal_drawer(&s, window, cx));
         let doc_view = show_doc.then(|| self.render_office_pane(dock_w, single_dock, window, cx));
-        let sidebar_view = (sidebar_w > 0.5).then(|| self.render_sidebar(rail_width, window, cx));
+        let sidebar_view = (sidebar_w > 0.).then(|| self.render_sidebar(rail_width, window, cx));
 
         // An in-flight split is narrower than its draggable minimum. Until the visible
         // boundary reaches that minimum, a drag would snap to a different width.

@@ -153,7 +153,7 @@ impl KarWorkbench {
         s: &StudioPalette,
         window: &Window,
     ) -> Div {
-        let left = 20. + (macos_traffic_pad(window) - 20.) * (1. - self.sidebar_reveal);
+        let left = 20. + (macos_traffic_pad(window) - 20.) * (1. - self.inline_sidebar_reveal);
         crate::ui_primitives::titlebar_row(window)
             .w_full()
             .pl(px(left))

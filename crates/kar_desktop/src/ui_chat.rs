@@ -95,6 +95,7 @@ impl KarWorkbench {
 
     pub(crate) fn render_chat_pane(
         &mut self,
+        pane_left: f32,
         pane_w: f32,
         revealed_dock_width: f32,
         window: &mut Window,
@@ -151,6 +152,7 @@ impl KarWorkbench {
         self.set_thread_details_space(margin.is_some());
         let reveal = self.thread_details_reveal(window, cx);
         let header = self.render_chat_header(
+            pane_left,
             pane_w,
             revealed_dock_width,
             on_start_screen,
@@ -530,6 +532,7 @@ impl KarWorkbench {
 
     fn render_chat_header(
         &self,
+        pane_left: f32,
         pane_w: f32,
         revealed_dock_width: f32,
         on_start_screen: bool,
@@ -581,14 +584,25 @@ impl KarWorkbench {
                 | ChatAccessMode::ArchivedReadOnly { .. }
         );
 
-        let rail_hidden = (1. - self.sidebar_reveal).clamp(0., 1.);
+        let rail_hidden = 1. - self.inline_sidebar_reveal;
+        let tool_gap = 7.;
         let base_pad = 20.0;
         let traffic_extra = macos_traffic_pad(window) - base_pad;
         let left_pad = base_pad + traffic_extra * rail_hidden;
-        let collapsed_slot_w = (2. * CTRL_SM_H + TITLEBAR_BUTTON_GAP) * rail_hidden;
+        // Collapse the trailing gap with the tools. Removing a flex child with a fixed
+        // gap would pull every breadcrumb backwards on the last frame.
+        let collapsed_slot_w = (2. * CTRL_SM_H + TITLEBAR_BUTTON_GAP + tool_gap) * rail_hidden;
         // Leave room for the thread title and the panel controls when the sidebar tools move here.
-        let title_lane = pane_w - left_pad - collapsed_slot_w;
-        let compact_crumb = title_lane < if on_start_screen { 232. } else { 272. };
+        // Snap the leading edge once in window coordinates, as the rail and the
+        // space vacated by its controls animate in opposite directions.
+        let scale = window.scale_factor();
+        let snap = |x: f32| (x * scale).round() / scale;
+        let title_inset = snap(pane_left + left_pad + collapsed_slot_w) - snap(pane_left);
+        let title_lane = pane_w - title_inset;
+        let compact_at = if on_start_screen { 232. } else { 272. };
+        let project_room = (title_lane - compact_at).max(0.);
+        let compact_crumb = project_room == 0.;
+        let crumb_gap = (4. + project_room).min(7.);
 
         let right_pad = TITLEBAR_EDGE_INSET + (CTRL_SM_H + TITLEBAR_BUTTON_GAP - revealed_dock_width).max(0.);
         let terminal = icon_button_sm("chat-toggle-bottom-terminal", ProIcon::PanelBottom,
@@ -622,9 +636,9 @@ impl KarWorkbench {
         let new_in_project = loc.pick("在此项目中新建对话", "New thread in this project");
         let project_crumb = Tactile::ghost("chat-project-crumb", s)
             .h(px(CTRL_SM_H))
-            .flex_none()
+            .min_w(px(24.))
             .when(compact_crumb, |b| {
-                b.w(px(24.)).flex_none().justify_center().child(render_folder_icon(16., s.muted))
+                b.w(px(24.)).justify_center().child(render_folder_icon(16., s.muted))
             })
             .when(!compact_crumb, |b| b.px(px(4.)))
             .tip(new_in_project)
@@ -632,7 +646,8 @@ impl KarWorkbench {
             .when(!compact_crumb, |b| {
                 b.child(
                     div()
-                        .max_w(px((pane_w * 0.18).clamp(44., 160.)))
+                        .min_w_0()
+                        .max_w(px((16. + project_room).min(160.)))
                         .truncate()
                         .text_size(s.font_size(FS_UI))
                         .text_color(s.muted)
@@ -643,13 +658,16 @@ impl KarWorkbench {
                 this.select_project_and_new_chat(ws.clone(), win, cx)
             });
 
+        // Keep a short conversation name legible before giving width to the project
+        // label, including frames where both sidebars are moving.
+        let title_min = s.font_size(FS_UI) * title.chars().take(2).count() as f32;
         let title_for_rename = title.clone();
         let title_el: AnyElement = if let Some(cid) = chat_id.filter(|_| has_own_chat) {
             Tactile::ghost("chat-header-rename", s)
                 .h(px(CTRL_SM_H))
                 .px(px(5.))
                 .mx(px(-5.))
-                .min_w_0()
+                .min_w(title_min + px(10.))
                 .tip(loc.pick("点击重命名对话", "Click to rename thread"))
                 .child(
                     div()
@@ -666,7 +684,7 @@ impl KarWorkbench {
                 .into_any_element()
         } else {
             div()
-                .min_w_0()
+                .min_w(title_min)
                 .truncate()
                 .text_size(s.font_size(FS_UI))
                 .font_weight(FontWeight::MEDIUM)
@@ -676,7 +694,8 @@ impl KarWorkbench {
         };
 
         crate::ui_primitives::titlebar_row(window)
-            .pl(px(left_pad))
+            .relative()
+            .pl(px(title_inset))
             .pr(px(right_pad))
             .justify_between()
             .gap(px(12.))
@@ -687,47 +706,26 @@ impl KarWorkbench {
                     .min_w_0()
                     .flex()
                     .items_center()
-                    .gap(px(7.))
-                    .when(rail_hidden > 0.01, |d| {
-                        d.child(
-                            div()
-                                .w(px(collapsed_slot_w))
-                                .flex_none()
-                                .overflow_hidden()
-                                .opacity(rail_hidden)
-                                .flex()
-                                .items_center()
-                                .gap(px(TITLEBAR_BUTTON_GAP))
-                                .child(div().size(px(CTRL_SM_H)).flex_none())
-                                .child(
-                                    icon_button_sm("chat-new", ProIcon::NewChat,
-                                        loc.pick("新建对话  ⌘N", "New thread  ⌘N"), s)
-                                        .on_press(cx, |this, window, cx| {
-                                            this.start_new_chat(window, cx)
-                                        }),
-                                ),
-                        )
-                    })
-                    .child(project_crumb)
-                    .when(!compact_crumb, |d| {
-                        d.child(div().text_size(s.font_size(FS_CONTROL)).text_color(s.faint).child("/"))
-                    })
+                    .gap(px(crumb_gap))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .child(project_crumb)
+                            .when(!compact_crumb, |crumb| {
+                                crumb.child(
+                                    div()
+                                        .ml(px(crumb_gap.min(project_room)))
+                                        .max_w(px(project_room))
+                                        .overflow_hidden()
+                                        .text_size(s.font_size(FS_CONTROL))
+                                        .text_color(s.faint)
+                                        .child("/"),
+                                )
+                            }),
+                    )
                     .child(title_el)
-                    .when(!on_start_screen, |d| {
-                        d.child(menu_host(
-                            Tactile::ghost("chat-more", s)
-                                .size(px(CTRL_SM_H))
-                                .radius(crate::ui_primitives::R_SM)
-                                .justify_center()
-                                .lit(self.open_menu == Some(Menu::ChatMore))
-                                .tip(loc.pick("对话与接力选项", "Thread actions"))
-                                .child(pro_icon(ProIcon::MoreHorizontal, 14., s.muted))
-                                .on_press(cx, |this, _, cx| this.toggle_menu(Menu::ChatMore, cx)),
-                            self.render_chat_more_menu(s, cx),
-                        ).when(pointer_controls && self.open_menu != Some(Menu::ChatMore), |menu| {
-                            menu.opacity(0.).group_hover("chat-title-actions", |show| show.opacity(1.))
-                        }))
-                    })
                     .when_some(assoc_badge, |d, assoc| {
                         d.child(
                             Tactile::soft("chat-assoc-pill", s)
@@ -744,8 +742,43 @@ impl KarWorkbench {
                                 }),
                         )
                     })
-                    .when_some(status, |d, (label, tone)| {
-                        d.child(render_status(label, tone, s))
+                    .when(!on_start_screen, |row| {
+                        let actions = loc.pick("对话与接力选项", "Thread actions");
+                        let open = self.open_menu == Some(Menu::ChatMore);
+                        // In tight headers the status itself opens the thread menu, leaving
+                        // the space normally reserved for its hover icon to the title.
+                        let icon_slot = if status.is_some() {
+                            project_room.min(CTRL_SM_H + crumb_gap)
+                        } else {
+                            CTRL_SM_H
+                        };
+                        let glyph = div()
+                            .w(px(icon_slot))
+                            .flex_none()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .size(px(CTRL_SM_H))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(pro_icon(ProIcon::MoreHorizontal, 14., s.muted)),
+                            )
+                            .when(pointer_controls && !open, |d| {
+                                d.opacity(0.).group_hover("chat-title-actions", |style| style.opacity(1.))
+                            });
+                        let button = Tactile::inline("chat-more", s)
+                            .h(px(CTRL_SM_H))
+                            .radius(crate::ui_primitives::R_SM)
+                            .aria(status.map_or_else(|| actions.to_owned(), |(label, _)| format!("{label} · {actions}")))
+                            .tip(actions)
+                            .child(glyph)
+                            .when_some(status, |b, (label, tone)| b.child(render_status(label, tone, s)))
+                            .on_press(cx, |wb, _, cx| wb.toggle_menu(Menu::ChatMore, cx));
+                        row.child(menu_host(button, self.render_chat_more_menu(s, cx)))
+                    })
+                    .when_some(status.filter(|_| on_start_screen), |row, (label, tone)| {
+                        row.child(render_status(label, tone, s))
                     }),
             )
             .child(
@@ -825,6 +858,30 @@ impl KarWorkbench {
                     .child(self.thread_details_toggle(s, cx))
                     .child(terminal),
             )
+            .when(collapsed_slot_w > 0., |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left(px(left_pad))
+                        .top(px(crate::ui_primitives::titlebar_center_y(window) - CTRL_SM_H / 2.))
+                        .h(px(CTRL_SM_H))
+                        .w(px(collapsed_slot_w))
+                        .flex_none()
+                        .overflow_hidden()
+                        .opacity(rail_hidden)
+                        .flex()
+                        .items_center()
+                        .gap(px(TITLEBAR_BUTTON_GAP))
+                        .child(div().size(px(CTRL_SM_H)).flex_none())
+                        .child(
+                            icon_button_sm("chat-new", ProIcon::NewChat,
+                                loc.pick("新建对话  ⌘N", "New thread  ⌘N"), s)
+                                .on_press(cx, |this, window, cx| {
+                                    this.start_new_chat(window, cx)
+                                }),
+                        ),
+                )
+            })
     }
 
     pub(crate) fn thread_details_toggle(&self, s: &StudioPalette, cx: &mut Context<Self>) -> Tactile {
