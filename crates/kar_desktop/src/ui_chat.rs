@@ -165,26 +165,18 @@ impl KarWorkbench {
             window,
             cx,
         );
-        let find_bar = self.render_chat_find_bar(thread_w, &s, window, cx);
+        let matches = if self.chat_search_open {
+            matching_turn_indices(&self.projected.turns, &self.chat_search_query.trim().to_lowercase())
+        } else {
+            Vec::new()
+        };
+        let active_match = (!matches.is_empty()).then(|| self.chat_search_match_ix % matches.len());
+        let find_bar = self.render_chat_find_bar(thread_w, &matches, &s, window, cx);
         let share_bar = self.render_share_bar(thread_w, &s, cx);
         let goal_bar = self.render_goal_bar(thread_w.min(center_w), &s, cx);
         let notice = self.render_notice(thread_w, &s, cx);
 
-        let search_q_lc = if self.chat_search_open {
-            self.chat_search_query.trim().to_lowercase()
-        } else {
-            String::new()
-        };
-        let active_match_turn_ix = if search_q_lc.is_empty() {
-            None
-        } else {
-            let matches = matching_turn_indices(&self.projected.turns, &search_q_lc);
-            if matches.is_empty() {
-                None
-            } else {
-                Some(matches[self.chat_search_match_ix % matches.len()])
-            }
-        };
+        let active_match_turn_ix = active_match.map(|index| matches[index]);
 
         let stage = if on_start_screen {
             self.render_start_stage(center_w, &s, window, cx)
@@ -202,21 +194,16 @@ impl KarWorkbench {
                 let turns = self.projected.turns.clone();
                 for (turn_idx, turn) in turns.iter().enumerate() {
                     let is_active_match = active_match_turn_ix == Some(turn_idx);
-                    let turn_matched = !search_q_lc.is_empty()
-                        && turn_matches_search(turn, &search_q_lc);
+                    let turn_matched = matches.binary_search(&turn_idx).is_ok();
                     let rendered = self
                         .render_turn(turn_idx, turn, !show_review_rail, &s, window, cx)
                         .when(turn_matched, |d| {
-                            d.pl(px(10.))
-                                .border_l_2()
-                                .border_color(if is_active_match {
-                                    s.primary
-                                } else {
-                                    s.primary.opacity(0.38)
-                                })
+                            d.relative()
                                 .when(is_active_match, |d| {
-                                    d.rounded(px(R_CARD)).bg(s.pro.accent_soft.opacity(0.32)).py(px(6.)).pr(px(8.))
+                                    d.rounded(px(R_CARD)).bg(s.pro.accent_soft.opacity(0.32))
                                 })
+                                .child(div().absolute().left(px(-6.)).top_0().bottom_0().w(px(2.))
+                                    .bg(if is_active_match { s.primary } else { s.primary.opacity(0.38) }))
                         });
                     rows.push(
                         arrive(
@@ -1353,15 +1340,18 @@ impl KarWorkbench {
     fn render_chat_find_bar(
         &self,
         thread_w: f32,
+        matches: &[usize],
         s: &StudioPalette,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        const BAR_HEIGHT: f32 = 46.;
         #[derive(Clone)]
         struct ChatFindBarState {
             editor: Entity<Editor>,
             wired: bool,
-            was_open: bool,
+            return_focus: Option<FocusHandle>,
+            match_count: usize,
         }
 
         let loc = self.ui_locale;
@@ -1376,7 +1366,8 @@ impl KarWorkbench {
             ChatFindBarState {
                 editor,
                 wired: false,
-                was_open: false,
+                return_focus: None,
+                match_count: 0,
             }
         });
         let cur_state = state.read(cx).clone();
@@ -1419,44 +1410,57 @@ impl KarWorkbench {
             )
             .detach();
         }
-        if open != cur_state.was_open {
-            state.update(cx, |st, _| st.was_open = open);
+        if open != cur_state.return_focus.is_some() {
+            editor.update(cx, |ed, _| ed.disabled = !open);
             if open {
+                let origin = window.focused(cx).unwrap_or_else(|| self.focus_handle.clone());
+                state.update(cx, |st, _| st.return_focus = Some(origin));
                 let focus = editor.read(cx).focus.clone();
-                window.defer(cx, move |win, cx| focus.focus(win, cx));
+                let view = cx.weak_entity();
+                window.defer(cx, move |win, cx| {
+                    if view.upgrade().is_some_and(|wb| wb.read(cx).chat_search_open) {
+                        focus.focus(win, cx);
+                    }
+                });
+            } else if let Some(origin) = state.update(cx, |st, _| st.return_focus.take()) {
+                origin.focus(window, cx);
             }
         }
-        if !open {
-            return pro_fold("kar-chat-find-bar", false, 46., 0., || {
-                div().into_any_element()
-            });
+        let reveal = pro_spring_f32("kar-chat-find-reveal", f32::from(open), 0.16, window, cx)
+            .clamp(0., 1.);
+        if !open && reveal <= 0.001 {
+            return div().h_0().into_any_element();
         }
 
-        let q_lc = self.chat_search_query.trim().to_lowercase();
-        let matches = if q_lc.is_empty() {
-            Vec::new()
-        } else {
-            matching_turn_indices(&self.projected.turns, &q_lc)
-        };
-        let match_count = matches.len();
+        // Keep the counter and controls in place until their exit finishes.
+        let match_count = if open { matches.len() } else { cur_state.match_count };
+        if open && match_count != cur_state.match_count {
+            state.update(cx, |st, _| st.match_count = match_count);
+        }
         let cur_ix = if match_count == 0 {
             0
         } else {
             (self.chat_search_match_ix % match_count) + 1
         };
-        let counter_label = if q_lc.is_empty() {
+        let counter_label = if self.chat_search_query.trim().is_empty() {
             String::new()
         } else if match_count == 0 {
             loc.pick("无匹配", "0 matches").to_owned()
         } else {
             format!("{cur_ix} / {match_count}")
         };
-        let matches_prev = matches.clone();
-        let matches_next = matches;
+        let targets = (!matches.is_empty()).then(|| {
+            let active = self.chat_search_match_ix % matches.len();
+            let prev = (active + matches.len() - 1) % matches.len();
+            let next = (active + 1) % matches.len();
+            [(prev, matches[prev]), (next, matches[next])]
+        });
         let focused = editor.read(cx).focus.is_focused(window);
 
         let bar = div()
             .w_full()
+            .h(px(BAR_HEIGHT))
+            .flex_none()
             .max_w(px(thread_w))
             .mx_auto()
             .px(px(THREAD_PAD))
@@ -1499,13 +1503,11 @@ impl KarWorkbench {
                             s,
                         )
                         .disabled(match_count == 0)
+                        .when(!open && match_count > 0, |b| b.inert())
                         .on_press(cx, move |this, _, cx| {
-                            if !matches_prev.is_empty() {
-                                let len = matches_prev.len();
-                                this.chat_search_match_ix =
-                                    (this.chat_search_match_ix + len - 1) % len;
-                                this.chat_scroll
-                                    .scroll_to_item(matches_prev[this.chat_search_match_ix]);
+                            if let Some([(index, turn), _]) = targets {
+                                this.chat_search_match_ix = index;
+                                this.chat_scroll.scroll_to_item(turn);
                                 cx.notify();
                             }
                         }),
@@ -1518,12 +1520,11 @@ impl KarWorkbench {
                             s,
                         )
                         .disabled(match_count == 0)
+                        .when(!open && match_count > 0, |b| b.inert())
                         .on_press(cx, move |this, _, cx| {
-                            if !matches_next.is_empty() {
-                                let len = matches_next.len();
-                                this.chat_search_match_ix = (this.chat_search_match_ix + 1) % len;
-                                this.chat_scroll
-                                    .scroll_to_item(matches_next[this.chat_search_match_ix]);
+                            if let Some([_, (index, turn)]) = targets {
+                                this.chat_search_match_ix = index;
+                                this.chat_scroll.scroll_to_item(turn);
                                 cx.notify();
                             }
                         }),
@@ -1535,6 +1536,7 @@ impl KarWorkbench {
                             loc.pick("关闭查找  Esc", "Close find  Esc"),
                             s,
                         )
+                        .when(!open, |b| b.inert())
                         .on_press(cx, |this, _, cx| {
                             this.chat_search_open = false;
                             cx.notify();
@@ -1543,7 +1545,14 @@ impl KarWorkbench {
             )
             .into_any_element();
 
-        pro_fold("kar-chat-find-bar", true, 46., 0., move || bar)
+        div()
+            .w_full()
+            .h(px(BAR_HEIGHT * reveal))
+            .flex_none()
+            .overflow_hidden()
+            .opacity(reveal)
+            .child(bar)
+            .into_any_element()
     }
 
     fn render_share_bar(
@@ -5940,6 +5949,9 @@ fn turn_matches_search(turn: &ChatTurn, query_lc: &str) -> bool {
 }
 
 fn matching_turn_indices(turns: &[ChatTurn], query_lc: &str) -> Vec<usize> {
+    if query_lc.is_empty() {
+        return Vec::new();
+    }
     turns
         .iter()
         .enumerate()
