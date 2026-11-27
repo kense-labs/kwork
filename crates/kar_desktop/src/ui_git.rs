@@ -1991,7 +1991,8 @@ pub(crate) fn render_split_diff_hunks(
         .border_color(s.line_soft)
         .overflow_hidden()
         .font_family(mono)
-        .text_size(px(FS_META))
+        .text_size(px(crate::ui_primitives::effective_code_font_size(cx)))
+        .line_height(relative(1.5))
         .flex()
         .flex_col();
 

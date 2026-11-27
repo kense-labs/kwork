@@ -438,8 +438,8 @@ pub(super) fn activity_line(
         .px(px(6.))
         .max_w_full()
         .h(px(CTRL_SM_H))
-        .text_size(px(FS_UI))
-        .line_height(px(LH_UI))
+        .text_size(s.font_size(FS_UI))
+        .line_height(s.line_height(LH_UI))
         .ink(tone, s.ink)
         .child(body)
 }
@@ -630,7 +630,7 @@ impl KarWorkbench {
                             .ml(px(-4.))
                             .px(px(4.))
                             .h(px(24.))
-                            .text_size(px(FS_META))
+                            .text_size(s.font_size(FS_META))
                             .ink(s.muted, s.ink)
                             .gap(px(4.))
                             .child(label)
@@ -736,7 +736,7 @@ impl KarWorkbench {
             .unwrap_or_else(|| status.to_owned());
         box_el = box_el.child(
             div()
-                .text_size(px(FS_META))
+                .text_size(s.font_size(FS_META))
                 .text_color(if state == Phase::Failed {
                     s.pro.red_ink
                 } else {
@@ -774,8 +774,8 @@ impl KarWorkbench {
                 .overflow_y_scroll()
                 .tab_stop(true)
                 .font_family(mono_font(cx))
-                .text_size(px(FS_META))
-                .line_height(px(18.))
+                .text_size(s.font_size(FS_META))
+                .line_height(s.line_height(18.))
                 .text_color(if part == "output" && state == Phase::Failed {
                     s.pro.red_ink
                 } else {
@@ -791,7 +791,7 @@ impl KarWorkbench {
                         .justify_between()
                         .child(
                             div()
-                                .text_size(px(FS_META))
+                                .text_size(s.font_size(FS_META))
                                 .text_color(s.muted)
                                 .child(label),
                         )

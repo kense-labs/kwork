@@ -218,6 +218,8 @@ pub struct Editor {
     pub disabled: bool,
     read_only: bool,
     pub font_size: f32,
+    /// Use the enclosing surface's text size, for example a terminal prompt.
+    pub inherit_font_size: bool,
     pub(crate) center_text: bool,
     pub description: SharedString,
     layout: Option<Layout>,
@@ -315,6 +317,7 @@ impl Editor {
             disabled: false,
             read_only: false,
             font_size: 14.,
+            inherit_font_size: false,
             center_text: false,
             description: "".into(),
             layout: None,
@@ -914,7 +917,12 @@ impl Editor {
         } else {
             p.ink
         };
-        let line = px(self.font_size + 7.);
+        let font_size = if self.inherit_font_size {
+            w.text_style().font_size.to_pixels(w.rem_size())
+        } else {
+            px(self.font_size + crate::Theme::global(cx).text_size_offset)
+        };
+        let line = font_size + px(7.);
         let multi = self.mode.multiline();
         let styled = if show_ghost {
             let mut base = run.clone();
@@ -965,7 +973,7 @@ impl Editor {
             .text_system()
             .shape_text(
                 text,
-                px(self.font_size),
+                font_size,
                 styled.as_deref().unwrap_or(std::slice::from_ref(&run)),
                 multi.then_some(b.size.width.max(px(1.))),
                 None,

@@ -372,8 +372,8 @@ pub(crate) fn render(
                             .min_w_0()
                             .flex_1()
                             .truncate()
-                            .text_size(px(FS_CONTROL))
-                            .line_height(px(20.))
+                            .text_size(s.font_size(FS_CONTROL))
+                            .line_height(s.line_height(20.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(s.ink)
                             .child(entry.title.clone()),
@@ -385,8 +385,8 @@ pub(crate) fn render(
                     div()
                         .line_clamp(lines)
                         .overflow_hidden()
-                        .text_size(px(FS_CONTROL))
-                        .line_height(px(20.))
+                        .text_size(s.font_size(FS_CONTROL))
+                        .line_height(s.line_height(20.))
                         .text_color(s.muted)
                         .child(entry.reply.clone()),
                 )

@@ -59,8 +59,8 @@ impl KarWorkbench {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(FS_UI))
-                    .line_height(px(20.))
+                    .text_size(s.font_size(FS_UI))
+                    .line_height(s.line_height(20.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(s.ink)
                     .child(title),
@@ -99,7 +99,7 @@ impl KarWorkbench {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(px(FS_META))
+                                .text_size(s.font_size(FS_META))
                                 .text_color(s.ink)
                                 .child(format!(
                                     "{} \"{del_title}\"",
@@ -255,7 +255,7 @@ impl KarWorkbench {
             .flex()
             .items_center()
             .justify_between()
-            .text_size(px(FS_META))
+            .text_size(s.font_size(FS_META))
             .font_weight(FontWeight::MEDIUM)
             .text_color(s.muted)
             .child(if has_query { loc.pick("搜索结果", "Search results") } else { loc.pick("对话", "Chats") })
@@ -289,7 +289,7 @@ impl KarWorkbench {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(FS_TAG))
+                                    .text_size(s.font_size(FS_TAG))
                                     .text_color(s.ink)
                                     .child(pname),
                             ),
@@ -432,21 +432,21 @@ impl KarWorkbench {
                                     })
                                     .child(
                                         div()
-                                            .text_size(px(FS_META))
+                                            .text_size(s.font_size(FS_META))
                                             .text_color(s.muted)
                                             .child("remote"),
                                     ),
                             )
                             .child(
                                 div()
-                                    .text_size(px(FS_TAG))
+                                    .text_size(s.font_size(FS_TAG))
                                     .text_color(s.pro.green_ink)
                                     .child("live"),
                             ),
                     )
                     .child(
                         div()
-                            .text_size(px(FS_UI))
+                            .text_size(s.font_size(FS_UI))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(s.ink)
                             .truncate()
@@ -473,7 +473,7 @@ impl KarWorkbench {
                         div()
                             .flex_1()
                             .truncate()
-                            .text_size(px(FS_UI))
+                            .text_size(s.font_size(FS_UI))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(s.ink)
                             .child(loc.pick("共享的实时对话", "Shared live thread")),
@@ -537,7 +537,7 @@ impl KarWorkbench {
                                 .flex()
                                 .items_center()
                                 .gap(px(5.))
-                                .text_size(px(FS_TAG))
+                                .text_size(s.font_size(FS_TAG))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(s.muted)
                                 .child(pro_icon(
@@ -554,7 +554,7 @@ impl KarWorkbench {
                         .child(
                             div()
                                 .font_features(tnum_features())
-                                .text_size(px(FS_TAG))
+                                .text_size(s.font_size(FS_TAG))
                                 .text_color(s.faint)
                                 .child(format!("{}", items.len())),
                         )
@@ -604,7 +604,7 @@ impl KarWorkbench {
                     .px(px(6.))
                     .pt(px(8.))
                     .pb(px(2.))
-                    .text_size(px(FS_TAG))
+                    .text_size(s.font_size(FS_TAG))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(s.faint)
                     .child(format!(
@@ -645,8 +645,8 @@ impl KarWorkbench {
                     .pt(px(24.))
                     .pb(px(24.))
                     .text_center()
-                    .text_size(px(FS_META))
-                    .line_height(px(16.))
+                    .text_size(s.font_size(FS_META))
+                    .line_height(s.line_height(16.))
                     .text_color(s.muted.opacity(0.68))
                     .child(message),
             );
@@ -672,7 +672,7 @@ impl KarWorkbench {
                     div()
                         .px(px(6.))
                         .pb(px(2.))
-                        .text_size(px(FS_TAG))
+                        .text_size(s.font_size(FS_TAG))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(s.faint)
                         .child(loc.pick("打开的文档", "Open documents")),
@@ -716,7 +716,7 @@ impl KarWorkbench {
                                         .flex_1()
                                         .min_w_0()
                                         .truncate()
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .font_weight(if in_front {
                                             FontWeight::MEDIUM
                                         } else {
@@ -784,7 +784,7 @@ impl KarWorkbench {
                         .justify_between()
                         .child(
                             div()
-                                .text_size(px(FS_META))
+                                .text_size(s.font_size(FS_META))
                                 .text_color(s.muted)
                                 .child(if self.sidebar_metadata.values().any(|meta| meta.archived) { loc.pick("已结项与归档", "Settled and archived") } else { loc.pick("已结项", "Settled") }),
                         )
@@ -794,7 +794,7 @@ impl KarWorkbench {
                                 .items_center()
                                 .gap(px(6.))
                                 .font_features(tnum_features())
-                                .text_size(px(FS_META))
+                                .text_size(s.font_size(FS_META))
                                 .text_color(s.muted)
                                 .child(format!("{settled_count}"))
                                 .child(pro_icon(
@@ -846,8 +846,8 @@ impl KarWorkbench {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(px(FS_UI))
-                        .line_height(px(LH_UI))
+                        .text_size(s.font_size(FS_UI))
+                        .line_height(s.line_height(LH_UI))
                         .text_color(s.ink)
                         .child(label),
                 )
@@ -886,7 +886,7 @@ impl KarWorkbench {
                 .when(inbox_attention_count > 0, |row| {
                     row.child(
                         div()
-                            .text_size(px(FS_META))
+                            .text_size(s.font_size(FS_META))
                             .font_features(tnum_features())
                             .text_color(s.pro.amber_ink)
                             .child(inbox_attention_count.to_string()),
@@ -1069,8 +1069,8 @@ impl KarWorkbench {
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(px(FS_UI))
-                .line_height(px(LH_UI))
+                .text_size(s.font_size(FS_UI))
+                .line_height(s.line_height(LH_UI))
                 .text_color(s.ink)
                 .child(display_title.clone()),
         )
@@ -1079,7 +1079,7 @@ impl KarWorkbench {
         .child({
             let trailing = div().flex_none().h(px(ICON)).min_w(px(ICON))
                 .flex().items_center().justify_center()
-                .text_size(px(FS_META)).font_features(tnum_features()).text_color(s.muted);
+                .text_size(s.font_size(FS_META)).font_features(tnum_features()).text_color(s.muted);
             if needs_approval {
                 trailing.text_color(s.pro.amber_ink).child(loc.pick("待确认", "Approval"))
             } else if running {
@@ -1358,7 +1358,7 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .gap(px(3.5))
-                    .text_size(px(FS_META))
+                    .text_size(s.font_size(FS_META))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(s.pro.amber_ink)
                     .child(render_approval_hand(12., s.pro.amber_ink))
@@ -1383,7 +1383,7 @@ impl KarWorkbench {
             "claude",
             div()
                 .font_features(tnum_features())
-                .text_size(px(FS_META))
+                .text_size(s.font_size(FS_META))
                 .text_color(s.muted)
                 .child("24m")
                 .into_any_element(),
@@ -1406,7 +1406,7 @@ impl KarWorkbench {
                     "codex",
                     div()
                         .font_features(tnum_features())
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .text_color(s.muted)
                         .child("41m")
                         .into_any_element(),
@@ -1428,7 +1428,7 @@ impl KarWorkbench {
                         .flex()
                         .items_center()
                         .gap(px(3.5))
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(s.pro.green_ink)
                         .child(render_circle_check_icon(12., s.pro.green))
@@ -1447,7 +1447,7 @@ impl KarWorkbench {
                     "claude",
                     div()
                         .font_features(tnum_features())
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .text_color(s.muted)
                         .child("2h")
                         .into_any_element(),
@@ -1650,8 +1650,8 @@ fn demo_static_card(
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(px(FS_UI))
-                .line_height(px(LH_UI))
+                .text_size(s.font_size(FS_UI))
+                .line_height(s.line_height(LH_UI))
                 .text_color(s.ink)
                 .child(title.to_owned())
                 .tooltip(move |window, cx| Tooltip::new(context.clone()).build(window, cx)),

@@ -129,7 +129,7 @@ impl KarWorkbench {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(s.ink)
                                         .child(loc.pick("经典极简黑白（默认）", "Kwrok Monochrome")),
@@ -273,7 +273,7 @@ impl KarWorkbench {
                                             .bg(rgb(bg_hex))
                                             .border_1()
                                             .border_color(s.line_soft)
-                                            .text_size(px(FS_TAG))
+                                            .text_size(s.font_size(FS_TAG))
                                             .font_weight(FontWeight::BOLD)
                                             .text_color(rgb(fg_hex))
                                             .child("Aa"),
@@ -283,7 +283,7 @@ impl KarWorkbench {
                                             .flex_1()
                                             .min_w_0()
                                             .truncate()
-                                            .text_size(px(FS_META))
+                                            .text_size(s.font_size(FS_META))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(s.ink)
                                             .child(display_name),
@@ -338,7 +338,7 @@ impl KarWorkbench {
                                 .gap(px(2.))
                                 .child(
                                     div()
-                                        .text_size(px(FS_UI))
+                                        .text_size(s.font_size(FS_UI))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(s.ink)
                                         .child(loc.pick("精选主题配色", "Curated color themes")),
@@ -346,7 +346,7 @@ impl KarWorkbench {
                                 .child(
                                     div()
                                         .font_features(tnum_features())
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .text_color(s.muted)
                                         .child(loc.pick(
                                             "默认展示 6 款护眼精选配色，点击右侧按钮可搜索全部主题库。",
@@ -406,42 +406,55 @@ impl KarWorkbench {
             },
         );
 
+        let mut code_sizes = vec![12., 13., 14., 15., 16.];
+        if !code_sizes.contains(&self.prefs.code_font_size) {
+            code_sizes.push(self.prefs.code_font_size);
+            code_sizes.sort_by(f32::total_cmp);
+        }
         let code_size_strip = SelectionStrip::options(
             "appearance-code-size",
             loc.pick("代码与终端字号", "Code & terminal font size"),
             Group::Choices,
-            [(12u32, "12px"), (13, "13px"), (14, "14px"), (15, "15px"), (16, "16px")],
-            self.prefs.code_font_size.round() as u32,
+            code_sizes.into_iter().map(|size| (size, format!("{size}px"))),
+            self.prefs.code_font_size,
             s,
             cx,
             |wb, sz, _, cx| {
-                wb.prefs.code_font_size = sz as f32;
+                wb.prefs.code_font_size = sz;
                 wb.save_prefs();
                 crate::apply_theme_and_typography(wb.theme_mode, &wb.prefs, cx);
                 cx.notify();
             },
         );
 
-        let code_font_current = self
-            .prefs
-            .code_font_family
-            .clone()
-            .unwrap_or_else(|| "default".into());
+        let code_font_current = cx.global::<crate::ui_primitives::ActiveTypography>()
+            .code_font_family.clone();
+        let mut code_fonts = vec![(None, SharedString::from(loc.pick("系统默认", "System")))];
+        let candidates = [
+            "SF Mono", "JetBrains Mono", "Menlo", "Monaco", "Cascadia Mono", "Consolas",
+            "Noto Sans Mono", "DejaVu Sans Mono", "Liberation Mono", "Courier New",
+        ];
+        for family in candidates.iter()
+            .filter_map(|name| crate::installed_code_font(name, cx))
+            .take(3)
+        {
+            code_fonts.push((Some(family.clone()), family));
+        }
+        if let Some(current) = &code_font_current
+            && !code_fonts.iter().any(|(family, _)| family.as_ref() == Some(current))
+        {
+            code_fonts.push((Some(current.clone()), current.clone()));
+        }
         let code_font_strip = SelectionStrip::options(
             "appearance-code-family",
             loc.pick("等宽代码字体", "Monospace font"),
             Group::Choices,
-            [
-                ("default".to_owned(), loc.pick("系统默认", "System").to_owned()),
-                ("SF Mono".to_owned(), "SF Mono".to_owned()),
-                ("JetBrains Mono".to_owned(), "JetBrains Mono".to_owned()),
-                ("Menlo".to_owned(), "Menlo".to_owned()),
-            ],
+            code_fonts,
             code_font_current,
             s,
             cx,
             |wb, fam, _, cx| {
-                wb.prefs.code_font_family = (fam != "default").then_some(fam);
+                wb.prefs.code_font_family = fam.map(|family| family.to_string());
                 wb.save_prefs();
                 crate::apply_theme_and_typography(wb.theme_mode, &wb.prefs, cx);
                 cx.notify();
@@ -463,6 +476,11 @@ impl KarWorkbench {
             },
         );
 
+        let system_mono = &cx.global::<crate::SystemCodeFont>().0;
+        let font_description = match loc {
+            crate::ui_primitives::UiLocale::Zh => format!("用于代码块、文件差异和终端。系统默认使用 {system_mono}。"),
+            crate::ui_primitives::UiLocale::En => format!("Used for code blocks, diffs, and the terminal. System default is {system_mono}."),
+        };
         let typo_box = card_box(s)
             .flex()
             .flex_col()
@@ -495,15 +513,15 @@ impl KarWorkbench {
             .child(settings_divider(s))
             .child(settings_row_item(
                 loc.pick("代码与终端字体", "Code & terminal font"),
-                loc.pick("用于代码块、文件改动对比与底部终端。", "Used for code blocks, diffs, and terminal."),
+                font_description,
                 code_font_strip.into_any_element(),
                 stacked,
                 s,
             ))
             .child(settings_divider(s))
             .child(settings_row_item(
-                loc.pick("代码字号大小", "Code font size"),
-                loc.pick("代码块与底部终端的显示字号。", "Default pixel size for code and terminal."),
+                loc.pick("代码字号", "Code font size"),
+                loc.pick("调节代码块、文件差异和终端的字号。", "Text size in code blocks, diffs, and the terminal."),
                 code_size_strip.into_any_element(),
                 stacked,
                 s,
@@ -785,7 +803,7 @@ impl KarWorkbench {
                         .px(px(16.))
                         .py(px(8.))
                         .bg(s.tray)
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(s.muted)
                         .child(cat),
@@ -823,7 +841,7 @@ impl KarWorkbench {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(FS_UI))
+                                    .text_size(s.font_size(FS_UI))
                                     .text_color(s.ink)
                                     .child(def.label(loc)),
                             )
@@ -834,7 +852,7 @@ impl KarWorkbench {
                                         .py(px(1.))
                                         .rounded(px(R_PILL))
                                         .bg(s.pro.accent_soft)
-                                        .text_size(px(FS_TAG))
+                                        .text_size(s.font_size(FS_TAG))
                                         .text_color(s.pro.accent_info)
                                         .child(loc.pick("已自定义", "Modified")),
                                 )
@@ -846,7 +864,7 @@ impl KarWorkbench {
                                         .py(px(1.))
                                         .rounded(px(R_PILL))
                                         .bg(s.pro.amber_soft)
-                                        .text_size(px(FS_TAG))
+                                        .text_size(s.font_size(FS_TAG))
                                         .text_color(s.pro.amber_ink)
                                         .child(format!(
                                             "{}: {}",
@@ -918,7 +936,7 @@ impl KarWorkbench {
             list_card = list_card.child(
                 div()
                     .p(px(24.))
-                    .text_size(px(FS_META))
+                    .text_size(s.font_size(FS_META))
                     .text_color(s.muted)
                     .child(loc.pick("没有匹配的快捷键条目", "No matching shortcuts")),
             );
@@ -1182,7 +1200,7 @@ impl KarWorkbench {
                         .items_center()
                         .justify_between()
                         .gap(px(6.))
-                        .child(div().text_size(px(FS_META)).text_color(s.text).child(name))
+                        .child(div().text_size(s.font_size(FS_META)).text_color(s.text).child(name))
                         .child(
                             soft_button_sm(("voice-model", ix), action, s)
                                 .disabled(active)
@@ -1311,7 +1329,7 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .gap(px(4.))
-                    .text_size(px(FS_META))
+                    .text_size(s.font_size(FS_META))
                     .text_color(s.ink)
                     .child(word)
                     .child(
@@ -1434,7 +1452,7 @@ impl KarWorkbench {
                             .gap(px(2.))
                             .child(
                                 div()
-                                    .text_size(px(FS_UI))
+                                    .text_size(s.font_size(FS_UI))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(s.ink)
                                     .child(crate::studio_hub::project_display_name(&proj.name).to_owned()),
@@ -1443,7 +1461,7 @@ impl KarWorkbench {
                                 div()
                                     .truncate()
                                     .font_family(mono_font(cx))
-                                    .text_size(px(FS_META))
+                                    .text_size(s.font_size(FS_META))
                                     .text_color(s.muted)
                                     .child(proj.root_path.display().to_string()),
                             ),
@@ -1604,7 +1622,7 @@ impl KarWorkbench {
                             .gap(px(10.))
                             .child(
                                 div()
-                                    .text_size(px(FS_UI))
+                                    .text_size(s.font_size(FS_UI))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(s.ink)
                                     .child(sc.name),
@@ -1613,7 +1631,7 @@ impl KarWorkbench {
                                 div()
                                     .truncate()
                                     .font_family(mono_font(cx))
-                                    .text_size(px(FS_META))
+                                    .text_size(s.font_size(FS_META))
                                     .text_color(s.muted)
                                     .child(sc.command),
                             ),
@@ -1938,7 +1956,7 @@ impl KarWorkbench {
             .flex_wrap()
             .gap(px(8.));
         if self.detected_dev_ports.is_empty() {
-            ports_row = ports_row.child(div().text_size(px(FS_META)).text_color(s.muted).child(
+            ports_row = ports_row.child(div().text_size(s.font_size(FS_META)).text_color(s.muted).child(
                 loc.pick(
                     "暂未检测到正在运行的本地网页服务（启动开发服务后可点右侧按钮扫描）",
                     "No active local dev ports detected yet.",
@@ -2073,7 +2091,7 @@ impl KarWorkbench {
                             div()
                                 .px(px(16.))
                                 .py(px(3.))
-                                .text_size(px(FS_META))
+                                .text_size(s.font_size(FS_META))
                                 .text_color(s.muted)
                                 .child(format!(
                                     "{} · {} · {reason}",
@@ -2393,7 +2411,7 @@ impl KarWorkbench {
                         .justify_between()
                         .child(
                             div()
-                                .text_size(px(FS_META))
+                                .text_size(s.font_size(FS_META))
                                 .text_color(s.muted)
                                 .child(loc.pick(
                                     "自动扫描本机 ~/.claude、~/.codex、~/.pi 历史对话记录并一键导入接力",
@@ -2431,7 +2449,7 @@ impl KarWorkbench {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_size(px(FS_UI))
+                                        .text_size(s.font_size(FS_UI))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(s.ink)
                                         .child(format!("[{}] {}", item.source_agent, item.title)),
@@ -2440,7 +2458,7 @@ impl KarWorkbench {
                                     div()
                                         .truncate()
                                         .font_family(mono_font(cx))
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .text_color(s.muted)
                                         .child(item.path.display().to_string()),
                                 ),
@@ -2537,14 +2555,14 @@ impl KarWorkbench {
                                     .child(
                                         div()
                                             .font_features(tnum_features())
-                                            .text_size(px(FS_TITLE))
+                                            .text_size(s.font_size(FS_TITLE))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(s.ink)
                                             .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(FS_META))
+                                            .text_size(s.font_size(FS_META))
                                             .text_color(s.muted)
                                             .child(format!(
                                                 "Pure Rust + GPUI Native Workbench · {}-{}",
@@ -2587,7 +2605,7 @@ impl KarWorkbench {
                     div()
                         .px(px(20.))
                         .py(px(10.))
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .text_color(s.text)
                         .child(rep.status_message),
                 )

@@ -72,8 +72,10 @@ type Tokens = Vec<(Range<usize>, Syntax)>;
 #[derive(Clone, Copy)]
 struct CodeStyle {
     paint: Paint,
-    narrow: bool,
+    number_width: Pixels,
     scroll_x: Pixels,
+    font_size: Pixels,
+    line_height: Pixels,
 }
 
 pub struct PatchReview {
@@ -299,8 +301,10 @@ impl PatchReview {
     ) -> Div {
         let CodeStyle {
             paint: p,
-            narrow,
+            number_width,
             scroll_x,
+            font_size,
+            line_height,
         } = style;
         let (mark, accent) = match kind {
             LineKind::Context => (" ", p.ink),
@@ -332,19 +336,20 @@ impl PatchReview {
         row()
             .gap_0()
             .w_full()
-            .h(px(LINE_HEIGHT))
+            .h(line_height)
             .flex_none()
-            .text_size(px(if narrow { 12. } else { 13. }))
-            .line_height(px(LINE_HEIGHT))
+            .text_size(font_size)
+            .line_height(line_height)
             .when(strength > 0., |line| {
                 line.bg(accent.opacity(0.10 * strength))
             })
             .child(
                 div()
-                    .w(px(if narrow { 23. } else { 31. }))
+                    .w(number_width)
                     .flex_none()
                     .pr(px(5.))
                     .text_right()
+                    .whitespace_nowrap()
                     .text_color(p.faint)
                     .child(number.map_or_else(String::new, |n| n.to_string())),
             )
@@ -464,7 +469,31 @@ impl Render for PatchReview {
         self.accept_focus.truncate(self.hunks.len());
         self.accept_focus
             .resize_with(self.hunks.len(), || cx.focus_handle().tab_stop(true));
-        let mut widest = self
+        let (family, font_size, line_height) = match &crate::Theme::global(cx).code_typography {
+            Some((family, size)) => (family.clone(), *size, (*size * 1.5).round()),
+            None => (
+                self.preview_font.clone().unwrap_or_else(|| "Fira Code".into()),
+                px(if narrow { 12. } else { 13. }),
+                px(LINE_HEIGHT),
+            ),
+        };
+        let font_id = cx.text_system().resolve_font(&font(family.clone()));
+        let char_width = cx.text_system().ch_advance(font_id, font_size)
+            .unwrap_or(font_size * 0.62);
+        let max_number = if let Some(original) = &self.original {
+            original.len() + self.hunks.iter()
+                .map(|h| h.after.len().saturating_sub(h.before.len()))
+                .sum::<usize>()
+        } else {
+            self.hunks.iter().map(|hunk| {
+                let count = hunk.before.len().max(hunk.after.len());
+                hunk.line.saturating_add(count.saturating_sub(1))
+            }).max().unwrap_or(1)
+        };
+        let digits = max_number.max(1).ilog10() + 1;
+        let number_width = (char_width * digits as f32 + px(7.))
+            .max(px(if narrow { 23. } else { 31. }));
+        let widest = self
             .original
             .iter()
             .flatten()
@@ -476,17 +505,18 @@ impl Render for PatchReview {
             .map(|line| line.chars().count())
             .max()
             .unwrap_or(0) as f32;
-        widest *= if narrow { 7.4 } else { 8.0 };
-        self.max_code_x = (px(widest + 48.) - width).max(px(0.));
+        self.max_code_x = (char_width * widest + number_width + px(16.) - width).max(px(0.));
         self.code_x = self.code_x.min(self.max_code_x);
         let style = CodeStyle {
             paint: p,
-            narrow,
+            number_width,
             scroll_x: self.code_x,
+            font_size,
+            line_height,
         };
         let mut body = column()
             .id("patch-code")
-            .font_family(self.preview_font.clone().unwrap_or_else(|| "Fira Code".into()))
+            .font_family(family)
             .role(Role::Region)
             .aria_label(self.file.clone())
             .track_focus(&self.focus)
@@ -495,8 +525,8 @@ impl Render for PatchReview {
             .gap_0()
             .overflow_y_scroll()
             .track_scroll(&self.code_scroll)
-            .on_scroll(cx.listener(|s, e: &ScrollEvent, w, cx| {
-                let delta = e.delta.pixel_delta(px(LINE_HEIGHT));
+            .on_scroll(cx.listener(move |s, e: &ScrollEvent, w, cx| {
+                let delta = e.delta.pixel_delta(line_height);
                 if !e.control
                     && !e.platform
                     && delta.x.abs() > delta.y.abs()
@@ -548,7 +578,7 @@ impl Render for PatchReview {
                 let fold = Fold::get(
                     key.clone(),
                     visible,
-                    lines.len() as f32 * LINE_HEIGHT,
+                    lines.len() as f32 * f32::from(line_height),
                     0.26,
                     w,
                     cx,
@@ -584,7 +614,7 @@ impl Render for PatchReview {
                             text.child(div().w_full().overflow_hidden().child(row).with_animation(
                                 format!("{key}-{n}"),
                                 Animation::new(Duration::from_millis(120)),
-                                |row, t| row.h(px(LINE_HEIGHT * ease(t))).opacity(t),
+                                move |row, t| row.h(line_height * ease(t)).opacity(t),
                             ));
                     } else {
                         text = text.child(row);

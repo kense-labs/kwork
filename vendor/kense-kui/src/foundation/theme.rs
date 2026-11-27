@@ -1,4 +1,4 @@
-use gpui::{App, Global, Hsla, Rgba};
+use gpui::{App, Global, Hsla, Pixels, Rgba, SharedString};
 
 use super::tokens::{ColorTokens, Tokens};
 
@@ -106,6 +106,10 @@ impl AccentPalette {
 pub struct Theme {
     pub mode: ThemeMode,
     pub tokens: Tokens,
+    /// Added to the base size of UI text and editable fields, in logical pixels.
+    pub text_size_offset: f32,
+    /// Host-selected monospace family and size shared by source and diff views.
+    pub code_typography: Option<(SharedString, Pixels)>,
     pub reduced_motion: bool,
     pub accent: AccentPalette,
 }
@@ -116,6 +120,8 @@ impl Default for Theme {
         Self {
             mode,
             tokens: Tokens::for_mode(mode),
+            text_size_offset: 0.,
+            code_typography: None,
             reduced_motion: false,
             accent: AccentPalette::default(),
         }

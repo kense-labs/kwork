@@ -131,7 +131,7 @@ impl KarWorkbench {
                                         .gap(px(6.))
                                         .child(
                                             div()
-                                                .text_size(px(FS_META))
+                                                .text_size(s.font_size(FS_META))
                                                 .font_weight(FontWeight::MEDIUM)
                                                 .text_color(s.muted)
                                                 .child(loc.pick(
@@ -146,7 +146,7 @@ impl KarWorkbench {
                                                     .py(px(1.))
                                                     .rounded(px(R_PILL))
                                                     .bg(s.pro.amber_soft)
-                                                    .text_size(px(FS_TAG))
+                                                    .text_size(s.font_size(FS_TAG))
                                                     .text_color(s.pro.amber_ink)
                                                     .child(loc.pick("演示数据", "Demo data")),
                                             )
@@ -160,8 +160,8 @@ impl KarWorkbench {
                                         .child(
                                             div()
                                                 .font_features(tnum_features())
-                                                .text_size(px(FS_METRIC))
-                                                .line_height(px(LH_METRIC))
+                                                .text_size(s.font_size(FS_METRIC))
+                                                .line_height(s.line_height(LH_METRIC))
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(s.ink)
                                                 .child(if snap.has_usage {
@@ -180,7 +180,7 @@ impl KarWorkbench {
                                                         .rounded(px(R_PILL))
                                                         .bg(s.pro.green_soft)
                                                         .font_features(tnum_features())
-                                                        .text_size(px(FS_TAG))
+                                                        .text_size(s.font_size(FS_TAG))
                                                         .font_weight(FontWeight::MEDIUM)
                                                         .text_color(s.pro.green_ink)
                                                         .child(format!(
@@ -282,7 +282,7 @@ impl KarWorkbench {
                     .gap(px(8.))
                     .child(
                         div()
-                            .text_size(px(FS_UI))
+                            .text_size(s.font_size(FS_UI))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(s.ink)
                             .child(loc.pick("用量分布", "Usage breakdown")),
@@ -303,7 +303,7 @@ impl KarWorkbench {
                 breakdown_card = breakdown_card.child(
                     div()
                         .py(px(14.))
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .text_color(s.muted)
                         .child(loc.pick(
                             "智能体上报词元后，可在这里查看用量。",
@@ -363,14 +363,14 @@ impl KarWorkbench {
                                             ))
                                             .child(
                                                 div()
-                                                    .text_size(px(FS_META))
+                                                    .text_size(s.font_size(FS_META))
                                                     .font_weight(FontWeight::MEDIUM)
                                                     .text_color(s.ink)
                                                     .child(row.display_name.clone()),
                                             )
                                             .child(
                                                 div()
-                                                    .text_size(px(FS_TAG))
+                                                    .text_size(s.font_size(FS_TAG))
                                                     .text_color(s.muted)
                                                     .child(format!(
                                                         "{} {} · {} {}",
@@ -387,7 +387,7 @@ impl KarWorkbench {
                                                         .py(px(1.))
                                                         .rounded(px(R_PILL))
                                                         .bg(s.pro.accent_soft)
-                                                        .text_size(px(FS_TAG))
+                                                        .text_size(s.font_size(FS_TAG))
                                                         .text_color(s.pro.accent_info)
                                                         .child(q),
                                                 )
@@ -396,7 +396,7 @@ impl KarWorkbench {
                                     .child(
                                         div()
                                             .font_features(tnum_features())
-                                            .text_size(px(FS_META))
+                                            .text_size(s.font_size(FS_META))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(if row.has_usage { s.ink } else { s.muted })
                                             .child(token_summary),
@@ -479,7 +479,7 @@ impl KarWorkbench {
                                         .child(render_tray_folder_artwork(18.))
                                         .child(
                                             div()
-                                                .text_size(px(FS_META))
+                                                .text_size(s.font_size(FS_META))
                                                 .font_weight(FontWeight::MEDIUM)
                                                 .text_color(s.ink)
                                                 .child(pname.clone()),
@@ -488,7 +488,7 @@ impl KarWorkbench {
                                 .child(
                                     div()
                                         .font_features(tnum_features())
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .text_color(s.muted)
                                         .child(format!(
                                             "{chats} {} · {turns} {}",
@@ -592,14 +592,14 @@ impl KarWorkbench {
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .text_size(px(FS_UI))
+                            .text_size(s.font_size(FS_UI))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(s.ink)
                             .child(loc.pick("对话活动", "Conversation activity"))
                             .when(demo, |row| {
                                 row.child(
                                     div()
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .font_weight(FontWeight::NORMAL)
                                         .text_color(s.muted)
                                         .child(loc.pick("演示", "Demo")),
@@ -639,21 +639,21 @@ impl KarWorkbench {
                         .gap(px(5.))
                         .child(
                             div()
-                                .text_size(px(FS_METRIC))
-                                .line_height(px(LH_METRIC))
+                                .text_size(s.font_size(FS_METRIC))
+                                .line_height(s.line_height(LH_METRIC))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .font_features(tnum_features())
                                 .text_color(s.ink)
                                 .child(series.total.to_string()),
                         )
-                        .child(div().text_size(px(FS_META)).text_color(s.muted).child(
+                        .child(div().text_size(s.font_size(FS_META)).text_color(s.muted).child(
                             loc.pick("轮", if series.total == 1 { "turn" } else { "turns" }),
                         )),
                 )
                 .child(
                     div()
-                        .text_size(px(FS_META))
-                        .line_height(px(LH_META))
+                        .text_size(s.font_size(FS_META))
+                        .line_height(s.line_height(LH_META))
                         .text_color(s.muted)
                         .child(active_days),
                 );
@@ -686,7 +686,7 @@ fn usage_footer_cell(label: &'static str, value: String, dot_col: Hsla, s: &Stud
                 .child(div().size(px(6.)).rounded_full().bg(dot_col))
                 .child(
                     div()
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .text_color(s.muted)
                         .truncate()
                         .child(label),
@@ -695,7 +695,7 @@ fn usage_footer_cell(label: &'static str, value: String, dot_col: Hsla, s: &Stud
         .child(
             div()
                 .font_features(tnum_features())
-                .text_size(px(FS_UI))
+                .text_size(s.font_size(FS_UI))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(s.ink)
                 .truncate()
@@ -706,7 +706,7 @@ fn usage_footer_cell(label: &'static str, value: String, dot_col: Hsla, s: &Stud
 fn activity_notice(label: &'static str, s: &StudioPalette) -> Div {
     div()
         .py(px(12.))
-        .text_size(px(FS_UI))
+        .text_size(s.font_size(FS_UI))
         .text_color(s.muted)
         .child(label)
 }

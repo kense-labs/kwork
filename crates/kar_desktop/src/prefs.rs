@@ -126,8 +126,12 @@ impl ChatWidthMode {
             Self::Compact => 640.0,
             Self::Standard => 736.0,
             Self::Wide => 940.0,
-            Self::Full => 1600.0,
+            Self::Full => f32::MAX,
         }
+    }
+
+    pub fn width_for_pane(self, pane_width: f32) -> f32 {
+        pane_width.max(1.0).min(self.max_width_px())
     }
 
     pub fn label(self, loc: UiLocale) -> &'static str {
@@ -1065,6 +1069,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reading_width_fits_narrow_panes_and_can_fill_an_ultrawide_pane() {
+        assert_eq!(
+            ChatWidthMode::ALL.map(|mode| mode.width_for_pane(480.)),
+            [480.; 4]
+        );
+        assert_eq!(
+            ChatWidthMode::ALL.map(|mode| mode.width_for_pane(2048.)),
+            [640., 736., 940., 2048.]
+        );
+    }
+
+    #[test]
     fn preferences_roundtrip_and_sync_keybindings_json() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut prefs = DesktopPreferences::default();
@@ -1072,6 +1088,10 @@ mod tests {
         prefs.settled_chats.insert(cid);
         prefs.tree_show_hidden = true;
         prefs.sidebar_open = Some(false);
+        prefs.ui_font_scale = FontScale::Large;
+        prefs.chat_width_mode = ChatWidthMode::Full;
+        prefs.code_font_family = Some("Monaco".into());
+        prefs.code_font_size = 16.0;
         prefs
             .custom_keybindings
             .insert("app.settings".into(), "cmd+shift+,".into());
@@ -1082,6 +1102,10 @@ mod tests {
         assert!(loaded.settled_chats.contains(&cid));
         assert!(loaded.tree_show_hidden);
         assert_eq!(loaded.sidebar_open, Some(false));
+        assert_eq!(loaded.ui_font_scale, FontScale::Large);
+        assert_eq!(loaded.chat_width_mode, ChatWidthMode::Full);
+        assert_eq!(loaded.code_font_family.as_deref(), Some("Monaco"));
+        assert_eq!(loaded.code_font_size, 16.0);
         assert_eq!(loaded.effective_chord("app.settings"), "cmd+shift+,");
         assert!(loaded.is_model_favorite("claude", "claude-opus-4-6"));
         assert!(DesktopPreferences::keybindings_json_path(dir.path()).exists());

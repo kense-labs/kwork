@@ -230,6 +230,7 @@ impl TextShimmer {
 impl Render for TextShimmer {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Paint::get(cx);
+        let size = self.font_size + crate::Theme::global(cx).text_size_offset;
         let reduced = disabled_motion(cx);
         if self.window_visible != w.is_visible() || self.reduced != reduced {
             self.window_visible = w.is_visible();
@@ -286,7 +287,7 @@ impl Render for TextShimmer {
         let style = w.text_style();
         let shaped = w.text_system().shape_line(
             self.text.clone(),
-            px(self.font_size),
+            px(size),
             &[style.to_run(self.text.len())],
             None,
         );
@@ -303,7 +304,7 @@ impl Render for TextShimmer {
             self.width.value(cx)
         }
         .max(target);
-        let band = BAND_EM * self.font_size;
+        let band = BAND_EM * size;
         let peak = t * target + (2. * t - 1.) * band;
         let base = p.faint.blend(p.ink.opacity(0.12));
         let rest = base.blend(p.ink.opacity(settle));
@@ -346,9 +347,9 @@ impl Render for TextShimmer {
             .aria_label(self.text.clone())
             .w(px(width))
             .relative()
-            .top(px(0.3 * self.font_size * (1. - label_rise)))
+            .top(px(0.3 * size * (1. - label_rise)))
             .opacity(label_fade)
-            .text_size(px(self.font_size))
+            .text_size(px(size))
             .whitespace_nowrap()
             .text_color(p.secondary)
             .child(text)
@@ -365,7 +366,7 @@ impl Render for TextShimmer {
                 Some(
                     div()
                         .absolute()
-                        .top(px(-0.24 * self.font_size * leave))
+                        .top(px(-0.24 * size * leave))
                         .opacity(1. - leave)
                         .whitespace_nowrap()
                         .text_color(p.secondary)

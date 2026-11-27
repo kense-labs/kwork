@@ -62,6 +62,11 @@ impl CodeBlock {
 impl Render for CodeBlock {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Paint::get(cx);
+        let (font_family, font_size) = crate::Theme::global(cx)
+            .code_typography
+            .clone()
+            .unwrap_or_else(|| ("monospace".into(), px(13.)));
+        let line_height = (font_size * 1.5).round();
         let foldable = self.max_lines > 0 && self.max_lines < self.lines;
         let a = self.fold.get(w, cx).clamp(0., 1.);
         let text = if self.open {
@@ -91,18 +96,16 @@ impl Render for CodeBlock {
                     .overflow_x_scroll()
                     .overflow_y_hidden()
                     .when(foldable, |d| {
-                        d.h(px(33.
-                            + 20.
-                                * (self.max_lines as f32
-                                    + (self.lines - self.max_lines) as f32 * a)))
+                        d.h(px(33.) + line_height * (self.max_lines as f32
+                            + (self.lines - self.max_lines) as f32 * a))
                     })
                     .p_4()
                     .when(self.header.is_some(), |d| d.border_t_1())
                     .border_color(p.line)
                     .bg(p.stage)
-                    .font_family("monospace")
-                    .text_size(px(13.))
-                    .line_height(px(20.))
+                    .font_family(font_family)
+                    .text_size(font_size)
+                    .line_height(line_height)
                     .flex()
                     .child(div().flex_none().whitespace_nowrap().child(self.source.clone())),
             )

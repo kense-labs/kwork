@@ -209,8 +209,8 @@ impl RenderOnce for SelectionStrip {
                 .px(px(if dock { 6. } else { 9. }))
                 .justify_center()
                 .gap(px(5.))
-                .text_size(px(FS_CONTROL))
-                .line_height(px(LH_CONTROL))
+                .text_size(s.font_size(FS_CONTROL))
+                .line_height(s.line_height(LH_CONTROL))
                 .font_weight(FontWeight::MEDIUM)
                 .ink(if item.selected { s.ink } else { s.muted }, s.ink)
                 .child(

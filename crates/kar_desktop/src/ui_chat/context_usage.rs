@@ -31,8 +31,8 @@ pub(super) fn detail_row(label: &'static str, value: String, s: &StudioPalette) 
         .items_center()
         .justify_between()
         .gap(px(12.))
-        .text_size(px(FS_CONTROL))
-        .line_height(px(LH_CONTROL))
+        .text_size(s.font_size(FS_CONTROL))
+        .line_height(s.line_height(LH_CONTROL))
         .child(div().flex_none().text_color(s.muted).child(label))
         .child(div().min_w_0().truncate().font_features(tnum_features()).text_color(s.ink).child(value))
 }
@@ -61,16 +61,16 @@ pub(super) fn inspector(
                 .items_center()
                 .justify_between()
                 .gap(px(8.))
-                .text_size(px(FS_CONTROL))
-                .line_height(px(LH_CONTROL))
+                .text_size(s.font_size(FS_CONTROL))
+                .line_height(s.line_height(LH_CONTROL))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(s.text)
                 .child(heading)
                 .when_some(ratio, |row, r| {
                     row.child(
                         div()
-                            .text_size(px(FS_CONTROL))
-                            .line_height(px(LH_CONTROL))
+                            .text_size(s.font_size(FS_CONTROL))
+                            .line_height(s.line_height(LH_CONTROL))
                             .font_features(tnum_features())
                             .text_color(s.ink)
                             .child(format!("{:.0}%", r * 100.)),
@@ -109,8 +109,8 @@ pub(super) fn inspector(
         .when(ratio.is_none() && used.is_none() && limit.is_none(), |p| {
             p.child(
                 div()
-                    .text_size(px(FS_META))
-                    .line_height(px(LH_META))
+                    .text_size(s.font_size(FS_META))
+                    .line_height(s.line_height(LH_META))
                     .text_color(s.muted)
                     .child(loc.pick("智能体尚未上报用量", "The agent hasn’t reported usage yet")),
             )
@@ -137,7 +137,7 @@ pub(super) fn inspector(
             };
             p.child(
                 div()
-                    .text_size(px(FS_META))
+                    .text_size(s.font_size(FS_META))
                     .text_color(s.muted)
                     .child(status),
             )

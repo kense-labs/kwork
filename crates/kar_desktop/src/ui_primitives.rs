@@ -236,6 +236,7 @@ const SVG_SIDE_QUESTION: &str = r#"<path d="M12 21C16.9706 21 21 17.1944 21 12.5
 pub struct StudioPalette {
     /// KUI's palette for status accents and KUI internal widgets.
     pub pro: ProPalette,
+    text_delta: f32,
     pub dark: bool,
     pub stage: Hsla,
     pub surface: Hsla,
@@ -264,6 +265,7 @@ pub struct StudioPalette {
 impl StudioPalette {
     pub fn get(cx: &App) -> Self {
         let pro = ProPalette::get(cx);
+        let text_delta = cx.try_global::<ActiveTypography>().map_or(0., |t| t.ui_delta_px);
         if let Some(named) = cx
             .try_global::<ActiveNamedTheme>()
             .and_then(|g| g.0.as_ref())
@@ -273,6 +275,7 @@ impl StudioPalette {
             let ink = kt.fg;
             return Self {
                 pro,
+                text_delta,
                 dark,
                 stage: kt.bg,
                 surface: kt.bg,
@@ -307,6 +310,7 @@ impl StudioPalette {
         let primary = tone(0x1447e6, 0x4779e9);
         Self {
             pro,
+            text_delta,
             dark,
             stage: tone(0xfafafa, 0x050505),
             surface: tone(0xfcfcfc, 0x09090b),
@@ -331,6 +335,14 @@ impl StudioPalette {
             brand_action: primary,
             on_brand_action: white(),
         }
+    }
+
+    pub fn font_size(&self, base: f32) -> Pixels {
+        px(base + self.text_delta)
+    }
+
+    pub fn line_height(&self, base: f32) -> Pixels {
+        px(base * (1. + self.text_delta / FS_UI))
     }
 
     /// Subtle resting 1px elevation for content cards (`s.card`).
@@ -422,7 +434,7 @@ pub fn pane_empty(icon: AnyElement, title: &str, detail: &str, s: &StudioPalette
         .child(
             div()
                 .mt(px(12.))
-                .text_size(px(FS_TITLE))
+                .text_size(s.font_size(FS_TITLE))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(s.ink)
                 .child(title.to_owned()),
@@ -431,8 +443,8 @@ pub fn pane_empty(icon: AnyElement, title: &str, detail: &str, s: &StudioPalette
             div()
                 .mt(px(6.))
                 .max_w(px(320.))
-                .text_size(px(FS_UI))
-                .line_height(px(LH_UI))
+                .text_size(s.font_size(FS_UI))
+                .line_height(s.line_height(LH_UI))
                 .text_color(s.muted)
                 .child(detail.to_owned()),
         )
@@ -484,13 +496,6 @@ pub fn ui_font(cx: &App) -> SharedString {
 
 /// The monospace family for commands and code, honoring user overrides.
 pub fn mono_font(cx: &App) -> SharedString {
-    if let Some(custom) = cx
-        .try_global::<ActiveTypography>()
-        .and_then(|t| t.code_font_family.clone())
-        .filter(|f| !f.trim().is_empty())
-    {
-        return custom;
-    }
     gpui_kit::component::Theme::global(cx).mono_font_family.clone()
 }
 
@@ -738,7 +743,7 @@ pub(crate) fn kar_brand_on(ink: Hsla, cx: &App) -> Div {
         .when_some(pro_app_artwork("kense", 14., cx), |d, mark| d.child(mark))
         .child(
             div()
-                .text_size(px(FS_UI))
+                .text_size(px(scaled_fs(FS_UI, cx)))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(ink)
                 .child(crate::APP_NAME),
@@ -873,7 +878,7 @@ pub fn render_kbd(text: impl Into<SharedString>, s: &StudioPalette) -> Div {
         .items_center()
         .justify_center()
         .font_features(tnum_features())
-        .text_size(px(FS_TAG))
+        .text_size(s.font_size(FS_TAG))
         .text_color(s.muted)
         .whitespace_nowrap()
         .child(text.into())
@@ -895,7 +900,7 @@ pub fn render_status(label: impl Into<SharedString>, tone: DotTone, s: &StudioPa
         )
         .child(
             div()
-                .text_size(px(FS_META))
+                .text_size(s.font_size(FS_META))
                 .text_color(tone.text_color(s))
                 .whitespace_nowrap()
                 .child(label.into()),
@@ -912,7 +917,7 @@ pub fn render_sample_tag(s: &StudioPalette) -> Div {
         .bg(s.soft)
         .flex()
         .items_center()
-        .text_size(px(FS_TAG))
+        .text_size(s.font_size(FS_TAG))
         .text_color(s.muted)
         .whitespace_nowrap()
         .child("Demo")
@@ -1297,7 +1302,7 @@ pub fn settings_section_title(label: impl Into<SharedString>, s: &StudioPalette)
         .px(px(4.))
         .pb(px(8.))
         .text_color(s.ink)
-        .text_size(px(FS_SECTION))
+        .text_size(s.font_size(FS_SECTION))
         .font_weight(FontWeight::SEMIBOLD)
         .child(label.into())
 }
@@ -1324,7 +1329,7 @@ pub fn settings_row_item(
             if stacked {
                 d.flex_col().items_start().gap(px(8.))
             } else {
-                d.items_center().justify_between().gap(px(16.))
+                d.flex_wrap().items_center().justify_between().gap(px(12.))
             }
         })
         .child(
@@ -1333,7 +1338,7 @@ pub fn settings_row_item(
                     if stacked {
                         d.w_full()
                     } else {
-                        d.flex_1().min_w_0()
+                        d.flex_1().flex_basis(px(180.)).min_w_0()
                     }
                 })
                 .flex()
@@ -1341,20 +1346,20 @@ pub fn settings_row_item(
                 .gap(px(3.))
                 .child(
                     div()
-                        .text_size(px(FS_UI))
+                        .text_size(s.font_size(FS_UI))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(s.ink)
                         .child(title.into()),
                 )
                 .child(
                     div()
-                        .text_size(px(FS_META))
-                        .line_height(px(17.))
+                        .text_size(s.font_size(FS_META))
+                        .line_height(s.line_height(17.))
                         .text_color(s.muted)
                         .child(description.into()),
                 ),
         )
-        .child(div().flex_none().child(control))
+        .child(div().max_w_full().flex_none().child(control))
 }
 
 /// Unified `32px` (`CTRL_H`) single-line search / text input box with focus border feedback.
@@ -1399,7 +1404,7 @@ pub(crate) fn section_heading(label: &'static str, count: Option<usize>, s: &Stu
         .border_color(s.line)
         .child(
             div()
-                .text_size(px(FS_SECTION))
+                .text_size(s.font_size(FS_SECTION))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(s.ink)
                 .child(label),
@@ -1407,7 +1412,7 @@ pub(crate) fn section_heading(label: &'static str, count: Option<usize>, s: &Stu
         .when_some(count, |d, n| {
             d.child(
                 div()
-                    .text_size(px(FS_META))
+                    .text_size(s.font_size(FS_META))
                     .text_color(s.muted)
                     .child(n.to_string()),
             )

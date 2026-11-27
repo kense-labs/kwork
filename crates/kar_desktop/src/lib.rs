@@ -71,6 +71,9 @@ use crate::ui_primitives::{
 
 pub const APP_NAME: &str = "Kwrok";
 
+struct SystemCodeFont(SharedString);
+impl Global for SystemCodeFont {}
+
 /// Initialize shared GPUI Kit, Kantor Office editors, and KUI foundation globals.
 pub fn init_runtime_ui(cx: &mut App) {
     kantor_ui::set_embedded_host(true);
@@ -132,8 +135,7 @@ pub fn apply_theme_and_typography(
         code_font_family: prefs
             .code_font_family
             .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| SharedString::from(s.to_owned())),
+            .and_then(|family| installed_code_font(family, cx)),
     });
     let resolved_palette = prefs
         .named_theme_id
@@ -155,6 +157,13 @@ pub fn apply_theme_and_typography(
     };
     cx.set_global(ui_primitives::ActiveNamedTheme(resolved_palette.clone()));
     apply_palette_and_mode(effective_mode, resolved_palette, cx);
+}
+
+fn installed_code_font(family: &str, cx: &App) -> Option<SharedString> {
+    kantor_ui::fonts::installed(cx)
+        .iter()
+        .find(|name| name.eq_ignore_ascii_case(family.trim()))
+        .map(|name| SharedString::from(name.clone()))
 }
 
 fn apply_palette_and_mode(
@@ -210,12 +219,22 @@ fn apply_palette_and_mode(
     });
     kantor_ui::tokens::apply_palette(&palette, cx);
     kantor_ui::fonts::apply(None, cx);
-    if let Some(mono) = cx
-        .try_global::<ui_primitives::ActiveTypography>()
-        .and_then(|t| t.code_font_family.clone())
-    {
-        gpui_kit::component::Theme::global_mut(cx).mono_font_family = mono;
+    if !cx.has_global::<SystemCodeFont>() {
+        let family = gpui_kit::component::Theme::global(cx).mono_font_family.clone();
+        cx.set_global(SystemCodeFont(family));
     }
+    let typography = cx.default_global::<ui_primitives::ActiveTypography>();
+    let size = px(typography.code_font_size);
+    let text_offset = typography.ui_delta_px;
+    let mono = typography.code_font_family.clone()
+        .unwrap_or_else(|| cx.global::<SystemCodeFont>().0.clone());
+    gpui_kit::component::Theme::update(cx, |theme| {
+        theme.mono_font_family = mono.clone();
+        theme.mono_font_size = size;
+    });
+    let kui_theme = kui::Theme::global_mut(cx);
+    kui_theme.text_size_offset = text_offset;
+    kui_theme.code_typography = Some((mono, size));
     cx.refresh_windows();
 }
 

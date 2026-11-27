@@ -182,6 +182,7 @@ impl RenderOnce for ReplyMarkdown {
 
         let s = StudioPalette::get(cx);
         let mono = crate::ui_primitives::mono_font(cx);
+        let code_size = px(crate::ui_primitives::effective_code_font_size(cx));
         let inline_ink = if s.dark {
             s.pro.cyan
         } else {
@@ -202,7 +203,7 @@ impl RenderOnce for ReplyMarkdown {
 
         let base_style = TextViewStyle {
             paragraph_gap: rems(0.82),
-            heading_base_font_size: px(FS_READ),
+            heading_base_font_size: s.font_size(FS_READ),
             highlight_theme: if s.dark {
                 HighlightTheme::default_dark()
             } else {
@@ -212,11 +213,13 @@ impl RenderOnce for ReplyMarkdown {
             ..TextViewStyle::default()
         };
         let style = base_style
-            .heading_font_size(|level, _| match level {
-                1 => px(19.0),
-                2 => px(17.0),
-                3 => px(15.5),
-                _ => px(FS_READ),
+            .heading_font_size(move |level, _| {
+                s.font_size(match level {
+                    1 => 19.,
+                    2 => 17.,
+                    3 => 15.5,
+                    _ => FS_READ,
+                })
             })
             .inline_code(HighlightStyle {
                 color: Some(inline_ink),
@@ -226,6 +229,8 @@ impl RenderOnce for ReplyMarkdown {
             })
             .code_block(
                 StyleRefinement::default()
+                    .font_family(mono.clone())
+                    .text_size(code_size)
                     .pt(px(38.))
                     .pb(px(10.))
                     .rounded(px(R_CARD))
@@ -253,7 +258,7 @@ impl RenderOnce for ReplyMarkdown {
             .inline_code_style(
                 StyleRefinement::default()
                     .font_family(mono)
-                    .text_size(px(FS_CONTROL))
+                    .text_size(code_size)
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(inline_ink)
                     .bg(inline_bg)

@@ -137,7 +137,7 @@ impl KarWorkbench {
                 row.child(
                     div()
                         .font_features(tnum_features())
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .text_color(s.muted)
                         .child(format!(
                             "{} {} · {} {}",
@@ -235,7 +235,7 @@ impl KarWorkbench {
 
             if let Some(hosted) = self.remote_telemetry.chat_id {
                 let title = self.chat_list.iter().find(|chat|chat.info.id==hosted).map(|chat|chat.title.clone()).unwrap_or_else(||hosted.to_string());
-                code_card=code_card.child(div().text_size(px(FS_META)).text_color(s.muted).truncate()
+                code_card=code_card.child(div().text_size(s.font_size(FS_META)).text_color(s.muted).truncate()
                     .child(format!("{} · {title}",loc.pick("正在共享","Sharing"))));
             }
             let url_to_copy = url.clone();
@@ -261,7 +261,7 @@ impl KarWorkbench {
                             .child(
                                 div()
                                     .font_family(mono_font(cx))
-                                    .text_size(px(FS_META))
+                                    .text_size(s.font_size(FS_META))
                                     .text_color(s.ink)
                                     .child(url.clone()),
                             ),
@@ -329,7 +329,7 @@ impl KarWorkbench {
                         digits_row = digits_row.child(
                             div()
                                 .px(px(3.))
-                                .text_size(px(FS_TITLE))
+                                .text_size(s.font_size(FS_TITLE))
                                 .text_color(s.faint)
                                 .child("·"),
                         );
@@ -347,7 +347,7 @@ impl KarWorkbench {
                             .justify_center()
                             .font_family(mono_font(cx))
                             .font_features(tnum_features())
-                            .text_size(px(FS_METRIC))
+                            .text_size(s.font_size(FS_METRIC))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(s.ink)
                             .child(ch.to_string()),
@@ -399,7 +399,7 @@ impl KarWorkbench {
                                                 .child(
                                                     div()
                                                         .font_features(tnum_features())
-                                                        .text_size(px(FS_META))
+                                                        .text_size(s.font_size(FS_META))
                                                         .text_color(s.muted)
                                                         .child(format!(
                                                             "{} {secs} {}",
@@ -461,7 +461,7 @@ impl KarWorkbench {
                         .gap(px(12.))
                         .child(
                             div()
-                                .text_size(px(FS_UI))
+                                .text_size(s.font_size(FS_UI))
                                 .text_color(s.muted)
                                 .child(loc.pick(
                                     "一次性短码已过期（已配对设备凭证已持久化保存，无需重复扫码）",
@@ -499,14 +499,14 @@ impl KarWorkbench {
                             .gap(px(2.))
                             .child(
                                 div()
-                                    .text_size(px(FS_UI))
+                                    .text_size(s.font_size(FS_UI))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(s.ink)
                                     .child(loc.pick("限时网页只读分享链接", "Time-limited Guest Web Links")),
                             )
                             .child(
                                 div()
-                                    .text_size(px(FS_META))
+                                    .text_size(s.font_size(FS_META))
                                     .text_color(s.muted)
                                     .child(loc.pick(
                                         "访客可在浏览器查看此对话的公开消息。生成新链接会撤销旧链接。",
@@ -530,7 +530,7 @@ impl KarWorkbench {
 
             if !sharing_selected {
                 guest_card = guest_card.child(settings_divider(s)).child(div().px(px(16.)).py(px(10.)).flex().items_center().justify_between().gap(px(8.))
-                    .child(div().text_size(px(FS_META)).text_color(s.muted).child(loc.pick("共享服务当前未连接此对话。","This thread is outside the current share.")))
+                    .child(div().text_size(s.font_size(FS_META)).text_color(s.muted).child(loc.pick("共享服务当前未连接此对话。","This thread is outside the current share.")))
                     .when(selected.is_some(), |row| row.child(soft_button_sm("share-selected-chat",loc.pick("切换到此对话","Share this thread"),s)
                         .on_press(cx,|wb,_,cx|wb.start_sharing(cx)))));
             }
@@ -556,14 +556,14 @@ impl KarWorkbench {
                                     div()
                                         .truncate()
                                         .font_family(mono_font(cx))
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .text_color(s.ink)
                                         .child(full_link.clone()),
                                 )
                                 .child(
                                     div()
                                         .font_features(tnum_features())
-                                        .text_size(px(FS_TAG))
+                                        .text_size(s.font_size(FS_TAG))
                                         .text_color(s.muted)
                                         .child(format!("剩余 {rem_min} 分钟有效")),
                                 ),
@@ -607,15 +607,15 @@ impl KarWorkbench {
                     .gap(px(10.))
                     .child(
                         div()
-                            .text_size(px(FS_UI))
+                            .text_size(s.font_size(FS_UI))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(s.ink)
                             .child(loc.pick("共享当前对话与扫码配对", "Share this thread & QR pair")),
                     )
                     .child(
                         div()
-                            .text_size(px(FS_META))
-                            .line_height(px(LH_META))
+                            .text_size(s.font_size(FS_META))
+                            .line_height(s.line_height(LH_META))
                             .text_color(s.muted)
                             .child(if has_chat {
                                 loc.pick(
@@ -653,7 +653,7 @@ impl KarWorkbench {
                 peers_card = peers_card.child(
                     div()
                         .p(px(16.))
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .text_color(s.muted)
                         .child(loc.pick(
                             "暂无已授权远端设备。扫码或输入上方地址与 6 位短码即可绑定。",
@@ -691,7 +691,7 @@ impl KarWorkbench {
                                                     .gap(px(6.))
                                                     .child(
                                                         div()
-                                                            .text_size(px(FS_UI))
+                                                            .text_size(s.font_size(FS_UI))
                                                             .font_weight(FontWeight::MEDIUM)
                                                             .text_color(s.ink)
                                                             .child(peer.device_name.clone()),
@@ -702,7 +702,7 @@ impl KarWorkbench {
                                                             .py(px(1.))
                                                             .rounded(px(R_PILL))
                                                             .bg(s.pro.accent_soft)
-                                                            .text_size(px(FS_TAG))
+                                                            .text_size(s.font_size(FS_TAG))
                                                             .text_color(s.pro.accent_info)
                                                             .child(role_label(peer.role, loc)),
                                                     ),
@@ -710,7 +710,7 @@ impl KarWorkbench {
                                             .child(
                                                 div()
                                                     .font_features(tnum_features())
-                                                    .text_size(px(FS_META))
+                                                    .text_size(s.font_size(FS_META))
                                                     .text_color(s.muted)
                                                     .child(format!(
                                                         "{} {}",
@@ -778,14 +778,14 @@ impl KarWorkbench {
             .child(
                 card_box(s).w_full().p(px(16.)).flex().flex_col().gap(px(10.))
                     .child(div().flex().items_center().justify_between().flex_wrap().gap(px(8.))
-                        .child(div().font_weight(FontWeight::MEDIUM).text_size(px(FS_UI)).text_color(s.ink).child("KRemote"))
+                        .child(div().font_weight(FontWeight::MEDIUM).text_size(s.font_size(FS_UI)).text_color(s.ink).child("KRemote"))
                         .child(soft_button_sm("kremote-open-client", loc.pick("打开客户端", "Open client"), s)
                             .on_press(cx, |this, _, cx| {
                                 if let Err(error) = crate::kremote::open(None) {
                                     this.show_toast(error.message(this.ui_locale), true, cx);
                                 }
                             })))
-                    .child(div().text_size(px(FS_META)).text_color(s.muted).child(description))
+                    .child(div().text_size(s.font_size(FS_META)).text_color(s.muted).child(description))
                     .child(self.kremote_invite_input.clone())
                     .child(div().flex().justify_end().child(
                         outline_button("kremote-open-invitation", loc.pick("打开协助邀请", "Open invitation"), s)
@@ -850,7 +850,7 @@ impl KarWorkbench {
                                     .flex_col()
                                     .child(
                                         div()
-                                            .text_size(px(FS_UI))
+                                            .text_size(s.font_size(FS_UI))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(s.ink)
                                             .child(format!(
@@ -861,7 +861,7 @@ impl KarWorkbench {
                                     .child(
                                         div()
                                             .font_family(mono_font(cx))
-                                            .text_size(px(FS_META))
+                                            .text_size(s.font_size(FS_META))
                                             .text_color(s.text)
                                             .child(host_url),
                                     ),
@@ -998,7 +998,7 @@ impl KarWorkbench {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_size(px(FS_UI))
+                                        .text_size(s.font_size(FS_UI))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(s.ink)
                                         .child(env.name),
@@ -1007,7 +1007,7 @@ impl KarWorkbench {
                                     div()
                                         .truncate()
                                         .font_family(mono_font(cx))
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .text_color(s.muted)
                                         .child(env.url),
                                 ),

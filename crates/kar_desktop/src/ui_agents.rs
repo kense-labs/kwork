@@ -107,7 +107,7 @@ impl KarWorkbench {
                         .gap(px(8.))
                         .child(
                             div()
-                                .text_size(px(FS_UI))
+                                .text_size(s.font_size(FS_UI))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(s.ink)
                                 .child(format!(
@@ -137,7 +137,7 @@ impl KarWorkbench {
                                 div()
                                     .font_family(mono_font(cx))
                                     .font_features(tnum_features())
-                                    .text_size(px(FS_TITLE))
+                                    .text_size(s.font_size(FS_TITLE))
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(s.ink)
                                     .child(user_code),
@@ -151,7 +151,7 @@ impl KarWorkbench {
                             ),
                     )
                 })
-                .child(div().text_size(px(FS_META)).text_color(s.muted).child(msg.clone()))
+                .child(div().text_size(s.font_size(FS_META)).text_color(s.muted).child(msg.clone()))
                 .when_some(url_clone, |d, url| {
                     d.child(
                         div().flex().justify_end().child(
@@ -246,8 +246,8 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .text_size(px(FS_UI))
-                    .line_height(px(LH_UI))
+                    .text_size(s.font_size(FS_UI))
+                    .line_height(s.line_height(LH_UI))
                     .text_color(s.muted)
                     .child(spinner(ICON_SM, s.muted, window, cx))
                     .child(loc.pick(
@@ -341,7 +341,7 @@ impl KarWorkbench {
                                                     .gap(px(8.))
                                                     .child(
                                                         div()
-                                                            .text_size(px(FS_UI))
+                                                            .text_size(s.font_size(FS_UI))
                                                             .font_weight(FontWeight::SEMIBOLD)
                                                             .text_color(s.ink)
                                                             .child(agent.display_name()),
@@ -363,7 +363,7 @@ impl KarWorkbench {
                                                                     .rounded(px(R_PILL))
                                                                     .bg(s.tray)
                                                                     .font_family(mono_font(cx))
-                                                                    .text_size(px(FS_TAG))
+                                                                    .text_size(s.font_size(FS_TAG))
                                                                     .text_color(s.muted)
                                                                     .child(v),
                                                             )
@@ -375,7 +375,7 @@ impl KarWorkbench {
                                                                 .px(px(6.))
                                                                 .rounded(px(R_PILL))
                                                                 .bg(s.pro.accent_soft)
-                                                                .text_size(px(FS_TAG))
+                                                                .text_size(s.font_size(FS_TAG))
                                                                 .text_color(s.pro.accent_info)
                                                                 .child(summary.clone()),
                                                         )
@@ -491,7 +491,7 @@ impl KarWorkbench {
                                             .flex()
                                             .items_center()
                                             .gap(px(5.))
-                                            .text_size(px(FS_META))
+                                            .text_size(s.font_size(FS_META))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(s.ink)
                                             .child(pro_icon(ProIcon::Check, 12., s.pro.green_ink))
@@ -547,8 +547,8 @@ impl KarWorkbench {
                             .pt(px(8.))
                             .border_t_1()
                             .border_color(s.line_soft)
-                            .text_size(px(FS_META))
-                            .line_height(px(LH_META))
+                            .text_size(s.font_size(FS_META))
+                            .line_height(s.line_height(LH_META))
                             .text_color(s.text)
                             .child(detail),
                     );
@@ -597,7 +597,7 @@ impl KarWorkbench {
                                 if auto_active { s.ink } else { s.line_soft },
                                 s.line_strong,
                             )
-                            .text_size(px(FS_META))
+                            .text_size(s.font_size(FS_META))
                             .child(loc.pick("自动推荐默认模型", "Agent default"))
                             .on_press(cx, |wb, _, cx| {
                                 wb.selected_model = None;
@@ -642,7 +642,7 @@ impl KarWorkbench {
                                         .size(px(20.))
                                         .justify_center()
                                         .tip(loc.pick("收藏置顶模型", "Favorite model"))
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .text_color(if is_fav { s.pro.amber } else { s.faint })
                                         .child(if is_fav { "★" } else { "☆" })
                                         .on_press(cx, move |wb, _, cx| {
@@ -655,7 +655,7 @@ impl KarWorkbench {
                                     Tactile::ghost(("model-pick", mix), s)
                                         .h(px(22.))
                                         .px(px(4.))
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .font_weight(if is_sel {
                                             FontWeight::SEMIBOLD
                                         } else {
@@ -708,7 +708,7 @@ impl KarWorkbench {
                                     .gap(px(8.))
                                     .child(
                                         div()
-                                            .text_size(px(FS_META))
+                                            .text_size(s.font_size(FS_META))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(s.muted)
                                             .child(loc.pick("全部可用模型（支持 ★ 收藏置顶与自定义模型）", "All models (star favorites or add custom IDs)")),
@@ -888,7 +888,7 @@ impl KarWorkbench {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_size(px(FS_UI))
+                                        .text_size(s.font_size(FS_UI))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(s.text)
                                         .child(agent.display_name()),
@@ -897,7 +897,7 @@ impl KarWorkbench {
                                     col.child(
                                         div()
                                             .truncate()
-                                            .text_size(px(FS_META))
+                                            .text_size(s.font_size(FS_META))
                                             .text_color(s.muted)
                                             .child(sub),
                                     )
@@ -1177,7 +1177,7 @@ impl KarWorkbench {
             .tip(loc.pick("复制终端命令", "Copy terminal command"))
             .child(
                 div()
-                    .text_size(px(FS_META))
+                    .text_size(s.font_size(FS_META))
                     .font_family(mono)
                     .text_color(s.ink)
                     .child(command),
@@ -1200,7 +1200,7 @@ fn agent_text(name: String, detail: String, s: &StudioPalette) -> Div {
         .child(
             div()
                 .truncate()
-                .text_size(px(FS_UI))
+                .text_size(s.font_size(FS_UI))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(s.ink)
                 .child(name),
@@ -1208,8 +1208,8 @@ fn agent_text(name: String, detail: String, s: &StudioPalette) -> Div {
         .when(!detail.is_empty(), |d| {
             d.child(
                 div()
-                    .text_size(px(FS_META))
-                    .line_height(px(LH_META))
+                    .text_size(s.font_size(FS_META))
+                    .line_height(s.line_height(LH_META))
                     .text_color(s.muted)
                     .child(detail),
             )

@@ -260,12 +260,12 @@ impl KarWorkbench {
                 .gap(px(5.))
                 .child(
                     div()
-                        .text_size(px(FS_UI))
+                        .text_size(s.font_size(FS_UI))
                         .text_color(s.ink)
                         .child(field.label.clone()),
                 )
                 .when_some(field.description.clone(), |row, desc| {
-                    row.child(div().text_size(px(FS_META)).text_color(s.muted).child(desc))
+                    row.child(div().text_size(s.font_size(FS_META)).text_color(s.muted).child(desc))
                 });
             let options: Vec<_> = if field.kind == FieldKind::Boolean {
                 vec![

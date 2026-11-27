@@ -1378,6 +1378,7 @@ impl KarWorkbench {
         });
 
         let terminal_editor = terminal_cmd_input.read(cx).editor();
+        terminal_editor.update(cx, |editor, _| editor.inherit_font_size = true);
         cx.subscribe_in(
             &terminal_editor,
             window,
@@ -5667,7 +5668,7 @@ impl KarWorkbench {
                         .flex_none()
                         .pt(px(if ix == 0 { 2. } else { 10. }))
                         .pb(px(4.))
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(s.muted)
                         .child(match item.section {
@@ -5695,8 +5696,8 @@ impl KarWorkbench {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(px(FS_UI))
-                            .line_height(px(LH_UI))
+                            .text_size(s.font_size(FS_UI))
+                            .line_height(s.line_height(LH_UI))
                             .text_color(if active { s.ink } else { s.text })
                             .child(loc.pick(item.label, item.label_en)),
                     )
@@ -5719,7 +5720,7 @@ impl KarWorkbench {
                     .px(px(10.))
                     .pt(px(if items.is_empty() { 2. } else { 10. }))
                     .pb(px(4.))
-                    .text_size(px(FS_META))
+                    .text_size(s.font_size(FS_META))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(s.muted)
                     .child(loc.pick("工作区文件与历史对话命中", "Files and threads")),
@@ -5738,13 +5739,13 @@ impl KarWorkbench {
                                         .flex_1()
                                         .min_w_0()
                                         .truncate()
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .text_color(s.ink)
                                         .child(label),
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(FS_TAG))
+                                        .text_size(s.font_size(FS_TAG))
                                         .text_color(s.muted)
                                         .child(loc.pick("打开文件", "Open file")),
                                 )
@@ -5770,7 +5771,7 @@ impl KarWorkbench {
                                         .flex_1()
                                         .min_w_0()
                                         .truncate()
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .text_color(s.ink)
                                         .child(format!("{title}  —  {sub}")),
                                 )
@@ -5796,7 +5797,7 @@ impl KarWorkbench {
                                         .flex_1()
                                         .min_w_0()
                                         .truncate()
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .text_color(s.ink)
                                         .child(desc),
                                 )
@@ -5823,7 +5824,7 @@ impl KarWorkbench {
                         .px(px(10.))
                         .pt(px(if items.is_empty() { 2. } else { 10. }))
                         .pb(px(4.))
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(s.muted)
                         .child(loc.pick("立即提问", "Ask in thread")),
@@ -5840,7 +5841,7 @@ impl KarWorkbench {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(px(FS_UI))
+                                .text_size(s.font_size(FS_UI))
                                 .text_color(s.ink)
                                 .child(format!(
                                     "{} “{trimmed}”",
@@ -5860,7 +5861,7 @@ impl KarWorkbench {
             list = list.child(
                 div()
                     .p(px(12.))
-                    .text_size(px(FS_UI))
+                    .text_size(s.font_size(FS_UI))
                     .text_color(s.muted)
                     .child(loc.pick(
                         "没有匹配的命令、文件或对话",
@@ -5918,8 +5919,8 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .text_size(px(FS_META))
-                    .line_height(px(LH_META))
+                    .text_size(s.font_size(FS_META))
+                    .line_height(s.line_height(LH_META))
                     .text_color(s.muted)
                     .child(loc.pick(
                         "↑↓  选择      ↵  执行      Esc  关闭",

@@ -930,7 +930,7 @@ impl KarWorkbench {
             .gap(px(10.))
             .border_b_1()
             .border_color(s.line_soft)
-            .text_size(px(FS_UI))
+            .text_size(s.font_size(FS_UI))
             .child(div().text_color(s.muted).child(loc.pick("设置", "Settings")))
             .child(pro_icon(ProIcon::ChevronRight, 12., s.faint))
             .child(
@@ -1070,7 +1070,7 @@ impl KarWorkbench {
                             .px(px(10.))
                             .pt(px(if index == 0 { 4. } else { 14. }))
                             .pb(px(4.))
-                            .text_size(px(FS_TAG))
+                            .text_size(s.font_size(FS_TAG))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(s.muted)
                             .child(group),
@@ -1115,7 +1115,7 @@ impl KarWorkbench {
                                         .flex_1()
                                         .min_w_0()
                                         .truncate()
-                                        .text_size(px(FS_UI))
+                                        .text_size(s.font_size(FS_UI))
                                         .font_weight(if selected {
                                             FontWeight::MEDIUM
                                         } else {
@@ -1145,7 +1145,7 @@ impl KarWorkbench {
                     .px(px(10.))
                     .pt(px(12.))
                     .pb(px(4.))
-                    .text_size(px(FS_TAG))
+                    .text_size(s.font_size(FS_TAG))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(s.muted)
                     .child(loc.pick("匹配的具体设置项", "Matching settings")),
@@ -1169,7 +1169,7 @@ impl KarWorkbench {
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(s.ink)
                                         .child(loc.pick(hit.title_zh, hit.title_en)),
@@ -1184,7 +1184,7 @@ impl KarWorkbench {
                                                 .px(px(5.))
                                                 .rounded(px(R_PILL))
                                                 .bg(s.soft)
-                                                .text_size(px(FS_TAG))
+                                                .text_size(s.font_size(FS_TAG))
                                                 .text_color(s.muted)
                                                 .child(target_tab.title(loc)),
                                         ),
@@ -1204,7 +1204,7 @@ impl KarWorkbench {
                 div()
                     .px(px(10.))
                     .py(px(16.))
-                    .text_size(px(FS_META))
+                    .text_size(s.font_size(FS_META))
                     .text_color(s.muted)
                     .child(loc.pick("未找到相关设置项", "No matching settings")),
             );

@@ -68,19 +68,19 @@ impl KarWorkbench {
 
         let mut list = div().flex().flex_col().gap(px(10.));
         for warning in &self.schedule_registry.migration_warnings {
-            list = list.child(div().text_size(px(FS_META)).text_color(s.muted).child(warning.clone()));
+            list = list.child(div().text_size(s.font_size(FS_META)).text_color(s.muted).child(warning.clone()));
         }
         if let Some(error)=&self.schedule_error {
-            list=list.child(div().text_size(px(FS_META)).text_color(s.muted).child(error.clone()));
+            list=list.child(div().text_size(s.font_size(FS_META)).text_color(s.muted).child(error.clone()));
         }
         if tasks.is_empty() && !self.schedule_loaded && self.schedule_error.is_none() {
-            list=list.child(div().text_size(px(FS_META)).text_color(s.muted).child(self.ui_locale.pick("正在读取工作区任务…","Loading workspace schedules…")));
+            list=list.child(div().text_size(s.font_size(FS_META)).text_color(s.muted).child(self.ui_locale.pick("正在读取工作区任务…","Loading workspace schedules…")));
         } else if tasks.is_empty() && self.schedule_error.is_none() {
             list = list.child(
                 card_box(s)
                     .w_full()
                     .p(px(18.))
-                    .text_size(px(FS_UI))
+                    .text_size(s.font_size(FS_UI))
                     .text_color(s.muted)
                     .child(self.ui_locale.pick(
                         "还没有定时任务。点击右上角「新建定时任务」添加。",
@@ -210,7 +210,7 @@ impl KarWorkbench {
             .justify_between()
             .font_family(mono_font(cx))
             .font_features(tnum_features())
-            .text_size(px(FS_TAG))
+            .text_size(s.font_size(FS_TAG))
             .text_color(s.faint);
         for lbl in ["00:00", "06:00", "12:00", "18:00", "24:00"] {
             ticks_row = ticks_row.child(div().child(lbl));
@@ -236,7 +236,7 @@ impl KarWorkbench {
                             .gap(px(8.))
                             .child(
                                 div()
-                                    .text_size(px(FS_UI))
+                                    .text_size(s.font_size(FS_UI))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(s.ink)
                                     .child(self.ui_locale.pick("今日 24 小时触发排期", "24h Schedule Timeline")),
@@ -248,7 +248,7 @@ impl KarWorkbench {
                                     .rounded(px(R_PILL))
                                     .bg(s.tray)
                                     .font_features(tnum_features())
-                                    .text_size(px(FS_TAG))
+                                    .text_size(s.font_size(FS_TAG))
                                     .text_color(s.muted)
                                     .child(format!(
                                         "{enabled_cnt} {}",
@@ -267,7 +267,7 @@ impl KarWorkbench {
                             .gap(px(5.))
                             .font_family(mono_font(cx))
                             .font_features(tnum_features())
-                            .text_size(px(FS_META))
+                            .text_size(s.font_size(FS_META))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(s.pro.green_ink)
                             .child(div().size(px(5.5)).rounded_full().bg(s.pro.green))
@@ -366,7 +366,7 @@ impl KarWorkbench {
                             .radius(R_SM)
                             .lit(on)
                             .outlined(if on { s.ink } else { s.line_soft }, s.line_strong)
-                            .text_size(px(FS_META))
+                            .text_size(s.font_size(FS_META))
                             .child(name)
                             .on_press(cx, move |wb, _, cx| {
                                 let next_mask = mask_cur ^ (1 << bit);
@@ -452,7 +452,7 @@ impl KarWorkbench {
                         .child(
                             div()
                                 .font_family(mono_font(cx))
-                                .text_size(px(FS_META))
+                                .text_size(s.font_size(FS_META))
                                 .text_color(s.ink)
                                 .child(if secret.is_empty() {loc.pick("沿用已保存的签名密钥", "Use the saved signing secret")} else {loc.pick("保存前可复制此签名密钥", "Copy this signing secret before saving")}),
                         )
@@ -480,7 +480,7 @@ impl KarWorkbench {
             .gap(px(12.))
             .child(
                 div()
-                    .text_size(px(FS_UI))
+                    .text_size(s.font_size(FS_UI))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(s.ink)
                     .child(if is_editing {
@@ -632,7 +632,7 @@ impl KarWorkbench {
                                         div()
                                             .min_w_0()
                                             .truncate()
-                                            .text_size(px(FS_UI))
+                                            .text_size(s.font_size(FS_UI))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(s.ink)
                                             .child(task.title.clone()),
@@ -643,7 +643,7 @@ impl KarWorkbench {
                                             .py(px(1.))
                                             .rounded(px(R_PILL))
                                             .bg(s.tray)
-                                            .text_size(px(FS_TAG))
+                                            .text_size(s.font_size(FS_TAG))
                                             .text_color(s.muted)
                                             .child(task.cadence.label()),
                                     ),
@@ -651,8 +651,8 @@ impl KarWorkbench {
                             .child(
                                 div()
                                     .line_clamp(2)
-                                    .text_size(px(FS_META))
-                                    .line_height(px(LH_META))
+                                    .text_size(s.font_size(FS_META))
+                                    .line_height(s.line_height(LH_META))
                                     .text_color(s.muted)
                                     .child(task.prompt.clone()),
                             ),
@@ -736,7 +736,7 @@ impl KarWorkbench {
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .text_size(px(FS_META))
+                            .text_size(s.font_size(FS_META))
                             .text_color(s.text)
                             .child(render_provider_color_tile(&task.runtime_id, 18., s, cx))
                             .child(crate::types::runtime_display_name(&task.runtime_id)),
@@ -756,7 +756,7 @@ impl KarWorkbench {
                                 .py(px(1.))
                                 .rounded(px(R_SM))
                                 .bg(s.tray)
-                                .text_size(px(FS_TAG))
+                                .text_size(s.font_size(FS_TAG))
                                 .text_color(s.text)
                                 .child(render_office_chip(kind, s))
                                 .child(clean_display_doc_name(name)),
@@ -809,7 +809,7 @@ impl KarWorkbench {
             card = card.child(
                 div()
                     .font_features(tnum_features())
-                    .text_size(px(FS_META))
+                    .text_size(s.font_size(FS_META))
                     .text_color(s.muted)
                     .child(format!(
                         "下次自动触发：{}",
@@ -830,7 +830,7 @@ impl KarWorkbench {
             if task.history.is_empty() && associated_chats.is_empty() {
                 hist_col = hist_col.child(
                     div()
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .text_color(s.muted)
                         .child(self.ui_locale.pick(
                             "暂无执行记录。点击「立即运行」将自动创建关联对话并投递任务。",
@@ -870,7 +870,7 @@ impl KarWorkbench {
                                             .py(px(1.))
                                             .rounded(px(R_PILL))
                                             .bg(badge_bg)
-                                            .text_size(px(FS_TAG))
+                                            .text_size(s.font_size(FS_TAG))
                                             .text_color(badge_fg)
                                             .child(self.ui_locale.pick(
                                                 rec.outcome.label(),
@@ -884,7 +884,7 @@ impl KarWorkbench {
                                                 },
                                             )),
                                     )
-                                    .child(div().text_size(px(FS_META)).text_color(s.text).child(
+                                    .child(div().text_size(s.font_size(FS_META)).text_color(s.text).child(
                                         if rec.manual {
                                             format!("手动触发 · {age_mins} 分钟前")
                                         } else {

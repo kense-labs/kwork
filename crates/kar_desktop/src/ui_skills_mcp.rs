@@ -208,7 +208,7 @@ impl KarWorkbench {
             if !mcps.is_empty() {
                 let mut sec = div().w_full().flex().flex_col().gap(px(8.)).child(
                     div()
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(s.muted)
                         .child(loc.pick("已连接的 MCP 服务", "Connected MCP servers")),
@@ -257,7 +257,7 @@ impl KarWorkbench {
                                                     ))
                                                     .child(
                                                         div()
-                                                            .text_size(px(FS_UI))
+                                                            .text_size(s.font_size(FS_UI))
                                                             .font_weight(FontWeight::SEMIBOLD)
                                                             .text_color(s.ink)
                                                             .truncate()
@@ -270,14 +270,14 @@ impl KarWorkbench {
                                                             .rounded(px(R_PILL))
                                                             .bg(s.tray)
                                                             .font_family(mono_font(cx))
-                                                            .text_size(px(FS_TAG))
+                                                            .text_size(s.font_size(FS_TAG))
                                                             .text_color(s.muted)
                                                             .child(srv.id.clone()),
                                                     ),
                                             )
                                             .child(
                                                 div()
-                                                    .text_size(px(FS_META))
+                                                    .text_size(s.font_size(FS_META))
                                                     .text_color(s.muted)
                                                     .truncate()
                                                     .child(format!(
@@ -330,14 +330,14 @@ impl KarWorkbench {
                     .justify_between()
                     .child(
                         div()
-                            .text_size(px(FS_META))
+                            .text_size(s.font_size(FS_META))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(s.muted)
                             .child(loc.pick("工作区与全局技能", "Workspace and global skills")),
                     )
                     .child(
                         div()
-                            .text_size(px(FS_TAG))
+                            .text_size(s.font_size(FS_TAG))
                             .text_color(s.faint)
                             .child(loc.pick("选择技能查看详情", "Select a skill for details")),
                     ),
@@ -405,7 +405,7 @@ impl KarWorkbench {
                                                     .rounded(px(R_PILL))
                                                     .bg(s.tray)
                                                     .font_family(mono_font(cx))
-                                                    .text_size(px(FS_TAG))
+                                                    .text_size(s.font_size(FS_TAG))
                                                     .text_color(s.muted)
                                                     .truncate()
                                                     .child(format!("${}", sk.name)),
@@ -413,7 +413,7 @@ impl KarWorkbench {
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(FS_UI))
+                                            .text_size(s.font_size(FS_UI))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(s.ink)
                                             .truncate()
@@ -422,7 +422,7 @@ impl KarWorkbench {
                                     .child(
                                         div()
                                             .line_clamp(2)
-                                            .text_size(px(FS_META))
+                                            .text_size(s.font_size(FS_META))
                                             .line_height(px(17.5))
                                             .text_color(s.muted)
                                             .child(sk_display_desc),
@@ -439,7 +439,7 @@ impl KarWorkbench {
                                     .gap(px(6.))
                                     .child(
                                         div()
-                                            .text_size(px(FS_TAG))
+                                            .text_size(s.font_size(FS_TAG))
                                             .text_color(s.faint)
                                             .truncate()
                                             .child(scope_label(&sk.scope_label, loc)),
@@ -486,7 +486,7 @@ impl KarWorkbench {
             if !cmds.is_empty() {
                 let mut sec = div().w_full().flex().flex_col().gap(px(6.)).child(
                     div()
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(s.muted)
                         .child(loc.pick("快捷斜杠指令", "Slash commands")),
@@ -512,7 +512,7 @@ impl KarWorkbench {
                                     .child(
                                         div()
                                             .font_family(mono_font(cx))
-                                            .text_size(px(FS_META))
+                                            .text_size(s.font_size(FS_META))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(s.ink)
                                             .child(cmd.name),
@@ -520,7 +520,7 @@ impl KarWorkbench {
                                     .when_some(cmd.hint, |r, h| {
                                         r.child(
                                             div()
-                                                .text_size(px(FS_TAG))
+                                                .text_size(s.font_size(FS_TAG))
                                                 .text_color(s.faint)
                                                 .child(h),
                                         )
@@ -529,7 +529,7 @@ impl KarWorkbench {
                                         div()
                                             .min_w_0()
                                             .truncate()
-                                            .text_size(px(FS_META))
+                                            .text_size(s.font_size(FS_META))
                                             .text_color(s.muted)
                                             .child(cmd_desc),
                                     ),
@@ -551,7 +551,7 @@ impl KarWorkbench {
             matched += filtered_tools.len();
             let mut sec = div().w_full().flex().flex_col().gap(px(7.)).child(
                 div()
-                    .text_size(px(FS_META))
+                    .text_size(s.font_size(FS_META))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(s.muted)
                     .child(loc.pick("MCP 与宿主工具能力", "Tool schemas")),
@@ -596,7 +596,7 @@ impl KarWorkbench {
                                         .gap(px(6.))
                                         .child(
                                             div()
-                                                .text_size(px(FS_CONTROL))
+                                                .text_size(s.font_size(FS_CONTROL))
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(s.ink)
                                                 .truncate()
@@ -609,14 +609,14 @@ impl KarWorkbench {
                                                 .rounded(px(R_PILL))
                                                 .bg(s.tray)
                                                 .font_family(mono_font(cx))
-                                                .text_size(px(FS_TAG))
+                                                .text_size(s.font_size(FS_TAG))
                                                 .text_color(s.muted)
                                                 .child(format!("{} · {}", t.server_id, t.name)),
                                         ),
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .text_color(s.muted)
                                         .truncate()
                                         .child(tool_desc),
@@ -699,7 +699,7 @@ impl KarWorkbench {
                                         .justify_between()
                                         .child(
                                             div()
-                                                .text_size(px(FS_TAG))
+                                                .text_size(s.font_size(FS_TAG))
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(s.faint)
                                                 .child(loc.pick("技能详情说明", "SKILL INSPECTOR")),
@@ -736,7 +736,7 @@ impl KarWorkbench {
                                                 .gap(px(2.))
                                                 .child(
                                                     div()
-                                                        .text_size(px(FS_UI))
+                                                        .text_size(s.font_size(FS_UI))
                                                         .font_weight(FontWeight::SEMIBOLD)
                                                         .text_color(s.ink)
                                                         .truncate()
@@ -744,7 +744,7 @@ impl KarWorkbench {
                                                 )
                                                 .child(
                                                     div()
-                                                        .text_size(px(FS_TAG))
+                                                        .text_size(s.font_size(FS_TAG))
                                                         .text_color(s.muted)
                                                         .truncate()
                                                         .child(format!(
@@ -757,7 +757,7 @@ impl KarWorkbench {
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .line_height(px(17.5))
                                         .text_color(s.text)
                                         .child(sk_desc),
@@ -777,7 +777,7 @@ impl KarWorkbench {
                                     div()
                                         .min_w_0()
                                         .truncate()
-                                        .text_size(px(FS_META))
+                                        .text_size(s.font_size(FS_META))
                                         .font_weight(FontWeight::MEDIUM)
                                         .child(format!(
                                             "{} ${}",
@@ -829,7 +829,7 @@ impl KarWorkbench {
                                 .justify_between()
                                 .child(
                                     div()
-                                        .text_size(px(FS_TAG))
+                                        .text_size(s.font_size(FS_TAG))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(s.faint)
                                         .child(loc.pick("工具参数详情", "TOOL SCHEMA")),
@@ -849,7 +849,7 @@ impl KarWorkbench {
                         )
                         .child(
                             div()
-                                .text_size(px(FS_UI))
+                                .text_size(s.font_size(FS_UI))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(s.ink)
                                 .child(t_title),
@@ -857,13 +857,13 @@ impl KarWorkbench {
                         .child(
                             div()
                                 .font_family(mono_font(cx))
-                                .text_size(px(FS_TAG))
+                                .text_size(s.font_size(FS_TAG))
                                 .text_color(s.muted)
                                 .child(t.name.clone()),
                         )
                         .child(
                             div()
-                                .text_size(px(FS_META))
+                                .text_size(s.font_size(FS_META))
                                 .line_height(px(17.5))
                                 .text_color(s.muted)
                                 .child(t_desc),

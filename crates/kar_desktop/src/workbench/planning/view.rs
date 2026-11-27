@@ -30,7 +30,7 @@ impl KarWorkbench {
             .child(
                 div()
                     .flex_none()
-                    .text_size(px(FS_META))
+                    .text_size(s.font_size(FS_META))
                     .text_color(s.muted)
                     .child(status),
             );
@@ -40,7 +40,7 @@ impl KarWorkbench {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(FS_CONTROL))
+                    .text_size(s.font_size(FS_CONTROL))
                     .font_weight(FontWeight::MEDIUM)
                     .child(title.to_owned()),
             );
@@ -136,7 +136,7 @@ impl KarWorkbench {
                     .child(pro_icon(ProIcon::Tasks, 15., s.ink))
                     .child(
                         div()
-                            .text_size(px(FS_CONTROL))
+                            .text_size(s.font_size(FS_CONTROL))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(title),
                     )
@@ -168,7 +168,7 @@ impl KarWorkbench {
                         div()
                             .truncate()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(px(FS_CONTROL))
+                            .text_size(s.font_size(FS_CONTROL))
                             .child(title),
                     ),
             );
@@ -178,7 +178,7 @@ impl KarWorkbench {
         {
             header = header.child(
                 div()
-                    .text_size(px(FS_META))
+                    .text_size(s.font_size(FS_META))
                     .text_color(s.muted)
                     .child(format!(
                         "{} / {}",
@@ -198,7 +198,7 @@ impl KarWorkbench {
                     .h(px(27.))
                     .px(px(9.))
                     .radius(R_CTRL)
-                    .text_size(px(FS_META))
+                    .text_size(s.font_size(FS_META))
                     .aria(label)
                     .child(label)
                     .disabled(
@@ -253,7 +253,7 @@ impl KarWorkbench {
                 .gap(px(4.))
                 .child(
                     div()
-                        .text_size(px(FS_UI))
+                        .text_size(s.font_size(FS_UI))
                         .text_color(s.text)
                         .child(q.prompt.clone()),
                 );
@@ -266,7 +266,7 @@ impl KarWorkbench {
                         .h_auto()
                         .px(px(7.))
                         .py(px(4.))
-                        .text_size(px(FS_CONTROL))
+                        .text_size(s.font_size(FS_CONTROL))
                         .ink(s.text, s.ink)
                         .aria(answer.clone())
                         .child(
@@ -279,7 +279,7 @@ impl KarWorkbench {
                                 .when_some(option.description.clone(), |row, description| {
                                     row.child(
                                         div()
-                                            .text_size(px(FS_META))
+                                            .text_size(s.font_size(FS_META))
                                             .text_color(s.muted)
                                             .child(description),
                                     )
@@ -323,14 +323,14 @@ impl KarWorkbench {
                         .id("planning-error")
                         .max_h(px(height))
                         .overflow_y_scroll()
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .text_color(s.muted)
                         .child(text),
                 )
                 .child(
                     Tactile::ghost("retry-plan", s)
                         .h(px(26.))
-                        .text_size(px(FS_META))
+                        .text_size(s.font_size(FS_META))
                         .aria(loc.pick("重新规划", "Retry planning"))
                         .child(loc.pick("重新规划", "Retry planning"))
                         .on_press(cx, move |wb, _, cx| {
@@ -343,7 +343,7 @@ impl KarWorkbench {
             panel = panel.child(
                 div()
                     .truncate()
-                    .text_size(px(FS_META))
+                    .text_size(s.font_size(FS_META))
                     .text_color(s.muted)
                     .child(
                         self.planning
@@ -354,7 +354,7 @@ impl KarWorkbench {
                     ),
             );
         } else if phase == Phase::Draft {
-            panel = panel.child(div().text_size(px(FS_META)).text_color(s.muted).child(
+            panel = panel.child(div().text_size(s.font_size(FS_META)).text_color(s.muted).child(
                 if pane_w < 400. {
                     loc.pick("只读规划，确认后实施。", "Read-only until you approve.")
                 } else {

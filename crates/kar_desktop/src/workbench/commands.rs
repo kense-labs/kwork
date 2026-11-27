@@ -789,7 +789,7 @@ impl KarWorkbench {
                 div()
                     .px(px(9.))
                     .py(px(7.))
-                    .text_size(px(FS_META))
+                    .text_size(s.font_size(FS_META))
                     .text_color(s.muted)
                     .child(self.ui_locale.pick(
                         "智能体尚未提供指令列表，可直接输入原生指令。",
@@ -835,7 +835,7 @@ impl KarWorkbench {
                             .flex_none()
                             .max_w(relative(0.44))
                             .truncate()
-                            .text_size(px(FS_UI))
+                            .text_size(s.font_size(FS_UI))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(s.ink)
                             .child(label),
@@ -845,7 +845,7 @@ impl KarWorkbench {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(px(FS_META))
+                            .text_size(s.font_size(FS_META))
                             .text_color(s.muted)
                             .child(choice.description),
                     )
@@ -853,7 +853,7 @@ impl KarWorkbench {
                         row.child(
                             div()
                                 .flex_none()
-                                .text_size(px(FS_META))
+                                .text_size(s.font_size(FS_META))
                                 .text_color(s.muted)
                                 .child(alias),
                         )

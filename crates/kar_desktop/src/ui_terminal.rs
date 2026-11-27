@@ -425,27 +425,31 @@ impl KarWorkbench {
         }
 
         let font_sz = self.prefs.code_font_size;
+        let line_height = px((font_sz * 1.45).round());
 
         let content_area: AnyElement = if in_pty {
             let pty_f = self.pty_focus.clone();
             let pty_focused = pty_f.is_focused(window);
+            let family = mono_font(cx);
+            let font_id = cx.text_system().resolve_font(&font(family.clone()));
+            let cell_width = cx.text_system().ch_advance(font_id, px(font_sz)).unwrap_or(px(font_sz * 0.6));
             let mut screen_col = div()
                 .w_full()
                 .p(px(10.))
                 .flex()
                 .flex_col()
-                .font_family(mono_font(cx))
+                .font_family(family)
                 .text_size(px(font_sz))
-                .line_height(px((font_sz * 1.45).round()))
+                .line_height(line_height)
                 .text_color(s.ink);
 
             if let Some(snap) = pty_snap {
                 for (r_ix, row_spans) in snap.lines.iter().enumerate() {
-                    let mut row_div = div().min_h(px(font_sz * 1.45)).flex().items_center().whitespace_nowrap();
+                    let mut row_div = div().min_h(line_height).flex().items_center().whitespace_nowrap();
                     if row_spans.is_empty() && r_ix == snap.cursor_row as usize && pty_focused {
                         row_div = row_div.child(
                             div()
-                                .w(px(7.))
+                                .w(cell_width)
                                 .h(px(font_sz + 2.))
                                 .rounded(px(1.5))
                                 .bg(s.ink.opacity(0.75)),
@@ -463,7 +467,7 @@ impl KarWorkbench {
                             row_div = row_div.child(
                                 div()
                                     .ml(px(1.))
-                                    .w(px(7.))
+                                    .w(cell_width)
                                     .h(px(font_sz + 2.))
                                     .rounded(px(1.5))
                                     .bg(s.ink.opacity(0.75)),
@@ -519,7 +523,7 @@ impl KarWorkbench {
                 .flex_col()
                 .font_family(mono_font(cx))
                 .text_size(px(font_sz))
-                .line_height(px((font_sz * 1.45).round()))
+                .line_height(line_height)
                 .text_color(s.ink);
 
             for run in self.terminal_runs.iter().filter(|r| r.cwd == cwd) {
@@ -616,7 +620,7 @@ impl KarWorkbench {
                 )
                 .child(
                     div()
-                        .h(px(22.))
+                        .h(px((font_sz + 7.).max(22.)))
                         .flex_1()
                         .min_w_0()
                         .child(terminal_editor.clone()),
