@@ -45,6 +45,23 @@ impl TurnSteps {
             .is_some_and(|entry| child_source(turn, &entry.source, self.root.as_deref()))
     }
 
+    /// The path supplied by the runtime, or its explicit child → parent binding.
+    /// A different session without either record has an identity but no known parent.
+    pub(super) fn branch_path<'a>(&self, turn: &'a ChatTurn, source: &'a Agent) -> Vec<&'a str> {
+        if !source.path.is_empty() {
+            return source.path.iter().map(String::as_str).collect();
+        }
+        let mut path = Vec::new();
+        let mut next = source.session_id.as_deref();
+        while let Some(id) = next {
+            if path.contains(&id) { break; }
+            path.push(id);
+            next = turn.child_sessions.get(id).map(String::as_str);
+        }
+        path.reverse();
+        path
+    }
+
     pub(super) fn has_multiple_answers(&self) -> bool {
         self.answer.len() > 1
     }
@@ -98,6 +115,25 @@ mod tests {
 
     fn say(session: Option<&str>, role: Role, text: &str) -> TimelineItem {
         row(session, Item::Message { role, text: text.into(), provider_id: None, complete: true })
+    }
+
+    #[test]
+    fn branch_path_uses_only_reported_edges_and_handles_legacy_sessions() {
+        let mut turn = turn(vec![
+            say(Some("root"), Role::User, "start"),
+            say(Some("worker"), Role::Assistant, "child reply"),
+        ]);
+        let steps = TurnSteps::new(&turn, Some("root"));
+        let source = turn.items[1].source.clone();
+        assert!(steps.is_child(&turn, 1));
+        assert_eq!(steps.branch_path(&turn, &source), ["worker"]);
+        turn.child_sessions.insert("worker".into(), "reader".into());
+        turn.child_sessions.insert("reader".into(), "root".into());
+        assert_eq!(steps.branch_path(&turn, &source), ["root", "reader", "worker"]);
+        turn.child_sessions.insert("root".into(), "worker".into());
+        assert_eq!(steps.branch_path(&turn, &source), ["root", "reader", "worker"]);
+        let marked = Agent { session_id: Some("root".into()), path: vec!["delegated".into()] };
+        assert_eq!(steps.branch_path(&turn, &marked), ["delegated"]);
     }
 
     #[test]

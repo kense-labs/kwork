@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 const RATE: usize = 16_000;
 const MAX_FRAMES: usize = RATE * 300;
+pub(crate) const VOICE_METER_BARS: usize = 14;
 const BUNDLED_MODEL: &str = "handy-computer/whisper-base-gguf";
 const KAR_INITIAL_MODEL: &str = "handy-computer/parakeet-unified-en-0.6b-gguf";
 
@@ -225,6 +226,20 @@ struct Capture {
     error: Option<String>,
 }
 impl Capture {
+    fn waveform(&self) -> [f32; VOICE_METER_BARS] {
+        // Read complete 32 ms windows so individual microphone callbacks cannot shift the bars.
+        const WINDOW_FRAMES: usize = 512;
+        let mut bars = [0.; VOICE_METER_BARS];
+        let end = self.samples.len() / WINDOW_FRAMES * WINDOW_FRAMES;
+        let windows = self.samples[..end].rchunks_exact(WINDOW_FRAMES);
+        for (bar, samples) in bars.iter_mut().rev().zip(windows) {
+            let energy = samples.iter().map(|sample| sample * sample).sum::<f32>();
+            let rms = (energy / WINDOW_FRAMES as f32).sqrt();
+            *bar = ((20. * rms.max(0.001).log10() + 54.) / 54.).clamp(0., 1.);
+        }
+        bars
+    }
+
     fn push<T: cpal::Sample>(&mut self, data: &[T], channels: usize, input_rate: usize)
     where
         f32: cpal::FromSample<T>,
@@ -258,6 +273,10 @@ impl Capture {
     }
 }
 impl Recording {
+    pub(crate) fn waveform(&self) -> Option<[f32; VOICE_METER_BARS]> {
+        self.audio.try_lock().ok().map(|capture| capture.waveform())
+    }
+
     pub fn microphone() -> Option<String> {
         cpal::default_host()
             .default_input_device()
@@ -692,6 +711,17 @@ mod tests {
             remove_fillers: true,
             model: None,
         }
+    }
+    #[test]
+    fn voice_meter_tracks_recent_sound_and_silence() {
+        let mut capture = Capture::default();
+        capture.push(&[0.1f32; 512], 1, RATE);
+        capture.push(&[0.8f32; 512], 1, RATE);
+        let bars = capture.waveform();
+        assert_eq!(&bars[..12], &[0.; 12]);
+        assert!(bars[12] > 0. && bars[13] > bars[12]);
+        capture.push(&[0f32; 512 * VOICE_METER_BARS], 1, RATE);
+        assert_eq!(capture.waveform(), [0.; VOICE_METER_BARS]);
     }
     #[test]
     fn capture_preserves_sample_phase_across_stereo_callbacks() {

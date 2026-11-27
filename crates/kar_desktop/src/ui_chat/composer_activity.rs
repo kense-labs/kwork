@@ -16,6 +16,15 @@ pub(super) enum Activity {
     Replying,
 }
 
+pub(super) fn selected_projection(access: &ChatAccessMode, projected: &ProjectedChatState) -> bool {
+    if matches!(access, ChatAccessMode::DemoShowcase) {
+        projected.is_demo
+    } else {
+        let selected = access.selected_chat_id();
+        !projected.is_demo && selected.is_some() && selected == projected.chat_id
+    }
+}
+
 pub(super) fn current<'a>(
     access: &ChatAccessMode,
     projected: &ProjectedChatState,
@@ -35,11 +44,7 @@ pub(super) fn current<'a>(
     }
 
     let selected = access.selected_chat_id();
-    let same_chat = if matches!(access, ChatAccessMode::DemoShowcase) {
-        projected.is_demo
-    } else {
-        !projected.is_demo && selected.is_some() && selected == projected.chat_id
-    };
+    let same_chat = selected_projection(access, projected);
     if same_chat {
         if projected.pending_requests.iter().any(|request| {
             matches!(

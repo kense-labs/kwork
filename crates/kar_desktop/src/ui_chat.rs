@@ -4,6 +4,7 @@ mod context_usage;
 
 mod activity;
 mod composer_activity;
+mod composer_controls;
 mod message_time;
 mod reply_stream;
 mod turn_outline;
@@ -110,11 +111,13 @@ impl KarWorkbench {
         let mut decisions = self.pending_decisions();
         let decision = decisions.next().cloned();
         let pending_count = usize::from(decision.is_some()) + decisions.count();
-        let decision_cursor = decision.as_ref().map(|request| request.cursor.clone());
-        let last_presented = window.use_keyed_state("chat-presented-decision", cx, |_, _| None);
-        let reveal_decision = last_presented.update(cx, |previous, _| {
-            let changed = *previous != decision_cursor;
-            *previous = decision_cursor;
+        let question_cursor = decision.as_ref()
+            .filter(|request| request.kind == RequestKind::Question)
+            .map(|request| request.cursor.clone());
+        let last_question = window.use_keyed_state("chat-presented-question", cx, |_, _| None);
+        let reveal_question = last_question.update(cx, |previous, _| {
+            let changed = *previous != question_cursor;
+            *previous = question_cursor;
             changed && previous.is_some()
         });
         let activity = composer_activity::current(
@@ -280,15 +283,31 @@ impl KarWorkbench {
                 f32::from(self.chat_scroll.max_offset().y) + f32::from(self.chat_scroll.offset().y);
             let show_jump_bottom = scroll_remaining > CTRL_H && !self.projected.turns.is_empty();
 
-            let card = decision.map(|request| {
-                let compact = center_w < 460.;
-                let card = self.render_decision_card(request, pending_count, compact, &s, window, cx);
-                chat_content_lane(center_w, thread_w, window)
-                    .flex_none()
-                    .pb(px(8.))
-                    .child(card)
-            });
-            if reveal_decision {
+            let (question, approval) = if let Some(request) = decision {
+                let permission = request.kind == RequestKind::Permission;
+                let cursor = request.cursor.clone();
+                let card = self.render_decision_card(request, pending_count, center_w < 460., &s, window, cx);
+                let lane = chat_content_lane(center_w, thread_w, window);
+                if permission {
+                    // Keep the request reachable while the user reads earlier turns.
+                    // Long command lines and policy lists scroll inside the approval area.
+                    let panel = lane.id(SharedString::from(format!("approval-{}-{}", cursor.stream_id, cursor.after_seq)))
+                        .role(Role::Region)
+                        .aria_label(self.ui_locale.pick("待授权请求", "Pending approval"))
+                        .flex()
+                        .flex_col()
+                        .min_h_0()
+                        .max_h(relative(if center_w < 460. { 0.46 } else { 0.38 }))
+                        .overflow_y_scroll()
+                        .child(card);
+                    (None, Some(panel))
+                } else {
+                    (Some(lane.flex_none().pb(px(8.)).child(card)), None)
+                }
+            } else {
+                (None, None)
+            };
+            if reveal_question {
                 self.chat_scroll.scroll_to_item(rows.len());
             }
             let activity_row = activity.map(|phase| {
@@ -369,7 +388,7 @@ impl KarWorkbench {
                         .when(show_rail, |d| d.pl(px(rail_padding)))
                         .child(row)
                 }))
-                .children(card);
+                .children(question);
             let center_lane = div()
                 .flex_1()
                 .min_w_0()
@@ -396,6 +415,7 @@ impl KarWorkbench {
                         .children(rail)
                         .when(show_jump_bottom, |lane| lane.child(self.jump_to_latest(activity.is_some(), &s, window, cx))),
                 )
+                .children(approval)
                 .child(foot);
 
             center_lane.into_any_element()
@@ -2149,8 +2169,7 @@ impl KarWorkbench {
             move || pinned.unwrap_or_else(|| div().into_any_element()),
         );
 
-        let attachments_bar = (!self.pending_attachments.is_empty())
-            .then(|| self.render_pending_attachments_strip(s, cx));
+        let attachments_bar = self.render_attachment_tray(s, window, cx);
         let bg_cmds_bar = self
             .client_reducer
             .background_commands
@@ -2308,54 +2327,34 @@ impl KarWorkbench {
 
         let can_switch_perm = self.access_mode.is_writable()
             || matches!(self.access_mode, ChatAccessMode::NoneSelected);
-        let rec_active = self.active_voice_rec.is_some();
-        let left = div()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .child(
-                Tactile::ghost("cmp-add", s)
-                    .size(px(CTRL_H))
-                    .justify_center()
-                    .tip(loc.pick("添加文件或图片附件", "Attach files or images"))
-                    .child(pro_icon(ProIcon::Paperclip, 16., s.muted))
-                    .on_press(cx, |this, win, cx| this.pick_attachments(win, cx)),
-            )
-            .child(
-                Tactile::ghost("cmp-voice-mic", s)
-                    .h(px(CTRL_H))
-                    .when(!rec_active, |b| b.w(px(CTRL_H)))
-                    .when(rec_active, |b| {
-                        b.px(px(9.))
-                            .fills(s.pro.red_soft, s.pro.red.opacity(0.2))
-                            .text_color(s.pro.red_ink)
-                    })
-                    .radius(R_CTRL)
-                    .justify_center()
-                    .gap(px(5.))
-                    .lit(rec_active)
-                    .tip(if rec_active {
-                        loc.pick("正在录音，点击结束并转写语音  ⇧⌘V", "Recording — click to transcribe  ⇧⌘V")
-                    } else {
-                        loc.pick("语音听写输入  ⇧⌘V", "Voice dictation  ⇧⌘V")
-                    })
-                    .when(rec_active, |b| {
-                        b.child(pulse_beacon(s.pro.red, 6., true, window, cx))
-                            .child(
-                                div()
-                                    .text_size(s.font_size(FS_CONTROL))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(loc.pick("听写中…", "Listening…")),
-                            )
-                    })
-                    .when(!rec_active, |b| {
-                        b.child(pro_icon(ProIcon::Mic, 15.5, s.muted))
-                    })
+        let left = if self.active_voice_rec.is_some() {
+            self.render_recording_controls(card_width, s, window, cx)
+        } else {
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(
+                    Tactile::ghost("cmp-add", s)
+                        .size(px(CTRL_H))
+                        .justify_center()
+                        .tip(loc.pick("添加文件或图片附件", "Attach files or images"))
+                        .child(pro_icon(ProIcon::Paperclip, 16., s.muted))
+                        .on_press(cx, |this, win, cx| this.pick_attachments(win, cx)),
+                )
+                .child(
+                    icon_button(
+                        "cmp-voice-mic",
+                        ProIcon::Mic,
+                        loc.pick("语音听写  ⇧⌘V", "Dictate  ⇧⌘V"),
+                        s,
+                    )
                     .on_press(cx, |this, win, cx| this.toggle_voice_dictation(win, cx)),
-            )
-            .when(can_switch_perm, |d| d.child(perm_pill))
-            .when_some(ctx_control, |d, c| d.child(c));
+                )
+                .when(can_switch_perm, |d| d.child(perm_pill))
+                .when_some(ctx_control, |d, c| d.child(c))
+        };
 
         let effort_word = if chat_open {
             self.projected
@@ -2490,21 +2489,26 @@ impl KarWorkbench {
             ))
             .child(primary_action);
 
+        let editor_focus = self.composer_editor.read(cx).focus.clone();
+        let editor_focused = editor_focus.is_focused(window);
         let write_card = crate::ui_primitives::frosted_composer(s)
+            .when(editor_focused, |card| card.border_color(s.ink.opacity(0.32)))
             .w_full()
             .pt(px(16.))
             .pb(px(8.))
             .flex()
             .flex_col()
             .child(pinned_fold)
-            .when_some(attachments_bar, |d, bar| {
-                d.child(div().px(px(16.)).child(bar))
-            })
+            .child(attachments_bar)
             .child(
                 div()
                     .w_full()
                     .h(px(field_h))
                     .px(px(16.))
+                    .cursor_text()
+                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        editor_focus.focus(window, cx);
+                    })
                     .child(self.composer_editor.clone()),
             )
             .child(
@@ -2962,83 +2966,6 @@ impl KarWorkbench {
             );
         }
         col.into_any_element()
-    }
-
-    fn render_pending_attachments_strip(
-        &self,
-        s: &StudioPalette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut row = div()
-            .w_full()
-            .pb(px(4.))
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(6.));
-        for (ix, path) in self.pending_attachments.iter().enumerate() {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "附件".into());
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            let is_img = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp");
-            row = row.child(
-                div()
-                    .h(px(28.))
-                    .max_w_full()
-                    .min_w_0()
-                    .pl(px(8.))
-                    .pr(px(4.))
-                    .rounded(px(R_CTRL))
-                    .bg(s.soft)
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(pro_icon(
-                        if is_img {
-                            ProIcon::Sparkles
-                        } else {
-                            ProIcon::Paperclip
-                        },
-                        ICON_XS,
-                        s.muted,
-                    ))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .max_w(px(160.))
-                            .truncate()
-                            .text_size(s.font_size(FS_META))
-                            .text_color(s.ink)
-                            .child(name),
-                    )
-                    .child(
-                        close_button(
-                            ("cmp-att-rm", ix),
-                            self.ui_locale.pick("移除附件", "Remove attachment"),
-                            s,
-                        )
-                        .on_press(cx, move |this, _, cx| {
-                            if ix < this.pending_attachments.len() {
-                                this.pending_attachments.remove(ix);
-                                cx.notify();
-                            }
-                        }),
-                    ),
-            );
-        }
-        div()
-            .id("pending-attachment-list")
-            .w_full()
-            .max_h(px(68.))
-            .overflow_y_scroll()
-            .child(row)
-            .into_any_element()
     }
 
     fn render_queued_inputs_strip(&self, s: &StudioPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -3570,7 +3497,6 @@ impl KarWorkbench {
                 view.open = open;
                 if open {
                     view.provider = self.selected_runtime.clone();
-                    view.model = self.selected_model.clone();
                     let provider = self.providers.iter().find(|p| p.id == view.provider);
                     view.editor.update(cx, |editor, cx| {
                         editor.set_placeholder(loc.pick("搜索模型…", "Search models…"));
@@ -3594,10 +3520,10 @@ impl KarWorkbench {
             });
         }
         let runtime = search.read(cx).provider.clone();
-        let model = search.read(cx).model.clone();
         let provider = self.providers.iter().find(|p| p.id == runtime);
         let options = picker_models(provider, &search.read(cx).query, loc);
-        let cursor = search.read(cx).cursor;
+        let cursor = search.read(cx).cursor.min(options.len().saturating_sub(1));
+        let preview = options.get(cursor).map(|(model, _)| model);
         let scroll = search.read(cx).scroll.clone();
         let field = search.read(cx).editor.clone();
         let width = (f32::from(window.viewport_size().width) - 20.).min(554.);
@@ -3645,13 +3571,15 @@ impl KarWorkbench {
                     .on_press(cx, move |this, win, cx| {
                         search.update(cx, |view, cx| {
                             view.provider.clone_from(&id);
-                            view.model = if view.provider == this.selected_runtime {
-                                this.selected_model.clone()
-                            } else {
-                                None
-                            };
-                            view.cursor = 0;
-                            view.scroll.scroll_to_item(0);
+                            view.query.clear();
+                            let provider = this.providers.iter().find(|p| p.id == id);
+                            view.cursor = picker_models(provider, "", this.ui_locale)
+                                .iter()
+                                .position(|(model, _)| {
+                                    id == this.selected_runtime && model == &this.selected_model
+                                })
+                                .unwrap_or(0);
+                            view.scroll.scroll_to_item(view.cursor);
                             view.editor.update(cx, |editor, cx| {
                                 editor.set_value("", win, cx);
                                 editor.focus(win, cx);
@@ -3675,39 +3603,53 @@ impl KarWorkbench {
         let mut list = div()
             .id("picker-models")
             .role(Role::ListBox)
-            .flex_1()
-            .min_h_0()
+            .size_full()
             .overflow_y_scroll()
             .track_scroll(&scroll)
             .px(px(6.))
-            .py(px(5.));
+            .py(px(MODEL_LIST_PAD));
         for (index, (model, label)) in options.iter().enumerate() {
-            let chosen = *model == search.read(cx).model;
+            let chosen = runtime == self.selected_runtime && model == &self.selected_model;
             let model = model.clone();
+            let runtime = runtime.clone();
             let search = search.clone();
             list = list.child(
-                Tactile::ghost(("cmp-model-opt", index), s)
+                div()
+                    .id(("cmp-model-opt", index))
                     .role(Role::ListBoxOption)
+                    .aria_selected(chosen)
+                    .aria_label(label.clone())
                     .w_full()
-                    .h(px(32.))
+                    .h(px(MODEL_ROW_H))
+                    .flex()
+                    .items_center()
                     .gap(px(8.))
                     .px(px(8.))
-                    .lit(cursor == index)
-                    .lit_fill(s.hover)
-                    .aria(label.clone())
+                    .cursor_pointer()
+                    .text_color(if cursor == index || chosen {
+                        s.ink
+                    } else {
+                        s.text
+                    })
                     .child(render_runtime_mark(&runtime, 15., s, cx))
                     .child(div().min_w_0().flex_1().truncate().child(label.clone()))
                     .when(chosen, |row| {
                         row.child(pro_icon(ProIcon::Check, 13., s.text))
                     })
-                    .on_press(cx, move |_, win, cx| {
-                        search.update(cx, |view, cx| {
-                            view.model = model.clone();
-                            view.cursor = index;
-                            view.editor.read(cx).focus.clone().focus(win, cx);
-                            cx.notify();
-                        });
-                    }),
+                    .on_mouse_move(move |_, _, cx| {
+                        if search.read(cx).cursor != index {
+                            search.update(cx, |view, cx| {
+                                view.cursor = index;
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .on_click(cx.listener(move |this, _, win, cx| {
+                        let effort = (this.selected_runtime == runtime)
+                            .then(|| this.reasoning_effort.clone())
+                            .flatten();
+                        this.apply_model_picker(&runtime, model.clone(), effort, win, cx);
+                    })),
             );
         }
         if options.is_empty() {
@@ -3733,7 +3675,19 @@ impl KarWorkbench {
             .flex()
             .flex_col()
             .child(input)
-            .child(list);
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .when(open && preview.is_some(), |d| {
+                        d.child(model_cursor_band(cursor, &scroll, s.pro.pink, window, cx))
+                    })
+                    .child(list)
+                    .child(model_scroll_fade(scroll, s.card)),
+            );
+        let model = preview.cloned().flatten();
         let levels = provider.map_or(&[][..], |p| p.effort_levels(model.as_deref()));
         let effort = self
             .selected_effort()
@@ -3747,7 +3701,12 @@ impl KarWorkbench {
             .flex()
             .child(rail)
             .child(model_list);
-        if ready && !levels.is_empty() {
+        // Keep the list in place when neighboring models offer different reasoning controls.
+        if provider.is_some_and(|p| {
+            ready
+                && crate::types::runtime_supports_effort(&p.id)
+                && p.models.iter().any(|model| !model.effort_levels.is_empty())
+        }) {
             let mut detail = div()
                 .id("picker-reasoning")
                 .w(px(if width < 480. { 110. } else { 192. }))
@@ -3768,7 +3727,9 @@ impl KarWorkbench {
                         .text_size(s.font_size(FS_META))
                         .child(loc.pick("思考深度", "Reasoning")),
                 );
-            for (i, level) in std::iter::once(None)
+            for (i, level) in preview
+                .map(|_| None)
+                .into_iter()
                 .chain(levels.iter().map(|v| Some(v.as_str())))
                 .enumerate()
             {
@@ -3787,6 +3748,7 @@ impl KarWorkbench {
                 detail = detail.child(
                     Tactile::ghost(("cmp-effort-opt", i), s)
                         .w_full()
+                        .disabled(levels.is_empty())
                         .h(px(32.))
                         .gap(px(4.))
                         .px(px(5.))
@@ -3827,14 +3789,11 @@ impl KarWorkbench {
                     .on_press(cx, |this, _, cx| this.toggle_provider_sheet(cx)),
             )
             .child(
-                Tactile::soft("cmp-model-done", s)
-                    .h(px(28.))
-                    .px(px(10.))
-                    .disabled(!ready)
-                    .child(loc.pick("完成", "Done"))
-                    .on_press(cx, move |this, win, cx| {
-                        this.apply_model_picker(&runtime, model.clone(), effort.clone(), win, cx)
-                    }),
+                div()
+                    .pr(px(5.))
+                    .text_size(s.font_size(FS_META))
+                    .text_color(s.muted)
+                    .child(loc.pick("↑↓ 浏览   ↵ 选择", "↑↓ Browse   ↵ Select")),
             );
         let s = *s;
         pro_presence(Menu::ComposerAgent.id(), open, 0.16, 0.12, move |amount| {
@@ -3923,6 +3882,19 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(provider) = self
+            .providers
+            .iter()
+            .find(|p| p.id == runtime && p.is_ready())
+        else {
+            return;
+        };
+        if model
+            .as_ref()
+            .is_some_and(|id| !provider.models.iter().any(|m| &m.id == id))
+        {
+            return;
+        }
         self.select_runtime_by_id(runtime, cx);
         self.selected_model = model;
         self.reasoning_effort = effort.filter(|level| self.offered_efforts().contains(level));
@@ -3993,7 +3965,7 @@ impl KarWorkbench {
             mascot.update(cx, |view, cx| view.set_status(pose, cx));
         }
         let shimmer = activity::shimmer(
-            format!("composer-activity-{label}").into(),
+            "composer-activity-label".into(),
             label.clone().into(),
             FS_CONTROL,
             window,
@@ -4013,6 +3985,10 @@ impl KarWorkbench {
             .text_color(s.muted)
             .child(mascot)
             .child(shimmer)
+            .children(self.projected.turns.last().filter(|turn| {
+                turn.status == TurnStatus::Running && turn.started_ms > 0 &&
+                composer_activity::selected_projection(&self.access_mode, &self.projected)
+            }).map(|turn| message_time::live_clock(turn.id, turn.started_ms, window, cx)))
             .into_any_element()
     }
 
@@ -4308,12 +4284,7 @@ impl KarWorkbench {
         let mut tool_count = 0usize;
         let mut diff_count = 0usize;
         for (step_ix, entry) in turn.items.iter().enumerate() {
-            let delegated = !entry.source.path.is_empty()
-                || entry
-                    .source
-                    .session_id
-                    .as_ref()
-                    .is_some_and(|id| turn.child_sessions.contains_key(id));
+            let delegated = turn_steps.is_child(turn, step_ix);
             if (matches!(entry.item, Item::Message { role: KarRole::User, .. }) && !delegated)
                 || matches!(&entry.item, Item::Message { text, .. } if text.trim().is_empty())
             {
@@ -4336,13 +4307,13 @@ impl KarWorkbench {
 
         let multiple_answer_parts = turn_steps.has_multiple_answers();
         let mut ix = 0;
+        let mut branch_end = 0;
+        let mut branch_open = true;
         while ix < turn.items.len() {
             let item = &turn.items[ix].item;
             let source = &turn.items[ix].source;
-            let delegated = !source.path.is_empty()
-                || source.session_id.as_ref()
-                    .is_some_and(|id| turn.child_sessions.contains_key(id));
-            if (matches!(item, Item::Message { role: KarRole::User, .. }) && !delegated)
+            let is_subagent = turn_steps.is_child(turn, ix);
+            if (matches!(item, Item::Message { role: KarRole::User, .. }) && !is_subagent)
                 || matches!(item, Item::Message { text, .. } if text.trim().is_empty())
             {
                 ix += 1;
@@ -4361,12 +4332,21 @@ impl KarWorkbench {
             } else {
                 &mut reply_rows
             };
-            let is_subagent = turn_steps.is_child(turn, ix);
+            if is_subagent && ix >= branch_end {
+                branch_end = ix + turn.items[ix..].iter().take_while(|e| e.source == *source).count();
+                let path = turn_steps.branch_path(turn, source);
+                let (header, open) = activity::branch_header(turn_id, ix, &path, loc, s, window, cx);
+                branch_open = open;
+                rows.push(header);
+            }
+            if is_subagent && !branch_open {
+                ix += 1;
+                continue;
+            }
             match item {
                 Item::Message { role: role @ (KarRole::User | KarRole::Reasoning), text, complete, .. } => {
-                    let (icon, label) = match (role, is_subagent) {
-                        (KarRole::User, _) => (ProIcon::Users, loc.pick("子任务指令", "Delegated task")),
-                        (_, true) => (ProIcon::Sparkles, loc.pick("子智能体思考过程", "Subagent reasoning")),
+                    let (icon, label) = match role {
+                        KarRole::User => (ProIcon::Users, loc.pick("子任务指令", "Delegated task")),
                         _ => (ProIcon::Sparkles, loc.pick("思考过程", "Reasoning")),
                     };
                     let (label, body) = if *role == KarRole::Reasoning {
@@ -4405,15 +4385,6 @@ impl KarWorkbench {
                         .flex()
                         .flex_col()
                         .gap(px(6.))
-                        .when(is_subagent, |d| {
-                            d.child(
-                                div()
-                                    .text_size(s.font_size(FS_TAG))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(s.muted)
-                                    .child(loc.pick("子智能体回复", "Subagent")),
-                            )
-                        })
                         .child(self.render_assistant_markdown_blocks(
                             turn_id,
                             ix,
@@ -4459,23 +4430,24 @@ impl KarWorkbench {
                 Item::Tool { .. } => {
                     let source = &turn.items[ix].source;
                     let mut calls: Vec<(usize, &Tool)> = Vec::new();
+                    let mut next_ix = ix;
                     while let Some(Item::Tool { activity, .. }) = turn
                         .items
-                        .get(ix)
+                        .get(next_ix)
                         .filter(|item| &item.source == source)
                         .map(|item| &item.item)
                     {
-                        calls.push((ix, activity));
-                        ix += 1;
+                        calls.push((next_ix, activity));
+                        next_ix += 1;
                     }
                     if is_step {
                         work_items_count += calls.len().saturating_sub(1);
                     }
                     rows.push(
-                        self.render_tool_run(turn_id, &calls, running, is_subagent, s, window, cx)
+                        self.render_tool_run(turn_id, &calls, running, s, window, cx)
                             .into_any_element(),
                     );
-                    continue;
+                    ix = next_ix - 1;
                 }
                 Item::Retry { status } => {
                     let label = loc.pick("自动重试", "Automatic retry");
@@ -4582,6 +4554,11 @@ impl KarWorkbench {
                             .into_any_element(),
                     );
                 }
+            }
+            if is_subagent && let Some(inner) = rows.pop() {
+                rows.push(div().ml(px(6.)).pl(px(12.)).min_w_0()
+                    .border_l_1().border_color(s.line).flex().flex_col()
+                    .child(inner).into_any_element());
             }
             ix += 1;
         }
@@ -5641,6 +5618,15 @@ impl KarWorkbench {
         let loc = self.ui_locale;
         let agent = runtime_display_name(&self.effective_runtime());
         let mono = mono_font(cx);
+        let permission = request.kind == RequestKind::Permission;
+        let heading = if permission {
+            match loc {
+                UiLocale::Zh => format!("{agent} 请求授权"),
+                UiLocale::En => format!("{agent} requests approval"),
+            }
+        } else {
+            format!("{} · {agent}", loc.pick("需要你的答复", "Input needed"))
+        };
 
         let head = div()
             .flex_none()
@@ -5650,12 +5636,9 @@ impl KarWorkbench {
             .text_size(s.font_size(FS_TAG))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(s.muted)
-            .child(match request.kind {
-                RequestKind::Question => {
-                    format!("{} · {agent}", loc.pick("需要你的答复", "INPUT NEEDED"))
-                }
-                _ => loc.pick("需要执行授权", "APPROVAL NEEDED").to_owned(),
-            })
+            .child(div().flex().items_center().gap(px(6.))
+                .when(permission, |row| row.child(pro_icon(ProIcon::Shield, ICON_SM, s.pro.amber_ink)))
+                .child(heading))
             .when(total > 1, |d| {
                 d.child(format!(
                     "+{} {}",
@@ -5666,7 +5649,8 @@ impl KarWorkbench {
 
         let card = div()
             .w_full()
-            .p(px(if compact { 8. } else { 16. }))
+            .min_h_0()
+            .p(px(if compact { 8. } else if permission { 12. } else { 16. }))
             .rounded(px(R_HERO))
             .bg(s.card)
             .border_1()
@@ -5769,10 +5753,21 @@ impl KarWorkbench {
             .pt(px(2.))
             .w_full()
             .flex()
+            .flex_none()
             .flex_wrap()
             .items_center()
             .justify_end()
             .gap(px(6.));
+        for (i, choice) in accepted.iter().copied().enumerate() {
+            if ![refuse, allow, allow_more].contains(&Some(choice)) {
+                actions = actions.child(
+                    text_button_sm(("decision-alternative", i), permission_label(choice, loc), s)
+                        .h(px(CTRL_H))
+                        .px(px(button_padding))
+                        .on_press(cx, decide(choice)),
+                );
+            }
+        }
         if let Some(decision) = refuse {
             actions = actions.child(
                 Tactile::soft("decision-refuse", s)
@@ -5838,18 +5833,10 @@ impl KarWorkbench {
             );
         }
 
-        for (i, choice) in accepted.iter().copied().enumerate() {
-            if ![refuse, allow, allow_more].contains(&Some(choice)) {
-                policy_rows = policy_rows.child(
-                    Tactile::soft(("decision-alternative", i), s)
-                        .h(px(CTRL_H))
-                        .px(px(10.))
-                        .child(permission_label(choice, loc))
-                        .on_press(cx, decide(choice)),
-                );
-            }
-        }
-        card.child(detail.child(policy_rows)).child(actions)
+        card.child(
+            div().id("approval-details").min_h(px(24.)).overflow_y_scroll()
+                .child(detail.when(!controls.policies.is_empty(), |d| d.child(policy_rows)))
+        ).child(actions)
     }
 
     pub(crate) fn handle_dropped_paths(
@@ -6304,11 +6291,70 @@ impl HomeProjectMenu {
     }
 }
 
+const MODEL_ROW_H: f32 = 32.;
+const MODEL_LIST_PAD: f32 = 5.;
+
+fn model_cursor_band(
+    cursor: usize,
+    scroll: &ScrollHandle,
+    rose: Hsla,
+    window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement {
+    let target = cursor as f32 * MODEL_ROW_H;
+    let y = if kui::primitives::family::disabled_motion(cx) {
+        target
+    } else {
+        pro_spring_f32("model-cursor-y", target, 0.24, window, cx)
+    };
+    let scroll = scroll.clone();
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let band = Bounds::new(
+                bounds.origin + point(px(5.), px(MODEL_LIST_PAD + y) + scroll.offset().y),
+                size((bounds.size.width - px(10.)).max(px(0.)), px(MODEL_ROW_H)),
+            );
+            let wash = linear_gradient(
+                90.,
+                linear_color_stop(rose.opacity(0.22), 0.),
+                linear_color_stop(rose.opacity(0.), 1.),
+            );
+            window.paint_quad(fill(band, wash).corner_radii(px(6.)));
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
+fn model_scroll_fade(scroll: ScrollHandle, surface: Hsla) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let remaining = f32::from(scroll.max_offset().y + scroll.offset().y);
+            if remaining > 0. {
+                window.paint_quad(fill(
+                    bounds,
+                    linear_gradient(
+                        180.,
+                        linear_color_stop(surface.opacity(0.), 0.),
+                        linear_color_stop(surface.opacity((remaining / 12.).min(1.)), 1.),
+                    ),
+                ));
+            }
+        },
+    )
+    .absolute()
+    .bottom_0()
+    .left_0()
+    .right_0()
+    .h(px(12.))
+}
+
 /// Search state outlives repainting so keyboard focus and IME composition are retained.
 struct ModelPickerSearch {
     editor: Entity<Editor>,
     provider: String,
-    model: Option<String>,
     query: String,
     cursor: usize,
     open: bool,
@@ -6336,9 +6382,12 @@ impl ModelPickerSearch {
                 };
                 match event {
                     EditEvent::Changed => {
-                        view.query = editor.read(cx).value().trim().to_lowercase();
-                        view.cursor = 0;
-                        view.scroll.scroll_to_item(0);
+                        let query = editor.read(cx).value().trim().to_lowercase();
+                        if query != view.query {
+                            view.query = query;
+                            view.cursor = 0;
+                            view.scroll.scroll_to_item(0);
+                        }
                     }
                     EditEvent::Navigate(_) | EditEvent::Submitted => {
                         let host = bench.read(cx);
@@ -6381,7 +6430,6 @@ impl ModelPickerSearch {
         Self {
             editor,
             provider: String::new(),
-            model: None,
             query: String::new(),
             cursor: 0,
             open: false,

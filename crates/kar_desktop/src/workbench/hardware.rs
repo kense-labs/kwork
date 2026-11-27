@@ -27,6 +27,12 @@ impl KarWorkbench {
             self.prefs.voice_provider == VoiceProviderKind::OpenRouter,
         ));
     }
+    pub(crate) fn discard_voice_dictation(&mut self, cx: &mut Context<Self>) {
+        self.held_voice_key = None;
+        self.voice_owner = None;
+        self.active_voice_rec = None;
+        cx.notify();
+    }
     pub fn toggle_voice_dictation(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(recording) = self.active_voice_rec.take() {
             self.held_voice_key = None;
@@ -64,20 +70,15 @@ impl KarWorkbench {
                         &self.config.workspace_dir,
                     ));
                     self.active_voice_rec = Some(rec);
-                    self.notify_toast(
-                        if self.held_voice_key.is_some() {
+                    if self.held_voice_key.is_some() {
+                        self.notify_toast(
                             self.ui_locale.pick(
                                 "录音中，松开快捷键以转写",
                                 "Recording. Release the shortcut to transcribe.",
-                            )
-                        } else {
-                            self.ui_locale.pick(
-                                "录音中，再次点击以转写",
-                                "Recording. Click again to transcribe.",
-                            )
-                        },
-                        cx,
-                    );
+                            ),
+                            cx,
+                        );
+                    }
                 }
                 Err(e) => self.notify_warning(e.to_string(), cx),
             }

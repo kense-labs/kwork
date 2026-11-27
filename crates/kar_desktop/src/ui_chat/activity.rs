@@ -1,6 +1,7 @@
 //! Compact views of the provider's public activity records.
 use super::*;
 use crate::types::office_mcp_summary;
+use crate::ui_motion::selection::{Group, SelectionStrip};
 use kar::{OutputPart, ToolStatus, observe::ToolActionKind};
 use kui::components::{json_viewer::JsonViewer, text_shimmer::TextShimmer};
 use serde_json::Value;
@@ -238,7 +239,11 @@ fn summary(tool: &Tool, runtime: &str, loc: UiLocale) -> Summary {
         .as_ref()
         .and_then(|r| r.content.as_ref())
         .is_some_and(|parts| parts.iter().any(|p| matches!(p, OutputPart::Image { .. })));
-    let (kind, subject) = if returned_image && matches!(bare, "read" | "Read" | "read_file") {
+    let agent_wait = matches!(tool.native_type.as_deref(), Some("collabAgentToolCall" | "collabToolCall"))
+        && matches!(bare, "wait" | "wait_agent" | "waitAgent");
+    let (kind, subject) = if agent_wait {
+        (Kind::Wait, Some(loc.pick("子任务", "Subagent").to_owned()))
+    } else if returned_image && matches!(bare, "read" | "Read" | "read_file") {
         (
             Kind::Image,
             string_arg(input, &["file_path", "path"]).map(short),
@@ -444,13 +449,80 @@ pub(super) fn activity_line(
         .child(body)
 }
 
+pub(super) fn branch_header(
+    turn: Uuid,
+    ix: usize,
+    path: &[&str],
+    loc: UiLocale,
+    s: &StudioPalette,
+    window: &mut Window,
+    cx: &mut Context<KarWorkbench>,
+) -> (AnyElement, bool) {
+    let key = SharedString::from(format!("branch-{turn}-{ix}"));
+    let state = window.use_keyed_state(key.clone(), cx, |_, _| true);
+    let open = *state.read(cx);
+    let path_label = path
+        .iter()
+        .map(|id| {
+            if Uuid::parse_str(id).is_ok() {
+                format!("…{}", &id[id.len() - 8..])
+            } else {
+                short(id)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" › ");
+    let label = loc.pick("子任务", "Subagent");
+    let full = format!("{label} · {}", path.join(" › "));
+    let header = Tactile::ghost(key, s)
+        .aria(full.clone())
+        .tip(full)
+        .expanded(open)
+        .h(px(CTRL_SM_H))
+        .max_w_full()
+        .ml(px(-5.))
+        .px(px(5.))
+        .gap(px(6.))
+        .ink(s.muted, s.ink)
+        .child(pro_icon(ProIcon::GitBranch, ICON_SM, s.muted))
+        .child(
+            div()
+                .flex_none()
+                .text_size(s.font_size(FS_META))
+                .font_weight(FontWeight::MEDIUM)
+                .child(label),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_size(s.font_size(FS_META))
+                .child(path_label),
+        )
+        .child(pro_icon(
+            if open {
+                ProIcon::ChevronDown
+            } else {
+                ProIcon::ChevronRight
+            },
+            ICON_XS,
+            s.muted,
+        ))
+        .on_press(cx, move |_, _, cx| {
+            state.update(cx, |open, cx| {
+                *open = !*open;
+                cx.notify();
+            })
+        });
+    (header.into_any_element(), open)
+}
+
 impl KarWorkbench {
     pub(super) fn render_tool_run(
         &mut self,
         turn_id: Uuid,
         calls: &[(usize, &Tool)],
         running: bool,
-        subagent: bool,
         s: &StudioPalette,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -498,9 +570,6 @@ impl KarWorkbench {
                     if multiple && item.subject.is_none() {
                         title.push_str(&format!(" · {}", number + 1));
                     }
-                    if subagent {
-                        title = format!("{} · {title}", loc.pick("子智能体", "Subagent"));
-                    }
                     let id = SharedString::from(format!("activity-{turn_id}-{ix}"));
                     let row =
                         activity_line(id, item.kind.icon(), title, *state, open, s, window, cx)
@@ -508,7 +577,9 @@ impl KarWorkbench {
                                 wb.tool_detail = (!open).then_some(address);
                                 cx.notify();
                             });
-                    rows = rows.child(row);
+                    rows = rows.child(if running {
+                        arrive(div().child(row), SharedString::from(format!("tool-arrival-{turn_id}-{ix}")), 0, 6., cx)
+                    } else { row.into_any_element() });
                     if open {
                         rows = rows.child(self.render_activity_detail(
                             address, tool, item.kind, *state, s, window, cx,
@@ -524,7 +595,7 @@ impl KarWorkbench {
                         kinds.push(item.kind);
                     }
                 }
-                let mut title = if kinds.len() == 1 {
+                let title = if kinds.len() == 1 {
                     format!(
                         "{} · {count} {}",
                         first.kind.phrase(false, loc),
@@ -537,9 +608,6 @@ impl KarWorkbench {
                         .collect::<Vec<_>>()
                         .join(loc.pick("、", ", "))
                 };
-                if subagent {
-                    title = format!("{} · {title}", loc.pick("子智能体", "Subagent"));
-                }
                 list = list
                     .child(
                         activity_line(
@@ -734,16 +802,49 @@ impl KarWorkbench {
             .and_then(|r| r.exit_code)
             .map(|code| format!("{status} · {} {code}", loc.pick("退出码", "Exit code")))
             .unwrap_or_else(|| status.to_owned());
+        let identity = tool.tool_name.as_deref().or(tool.name.as_deref());
+        let identity = match (tool.server.as_deref(), identity) {
+            (Some(server), Some(name)) => Some(format!("{server} / {name}")),
+            (_, name) => name.map(str::to_owned),
+        };
         box_el = box_el.child(
             div()
+                .w_full().min_w_0().flex().items_center().gap(px(8.))
                 .text_size(s.font_size(FS_META))
                 .text_color(if state == Phase::Failed {
                     s.pro.red_ink
                 } else {
                     s.muted
                 })
-                .child(meta),
+                .child(div().flex_none().child(meta))
+                .when_some(identity, |row, name| row.child(
+                    div().min_w_0().truncate().text_color(s.muted).child(name)
+                )),
         );
+        let is_output = |part: &str| matches!(part, "output" | "progress");
+        let has_input = parts.iter().any(|(part, _, _)| !is_output(part));
+        let has_output = parts.iter().any(|(part, _, _)| is_output(part));
+        let mut tabs = None;
+        if has_input && has_output {
+            let id = SharedString::from(format!("tool-payload-{}-{}", key.0, key.1));
+            let side = window.use_keyed_state(id.clone(), cx, |_, _| true);
+            let show_output = *side.read(cx);
+            let strip = SelectionStrip::options(
+                id, loc.pick("调用详情", "Call details"), Group::Tabs,
+                [(false, loc.pick("输入", "Input")), (true, loc.pick("输出", "Output"))],
+                show_output, s, cx, move |_, selected, _, cx| {
+                    side.update(cx, |side, cx| { *side = selected; cx.notify(); });
+                },
+            );
+            parts.retain(|(part, _, _)| is_output(part) == show_output);
+            // A single payload needs only one heading. Share its row with Copy.
+            if parts.len() == 1 {
+                tabs = Some(strip);
+            } else {
+                box_el = box_el.child(div().flex().child(strip));
+            }
+        }
+        let code_size = crate::ui_primitives::effective_code_font_size(cx);
         for (part, label, text) in parts {
             let id = format!("activity-{}-{}-{part}", key.0, key.1);
             let is_final_json =
@@ -753,6 +854,9 @@ impl KarWorkbench {
                 && let Ok(value @ (Value::Object(_) | Value::Array(_))) =
                     serde_json::from_str(&text)
             {
+                if let Some(strip) = tabs.take() {
+                    box_el = box_el.child(div().flex().child(strip));
+                }
                 let viewer = self.tool_json_viewers.entry(id).or_insert_with(|| {
                     cx.new(|cx| JsonViewer::new(label, value, window, cx).with_max_height(180.))
                 });
@@ -774,14 +878,19 @@ impl KarWorkbench {
                 .overflow_y_scroll()
                 .tab_stop(true)
                 .font_family(mono_font(cx))
-                .text_size(s.font_size(FS_META))
-                .line_height(s.line_height(18.))
+                .text_size(px(code_size))
+                .line_height(px(code_size * 1.5))
                 .text_color(if part == "output" && state == Phase::Failed {
                     s.pro.red_ink
                 } else {
                     s.ink
                 })
                 .child(text);
+            let heading = match tabs.take() {
+                Some(strip) => strip.into_any_element(),
+                None => div().text_size(s.font_size(FS_META)).text_color(s.muted)
+                    .child(label).into_any_element(),
+            };
             box_el = box_el
                 .child(
                     div()
@@ -789,12 +898,7 @@ impl KarWorkbench {
                         .flex()
                         .items_center()
                         .justify_between()
-                        .child(
-                            div()
-                                .text_size(s.font_size(FS_META))
-                                .text_color(s.muted)
-                                .child(label),
-                        )
+                        .child(heading)
                         .child(copy),
                 )
                 .child(view);
@@ -906,6 +1010,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(summary(&agent, "codex", UiLocale::En).kind, Kind::Agent);
+        let wait = Tool { tool_name: Some("wait".into()), ..agent };
+        for runtime in ["codex", ""] {
+            let action = summary(&wait, runtime, UiLocale::En);
+            assert_eq!(action.kind, Kind::Wait);
+            assert_eq!(action.label(Phase::Succeeded, UiLocale::En), "Finished waiting · Subagent");
+        }
     }
 
     #[test]
