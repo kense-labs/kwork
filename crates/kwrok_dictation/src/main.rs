@@ -6,7 +6,7 @@ use clap::{Parser, ValueEnum};
 use kwrok_dictation::Recognizer;
 use std::{
     fs,
-    io::{self, Write},
+    io::{self, BufRead, Read, Write},
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -32,10 +32,13 @@ struct Args {
     #[arg(long, required_unless_present = "list_devices")]
     model: Option<PathBuf>,
     /// A 16 kHz mono PCM WAV file.
-    #[arg(required_unless_present_any = ["batch", "list_devices"], conflicts_with = "batch")]
+    #[arg(required_unless_present_any = ["batch", "list_devices", "preview"], conflicts_with_all = ["batch", "preview"])]
     input: Option<PathBuf>,
-    #[arg(long, conflicts_with = "batch")]
+    #[arg(long, conflicts_with_all = ["batch", "preview"])]
     output: Option<PathBuf>,
+    /// Recognize successive length-prefixed mono f32 windows from standard input.
+    #[arg(long, conflicts_with = "batch")]
+    preview: bool,
     #[arg(long, requires = "batch_jsonl")]
     batch: Option<PathBuf>,
     #[arg(long, requires = "batch")]
@@ -94,19 +97,38 @@ fn main() -> Result<()> {
     let model = args.model.as_deref().context("missing model path")?;
     let mut recognizer = Recognizer::load(model)
         .with_context(|| format!("load Whisper model {}", model.display()))?;
-    let mut decode = |path: &Path| -> Result<String> {
-        let pcm = read_audio(path)?;
-        if pcm.iter().all(|&s| s == 0.0) {
-            return Ok(String::new());
-        }
+    let mut decode = |pcm: &[f32]| -> Result<String> {
         recognizer.transcribe(
-            &pcm,
+            pcm,
             args.language.as_deref().filter(|s| *s != "auto"),
             matches!(args.task, Task::Translate),
             &vocabulary,
         )
     };
-    if let Some(batch) = args.batch {
+    if args.preview {
+        // One reply per window, so the recorder never queues stale work. EOF closes the session.
+        let mut input = io::stdin().lock();
+        let mut out = io::stdout().lock();
+        while !input.fill_buf()?.is_empty() {
+            let mut header = [0; 4];
+            input.read_exact(&mut header)?;
+            let frames = u32::from_le_bytes(header);
+            ensure!(
+                (1..=30 * SAMPLE_RATE).contains(&frames),
+                "invalid preview window"
+            );
+            let mut bytes = vec![0; frames as usize * 4];
+            input.read_exact(&mut bytes)?;
+            let pcm: Vec<_> = bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|s| f32::from_le_bytes(*s))
+                .collect();
+            writeln!(out, "{}", serde_json::to_string(&decode(&pcm)?)?)?;
+            out.flush()?;
+        }
+    } else if let Some(batch) = args.batch {
         let paths = fs::read_to_string(batch)?;
         let mut out = io::stdout().lock();
         // Kar waits for this line to verify the chosen model loads, then closes the process.
@@ -117,11 +139,13 @@ fn main() -> Result<()> {
         )?;
         out.flush()?;
         for input in paths.lines().filter(|s| !s.is_empty()) {
-            let text = decode(Path::new(input))?;
+            let text = decode(&read_audio(Path::new(input))?)?;
             writeln!(out, "{}", serde_json::json!({"file": input, "text": text}))?;
         }
     } else {
-        let text = decode(args.input.as_deref().context("missing audio")?)?;
+        let text = decode(&read_audio(
+            args.input.as_deref().context("missing audio")?,
+        )?)?;
         if let Some(output) = args.output {
             fs::write(output, text)?;
         } else {

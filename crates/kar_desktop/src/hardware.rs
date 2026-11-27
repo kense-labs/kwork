@@ -1,4 +1,5 @@
 //! Native microphone capture and the desktop-facing contracts for Kar voice and device routes.
+mod live_dictation;
 use crate::{engine::Engine, prefs::VoiceProviderKind};
 use anyhow::{Context, Result, anyhow, bail};
 use axum::http::Method;
@@ -216,6 +217,7 @@ async fn local_voice_status(engine: &Engine) -> Result<Value> {
 pub struct Recording {
     stream: cpal::Stream,
     audio: Arc<Mutex<Capture>>,
+    live: Option<live_dictation::LiveDictation>,
 }
 #[derive(Default)]
 struct Capture {
@@ -273,6 +275,18 @@ impl Capture {
     }
 }
 impl Recording {
+    pub(crate) fn live_transcript(
+        &mut self,
+        state: &VoiceState,
+        language: &str,
+        words: &[String],
+    ) -> Option<async_channel::Receiver<String>> {
+        let (live, updates) =
+            live_dictation::LiveDictation::start(self.audio.clone(), state, language, words)?;
+        self.live = Some(live);
+        Some(updates)
+    }
+
     pub(crate) fn waveform(&self) -> Option<[f32; VOICE_METER_BARS]> {
         self.audio.try_lock().ok().map(|capture| capture.waveform())
     }
@@ -329,9 +343,14 @@ impl Recording {
             other => bail!("不支持的麦克风格式 {other}"),
         };
         stream.play().context("无法启动麦克风")?;
-        Ok(Self { stream, audio })
+        Ok(Self {
+            stream,
+            audio,
+            live: None,
+        })
     }
     pub fn stop(self) -> Result<Vec<f32>> {
+        drop(self.live);
         drop(self.stream);
         let mut capture = self.audio.lock().map_err(|_| anyhow!("麦克风采集失败"))?;
         if let Some(err) = capture.error.take() {

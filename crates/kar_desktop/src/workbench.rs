@@ -8,6 +8,7 @@ mod aster_plan;
 mod commands;
 mod chat_goal;
 mod hardware;
+pub(crate) use hardware::speech_suffix;
 mod slash_actions;
 mod planning;
 mod resize;
@@ -710,7 +711,8 @@ pub struct KarWorkbench {
     pub pty_focus: FocusHandle,
     pub detected_dev_ports: Vec<u16>,
     pub active_voice_rec: Option<crate::hardware::Recording>,
-    voice_owner: Option<DraftLocation>,
+    voice_capture_id: Option<Uuid>,
+    voice_drafts: BTreeMap<Uuid, hardware::DictationDraft>,
     hardware_owners: BTreeMap<Uuid,DraftLocation>,
     migrating_voice_keys: BTreeMap<Uuid, String>,
     held_voice_key: Option<String>,
@@ -1686,7 +1688,8 @@ impl KarWorkbench {
             pty_focus: cx.focus_handle(),
             detected_dev_ports: Vec::new(),
             active_voice_rec: None,
-            voice_owner: None,
+            voice_capture_id: None,
+            voice_drafts: BTreeMap::new(),
             hardware_owners: Default::default(),
             migrating_voice_keys: Default::default(),
             held_voice_key: None,
@@ -3951,6 +3954,9 @@ impl KarWorkbench {
 
     fn switch_composer_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let next = DraftLocation::for_mode(&self.access_mode, &self.config.workspace_dir);
+        if next != self.drafts.location && self.active_voice_rec.is_some() {
+            self.finish_dictation(window, cx);
+        }
         let Some(next) = self.drafts.switch(next, || QueuedPrompt {
             text: self.composer_editor.read(cx).value().to_owned(),
             target: self.pinned_target.take(),
@@ -4086,7 +4092,7 @@ impl KarWorkbench {
     }
 
     pub fn submit_composer_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.aster_switching() { return; }
+        if self.aster_switching() || self.composer_dictation().is_some() { return; }
         self.open_menu = None;
         let typed = self.composer_editor.read(cx).value().trim().to_owned();
         if (typed.is_empty() && self.pending_attachments.is_empty())
@@ -7140,6 +7146,12 @@ impl Render for KarWorkbench {
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 if ev.keystroke.key == "escape" && !this.any_dialog_open(cx) {
+                    if this.composer_dictation().is_some() && !this.composer_editor.read(cx).is_composing() {
+                        this.discard_voice_dictation(cx);
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        return;
+                    }
                     if this.open_menu.is_some() {
                         this.close_menu(cx);
                         cx.stop_propagation();

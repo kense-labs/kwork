@@ -713,7 +713,8 @@ impl KarWorkbench {
     ) {
         let editor = self.composer_editor.read(cx);
         let mods = ev.keystroke.modifiers;
-        if !editor.focus_handle(cx).is_focused(win)
+        if self.composer_dictation().is_some()
+            || !editor.focus_handle(cx).is_focused(win)
             || editor.is_composing()
             || mods.shift
             || mods.platform
@@ -765,7 +766,7 @@ impl KarWorkbench {
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
         let editor = self.composer_editor.read(cx);
-        if !editor.focus_handle(cx).is_focused(win) || self.open_menu.is_some() {
+        if self.composer_dictation().is_some() || !editor.focus_handle(cx).is_focused(win) || self.open_menu.is_some() {
             return None;
         }
         let query = self.slash.query(editor.value())?;

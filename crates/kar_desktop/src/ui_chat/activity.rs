@@ -364,8 +364,10 @@ pub(super) fn shimmer(
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<TextShimmer> {
+    let size = f32::from(StudioPalette::get(cx).font_size(size));
+    let key = SharedString::from(format!("{id}-{}", size.to_bits()));
     let view = window
-        .use_keyed_state(id, cx, |_, cx| {
+        .use_keyed_state(key, cx, |_, cx| {
             cx.new(|cx| {
                 TextShimmer::new(text.clone(), cx)
                     .with_font_size(size)
@@ -377,6 +379,19 @@ pub(super) fn shimmer(
         .clone();
     view.update(cx, |view, cx| view.set_text(text, cx));
     view
+}
+
+pub(super) fn chevron(
+    id: SharedString,
+    open: bool,
+    color: Hsla,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let position = pro_spring_f32(id, f32::from(open), 0.18, window, cx).clamp(0., 1.);
+    let angle = (position - 1.) * std::f32::consts::FRAC_PI_2;
+    kui::primitives::glyph::transformed(Glyph::Down, ICON_SM, color, angle, 1., (0., 0.), 1.)
+        .into_any_element()
 }
 
 /// Semantic icon, one line of status, and a disclosure affordance flush with the reply.
@@ -426,17 +441,9 @@ pub(super) fn activity_line(
                     !open && !window.last_input_was_keyboard() && !window.last_input_was_touch(),
                     |d| d.opacity(0.).group_hover(id.clone(), |h| h.opacity(1.)),
                 )
-                .child(pro_icon(
-                    if open {
-                        ProIcon::ChevronDown
-                    } else {
-                        ProIcon::ChevronRight
-                    },
-                    ICON_XS,
-                    s.faint,
-                )),
+                .child(chevron(format!("{id}-chevron").into(), open, s.faint, window, cx)),
         );
-    Tactile::ghost(id, s)
+    Tactile::inline(id, s)
         .aria(label)
         .expanded(open)
         .ml(px(-6.))
@@ -457,24 +464,15 @@ pub(super) fn branch_header(
     s: &StudioPalette,
     window: &mut Window,
     cx: &mut Context<KarWorkbench>,
-) -> (AnyElement, bool) {
+) -> (AnyElement, Fold) {
     let key = SharedString::from(format!("branch-{turn}-{ix}"));
     let state = window.use_keyed_state(key.clone(), cx, |_, _| true);
     let open = *state.read(cx);
-    let path_label = path
-        .iter()
-        .map(|id| {
-            if Uuid::parse_str(id).is_ok() {
-                format!("…{}", &id[id.len() - 8..])
-            } else {
-                short(id)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" › ");
+    let fold = Fold::get(SharedString::from(format!("{key}-body")), open, 50., 0.18, window, cx);
+    let name = path.last().filter(|id| Uuid::parse_str(id).is_err()).map(|id| short(id));
     let label = loc.pick("子任务", "Subagent");
     let full = format!("{label} · {}", path.join(" › "));
-    let header = Tactile::ghost(key, s)
+    let header = Tactile::inline(key.clone(), s)
         .aria(full.clone())
         .tip(full)
         .expanded(open)
@@ -485,36 +483,16 @@ pub(super) fn branch_header(
         .gap(px(6.))
         .ink(s.muted, s.ink)
         .child(pro_icon(ProIcon::GitBranch, ICON_SM, s.muted))
-        .child(
-            div()
-                .flex_none()
-                .text_size(s.font_size(FS_META))
-                .font_weight(FontWeight::MEDIUM)
-                .child(label),
-        )
-        .child(
-            div()
-                .min_w_0()
-                .truncate()
-                .text_size(s.font_size(FS_META))
-                .child(path_label),
-        )
-        .child(pro_icon(
-            if open {
-                ProIcon::ChevronDown
-            } else {
-                ProIcon::ChevronRight
-            },
-            ICON_XS,
-            s.muted,
-        ))
+        .child(div().min_w_0().truncate().text_size(s.font_size(FS_UI))
+            .child(name.map_or_else(|| label.to_owned(), |name| format!("{label} · {name}"))))
+        .child(chevron(format!("{key}-chevron").into(), open, s.faint, window, cx))
         .on_press(cx, move |_, _, cx| {
             state.update(cx, |open, cx| {
                 *open = !*open;
                 cx.notify();
             })
         });
-    (header.into_any_element(), open)
+    (header.into_any_element(), fold)
 }
 
 impl KarWorkbench {
@@ -560,9 +538,13 @@ impl KarWorkbench {
             let group = &items[start..end];
             let key = (turn_id, *ix);
             let multiple = group.len() > 1;
-            let group_open = self.part_is_open(key, false);
-            let mut rows = div().w_full().flex().flex_col().gap(px(1.));
-            if !multiple || group_open {
+            let group_open = self.part_is_open(key, !self.prefs.default_collapse_tools);
+            let fold = multiple.then(|| Fold::get(
+                SharedString::from(format!("activity-list-{turn_id}-{ix}")),
+                group_open, group.len() as f32 * CTRL_SM_H, 0.18, window, cx,
+            ));
+            let mut rows = div().w_full().min_w_0().flex().flex_col().gap(px(3.));
+            if fold.as_ref().is_none_or(Fold::mounted) {
                 for (number, (ix, tool, item, state)) in group.iter().enumerate() {
                     let address = (turn_id, *ix);
                     let open = self.tool_detail == Some(address);
@@ -580,14 +562,18 @@ impl KarWorkbench {
                     rows = rows.child(if running {
                         arrive(div().child(row), SharedString::from(format!("tool-arrival-{turn_id}-{ix}")), 0, 6., cx)
                     } else { row.into_any_element() });
-                    if open {
-                        rows = rows.child(self.render_activity_detail(
+                    let detail = Fold::get(
+                        SharedString::from(format!("activity-detail-{turn_id}-{ix}")),
+                        open, 64., 0.18, window, cx,
+                    );
+                    if detail.mounted() {
+                        rows = rows.child(detail.wrap(0., self.render_activity_detail(
                             address, tool, item.kind, *state, s, window, cx,
-                        ));
+                        )));
                     }
                 }
             }
-            if multiple {
+            if let Some(fold) = fold {
                 let count = group.len();
                 let mut kinds = Vec::new();
                 for (_, _, item, _) in group {
@@ -625,13 +611,7 @@ impl KarWorkbench {
                             cx.notify();
                         }),
                     )
-                    .child(disclosure_body(
-                        SharedString::from(format!("activity-list-{turn_id}-{ix}")),
-                        group_open,
-                        count as f32 * 30.,
-                        rows.into_any_element(),
-                        s,
-                    ));
+                    .when(fold.mounted(), |list| list.child(fold.wrap(0., rows.pl(px(20.)))));
             } else {
                 list = list.child(rows);
             }
@@ -677,8 +657,6 @@ impl KarWorkbench {
                     .ml(px(6.))
                     .pl(px(14.))
                     .py(px(4.))
-                    .border_l_1()
-                    .border_color(s.line)
                     .flex()
                     .flex_col()
                     .items_start()
@@ -789,11 +767,9 @@ impl KarWorkbench {
         let mut box_el = div()
             .w_full()
             .min_w_0()
-            .my(px(3.))
-            .px(px(12.))
-            .py(px(8.))
-            .rounded(px(R_CTRL))
-            .bg(s.soft)
+            .pl(px(22.))
+            .pt(px(2.))
+            .pb(px(6.))
             .flex()
             .flex_col()
             .gap(px(6.));
@@ -830,7 +806,7 @@ impl KarWorkbench {
             let side = window.use_keyed_state(id.clone(), cx, |_, _| true);
             let show_output = *side.read(cx);
             let strip = SelectionStrip::options(
-                id, loc.pick("调用详情", "Call details"), Group::Tabs,
+                id, loc.pick("调用详情", "Call details"), Group::Inline,
                 [(false, loc.pick("输入", "Input")), (true, loc.pick("输出", "Output"))],
                 show_output, s, cx, move |_, selected, _, cx| {
                     side.update(cx, |side, cx| { *side = selected; cx.notify(); });

@@ -590,7 +590,7 @@ impl KarWorkbench {
 
         let collapse_tools_sw = Self::settings_switch(
             "appearance-collapse-tools",
-            loc.pick("默认折叠工具调用过程", "Collapse tool calls by default"),
+            loc.pick("折叠连续工具调用", "Group consecutive tool calls"),
             self.prefs.default_collapse_tools,
             |wb, cx| {
                 wb.prefs.default_collapse_tools = !wb.prefs.default_collapse_tools;
@@ -655,8 +655,8 @@ impl KarWorkbench {
             ))
             .child(settings_divider(s))
             .child(settings_row_item(
-                loc.pick("默认折叠工具执行详情", "Collapse tool calls by default"),
-                loc.pick("保持长对话清爽，点击任意步骤仍可展开完整命令输出。", "Keep long threads clean; click any step to inspect."),
+                loc.pick("折叠连续工具调用", "Group consecutive tool calls"),
+                loc.pick("在执行过程中将连续的同类调用收起为一行。", "Show consecutive similar calls as one expandable step."),
                 collapse_tools_sw,
                 stacked,
                 s,
@@ -1074,6 +1074,8 @@ impl KarWorkbench {
         );
 
         let is_recording = self.active_voice_rec.is_some();
+        let dictation = self.composer_dictation();
+        let finishing = dictation.is_some() && !is_recording;
         let status = &self.voice_env.status;
         let env_summary = if let Some(issue) = crate::hardware::LocalVoiceIssue::from_status(status) {
             issue.message(loc).to_owned()
@@ -1093,7 +1095,7 @@ impl KarWorkbench {
             if provider == VoiceProviderKind::Local {
                 env_summary.as_str()
             } else {
-                loc.pick("语音会发送至所选服务转写。", "Audio is sent to the selected provider.")
+                loc.pick("结束听写时，录音会发给所选服务转写。", "When you finish, the selected provider transcribes the recording.")
             },
             provider_strip.into_any_element(),
             stacked,
@@ -1241,17 +1243,21 @@ impl KarWorkbench {
             .child(settings_divider(s))
             .child(settings_row_item(
                 loc.pick("麦克风检测与试音", "Microphone & live test"),
-                self.microphone_name.clone()
-                    .unwrap_or_else(|| loc.pick("无输入设备", "No input device").into()),
+                dictation.filter(|text| !text.is_empty())
+                    .or(self.microphone_name.as_deref())
+                    .unwrap_or(loc.pick("无输入设备", "No input device")).to_owned(),
                 primary_button(
                     "voice-test-record",
                     if is_recording {
-                        loc.pick("停止录音并测试转写", "Stop & transcribe")
+                        loc.pick("完成听写", "Finish dictation")
+                    } else if finishing {
+                        loc.pick("正在整理听写…", "Finishing dictation…")
                     } else {
                         loc.pick("开始麦克风试音", "Test microphone")
                     },
                     s,
                 )
+                .disabled(finishing)
                 .on_press(cx, |wb, win, cx| wb.toggle_voice_dictation(win, cx))
                 .into_any_element(),
                 stacked,

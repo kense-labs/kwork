@@ -131,6 +131,14 @@ impl Tactile {
         }
     }
 
+    /// Inline disclosures use the label and chevron for pointer feedback.
+    pub fn inline(id: impl Into<ElementId>, s: &StudioPalette) -> Self {
+        Self {
+            hover: transparent_black(),
+            ..Self::ghost(id, s)
+        }
+    }
+
     /// A quiet fill. Secondary actions and chips: present with subtle hover elevation.
     pub fn soft(id: impl Into<ElementId>, s: &StudioPalette) -> Self {
         Self {

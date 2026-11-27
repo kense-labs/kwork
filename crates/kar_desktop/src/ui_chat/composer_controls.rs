@@ -52,7 +52,7 @@ impl KarWorkbench {
             workbench,
             levels: [0.; VOICE_METER_BARS],
         });
-        let finish = loc.pick("结束听写并转写", "Finish and transcribe");
+        let finish = loc.pick("完成听写", "Finish dictation");
         div()
             .flex_none()
             .flex()
@@ -75,7 +75,10 @@ impl KarWorkbench {
                     loc.pick("放弃这段录音", "Discard recording"),
                     s,
                 )
-                .on_press(cx, |this, _, cx| this.discard_voice_dictation(cx)),
+                .on_press(cx, |this, window, cx| {
+                    this.discard_voice_dictation(cx);
+                    this.composer_editor.read(cx).focus.clone().focus(window, cx);
+                }),
             )
             .child(
                 Tactile::soft("cmp-confirm-voice", s)
@@ -88,6 +91,7 @@ impl KarWorkbench {
                     .on_press(cx, |this, win, cx| {
                         if this.active_voice_rec.is_some() {
                             this.toggle_voice_dictation(win, cx);
+                            this.composer_editor.read(cx).focus.clone().focus(win, cx);
                         }
                     }),
             )

@@ -39,6 +39,16 @@ impl TurnSteps {
         self.answer.binary_search(&index).is_ok()
     }
 
+    /// While streaming, keep late events in arrival order after any visible reply text.
+    /// Once settled, gather every intermediate step above the final answer.
+    pub(super) fn is_work(&self, index: usize, running: bool) -> bool {
+        if running {
+            self.answer.first().is_none_or(|first| index < *first)
+        } else {
+            !self.is_answer(index)
+        }
+    }
+
     pub(super) fn is_child(&self, turn: &ChatTurn, index: usize) -> bool {
         turn.items
             .get(index)
@@ -156,6 +166,11 @@ mod tests {
         assert!(steps.has_answer());
         let indices: Vec<_> = (0..turn.items.len()).filter(|&i| steps.is_answer(i)).collect();
         assert_eq!(indices, [3, 5]);
+        assert!(steps.is_work(2, true));
+        assert!(!steps.is_work(4, true));
+        assert!(!steps.is_work(6, true));
+        assert!(steps.is_work(4, false));
+        assert!(steps.is_work(6, false));
         assert!(!steps.is_child(&turn, 3));
         assert!(steps.is_child(&turn, 6));
     }

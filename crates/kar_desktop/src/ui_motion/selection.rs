@@ -5,7 +5,7 @@ use crate::ui_primitives::{
 };
 use gpui::{prelude::*, *};
 use kui::components::pro_chrome::{
-    pro_eid, pro_mark_selected, pro_pill_indicator, pro_selection_sensor,
+    pro_eid, pro_mark_selected, pro_pill_indicator, pro_selection_sensor, pro_underline_indicator,
 };
 use std::rc::Rc;
 
@@ -15,6 +15,7 @@ type Select = Rc<dyn Fn(&mut Window, &mut App)>;
 pub enum Group {
     Choices,
     Tabs,
+    Inline,
     Documents,
 }
 
@@ -125,6 +126,7 @@ impl RenderOnce for SelectionStrip {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let s = self.palette;
         let dock = self.kind == Group::Documents;
+        let inline = self.kind == Group::Inline;
         let tabs = self.kind != Group::Choices;
         let selected = self.items.iter().position(|item| item.selected);
         let active = selected.unwrap_or(0);
@@ -164,7 +166,7 @@ impl RenderOnce for SelectionStrip {
             .when(dock, |d| {
                 d.min_w_0().overflow_x_scroll().track_scroll(&scroll)
             })
-            .when(!dock, |d| {
+            .when(!dock && !inline, |d| {
                 d.max_w_full()
                     .flex_wrap()
                     .p(px(2.))
@@ -187,26 +189,25 @@ impl RenderOnce for SelectionStrip {
                 win.prevent_default();
                 cx.stop_propagation();
             })
-            .child(pro_pill_indicator(
-                pro_eid(&self.id, "indicator"),
-                key,
-                sensor.clone(),
-                R_SM,
-                if dock { s.sidebar_selected } else { s.card },
-                Some(s.line_soft),
-                !dock,
-            ));
+            .child(if inline {
+                pro_underline_indicator(pro_eid(&self.id, "indicator"), key, sensor.clone(), 1., s.muted)
+            } else {
+                pro_pill_indicator(
+                    pro_eid(&self.id, "indicator"), key, sensor.clone(), R_SM,
+                    if dock { s.sidebar_selected } else { s.card }, Some(s.line_soft), !dock,
+                )
+            });
         let has_other_tabs = self.items.len() > 1;
         for (i, item) in self.items.into_iter().enumerate() {
             let group = SharedString::from(format!("{}-{}", self.id, item.key));
             let id: ElementId = group.clone().into();
-            let mut button = Tactile::ghost(id, &s)
+            let mut button = if inline { Tactile::inline(id, &s) } else { Tactile::ghost(id, &s) }
                 .role(if tabs { Role::Tab } else { Role::RadioButton })
                 .disabled(self.disabled)
                 .aria(item.label.clone())
                 .radius(R_SM)
                 .h(px(CTRL_SM_H))
-                .px(px(if dock { 6. } else { 9. }))
+                .px(px(if dock || inline { 6. } else { 9. }))
                 .justify_center()
                 .gap(px(5.))
                 .text_size(s.font_size(FS_CONTROL))

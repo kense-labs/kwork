@@ -212,6 +212,7 @@ pub struct Editor {
     ghost_chunks: Vec<GhostChunk>,
     ghost_fade_out: Option<Instant>,
     ghost_preview: bool,
+    dictation_preview: bool,
     command_submit: bool,
     pub focus: FocusHandle,
     pub revealed: bool,
@@ -311,6 +312,7 @@ impl Editor {
             ghost_chunks: Vec::new(),
             ghost_fade_out: None,
             ghost_preview: false,
+            dictation_preview: false,
             command_submit: false,
             focus,
             revealed: false,
@@ -360,6 +362,27 @@ impl Editor {
             if !added.is_empty() {
                 self.ghost_chunks.push(GhostChunk {
                     len: added.len(),
+                    started: Instant::now(),
+                });
+            }
+        } else if self.dictation_preview {
+            // Whisper can revise the last phrase. Keep the already-visible prefix
+            // at its current opacity and fade in only the replacement.
+            let common = old
+                .chars()
+                .zip(ghost.chars())
+                .take_while(|(a, b)| a == b)
+                .map(|(ch, _)| ch.len_utf8())
+                .sum::<usize>();
+            let mut retained = common;
+            self.ghost_chunks.retain_mut(|chunk| {
+                chunk.len = chunk.len.min(retained);
+                retained -= chunk.len;
+                chunk.len > 0
+            });
+            if ghost.len() > common {
+                self.ghost_chunks.push(GhostChunk {
+                    len: ghost.len() - common,
                     started: Instant::now(),
                 });
             }
@@ -415,6 +438,50 @@ impl Editor {
         self.ghost_preview = enabled;
         cx.notify();
     }
+    /// Paint a noninteractive speech hypothesis alongside the draft, including an empty
+    /// draft. It stays outside the input buffer, selection, clipboard and undo history.
+    pub fn set_dictation_preview(&mut self, suffix: &str, cx: &mut Context<Self>) {
+        if (suffix.is_empty() && !self.dictation_preview)
+            || (self.dictation_preview && suffix == self.ghost.as_ref())
+        {
+            return;
+        }
+        if self.caret == self.value.len() {
+            self.follow_caret = true;
+        }
+        self.dictation_preview = !suffix.is_empty();
+        self.set_ghost(suffix.to_owned(), cx);
+    }
+
+    /// Append a completed input as one undoable edit. Keep an active IME composition
+    /// or a selection elsewhere in the draft intact.
+    pub fn append_text(&mut self, text: &str, w: &Window, cx: &mut Context<Self>) {
+        if text.is_empty() || self.read_only || self.disabled {
+            return;
+        }
+        let at_end =
+            self.marked.is_none() && self.selected().is_empty() && self.caret == self.value.len();
+        let text = self.normalize(text);
+        let snapshot = if self.marked.is_some()
+            && let Some(prior) = self.history.last()
+        {
+            // The IME commits after this append. Undoing that composition should
+            // retain the transcript, and the next undo should remove the transcript.
+            let mut before_composition = prior.clone();
+            before_composition.text.push_str(&text);
+            before_composition
+        } else {
+            self.snapshot()
+        };
+        self.remember_edit(snapshot);
+        self.value.push_str(&text);
+        if at_end {
+            self.caret = self.value.len();
+            self.anchor = self.caret;
+        }
+        self.changed(w, cx);
+    }
+
     pub fn value(&self) -> &str {
         &self.value
     }
@@ -505,6 +572,13 @@ impl Editor {
             caret: self.caret,
         }
     }
+    fn remember_edit(&mut self, before: Snapshot) {
+        self.history.push(before);
+        if self.history.len() > 100 {
+            self.history.remove(0);
+        }
+        self.redo.clear();
+    }
     fn edit(
         &mut self,
         range: Option<Range<usize>>,
@@ -526,11 +600,7 @@ impl Editor {
             .unwrap_or_else(|| self.selected());
         let text = self.normalize(text);
         if self.marked.is_none() {
-            self.history.push(self.snapshot());
-            if self.history.len() > 100 {
-                self.history.remove(0);
-            }
-            self.redo.clear()
+            self.remember_edit(self.snapshot());
         }
         self.value.replace_range(range.clone(), &text);
         let end = range.start + text.len();
@@ -595,6 +665,7 @@ impl Editor {
         if self.disabled
             || self.marked.is_some()
             || self.ghost_preview
+            || self.dictation_preview
             || self.ghost_fade_out.is_some()
             || self.ghost.is_empty()
             || !self.selected().is_empty()
@@ -645,6 +716,7 @@ impl Editor {
         }
         let r = self.selected();
         if !self.ghost_preview
+            && !self.dictation_preview
             && self.ghost_fade_out.is_none()
             && !self.ghost.is_empty()
             && r.is_empty()
@@ -893,13 +965,13 @@ impl Editor {
         } else {
             vec![]
         };
-        let show_ghost = (focused || self.ghost_preview || self.ghost_fade_out.is_some())
-            && !blank
-            && !masked
+        let at_end = self.selected().is_empty() && self.caret == self.value.len();
+        let suggestion = !blank
             && self.marked.is_none()
-            && self.selected().is_empty()
-            && self.caret == self.value.len()
-            && !self.ghost.is_empty();
+            && at_end
+            && (focused || self.ghost_preview || self.ghost_fade_out.is_some());
+        let live_suffix = self.dictation_preview && self.mode != InputMode::Password;
+        let show_ghost = (live_suffix || suggestion) && !masked && !self.ghost.is_empty();
         let text: SharedString = if show_ghost {
             format!("{}{}", self.value, self.ghost).into()
         } else if blank {
@@ -927,11 +999,12 @@ impl Editor {
         let styled = if show_ghost {
             let mut base = run.clone();
             base.len = self.value.len();
-            let mut runs = vec![base];
+            let mut runs = if blank { Vec::new() } else { vec![base] };
             let fade = self.ghost_fade_out.map_or(1., |started| {
                 1. - ease((now.duration_since(started).as_secs_f32() / 0.11).clamp(0., 1.))
             });
             let mut animating = self.ghost_fade_out.is_some();
+            let ink = if live_suffix { p.secondary } else { p.faint };
             if self
                 .ghost_chunks
                 .iter()
@@ -948,13 +1021,13 @@ impl Editor {
                     animating |= progress < 1.;
                     let mut suffix = run.clone();
                     suffix.len = chunk.len;
-                    suffix.color = p.faint.opacity(ease(progress) * fade);
+                    suffix.color = ink.opacity(ease(progress) * fade);
                     runs.push(suffix);
                 }
             } else {
                 let mut suffix = run.clone();
                 suffix.len = self.ghost.len();
-                suffix.color = p.faint.opacity(fade);
+                suffix.color = ink.opacity(fade);
                 runs.push(suffix);
             }
             if animating && !reduced && w.is_visible() {
@@ -1006,7 +1079,12 @@ impl Editor {
             mask,
             line,
         };
-        let pt = layout.at(self.caret) - origin;
+        let scroll_to = if self.dictation_preview && at_end && self.marked.is_none() {
+            self.value.len() + self.ghost.len()
+        } else {
+            self.caret
+        };
+        let pt = layout.at(scroll_to) - origin;
         if self.follow_caret {
             let keep = |scroll: Pixels, pos: Pixels, room: Pixels| {
                 scroll.min(pos).max(pos - room).max(px(0.))
@@ -1101,7 +1179,11 @@ impl Render for Editor {
             .tab_stop(!self.disabled)
             .role(role)
             .aria_label(self.label.clone())
-            .aria_description(self.description.clone())
+            .aria_description(if self.dictation_preview {
+                self.ghost.clone()
+            } else {
+                self.description.clone()
+            })
             .aria_placeholder(self.placeholder.clone())
             .when_some(self.expanded, |e, open| e.aria_expanded(open))
             .when(self.mode != InputMode::Password, |e| {

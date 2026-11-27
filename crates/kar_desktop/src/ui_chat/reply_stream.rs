@@ -183,16 +183,8 @@ impl RenderOnce for ReplyMarkdown {
         let s = StudioPalette::get(cx);
         let mono = crate::ui_primitives::mono_font(cx);
         let code_size = px(crate::ui_primitives::effective_code_font_size(cx));
-        let inline_ink = if s.dark {
-            s.pro.cyan
-        } else {
-            s.pro.accent_info
-        };
-        let inline_bg = if s.dark {
-            s.pro.accent_soft.opacity(0.32)
-        } else {
-            s.pro.accent_soft.opacity(0.58)
-        };
+        let inline_ink = s.ink;
+        let inline_bg = s.ink.opacity(if s.dark { 0.075 } else { 0.05 });
 
         let mut table = StyleRefinement::default()
             .border_1()
@@ -262,8 +254,7 @@ impl RenderOnce for ReplyMarkdown {
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(inline_ink)
                     .bg(inline_bg)
-                    .px(px(5.))
-                    .py(px(1.))
+                    .px(px(3.))
                     .rounded(px(crate::ui_primitives::R_XS)),
             )
             .blockquote_style(

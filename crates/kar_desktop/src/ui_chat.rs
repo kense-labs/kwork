@@ -41,7 +41,7 @@ use kui::{
     primitives::{
         editor::{EditEvent, Editor, InputMode},
         glyph::Glyph,
-        ops_surface::arrive,
+        ops_surface::{Fold, arrive},
         pro_icons::{ProIcon, pro_icon},
     },
 };
@@ -2106,22 +2106,27 @@ impl KarWorkbench {
             self.composer_editor
                 .update(cx, |ed, _| ed.mode = desired_mode);
         }
-        let draft = self.composer_editor.read(cx).value().to_owned();
+        let mut visible_draft = self.composer_editor.read(cx).value().to_owned();
+        let has_draft = !visible_draft.trim().is_empty() || !self.pending_attachments.is_empty();
+        let dictation = self.composer_dictation();
+        let suffix = crate::workbench::speech_suffix(&visible_draft, dictation.unwrap_or_default());
+        self.composer_editor.update(cx, |editor, cx| editor.set_dictation_preview(&suffix, cx));
+        visible_draft.push_str(&suffix);
         // The Git split can halve the writing width. Measure the same shaped text
         // that GPUI paints so wrapped CJK drafts remain visible while editing.
         let thread_w = self.prefs.chat_width_mode.width_for_pane(pane_w);
         let card_width = (pane_w - 2. * chat_lane_gutter(pane_w, window)).min(thread_w);
         let input_width = (card_width - 34.).max(60.);
-        let lines = if draft.is_empty() {
+        let lines = if visible_draft.is_empty() {
             2
-        } else if draft.len() > 4096 {
+        } else if visible_draft.len() > 4096 {
             10
         } else {
-            let run = window.text_style().to_run(draft.len());
+            let run = window.text_style().to_run(visible_draft.len());
             window
                 .text_system()
                 .shape_text(
-                    draft.clone().into(),
+                    visible_draft.clone().into(),
                     s.font_size(FS_READ),
                     &[run],
                     Some(px(input_width)),
@@ -2132,7 +2137,7 @@ impl KarWorkbench {
                         .map(|r| r.wrap_boundaries().len() + 1)
                         .sum::<usize>()
                 })
-                .unwrap_or_else(|_| draft.lines().count())
+                .unwrap_or_else(|_| visible_draft.lines().count())
                 .clamp(2, 10)
         };
         // Keep the transcript and pending requests reachable beside a long draft.
@@ -2151,8 +2156,7 @@ impl KarWorkbench {
 
         let chat_open = self.chat_is_open();
         let turn_running = self.turn_in_progress();
-        let has_draft = !draft.trim().is_empty() || !self.pending_attachments.is_empty();
-        let can_send = has_draft && !self.plan_input_blocked() && self.queued_prompt.is_none() && (!turn_running || chat_open);
+        let can_send = has_draft && dictation.is_none() && !self.plan_input_blocked() && self.queued_prompt.is_none() && (!turn_running || chat_open);
 
         let start = MenuPlacement::AboveStart;
         let end = MenuPlacement::AboveEnd;
@@ -2329,6 +2333,16 @@ impl KarWorkbench {
             || matches!(self.access_mode, ChatAccessMode::NoneSelected);
         let left = if self.active_voice_rec.is_some() {
             self.render_recording_controls(card_width, s, window, cx)
+        } else if dictation.is_some() {
+            div().flex_none().flex().items_center().gap(px(4.)).px(px(6.))
+                .text_size(s.font_size(FS_META)).text_color(s.muted)
+                .child(loc.pick("正在整理听写…", "Finishing dictation…"))
+                .child(icon_button_sm("cmp-discard-transcription", ProIcon::Close,
+                    loc.pick("放弃这次听写", "Discard dictation"), s)
+                    .on_press(cx, |this, window, cx| {
+                        this.discard_voice_dictation(cx);
+                        this.composer_editor.read(cx).focus.clone().focus(window, cx);
+                    }))
         } else {
             div()
                 .flex_none()
@@ -2350,7 +2364,10 @@ impl KarWorkbench {
                         loc.pick("语音听写  ⇧⌘V", "Dictate  ⇧⌘V"),
                         s,
                     )
-                    .on_press(cx, |this, win, cx| this.toggle_voice_dictation(win, cx)),
+                    .on_press(cx, |this, win, cx| {
+                        this.toggle_voice_dictation(win, cx);
+                        this.composer_editor.read(cx).focus.clone().focus(win, cx);
+                    }),
                 )
                 .when(can_switch_perm, |d| d.child(perm_pill))
                 .when_some(ctx_control, |d, c| d.child(c))
@@ -4045,77 +4062,52 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let live: Vec<_> = self
-            .projected
-            .tasks
-            .iter()
-            .filter(|t| {
-                matches!(
-                    t.status,
-                    TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused
-                )
-            })
-            .cloned()
-            .collect();
-        if live.is_empty() {
-            return None;
-        }
+        let mut tasks = self.projected.tasks.iter().filter(|task| !task.status.is_terminal()).peekable();
+        tasks.peek()?;
+        let loc = self.ui_locale;
         let can_stop = self.projected.can_stop_task
             && matches!(self.access_mode, ChatAccessMode::WriteController { .. });
-        let mut box_el = div()
-            .w_full()
-            .px(px(12.))
-            .py(px(8.))
-            .rounded(px(R_CARD))
-            .bg(s.soft)
-            .flex()
-            .flex_col()
-            .gap(px(6.));
-        for (ix, task) in live.into_iter().enumerate() {
-            let label = task
-                .summary
-                .clone()
-                .or_else(|| task.details.description.clone())
-                .unwrap_or_else(|| format!("后台任务 {}", task.id));
-            let tid = task.id.clone();
-            box_el = box_el.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(8.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(spinner(ICON_XS, s.muted, window, cx))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(s.font_size(FS_META))
-                                    .text_color(s.text)
-                                    .child(label),
-                            ),
-                    )
-                    .when(can_stop, |d| {
-                        d.child(
-                            text_button(("stop-task", ix), "停止", s).on_press(
-                                cx,
-                                move |this, _, _| {
-                                    this.bridge.send(KarCommand::StopTask {
-                                        task_id: tid.clone(),
-                                    });
-                                },
-                            ),
-                        )
-                    }),
-            );
+        let mut list = div().w_full().min_w_0().pl(px(4.)).flex().flex_col().items_start().gap(px(4.));
+        for task in tasks {
+            let id = task.id.clone();
+            let group: SharedString = format!("live-task-{id}").into();
+            let title = task.summary.as_deref().or(task.details.description.as_deref())
+                .unwrap_or(loc.pick("后台任务", "Background task"));
+            let label = match task.status {
+                TaskStatus::Paused => format!("{} · {title}", loc.pick("已暂停", "Paused")),
+                TaskStatus::Pending => format!("{} · {title}", loc.pick("等待中", "Pending")),
+                _ => title.to_owned(),
+            };
+            let running = task.status == TaskStatus::Running;
+            let mark = match task.status {
+                TaskStatus::Paused => pro_icon(ProIcon::Pause, ICON_SM, s.muted),
+                TaskStatus::Pending => pro_icon(ProIcon::Clock, ICON_SM, s.muted),
+                _ => spinner(ICON_SM, s.muted, window, cx),
+            };
+            let name = if running {
+                activity::shimmer(format!("{group}-shimmer").into(), label.into(), FS_UI, window, cx)
+                    .into_any_element()
+            } else {
+                div().truncate().text_size(s.font_size(FS_UI)).text_color(s.muted).child(label)
+                    .into_any_element()
+            };
+            let stop = loc.pick("停止", "Stop");
+            let row = div().group(group.clone()).max_w_full().min_w_0().flex().items_center().gap(px(8.))
+                .child(mark)
+                .child(div().min_w_0().overflow_hidden().child(name))
+                .when(can_stop, |row| row.child(
+                    div().flex_none().when(!window.last_input_was_keyboard() && !window.last_input_was_touch(), |d| {
+                        d.opacity(0.).group_hover(group.clone(), |style| style.opacity(1.))
+                    }).child(Tactile::inline(SharedString::from(format!("{group}-stop")), s)
+                        .aria(stop).h(px(CTRL_SM_H)).px(px(5.)).text_size(s.font_size(FS_META))
+                        .ink(s.muted, s.ink).child(stop)
+                        .on_press(cx, move |this, _, _| {
+                            this.bridge.send(KarCommand::StopTask { task_id: id.clone() });
+                        }))
+                ));
+            list = list.child(arrive(row, group, 0, 3., cx));
         }
-        Some(box_el.into_any_element())
+        Some(list.into_any_element())
     }
 
     fn render_turn(
@@ -4247,15 +4239,8 @@ impl KarWorkbench {
 
         let root = self.projected.info.as_ref().map(|info| info.native_id.as_str());
         let turn_steps = turn_steps::TurnSteps::new(turn, root);
-        let mut work_failed = false;
         for entry in &turn.items {
             if let Item::Tool { activity, .. } = &entry.item {
-                work_failed |= matches!(
-                    activity::phase(activity, running),
-                    activity::Phase::Failed
-                        | activity::Phase::Cancelled
-                        | activity::Phase::Unfinished
-                );
                 if let Some(result) = &activity.result {
                     for change in &result.file_changes {
                         touched.push((
@@ -4269,49 +4254,47 @@ impl KarWorkbench {
                     }
                 }
             }
-            work_failed |= matches!(entry.item, Item::RequestError { .. });
         }
         let work_grp_key = (turn_id, 900_000);
-        let work_grp_open = self.part_is_open(
+        let work_grp_open = running || self.part_is_open(
             work_grp_key,
-            !self.prefs.default_collapse_tools
-                || work_failed
-                || turn.status != TurnStatus::Completed
-                || !turn_steps.has_answer(),
+            turn.status != TurnStatus::Completed || !turn_steps.has_answer(),
         );
-        let mut work_items_count = 0usize;
-        let mut think_count = 0usize;
-        let mut tool_count = 0usize;
-        let mut diff_count = 0usize;
-        for (step_ix, entry) in turn.items.iter().enumerate() {
-            let delegated = turn_steps.is_child(turn, step_ix);
-            if (matches!(entry.item, Item::Message { role: KarRole::User, .. }) && !delegated)
-                || matches!(&entry.item, Item::Message { text, .. } if text.trim().is_empty())
-            {
-                continue;
-            }
-            if !running && !turn_steps.is_answer(step_ix) {
-                match &entry.item {
-                    Item::Message {
-                        role: KarRole::Reasoning,
-                        ..
-                    } => think_count += 1,
-                    Item::Tool { .. } => tool_count += 1,
-                    Item::Diff { .. } => diff_count += 1,
-                    _ => {}
-                }
-            }
-        }
+        let work_fold = Fold::get(
+            SharedString::from(format!("turn-steps-body-{turn_id}")),
+            work_grp_open,
+            80.,
+            0.20,
+            window,
+            cx,
+        );
+        let mut has_work = false;
         let mut work_rows = Vec::new();
         let mut reply_rows = Vec::new();
 
         let multiple_answer_parts = turn_steps.has_multiple_answers();
         let mut ix = 0;
         let mut branch_end = 0;
-        let mut branch_open = true;
-        while ix < turn.items.len() {
-            let item = &turn.items[ix].item;
-            let source = &turn.items[ix].source;
+        let mut branch: Option<(Fold, Vec<AnyElement>, bool)> = None;
+        loop {
+            if ix == branch_end
+                && let Some((fold, rows, is_step)) = branch.take()
+                && fold.mounted()
+            {
+                let content = div()
+                    .w_full()
+                    .min_w_0()
+                    .pl(px(20.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .children(rows);
+                let lane = if is_step { &mut work_rows } else { &mut reply_rows };
+                lane.push(fold.wrap(0., content).into_any_element());
+            }
+            let Some(entry) = turn.items.get(ix) else { break };
+            let item = &entry.item;
+            let source = &entry.source;
             let is_subagent = turn_steps.is_child(turn, ix);
             if (matches!(item, Item::Message { role: KarRole::User, .. }) && !is_subagent)
                 || matches!(item, Item::Message { text, .. } if text.trim().is_empty())
@@ -4319,30 +4302,31 @@ impl KarWorkbench {
                 ix += 1;
                 continue;
             }
-            let is_step = !running && !turn_steps.is_answer(ix);
+            let is_step = turn_steps.is_work(ix, running);
             if is_step {
-                work_items_count += 1;
-                if !work_grp_open {
+                has_work = true;
+                if !work_fold.mounted() {
                     ix += 1;
                     continue;
                 }
             }
-            let rows = if is_step {
-                &mut work_rows
-            } else {
-                &mut reply_rows
-            };
+            let rows = if is_step { &mut work_rows } else { &mut reply_rows };
             if is_subagent && ix >= branch_end {
                 branch_end = ix + turn.items[ix..].iter().take_while(|e| e.source == *source).count();
                 let path = turn_steps.branch_path(turn, source);
-                let (header, open) = activity::branch_header(turn_id, ix, &path, loc, s, window, cx);
-                branch_open = open;
+                let (header, fold) = activity::branch_header(turn_id, ix, &path, loc, s, window, cx);
                 rows.push(header);
+                branch = Some((fold, Vec::new(), is_step));
             }
-            if is_subagent && !branch_open {
-                ix += 1;
-                continue;
-            }
+            let rows = if let Some((fold, children, _)) = branch.as_mut() {
+                if !fold.mounted() {
+                    ix = branch_end;
+                    continue;
+                }
+                children
+            } else {
+                rows
+            };
             match item {
                 Item::Message { role: role @ (KarRole::User | KarRole::Reasoning), text, complete, .. } => {
                     let (icon, label) = match role {
@@ -4439,9 +4423,6 @@ impl KarWorkbench {
                     {
                         calls.push((next_ix, activity));
                         next_ix += 1;
-                    }
-                    if is_step {
-                        work_items_count += calls.len().saturating_sub(1);
                     }
                     rows.push(
                         self.render_tool_run(turn_id, &calls, running, s, window, cx)
@@ -4555,163 +4536,41 @@ impl KarWorkbench {
                     );
                 }
             }
-            if is_subagent && let Some(inner) = rows.pop() {
-                rows.push(div().ml(px(6.)).pl(px(12.)).min_w_0()
-                    .border_l_1().border_color(s.line).flex().flex_col()
-                    .child(inner).into_any_element());
-            }
             ix += 1;
         }
 
-        if work_items_count > 0 {
+        if has_work {
             has_parts = true;
-            let mut facets: Vec<String> = Vec::new();
-            if think_count > 0 {
-                facets.push(match loc {
-                    UiLocale::Zh => format!("思考 {think_count} 次"),
-                    UiLocale::En => format!("{think_count} thoughts"),
-                });
-            }
-            if tool_count > 0 {
-                facets.push(match loc {
-                    UiLocale::Zh => format!("调用 {tool_count} 项工具"),
-                    UiLocale::En if tool_count == 1 => "1 tool".into(),
-                    UiLocale::En => format!("{tool_count} tools"),
-                });
-            }
-            if diff_count > 0 || !touched.is_empty() {
-                let edit_n = touched.len().max(diff_count);
-                facets.push(match loc {
-                    UiLocale::Zh => format!("改动 {edit_n} 处"),
-                    UiLocale::En if edit_n == 1 => "1 edit".into(),
-                    UiLocale::En => format!("{edit_n} edits"),
-                });
-            }
-            if facets.is_empty() {
-                facets.push(match loc {
-                    UiLocale::Zh => format!("{work_items_count} 个步骤"),
-                    UiLocale::En => format!("{work_items_count} steps"),
-                });
-            }
-            if let Some(ref dur) = duration {
-                facets.push(dur.clone());
-            }
-            let detail_summary = facets.join(" · ");
-            let toggle_hint = if work_grp_open {
-                loc.pick("收起", "Hide")
-            } else {
-                loc.pick("查看过程", "Show process")
-            };
-            let lead_icon = if work_failed {
-                ProIcon::AlertTriangle
-            } else {
-                ProIcon::Sparkles
-            };
-            let lead_color = if work_failed {
-                s.pro.amber
-            } else if work_grp_open {
-                s.pro.accent_info
-            } else {
-                s.muted
-            };
-
-            let mut process_block = div().w_full().flex().flex_col().items_start().child(
-                Tactile::ghost(SharedString::from(format!("worked-grp-{turn_id}")), s)
-                    .h(px(CTRL_SM_H))
-                    .px(px(10.))
-                    .radius(R_CTRL)
-                    .fills(
-                        if work_grp_open {
-                            s.soft
-                        } else {
-                            s.soft.opacity(0.52)
-                        },
-                        s.hover,
-                    )
-                    .outlined(s.line_soft, s.line)
-                    .gap(px(6.))
-                    .font_features(tnum_features())
-                    .text_size(s.font_size(FS_META))
-                    .ink(s.text, s.ink)
-                    .aria(format!(
-                        "{} · {detail_summary}",
-                        loc.pick("思考与执行过程", "Thought & actions")
-                    ))
+            let mut process = div().w_full().min_w_0().flex().flex_col().items_start();
+            if !running {
+                let label = duration.unwrap_or_else(|| loc.pick("执行过程", "Activity").into());
+                let toggle = Tactile::inline(SharedString::from(format!("worked-grp-{turn_id}")), s)
+                    .aria(format!("{label} · {}", loc.pick("执行过程", "Activity")))
                     .expanded(work_grp_open)
-                    .child(pro_icon(lead_icon, ICON_XS, lead_color))
-                    .child(
-                        div()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(s.ink)
-                            .child(loc.pick("思考与执行过程", "Thought & actions")),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(s.muted)
-                            .child(format!("· {detail_summary}")),
-                    )
-                    .child(
-                        div()
-                            .ml(px(4.))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .gap(px(3.))
-                            .text_color(if work_grp_open {
-                                s.pro.accent_info
-                            } else {
-                                s.muted
-                            })
-                            .child(toggle_hint)
-                            .child(pro_icon(
-                                if work_grp_open {
-                                    ProIcon::ChevronUp
-                                } else {
-                                    ProIcon::ChevronDown
-                                },
-                                11.,
-                                if work_grp_open {
-                                    s.pro.accent_info
-                                } else {
-                                    s.muted
-                                },
-                            )),
-                    )
+                    .ml(px(-4.))
+                    .px(px(4.))
+                    .h(px(CTRL_SM_H))
+                    .gap(px(5.))
+                    .font_features(tnum_features())
+                    .text_size(s.font_size(FS_UI))
+                    .ink(s.muted, s.ink)
+                    .child(label)
+                    .child(activity::chevron(
+                        format!("turn-chevron-{turn_id}").into(), work_grp_open, s.muted, window, cx,
+                    ))
                     .on_press(cx, move |this, _, cx| {
                         this.part_open.insert(work_grp_key, !work_grp_open);
                         cx.notify();
-                    }),
-            );
-
-            if work_grp_open && !work_rows.is_empty() {
-                process_block = process_block.child(
-                    div()
-                        .w_full()
-                        .min_w_0()
-                        .mt(px(8.))
-                        .px(px(12.))
-                        .py(px(10.))
-                        .rounded(px(R_CARD))
-                        .bg(s.stage.opacity(if s.dark { 0.55 } else { 0.68 }))
-                        .border_1()
-                        .border_color(s.line_soft)
-                        .child(
-                            div()
-                                .w_full()
-                                .min_w_0()
-                                .pl(px(10.))
-                                .border_l_2()
-                                .border_color(s.line)
-                                .flex()
-                                .flex_col()
-                                .gap(px(8.))
-                                .children(work_rows),
-                        ),
-                );
+                    });
+                process = process.child(toggle);
             }
-            parts = parts.child(process_block);
+            if work_fold.mounted() {
+                let content = div().w_full().min_w_0()
+                    .when(!running, |d| d.pt(px(8.)))
+                    .flex().flex_col().gap(px(10.)).children(work_rows);
+                process = process.child(work_fold.wrap(0., content));
+            }
+            parts = parts.child(process);
         } else if let Some(label) = duration {
             has_parts = true;
             parts = parts.child(
@@ -4720,7 +4579,7 @@ impl KarWorkbench {
                     .flex()
                     .items_center()
                     .font_features(tnum_features())
-                    .text_size(s.font_size(FS_META))
+                    .text_size(s.font_size(FS_UI))
                     .text_color(s.muted)
                     .child(label),
             );
