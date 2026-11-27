@@ -1,5 +1,6 @@
 //! The first-run route belongs to the primary window. An interlude replay never changes the chat.
 use std::{
+    f32::consts::TAU,
     io,
     path::Path,
     time::{Duration, Instant},
@@ -10,10 +11,12 @@ use kui::primitives::pro_icons::{ProIcon, pro_app_artwork, pro_icon};
 
 use crate::{
     client_store::{desktop_preference, write_desktop_preference},
-    onboarding_audio::IntroAudio,
+    onboarding_audio::{IntroAudio, UiSfx},
     ui_motion::{Tactile, render_toast},
-    ui_onboarding_film::{FILM_DURATION, film},
-    ui_primitives::{StudioPalette, ui_font},
+    ui_onboarding_film::{FILM_DURATION, film, welcome_ground},
+    ui_primitives::{
+        HEADER_H, StudioPalette, mono_font, render_provider_color_tile, titlebar_row, ui_font,
+    },
     workbench::{KarWorkbench, WorkbenchConfig},
 };
 
@@ -24,16 +27,39 @@ const REDUCED_DURATION: Duration = Duration::from_millis(1200);
 pub(crate) enum Onboarding {
     #[default]
     Hidden,
-    Welcome,
+    Welcome {
+        audio: Option<IntroAudio>,
+    },
     Film {
         start: Instant,
         replay: bool,
         reduced: bool,
-        _audio: Option<IntroAudio>,
+        audio: Option<IntroAudio>,
     },
     Providers {
         reveal: Option<Instant>,
+        audio: Option<IntroAudio>,
     },
+}
+
+impl Onboarding {
+    fn take_audio(&mut self) -> Option<IntroAudio> {
+        match self {
+            Self::Hidden => None,
+            Self::Welcome { audio } | Self::Film { audio, .. } | Self::Providers { audio, .. } => {
+                audio.take()
+            }
+        }
+    }
+
+    pub(crate) fn audio(&self) -> Option<&IntroAudio> {
+        match self {
+            Self::Hidden => None,
+            Self::Welcome { audio } | Self::Film { audio, .. } | Self::Providers { audio, .. } => {
+                audio.as_ref()
+            }
+        }
+    }
 }
 
 fn checkpoint(dir: &Path, value: &str) {
@@ -44,8 +70,13 @@ fn checkpoint(dir: &Path, value: &str) {
 
 fn first_screen(dir: &Path) -> Onboarding {
     match desktop_preference(dir, CHECKPOINT).as_deref() {
-        Some("welcome") => return Onboarding::Welcome,
-        Some("connect") => return Onboarding::Providers { reveal: None },
+        Some("welcome") => return Onboarding::Welcome { audio: None },
+        Some("connect") => {
+            return Onboarding::Providers {
+                reveal: None,
+                audio: None,
+            };
+        }
         Some(_) => return Onboarding::Hidden,
         None => {}
     }
@@ -75,9 +106,58 @@ fn first_screen(dir: &Path) -> Onboarding {
     };
     if fresh {
         checkpoint(dir, "welcome");
-        Onboarding::Welcome
+        Onboarding::Welcome { audio: None }
     } else {
         Onboarding::Hidden
+    }
+}
+
+fn paint_medallion_ring(bounds: Bounds<Pixels>, s: &StudioPalette, window: &mut Window) {
+    let center = bounds.center();
+    let outer_r = f32::from(bounds.size.width) * 0.47;
+    let inner_r = 47.;
+
+    let line_tone = if s.dark {
+        rgb(0x60a5fa).opacity(0.16)
+    } else {
+        rgb(0x3b82f6).opacity(0.14)
+    };
+    let accent_tone = if s.dark {
+        rgb(0x38bdf8).opacity(0.36)
+    } else {
+        rgb(0x2563eb).opacity(0.28)
+    };
+
+    let mut ring = PathBuilder::stroke(px(1.0));
+    for k in 0..4 {
+        let start_a = k as f32 * (TAU * 0.25) + 0.18;
+        let span = TAU * 0.25 - 0.36;
+        ring.move_to(center + point(px(outer_r * start_a.cos()), px(outer_r * start_a.sin())));
+        for step in 1..=12 {
+            let a = start_a + span * (step as f32 / 12.);
+            ring.line_to(center + point(px(outer_r * a.cos()), px(outer_r * a.sin())));
+        }
+        let ca = k as f32 * (TAU * 0.25);
+        ring.move_to(center + point(px((inner_r + 5.) * ca.cos()), px((inner_r + 5.) * ca.sin())));
+        ring.line_to(center + point(px((outer_r - 5.) * ca.cos()), px((outer_r - 5.) * ca.sin())));
+    }
+    if let Ok(path) = ring.build() {
+        window.paint_path(path, line_tone);
+    }
+
+    let mut gems = PathBuilder::fill();
+    for k in 0..4 {
+        let a = k as f32 * (TAU * 0.25);
+        let p = center + point(px(outer_r * a.cos()), px(outer_r * a.sin()));
+        let d = 2.8;
+        gems.move_to(p + point(px(0.), px(-d)));
+        gems.line_to(p + point(px(d), px(0.)));
+        gems.line_to(p + point(px(0.), px(d)));
+        gems.line_to(p + point(px(-d), px(0.)));
+        gems.close();
+    }
+    if let Ok(path) = gems.build() {
+        window.paint_path(path, accent_tone);
     }
 }
 
@@ -88,18 +168,34 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let screen = first_screen(&config.chat_dir);
+        let mut screen = first_screen(&config.chat_dir);
         let mut wb = Self::new(config, window, cx);
         if !matches!(screen, Onboarding::Hidden) {
+            if !cx.reduce_motion() {
+                match &mut screen {
+                    Onboarding::Welcome { audio } | Onboarding::Providers { audio, .. } => {
+                        *audio = Some(IntroAudio::prewarm());
+                    }
+                    Onboarding::Film { .. } | Onboarding::Hidden => {}
+                }
+            }
             wb.onboarding = screen;
             wb.focus_handle.focus(window, cx);
         }
         wb
     }
 
+    pub(crate) fn play_onboarding_sfx(&self, sfx: UiSfx, cx: &App) {
+        if !cx.reduce_motion()
+            && let Some(audio) = self.onboarding.audio()
+        {
+            audio.play_sfx(sfx);
+        }
+    }
+
     pub(crate) fn play_intro(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let replay = self.settings_open && matches!(self.onboarding, Onboarding::Hidden);
-        if !replay && !matches!(self.onboarding, Onboarding::Welcome) {
+        if !replay && !matches!(self.onboarding, Onboarding::Welcome { .. }) {
             return;
         }
         if !replay {
@@ -107,12 +203,20 @@ impl KarWorkbench {
         }
         let reduced = cx.reduce_motion();
         let start = Instant::now();
+        let mut audio = self.onboarding.take_audio();
+        if reduced {
+            audio = None;
+        } else if let Some(warm) = &audio {
+            warm.play_film();
+        } else {
+            audio = Some(IntroAudio::start_film());
+        }
         self.onboarding_provider = None;
         self.onboarding = Onboarding::Film {
             start,
             replay,
             reduced,
-            _audio: (!reduced).then(IntroAudio::start),
+            audio,
         };
         let duration = if reduced {
             REDUCED_DURATION
@@ -127,7 +231,8 @@ impl KarWorkbench {
                     wb.end_intro(window, cx);
                 }
             });
-        }).detach();
+        })
+        .detach();
         self.focus_handle.focus(window, cx);
         cx.notify();
     }
@@ -142,11 +247,21 @@ impl KarWorkbench {
         else {
             return;
         };
+        let elapsed = start.elapsed();
+        let skipped_early = !reduced && elapsed + Duration::from_millis(80) < FILM_DURATION;
+        let audio = self.onboarding.take_audio();
+        if let Some(ref stream) = audio
+            && skipped_early
+        {
+            stream.stop_film();
+            stream.play_sfx(UiSfx::Dismiss);
+        }
         self.onboarding = if replay {
             Onboarding::Hidden
         } else {
             Onboarding::Providers {
-                reveal: (!reduced && start.elapsed() >= FILM_DURATION).then(Instant::now),
+                reveal: (!reduced && !skipped_early).then(Instant::now),
+                audio,
             }
         };
         self.focus_handle.focus(window, cx);
@@ -161,6 +276,11 @@ impl KarWorkbench {
         if matches!(self.onboarding, Onboarding::Hidden) {
             return;
         }
+        self.play_onboarding_sfx(UiSfx::Dismiss, cx);
+        self.finish_onboarding_to_workbench(window, cx);
+    }
+
+    fn finish_onboarding_to_workbench(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         checkpoint(&self.config.chat_dir, "done");
         self.onboarding_provider = None;
         self.provider_sign_in.dismiss();
@@ -177,7 +297,8 @@ impl KarWorkbench {
 
     pub(crate) fn complete_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.onboarding, Onboarding::Providers { .. }) {
-            self.skip_onboarding(window, cx);
+            self.play_onboarding_sfx(UiSfx::Connected, cx);
+            self.finish_onboarding_to_workbench(window, cx);
             self.start_new_chat(window, cx);
         }
     }
@@ -199,9 +320,11 @@ impl KarWorkbench {
         let loc = self.ui_locale;
         let view = match &self.onboarding {
             Onboarding::Hidden => return None,
-            Onboarding::Welcome => {
+            Onboarding::Welcome { .. } => {
                 let sign_in = loc.pick("登录", "Sign in");
+                let pal = s;
                 div()
+                    .relative()
                     .size_full()
                     .flex()
                     .flex_col()
@@ -210,20 +333,53 @@ impl KarWorkbench {
                     .px(px(24.))
                     .child(
                         div()
-                            .size(px(86.))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(s.line)
+                            .relative()
+                            .size(px(140.))
                             .flex()
-                            .justify_center()
                             .items_center()
-                            .when_some(pro_app_artwork("kense", 42., cx), |d, mark| d.child(mark)),
+                            .justify_center()
+                            .child(
+                                canvas(
+                                    |_, _, _| (),
+                                    move |bounds, _, window, _| {
+                                        paint_medallion_ring(bounds, &pal, window);
+                                    },
+                                )
+                                .absolute()
+                                .inset_0(),
+                            )
+                            .child(
+                                div()
+                                    .size(px(90.))
+                                    .rounded_full()
+                                    .bg(s.card)
+                                    .border_1()
+                                    .border_color(s.line_strong)
+                                    .flex()
+                                    .justify_center()
+                                    .items_center()
+                                    .when_some(pro_app_artwork("kense", 42., cx), |d, mark| {
+                                        d.child(mark)
+                                    }),
+                            ),
                     )
                     .child(
                         div()
-                            .mt(px(20.))
-                            .text_size(px(40.))
-                            .line_height(px(48.))
+                            .mt(px(12.))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .font_family(mono_font(cx))
+                            .text_size(px(10.5))
+                            .text_color(s.muted)
+                            .child(div().size(px(5.)).rounded_full().bg(rgb(0x10b981)))
+                            .child("KENSE AGENT ONLINE // STANDBY"),
+                    )
+                    .child(
+                        div()
+                            .mt(px(8.))
+                            .text_size(px(42.))
+                            .line_height(px(50.))
                             .text_color(s.ink)
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(crate::APP_NAME),
@@ -233,6 +389,7 @@ impl KarWorkbench {
                             .mt(px(6.))
                             .text_size(s.font_size(15.))
                             .text_color(s.muted)
+                            .text_center()
                             .child(loc.pick(
                                 "连接智能体，开始第一次对话。",
                                 "Connect an agent to start your first conversation.",
@@ -241,9 +398,10 @@ impl KarWorkbench {
                     .child(
                         Tactile::ghost("onboarding-login", &s)
                             .mt(px(30.))
-                            .w(px(188.))
-                            .h(px(42.))
-                            .radius(21.)
+                            .w(px(200.))
+                            .h(px(44.))
+                            .radius(22.)
+                            .elevated(true)
                             .justify_center()
                             .gap(px(8.))
                             .fills(s.ink, s.text)
@@ -270,36 +428,57 @@ impl KarWorkbench {
                     .into_any_element()
             }
             Onboarding::Film { start, reduced, .. } => {
+                let elapsed = start.elapsed();
                 if !reduced {
                     window.request_animation_frame();
                 }
                 let skip = loc.pick("跳过", "Skip");
+                let dark_stage = !*reduced && elapsed.as_secs_f32() < 3.55;
+                let (pill_rest, pill_hover, pill_ink) = if dark_stage {
+                    (
+                        rgba(0x0f172ab8).into(),
+                        rgba(0x1e293bd8).into(),
+                        rgb(0xe2e8f0).into(),
+                    )
+                } else {
+                    (rgba(0xffffffdc).into(), white(), rgb(0x334155).into())
+                };
+                // Pre-populate GPUI's SVG atlas for installed providers during the final 0.7s
+                // of the film so the "Choose an agent" list renders icons on its very first frame.
+                let warm_icons = elapsed.as_secs_f32() > 5.4 || *reduced;
+                let mut prewarm = div().absolute().left(px(-200.)).top(px(-200.)).opacity(0.);
+                if warm_icons {
+                    for p in &self.providers {
+                        prewarm = prewarm.child(render_provider_color_tile(&p.id, 30., &s, cx));
+                    }
+                }
                 div()
                     .relative()
                     .size_full()
                     .overflow_hidden()
-                    .child(film(start.elapsed(), *reduced, window, cx))
+                    .when(warm_icons, |d| d.child(prewarm))
+                    .child(film(elapsed, *reduced, window, cx))
                     .child(
-                        div().absolute().top(px(16.)).right(px(20.)).child(
+                        div().absolute().top(px(14.)).right(px(18.)).child(
                             Tactile::ghost("onboarding-skip-film", &s)
                                 .h(px(30.))
                                 .px(px(12.))
                                 .radius(15.)
-                                .gap(px(6.))
-                                .fills(rgba(0xffffffd9).into(), white())
-                                .text_color(rgb(0x373b42))
-                                .text_size(px(13.))
+                                .gap(px(5.))
+                                .fills(pill_rest, pill_hover)
+                                .text_color(pill_ink)
+                                .text_size(px(12.5))
                                 .aria(skip)
                                 .child(skip)
-                                .child(pro_icon(ProIcon::ChevronRight, 13., rgb(0x373b42).into()))
+                                .child(pro_icon(ProIcon::ChevronRight, 13., pill_ink))
                                 .on_press(cx, |wb, window, cx| wb.end_intro(window, cx)),
                         ),
                     )
                     .into_any_element()
             }
-            Onboarding::Providers { reveal } => {
+            Onboarding::Providers { reveal, .. } => {
                 let fade = reveal
-                    .map(|time| time.elapsed().as_secs_f32() / 0.18)
+                    .map(|time| time.elapsed().as_secs_f32() / 0.32)
                     .filter(|t| *t < 1.);
                 if self.toast.as_ref().is_some_and(|t| t.expired()) {
                     self.toast = None;
@@ -310,13 +489,8 @@ impl KarWorkbench {
                     .child(self.render_onboarding_providers(window, cx))
                     .when_some(fade, |picker, t| {
                         window.request_animation_frame();
-                        picker.child(
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .opacity(1. - t * t * (3. - 2. * t))
-                                .child(film(FILM_DURATION, true, window, cx)),
-                        )
+                        let veil = 1. - t * t * (3. - 2. * t);
+                        picker.child(div().absolute().inset_0().bg(welcome_ground(veil)))
                     })
                     .child(render_toast(self.toast.as_ref(), &s, window, cx))
                     .into_any_element()
@@ -336,7 +510,7 @@ impl KarWorkbench {
                         wb.skip_onboarding(window, cx);
                     } else if ev.keystroke.key == "enter"
                         && wb.focus_handle.is_focused(window)
-                        && matches!(wb.onboarding, Onboarding::Welcome)
+                        && matches!(wb.onboarding, Onboarding::Welcome { .. })
                     {
                         wb.play_intro(window, cx);
                     } else {
@@ -346,6 +520,15 @@ impl KarWorkbench {
                     cx.stop_propagation();
                 }))
                 .child(view)
+                .child(
+                    // Keep the top frameless window strip draggable without blocking the top-right Skip button.
+                    titlebar_row(window)
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right(px(110.))
+                        .h(px(HEADER_H.min(44.))),
+                )
                 .into_any_element(),
         )
     }
@@ -359,8 +542,8 @@ mod tests {
     fn fresh_profile_resumes_its_checkpoint_and_existing_chats_bypass_welcome() {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path().join("chats");
-        assert!(matches!(first_screen(&dir), Onboarding::Welcome));
-        assert!(matches!(first_screen(&dir), Onboarding::Welcome));
+        assert!(matches!(first_screen(&dir), Onboarding::Welcome { .. }));
+        assert!(matches!(first_screen(&dir), Onboarding::Welcome { .. }));
         checkpoint(&dir, "connect");
         assert!(matches!(first_screen(&dir), Onboarding::Providers { .. }));
         checkpoint(&dir, "done");
