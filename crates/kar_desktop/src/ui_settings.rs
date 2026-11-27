@@ -585,19 +585,6 @@ impl KarWorkbench {
             window,
             cx,
         );
-        let group_proj_sw = Self::settings_switch(
-            "general-group-by-proj",
-            loc.pick("按项目文件夹分组折叠对话", "Group threads by project"),
-            self.prefs.sidebar_group_by_project,
-            |wb, cx| {
-                wb.prefs.sidebar_group_by_project = !wb.prefs.sidebar_group_by_project;
-                wb.save_prefs();
-                cx.notify();
-            },
-            s,
-            window,
-            cx,
-        );
         let running_first_switch = Self::settings_switch(
             "general-working-section",
             loc.pick("优先显示进行中的对话", "Show working chats first"),
@@ -721,7 +708,7 @@ impl KarWorkbench {
             .flex_col()
             .child(settings_row_item(
                 loc.pick("显示左侧会话栏", "Show sidebar"),
-                loc.pick("在主工作区左侧常驻显示项目筛选与历史对话列表。", "Keep projects and threads visible beside the stage."),
+                loc.pick("在左侧显示项目文件夹和历史对话。", "Keep projects and threads visible beside the stage."),
                 sidebar_sw,
                 stacked,
                 s,
@@ -729,16 +716,8 @@ impl KarWorkbench {
             .child(settings_divider(s))
             .child(settings_row_item(
                 loc.pick("把进行中的对话置顶", "Show working chats first"),
-                loc.pick("智能体正在思考或等待确认的对话自动排在最前面。", "Move working chats to the top of the list."),
+                loc.pick("在每个文件夹里优先显示正在工作或等待确认的对话。", "Show working chats first in each folder."),
                 running_first_switch,
-                stacked,
-                s,
-            ))
-            .child(settings_divider(s))
-            .child(settings_row_item(
-                loc.pick("按项目文件夹整理对话", "Group by project"),
-                loc.pick("将同一个代码仓库下的多条对话自动归入同一个文件夹。", "Group threads under collapsible project folders."),
-                group_proj_sw,
                 stacked,
                 s,
             ));

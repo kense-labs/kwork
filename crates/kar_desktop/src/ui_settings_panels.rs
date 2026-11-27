@@ -1479,9 +1479,9 @@ impl KarWorkbench {
                             .items_center()
                             .gap(px(4.))
                             .child(
-                                soft_button_sm(("proj-switch", ix), loc.pick("设为当前", "Activate"), s)
+                                soft_button_sm(("proj-new-chat", ix), loc.pick("新建对话", "New chat"), s)
                                     .on_press(cx, move |wb, win, cx| {
-                                        wb.switch_workspace_dir(root_switch.clone(), win, cx);
+                                        wb.select_project_and_new_chat(root_switch.clone(), win, cx);
                                     }),
                             )
                             .child(

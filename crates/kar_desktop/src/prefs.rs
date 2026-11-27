@@ -418,7 +418,6 @@ pub struct DesktopPreferences {
     pub bottom_terminal_open: bool,
     #[serde(default = "default_terminal_h")]
     pub bottom_terminal_h: f32,
-    pub active_project_filter: Option<PathBuf>,
     pub settled_chats: BTreeSet<Uuid>,
     pub snoozed_chats: BTreeMap<Uuid, u64>,
     #[serde(default = "default_true")]
@@ -431,7 +430,6 @@ pub struct DesktopPreferences {
     pub notification_sound: bool,
 
     // 3. Sidebar grouping & order
-    pub sidebar_group_by_project: bool,
     pub sidebar_project_order: ProjectSortOrder,
     /// Prioritize working chats within the current list or project.
     #[serde(default = "default_true")]
@@ -538,14 +536,12 @@ impl Default for DesktopPreferences {
             tree_show_hidden: false,
             bottom_terminal_open: false,
             bottom_terminal_h: default_terminal_h(),
-            active_project_filter: None,
             settled_chats: BTreeSet::new(),
             snoozed_chats: BTreeMap::new(),
             time_format_24h: true,
             system_notifications: NotificationLevel::NeedsInput,
             in_app_notifications: true,
             notification_sound: false,
-            sidebar_group_by_project: false,
             sidebar_project_order: ProjectSortOrder::Recent,
             sidebar_working_section: true,
             confirm_unpin: false,

@@ -34,23 +34,29 @@ pub fn strip_selection_envelope(text: &str) -> &str {
     text
 }
 
-/// Kar persists managed agents as `acp:{agent}:{version}:{distribution}` and
-/// local profiles as `acp-profile:{id}:{revision}`. Revisions identify a
-/// launch, while the agent ID identifies the artwork.
+/// Managed ACP keys carry a registry identity. A local profile's name is user-chosen.
 pub(crate) fn runtime_brand_id(runtime: &str) -> &str {
     if crate::aster::is_aster(runtime) {
         return "aster";
     }
     let id = runtime
         .strip_prefix("acp:")
-        .or_else(|| runtime.strip_prefix("acp-profile:"))
         .and_then(|key| key.split(':').next())
         .filter(|id| !id.is_empty())
         .unwrap_or(runtime);
     match id {
         "gemini-cli" | "gemini-acp" | "@google/gemini-cli" => "gemini",
+        "antigravity-acp" => "antigravity",
         "codex-acp" | "codex-cli" => "codex",
         "claude-acp" | "claude-code" | "claude-code-acp" => "claude",
+        "codebuddy-code" => "codebuddy",
+        "grok-build" => "grok",
+        "kimi-code" => "kimi",
+        "opencode-v2" => "opencode",
+        "factory-droid" => "factory",
+        "qwen-code" => "qwen",
+        "muse-code" => "muse",
+        "pi-acp" => "pi",
         _ => id,
     }
 }
@@ -80,35 +86,60 @@ pub fn runtime_display_name(id: &str) -> String {
         "factory" => "Factory Droid",
         "pi" => "Pi",
         "kiro" => "Kiro",
-        "fx" => "Fx",
-        "muse" => "Muse",
+        "fx" => "fx",
+        "muse" => "Muse Code",
+        "mistral-vibe" => "Mistral Vibe",
+        profile if profile.starts_with("acp-profile:") => {
+            return profile.split(':').nth(1).unwrap_or(profile).to_owned();
+        }
         other => return other.to_owned(),
     }
     .to_owned()
 }
 
-/// Official SVG data URI for a runtime from `kar::brands::runtime_brands()`,
-/// with crisp vector fallbacks for workbench-registered runtimes (`kiro`, `fx`, `muse`).
-pub fn runtime_brand_svg(id: &str, dark_bg: bool) -> Option<&'static str> {
-    if let Some(brand) = kar::brands::runtime_brands().get(id) {
-        let bg = if dark_bg {
-            kar::brands::Background::Dark
-        } else {
-            kar::brands::Background::Light
-        };
-        if let Some(svg) = brand.icon_for(bg) {
-            return Some(svg);
+/// Offline SVG data URI shared by the account list, model menu and conversation badges.
+/// Product artwork and the remaining Kar-supplied assets are listed in assets/icons/agents/SOURCES.md.
+pub fn runtime_brand_svg(runtime: &str, dark_bg: bool) -> Option<&'static str> {
+    // Keep the public data URI representation used by the Kar catalog and cache each local
+    // asset once. Literal '+' in an SVG path must remain distinct from an encoded space.
+    macro_rules! svg {
+        ($path:literal) => {{
+            static URI: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+            URI.get_or_init(|| {
+                let svg = include_bytes!(concat!("../../../assets/icons/", $path));
+                let escaped: String = form_urlencoded::byte_serialize(svg).collect();
+                format!("data:image/svg+xml,{}", escaped.replace('+', "%20"))
+            }).as_str()
+        }};
+    }
+
+    let id = runtime_brand_id(runtime);
+    Some(match id {
+        "aster" if dark_bg => svg!("aster-dark.svg"),
+        "aster" => svg!("aster-light.svg"),
+        "antigravity" => svg!("agents/antigravity.svg"),
+        "claude" => svg!("agents/claude.svg"),
+        "codebuddy" => svg!("agents/codebuddy.svg"),
+        "codex" => svg!("agents/codex.svg"),
+        "cursor" => svg!("agents/cursor.svg"),
+        "devin" => svg!("agents/devin.svg"),
+        "dsh" => svg!("agents/dsh.svg"),
+        "factory" => svg!("agents/factory.svg"),
+        "fx" => svg!("agents/fx.svg"),
+        "gemini" => svg!("agents/gemini.svg"),
+        "grok" => svg!("agents/grok.svg"),
+        "kimi" => svg!("agents/kimi.svg"),
+        "kiro" => svg!("agents/kiro.svg"),
+        "mistral-vibe" => svg!("agents/mistral-vibe.svg"),
+        "muse" => svg!("agents/muse.svg"),
+        "opencode" if dark_bg => svg!("agents/opencode-dark.svg"),
+        "opencode" => svg!("agents/opencode-light.svg"),
+        "qoder" => svg!("agents/qoder.svg"),
+        _ => {
+            let background = if dark_bg { kar::brands::Background::Dark } else { kar::brands::Background::Light };
+            kar::brands::runtime_brands().get(id)?.icon_for(background)?
         }
-    }
-    match (id, dark_bg) {
-        ("kiro", false) => Some("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2318181b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 5v14M17 5l-7 7 7 7'/%3E%3C/svg%3E"),
-        ("kiro", true) => Some("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f4f4f5' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 5v14M17 5l-7 7 7 7'/%3E%3C/svg%3E"),
-        ("fx", false) => Some("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2318181b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 19c1.5 0 2.5-1 3-4l1-6c.5-3 1.5-4 3-4M8 11h6M15 13l5 6M20 13l-5 6'/%3E%3C/svg%3E"),
-        ("fx", true) => Some("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f4f4f5' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 19c1.5 0 2.5-1 3-4l1-6c.5-3 1.5-4 3-4M8 11h6M15 13l5 6M20 13l-5 6'/%3E%3C/svg%3E"),
-        ("muse", false) => Some("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2318181b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 18V6l8 7 8-7v12'/%3E%3C/svg%3E"),
-        ("muse", true) => Some("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f4f4f5' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 18V6l8 7 8-7v12'/%3E%3C/svg%3E"),
-        _ => None,
-    }
+    })
 }
 
 /// These runtimes reject a nonempty effort in their Kar session options.
@@ -1165,13 +1196,27 @@ mod tests {
 
     #[test]
     fn agent_artwork_handles_profile_revisions_without_guessing_custom_brands() {
-        for id in ["gemini", "gemini-cli", "acp-profile:gemini-cli:48ef", "acp:@google/gemini-cli:1:npx"] {
+        for id in ["gemini", "gemini-cli", "acp:gemini:1:npx", "acp:@google/gemini-cli:1:npx"] {
             assert_eq!(runtime_brand_id(id), "gemini");
             assert_eq!(runtime_display_name(id), "Gemini CLI");
         }
         assert_eq!(runtime_brand_id("acp:claude-code-acp:1:npx"), "claude");
         assert_eq!(runtime_brand_id("acp:codex-acp:1:npx"), "codex");
-        assert_eq!(runtime_brand_id("acp-profile:my-gemini-proxy:31be"), "my-gemini-proxy");
+        for id in ["acp-profile:gemini-cli:48ef", "acp-profile:codex:8d2f", "acp-profile:my-gemini-proxy:31be", "unregistered-claude", "not-mistral-vibe"] {
+            assert!(runtime_brand_svg(id, false).is_none(), "{id}");
+        }
+        assert_eq!(runtime_display_name("acp-profile:codex:8d2f"), "codex");
+        for dark in [false, true] {
+            for (managed, native) in [
+                ("antigravity-acp", "antigravity"), ("grok-build", "grok"),
+                ("muse-code", "muse"), ("kimi-code", "kimi"), ("qwen-code", "qwen"),
+            ] {
+                assert_eq!(runtime_brand_svg(&format!("acp:{managed}:1.2:binary"), dark), runtime_brand_svg(native, dark));
+            }
+            assert_ne!(runtime_brand_svg("gemini", dark), runtime_brand_svg("antigravity", dark));
+            assert!(runtime_brand_svg("gemini", dark).unwrap().contains("data%3Aimage%2Fpng%3Bbase64"));
+            assert_ne!(runtime_brand_svg("kiro", dark), runtime_brand_svg("kimi", dark));
+        }
     }
 
     #[test]

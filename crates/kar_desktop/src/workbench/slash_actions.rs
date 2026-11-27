@@ -162,23 +162,7 @@ impl KarWorkbench {
         let chat = self.current_chat_id();
         let draft = matches!(self.access_mode, ChatAccessMode::NoneSelected);
         match action {
-            New => {
-                if let Some(info) = self
-                    .current_chat_info()
-                    .filter(|_| !self.access_mode.is_remote_paired())
-                {
-                    let directory = self
-                        .project_registry
-                        .project_for_chat(&info.workspace, info.id)
-                        .map_or_else(
-                            || self.effective_workspace_dir(),
-                            |project| project.root_path.clone(),
-                        );
-                    self.select_project_and_new_chat(directory, window, cx);
-                } else {
-                    self.start_new_chat(window, cx);
-                }
-            }
+            New => self.start_new_chat(window, cx),
             Model if draft => self.open_menu = Some(Menu::ComposerAgent),
             Reasoning if draft => self.open_menu = Some(Menu::ComposerEffort),
             Status | Model | Reasoning => self.open_menu = Some(Menu::ContextUsage),

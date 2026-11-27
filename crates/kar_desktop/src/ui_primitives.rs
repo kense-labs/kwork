@@ -14,7 +14,7 @@ use kui::{
 pub(crate) mod material;
 pub(crate) use material::{frosted_card, frosted_composer, frosted_panel};
 
-use crate::types::{OfficeKind, runtime_brand_id, runtime_brand_svg, runtime_display_name};
+use crate::types::{OfficeKind, runtime_brand_id, runtime_brand_svg};
 
 // ── UI Locale (`中` / `EN`) ──────────────────────────────────────────────────
 
@@ -364,17 +364,6 @@ impl StudioPalette {
                 inset: false,
             },
         ]
-    }
-}
-
-/// Project identity shared by breadcrumbs, the project picker and conversation rows.
-pub(crate) fn render_project_mark(name: &str, side: f32, s: &StudioPalette, cx: &App) -> AnyElement {
-    if (name.eq_ignore_ascii_case("Kwork") || name.eq_ignore_ascii_case(crate::APP_NAME))
-        && let Some(mark) = pro_app_artwork("kense", side, cx)
-    {
-        mark
-    } else {
-        render_folder_icon(side, s.muted)
     }
 }
 
@@ -753,82 +742,21 @@ fn decode_percent_svg_data_uri(data_uri: &str, dark_bg: bool) -> Option<Vec<u8>>
 
 type BrandImageCache = LazyLock<Mutex<HashMap<(String, bool), Arc<Image>>>>;
 
-/// Render an agent's official vector brand mark from `kar::brands::runtime_brands()` (Retina SVG
-/// cached per theme), falling back to KUI `pro_app_artwork` or a clean monogram tile.
-pub fn render_runtime_mark(runtime_id: &str, side: f32, s: &StudioPalette, cx: &App) -> AnyElement {
+/// Draw the same provider identity at every size, using GPUI's device-scale SVG cache.
+pub fn render_runtime_mark(runtime_id: &str, side: f32, s: &StudioPalette, _cx: &App) -> AnyElement {
     static BRAND_CACHE: BrandImageCache = LazyLock::new(|| Mutex::new(HashMap::new()));
 
     let brand_id = runtime_brand_id(runtime_id);
-    if brand_id == "aster" {
-        static ASTER: [OnceLock<Arc<Image>>; 2] = [const { OnceLock::new() }; 2];
-        let image = ASTER[s.dark as usize].get_or_init(|| {
-            let bytes: &[u8] = if s.dark {
-                include_bytes!("../../../assets/icons/aster-dark.svg")
-            } else {
-                include_bytes!("../../../assets/icons/aster-light.svg")
-            };
-            Arc::new(Image::from_bytes(ImageFormat::Svg, bytes.to_vec()))
+    if let Some(data_uri) = runtime_brand_svg(brand_id, s.dark) {
+        let mut images = BRAND_CACHE.lock().unwrap_or_else(|err| err.into_inner());
+        let key = (brand_id.to_owned(), s.dark);
+        let image = images.entry(key).or_insert_with(|| {
+            let bytes = decode_percent_svg_data_uri(data_uri, s.dark).expect("bundled runtime SVG");
+            Arc::new(Image::from_bytes(ImageFormat::Svg, bytes))
         });
         return pro_artwork(image.clone(), side).into_any_element();
     }
-    // Prefer KUI's crisp Claude starburst vector over CLI pixel-mascot for `"claude"`.
-    if brand_id == "claude"
-        && let Some(el) = pro_app_artwork("claude", side, cx)
-    {
-        return el;
-    }
-
-    if let Some(data_uri) = runtime_brand_svg(brand_id, s.dark) {
-        let cached = BRAND_CACHE
-            .lock()
-            .ok()
-            .and_then(|mut map| {
-                let key = (brand_id.to_owned(), s.dark);
-                if let Some(existing) = map.get(&key) {
-                    return Some(existing.clone());
-                }
-                let svg_bytes = decode_percent_svg_data_uri(data_uri, s.dark)?;
-                let image = Arc::new(Image::from_bytes(ImageFormat::Svg, svg_bytes));
-                map.insert(key, image.clone());
-                Some(image)
-            });
-        if let Some(image) = cached {
-            return pro_artwork(image, side).into_any_element();
-        }
-    }
-
-    let brand_key = match brand_id {
-        "codex" => Some("openai"),
-        "claude" => Some("claude"),
-        "grok" => Some("grok"),
-        "qwen" => Some("qwen"),
-        "gemini" | "antigravity" => Some("gemini"),
-        _ => None,
-    };
-    if let Some(key) = brand_key
-        && let Some(el) = pro_app_artwork(key, side, cx)
-    {
-        return el;
-    }
-
-    let initial = runtime_display_name(runtime_id)
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().to_string())
-        .unwrap_or_default();
-    div()
-        .size(px(side))
-        .flex_none()
-        .rounded(px((side * 0.28).round()))
-        .bg(s.active)
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px((side * 0.60).round()))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(s.ink)
-        .child(initial)
-        .into_any_element()
+    pro_icon(ProIcon::Terminal, side, s.muted)
 }
 
 /// Subtle keyboard shortcut badge (`⌘K`, `ESC`, `↵`).
@@ -1033,48 +961,14 @@ impl SkillCardGlyph {
     }
 }
 
-/// KUI `settings_models.rs` colorful provider logo tile (`Anthropic` coral, `Gemini` gradient, `Mistral` pixel, + Kar SVGs).
+/// A quiet frame for the same artwork shown in the sidebar and composer.
 pub fn render_provider_color_tile(
     runtime_id: &str,
     side: f32,
     s: &StudioPalette,
     cx: &App,
 ) -> Div {
-    static SPECIAL: [OnceLock<Arc<Image>>; 3] = [const { OnceLock::new() }; 3];
-    let lower = runtime_id.to_ascii_lowercase();
-    let special = if lower.contains("claude") || lower.contains("anthropic") {
-        Some((
-            0,
-            r##"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24"><path fill="#D97757" d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"/></svg>"##,
-        ))
-    } else if lower.contains("gemini") || lower.contains("antigravity") || lower.contains("google") {
-        Some((
-            1,
-            r##"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24"><defs><linearGradient id="g" x1="0" y1="24" x2="24" y2="0" gradientUnits="userSpaceOnUse"><stop stop-color="#1C7DFF"/><stop offset="0.52" stop-color="#1C69FF"/><stop offset="1" stop-color="#B04DFF"/></linearGradient></defs><path fill="url(#g)" d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"/></svg>"##,
-        ))
-    } else if lower.contains("mistral") || lower.contains("vibe") {
-        Some((
-            2,
-            r##"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="-2 -2 29 29"><rect x="0" y="0" width="5" height="5" fill="#FFD800"/><rect x="20" y="0" width="5" height="5" fill="#FFD800"/><rect x="0" y="5" width="5" height="5" fill="#FFAF00"/><rect x="5" y="5" width="5" height="5" fill="#FFAF00"/><rect x="15" y="5" width="5" height="5" fill="#FFAF00"/><rect x="20" y="5" width="5" height="5" fill="#FFAF00"/><rect x="0" y="10" width="5" height="5" fill="#FF8205"/><rect x="5" y="10" width="5" height="5" fill="#FF8205"/><rect x="10" y="10" width="5" height="5" fill="#FF8205"/><rect x="15" y="10" width="5" height="5" fill="#FF8205"/><rect x="20" y="10" width="5" height="5" fill="#FF8205"/><rect x="0" y="15" width="5" height="5" fill="#FA500F"/><rect x="10" y="15" width="5" height="5" fill="#FA500F"/><rect x="20" y="15" width="5" height="5" fill="#FA500F"/><rect x="0" y="20" width="5" height="5" fill="#E10500"/><rect x="20" y="20" width="5" height="5" fill="#E10500"/></svg>"##,
-        ))
-    } else {
-        None
-    };
-
-    let glyph_side = (side * 0.54).round().max(14.);
-    let inner: AnyElement = if let Some((slot, markup)) = special {
-        let image = SPECIAL[slot]
-            .get_or_init(|| {
-                Arc::new(Image::from_bytes(
-                    ImageFormat::Svg,
-                    markup.as_bytes().to_vec(),
-                ))
-            })
-            .clone();
-        pro_artwork(image, glyph_side).into_any_element()
-    } else {
-        render_runtime_mark(runtime_id, glyph_side, s, cx)
-    };
+    let glyph_side = (side * 0.67).round();
 
     div()
         .size(px(side))
@@ -1086,7 +980,7 @@ pub fn render_provider_color_tile(
         .flex()
         .items_center()
         .justify_center()
-        .child(inner)
+        .child(render_runtime_mark(runtime_id, glyph_side, s, cx))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

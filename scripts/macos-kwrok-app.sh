@@ -25,6 +25,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/Licenses"
 install -m755 "$binary" "$app/Contents/MacOS/Kwrok"
 install -m644 "$root/assets/icons/Kwork.icns" "$app/Contents/Resources/Kwork.icns"
 install -m644 "$root/LICENSE-MIT" "$root/LICENSE" "$root/NOTICE" "$app/Contents/Resources/Licenses/"
+mkdir -p "$app/Contents/Resources/Licenses/AgentArtwork"
+install -m644 "$root/assets/icons/agents/SOURCES.md" "$root/assets/icons/agents/LICENSE-ACP" "$app/Contents/Resources/Licenses/AgentArtwork/"
 "$root/scripts/macos-dictation.sh" "$app"
 python3 "$root/scripts/third-party-licenses.py" "$app/Contents/Resources/Licenses/THIRD_PARTY_LICENSES.txt" kar_desktop kwrok_dictation
 cat > "$app/Contents/Info.plist" <<PLIST

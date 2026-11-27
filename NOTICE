@@ -33,6 +33,9 @@ Kantor includes code from these projects, under their own licences:
     crates/kantor_spell/dict/LICENSE-id_ID.txt. Modified by Kantor (encoding line,
     904 rare entries removed, 2026-11-13/14): see crates/kantor_spell/dict/README.md.
 
+* Agent marks identify their respective products. Asset sources and publisher notices are in
+  assets/icons/agents/SOURCES.md and the application bundle's Licenses/AgentArtwork directory.
+
 Other dependencies are linked as crates; their licences are checked by cargo-deny (deny.toml).
 
 ----------------------------------------------------------------------------------------------

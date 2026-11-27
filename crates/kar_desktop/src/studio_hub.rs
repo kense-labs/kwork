@@ -2374,8 +2374,13 @@ fn project_registry_file(chat_dir: &Path) -> PathBuf {
     chat_dir.join("kar_desktop_projects.json")
 }
 
-fn normalize_project_path(path: &Path) -> PathBuf {
+pub(crate) fn normalize_project_path(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+pub(crate) fn project_id_for_path(path: &Path) -> String {
+    let root = normalize_project_path(path);
+    format!("proj-{}", Uuid::new_v5(&Uuid::NAMESPACE_URL, root.as_os_str().as_encoded_bytes()))
 }
 
 /// A display alias for the generic workspace folder. Storage and routing use its original path.
@@ -2407,6 +2412,14 @@ impl ProjectRegistry {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
+        // Older IDs used the registry length. Removing and adding another
+        // same-named folder could give two different roots the same identity.
+        let mut seen = BTreeSet::new();
+        for project in &mut reg.projects {
+            if !seen.insert(project.id.clone()) {
+                project.id = project_id_for_path(&project.root_path);
+            }
+        }
         reg.ensure_project(initial_workspace);
         reg
     }
@@ -2428,14 +2441,7 @@ impl ProjectRegistry {
             return existing.clone();
         }
         let name = derive_project_name(&norm);
-        let id = format!(
-            "proj-{}-{}",
-            name.chars()
-                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-                .collect::<String>()
-                .to_ascii_lowercase(),
-            self.projects.len() + 1
-        );
+        let id = project_id_for_path(&norm);
         let proj = StudioProject {
             id,
             name,
@@ -2497,21 +2503,17 @@ impl ProjectRegistry {
         self.chat_worktrees.get(&chat_id)
     }
 
-    /// Match a chat workspace (or its parent repo root when running inside an isolated worktree)
-    /// to a registered `StudioProject`.
+    /// New chats in a managed worktree belong to its project, while their tools run in the worktree.
+    pub(crate) fn project_root_for_chat<'a>(&'a self, chat_workspace: &'a Path, chat_id: Uuid) -> &'a Path {
+        self.worktree_for(chat_id).map_or(chat_workspace, |wt| wt.repo_root.as_path())
+    }
+
     pub fn project_for_chat(&self, chat_workspace: &Path, chat_id: Uuid) -> Option<&StudioProject> {
-        let target = self
-            .chat_worktrees
-            .get(&chat_id)
-            .map(|wt| normalize_project_path(&wt.repo_root))
-            .unwrap_or_else(|| normalize_project_path(chat_workspace));
-        self.projects
-            .iter()
-            .filter(|p| {
-                let root = normalize_project_path(&p.root_path);
-                target == root || target.starts_with(&root)
-            })
-            .max_by_key(|p| p.root_path.as_os_str().len())
+        let target = self.project_root_for_chat(chat_workspace, chat_id);
+        self.projects.iter().find(|p| p.root_path == target).or_else(|| {
+            let canonical = target.canonicalize().ok()?;
+            self.projects.iter().find(|p| p.root_path == canonical)
+        })
     }
 }
 
@@ -2953,6 +2955,38 @@ index 111..222 100644
         assert_eq!(project_display_name(&project.name), "Kwork");
         assert_eq!(project_display_name("Work Space"), "Kwork");
         assert_eq!(project_display_name("Workspace Notes"), "Workspace Notes");
+    }
+
+    #[test]
+    fn sidebar_projects_use_the_workspace_path_across_removals_and_old_id_collisions() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = temp.path().join("history");
+        let first = temp.path().join("team/report");
+        let second = temp.path().join("personal/report");
+        let nested = first.join("report");
+        for path in [&first, &second, &nested] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let chat = Uuid::new_v4();
+        let mut projects = ProjectRegistry::default();
+        let a = projects.ensure_project(&first);
+        let b = projects.ensure_project(&second);
+        assert_ne!(a.id, b.id);
+        assert!(projects.project_for_chat(&nested, chat).is_none());
+        assert_eq!(projects.project_for_chat(&second, chat), Some(&b));
+        projects.remove_project(&a.id);
+        let c = projects.ensure_project(&nested);
+        assert_ne!(b.id, c.id);
+        assert_eq!(c.id, project_id_for_path(&nested));
+        assert_eq!(a.id, projects.ensure_project(&first).id);
+
+        for p in &mut projects.projects { p.id = "proj-report-2".into(); }
+        projects.save(&store).unwrap();
+        let restored = ProjectRegistry::load_or_seed(&store, &first);
+        let distinct: BTreeSet<_> = restored.projects.iter().map(|p| &p.id).collect();
+        assert_eq!(distinct.len(), 3);
+        assert_eq!(restored.projects[0].id, "proj-report-2");
+        assert_eq!(restored.project_for_chat(&nested, chat).unwrap().id, c.id);
     }
 
     #[test]

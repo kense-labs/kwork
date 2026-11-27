@@ -203,7 +203,6 @@ pub enum Menu {
     DetailsBranch,
     ComposerBranch,
     GitMore,
-    SidebarFilter,
     SidebarMore,
     ThreadActions(Uuid),
     DetailsOpenIn,
@@ -229,7 +228,6 @@ impl Menu {
             Self::DetailsBranch => "menu-details-branch",
             Self::ComposerBranch => "menu-composer-branch",
             Self::GitMore => "menu-git-more",
-            Self::SidebarFilter => "menu-sidebar-filter",
             Self::SidebarMore => "menu-sidebar-more",
             Self::ThreadActions(_) => "menu-sidebar-thread-actions",
             Self::DetailsOpenIn => "menu-details-open-in",
@@ -481,7 +479,6 @@ pub struct KarWorkbench {
     navigation: Vec<WorkspaceLocation>,
     navigation_index: usize,
     pub sidebar_filter: String,
-    pub sidebar_project_filter: Option<PathBuf>,
     pub settled_chats: BTreeSet<Uuid>,
     pub(crate) hosted_writer: Option<Uuid>,
     pub(crate) sidebar_metadata: BTreeMap<Uuid, crate::kar_bridge::SidebarMetadata>,
@@ -767,6 +764,7 @@ pub struct KarWorkbench {
 
 impl KarWorkbench {
     pub fn new(mut config: WorkbenchConfig, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        config.workspace_dir = crate::studio_hub::normalize_project_path(&config.workspace_dir);
         config.resume_last_chat &= config.subscribe_http.is_none()
             && !config.start_demo_chat && !config.start_brief_demo && !config.start_coedit_demo
             && !config.open_tasks_inbox && !config.open_office_gallery
@@ -1486,7 +1484,6 @@ impl KarWorkbench {
             navigation_index: navigation.len() - 1,
             navigation,
             sidebar_filter: String::new(),
-            sidebar_project_filter: loaded_prefs.active_project_filter.clone(),
             settled_chats: loaded_prefs.settled_chats.clone(),
             sidebar_metadata: BTreeMap::new(),
             hosted_writer: None,
@@ -2771,6 +2768,9 @@ impl KarWorkbench {
                     self.projected.queued_inputs.clear();
                 }
                 self.access_mode = mode;
+                if chat_changed {
+                    self.follow_selected_project();
+                }
                 self.sync_plan_placeholder(cx);
                 let live = matches!(self.access_mode, ChatAccessMode::HttpReadOnly { .. } | ChatAccessMode::RemoteController { .. });
                 if (chat_changed || live) && self.main_stage_view == MainStageView::Conversation {
@@ -2986,6 +2986,7 @@ impl KarWorkbench {
                     }
                 }
                 if switched_chat || workspace_changed {
+                    self.follow_selected_project();
                     self.sync_workspace_panels(window, cx);
                 }
                 if self.chat_is_open() && self.projected.info.is_some()
@@ -3329,6 +3330,9 @@ impl KarWorkbench {
                 self.project_registry.ensure_project(&meta.repo_root);
                 self.project_registry.chat_worktrees.insert(chat_id, meta);
                 let _ = self.project_registry.save(&self.config.chat_dir);
+                if self.current_chat_id() == Some(chat_id) {
+                    self.follow_selected_project();
+                }
                 self.sync_workspace_panels(window, cx);
                 self.notify_toast(format!("已创建隔离 Worktree `{branch}`"), cx);
             }
@@ -3503,9 +3507,12 @@ impl KarWorkbench {
                 }
             }
             KarBridgeEvent::GitRepoCloned { repo_path } => {
-                let _ = self.project_registry.ensure_project(&repo_path);
-                let _ = self.project_registry.save(&self.config.chat_dir);
-                self.switch_workspace_dir(repo_path, window, cx);
+                // A background clone can finish after the user has opened a different chat.
+                let project = self.project_registry.ensure_project(&repo_path);
+                match self.project_registry.save(&self.config.chat_dir) {
+                    Ok(()) => self.notify_toast(format!("{} {}", self.ui_locale.pick("已添加项目", "Project added"), project.name), cx),
+                    Err(err) => self.notify_warning(format!("{}: {err}", self.ui_locale.pick("无法保存项目列表", "Could not save the project list")), cx),
+                }
             }
             KarBridgeEvent::DesktopUpdateChecked(report) => {
                 self.notify_toast(report.status_message.clone(), cx);
@@ -3794,12 +3801,30 @@ impl KarWorkbench {
         })
     }
 
+    // A local thread owns both its execution directory and the project used
+    // by the next new chat. A shared or remote thread cannot set a local project.
+    fn follow_selected_project(&mut self) {
+        if matches!(self.access_mode, ChatAccessMode::WriteController { .. }
+            | ChatAccessMode::LocalReadOnlySubscriber { .. } | ChatAccessMode::ArchivedReadOnly { .. })
+            && let Some(info) = self.current_chat_info()
+        {
+            let root = self.project_registry.project_root_for_chat(&info.workspace, info.id);
+            let group = self.project_registry.project_for_chat(&info.workspace, info.id)
+                .map_or_else(|| crate::studio_hub::project_id_for_path(root), |project| project.id.clone());
+            if root != self.config.workspace_dir {
+                self.config.workspace_dir = crate::studio_hub::normalize_project_path(root);
+            }
+            if self.project_registry.collapsed_projects.remove(&group) {
+                let _ = self.project_registry.save(&self.config.chat_dir);
+            }
+        }
+    }
+
     /// Active workspace directory: returns the chat's isolated Git Worktree (or chat workspace)
     /// when a local chat is open, otherwise `self.config.workspace_dir`.
     pub fn effective_workspace_dir(&self) -> PathBuf {
         if let Some(cid) = self.current_chat_id()
             && let Some(wt) = self.project_registry.worktree_for(cid)
-            && wt.worktree_path.is_dir()
         {
             return wt.worktree_path.clone();
         }
@@ -4033,15 +4058,20 @@ impl KarWorkbench {
         cx.notify();
     }
 
+    fn select_project(&mut self, dir: &Path) {
+        let project = self.project_registry.ensure_project(dir);
+        self.project_registry.collapsed_projects.remove(&project.id);
+        let _ = self.project_registry.save(&self.config.chat_dir);
+        self.config.workspace_dir = project.root_path;
+    }
+
     pub fn switch_workspace_dir(
         &mut self,
         dir: PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let proj = self.project_registry.ensure_project(&dir);
-        let _ = self.project_registry.save(&self.config.chat_dir);
-        self.config.workspace_dir = proj.root_path.clone();
+        self.select_project(&dir);
         self.switch_composer_draft(window, cx);
         self.sync_workspace_panels(window, cx);
         cx.notify();
@@ -4053,8 +4083,7 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.restore_queued_prompt(window, cx);
-        self.switch_workspace_dir(dir, window, cx);
+        self.select_project(&dir);
         self.start_new_chat(window, cx);
     }
 
