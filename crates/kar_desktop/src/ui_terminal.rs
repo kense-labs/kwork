@@ -648,9 +648,6 @@ impl KarWorkbench {
                 .into_any_element()
         };
 
-        let line_idle = s.line;
-        let line_hot = s.brand_action;
-        let dragging = self.dragging_terminal;
         div()
             .id(view_id)
             .relative()
@@ -666,7 +663,6 @@ impl KarWorkbench {
                         .h(px(4.))
                         .flex_none()
                         .cursor_row_resize()
-                        .group("term-resize-handle")
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|wb, ev: &MouseDownEvent, _, cx| {
@@ -676,12 +672,6 @@ impl KarWorkbench {
                                 cx.stop_propagation();
                                 cx.notify();
                             }),
-                        )
-                        .child(
-                            div()
-                                .h(px(if dragging { 2. } else { 1. }))
-                                .bg(if dragging { line_hot } else { line_idle })
-                                .group_hover("term-resize-handle", move |d| d.bg(line_hot)),
                         ),
                 )
             })
