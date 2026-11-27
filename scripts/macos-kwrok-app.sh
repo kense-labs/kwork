@@ -20,7 +20,7 @@ cleanup() {
 }
 trap cleanup EXIT
 root="$(cd "$(dirname "$0")/.." && pwd)"
-version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' "$root/Cargo.toml" | head -1)"
+version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' "$root/crates/kar_desktop/Cargo.toml" | head -1)"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/Licenses"
 install -m755 "$binary" "$app/Contents/MacOS/Kwrok"
 install -m644 "$root/assets/icons/Kwork.icns" "$app/Contents/Resources/Kwork.icns"
