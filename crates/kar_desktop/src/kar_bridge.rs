@@ -12,6 +12,7 @@ pub use undo::{UndoFailure, UndoOutcome, UndoTarget};
 pub(crate) use undo::input_outstanding;
 mod sidebar_journals;
 mod citations;
+mod model_catalog;
 mod hosted;
 #[cfg(all(test,unix))]
 mod side_question_test;
@@ -70,7 +71,7 @@ use crate::{
     },
     types::{
         ChatAccessMode, ChatListEntry, FeedConnectionState, PendingPromptAttempt,
-        ProviderAuthState, ProviderAvailability, ProviderModelOption, ProviderStatusInfo,
+        ModelCatalogState, ProviderAuthState, ProviderAvailability, ProviderModelOption, ProviderStatusInfo,
         SelectionTarget, runtime_display_name, runtime_supports_effort,
     },
 };
@@ -111,6 +112,12 @@ pub enum KarCommand {
         workspace: PathBuf,
     },
     ProbeProvidersOnly,
+    ProviderAccountChanged { runtime: String },
+    RetryModelCatalog { runtime: String, workspace: PathBuf },
+    ModelCatalogRead {
+        runtime: String, workspace: PathBuf, request: Uuid,
+        status: ModelCatalogState, models: Vec<ProviderModelOption>,
+    },
     ApplyProbedProviders {
         generation: u64,
         providers: Vec<ProviderStatusInfo>,
@@ -448,7 +455,11 @@ pub enum KarBridgeEvent {
         workspace: PathBuf,
     },
     ProvidersProbing(bool),
-    ProvidersUpdated { providers: Vec<ProviderStatusInfo>, accounts_checked: bool },
+    ProvidersUpdated { providers: Vec<ProviderStatusInfo>, accounts_checked: bool, workspace: PathBuf },
+    ModelCatalogInvalidated { runtime: String },
+    ModelCatalogUpdated {
+        runtime: String, workspace: PathBuf, status: ModelCatalogState, models: Vec<ProviderModelOption>,
+    },
     ChatsListed(Vec<ChatListEntry>),
     ChatsPatched { dir: PathBuf, changed: Vec<ChatListEntry>, removed: Vec<Uuid> },
     ReadReceiptsChanged { dir: PathBuf, bytes: Vec<u8> },
@@ -851,6 +862,7 @@ struct WorkerState {
     sidebar_changes: sidebar_journals::Changes,
     forge_read: Option<JoinHandle<()>>,
     probe_generation: u64,
+    catalog_requests: HashMap<String, (PathBuf, Uuid)>,
     demo_turns: Vec<ChatTurn>,
     in_demo: bool,
     running_terminals: HashMap<Uuid, watch::Sender<bool>>,
@@ -1482,6 +1494,8 @@ pub fn fast_seed_providers_from_path() -> Vec<ProviderStatusInfo> {
                 can_install,
                 install_lines,
                 models: Vec::new(),
+                model_catalog: ModelCatalogState::Loading,
+                catalog_workspace: None,
                 quota_summary: None,
                 id,
             }
@@ -1576,6 +1590,8 @@ async fn probe_all_providers(workspace: PathBuf) -> Vec<ProviderStatusInfo> {
                         .map(|l| (l.line.to_owned(), l.description.to_owned()))
                         .collect(),
                     models: Vec::new(),
+                    model_catalog: ModelCatalogState::Failed,
+                    catalog_workspace: None,
                     quota_summary: None,
                     id,
                 }
@@ -1671,6 +1687,11 @@ async fn probe_all_providers(workspace: PathBuf) -> Vec<ProviderStatusInfo> {
                 }
             };
 
+            let model_catalog = match &row.models {
+                Some(Probe::Ok { .. }) => ModelCatalogState::Available,
+                Some(Probe::Unsupported) => ModelCatalogState::Unsupported,
+                _ => ModelCatalogState::Failed,
+            };
             let models = match row.models {
                 Some(Probe::Ok { value, .. }) => value
                     .iter()
@@ -1692,6 +1713,8 @@ async fn probe_all_providers(workspace: PathBuf) -> Vec<ProviderStatusInfo> {
                 can_install,
                 install_lines,
                 models,
+                model_catalog,
+                catalog_workspace: None,
                 quota_summary,
             }
         })
@@ -2623,6 +2646,7 @@ async fn worker_loop(
         sidebar_changes: Default::default(),
         forge_read: None,
         probe_generation: 0,
+        catalog_requests: HashMap::new(),
         demo_turns: build_demo_seed_turns(),
         in_demo: false,
         running_terminals: HashMap::new(),
@@ -2785,6 +2809,20 @@ async fn worker_loop(
             } => {
                 init_store_and_providers(&mut state, store_dir, workspace);
             }
+            KarCommand::RetryModelCatalog { runtime, workspace } => {
+                state.request_model_catalog(runtime, workspace);
+            }
+            KarCommand::ModelCatalogRead { runtime, workspace, request, status, models } => {
+                if state.catalog_requests.get(&runtime).is_some_and(|(_, current)| *current == request) {
+                    state.catalog_requests.remove(&runtime);
+                    state.emit(KarBridgeEvent::ModelCatalogUpdated { runtime, workspace, status, models });
+                }
+            }
+            KarCommand::ProviderAccountChanged { runtime } => {
+                state.catalog_requests.remove(&runtime);
+                state.emit(KarBridgeEvent::ModelCatalogInvalidated { runtime });
+                state.spawn_provider_probe();
+            }
             KarCommand::ProbeProvidersOnly => {
                 state.spawn_provider_probe();
             }
@@ -2804,7 +2842,7 @@ async fn worker_loop(
                     .map(|p| (p.id.clone(), p.goals_supported))
                     .collect();
                 state.emit(KarBridgeEvent::ProvidersProbing(false));
-                state.emit(KarBridgeEvent::ProvidersUpdated { providers, accounts_checked: true });
+                state.emit(KarBridgeEvent::ProvidersUpdated { providers, accounts_checked: true, workspace: state.workspace.clone() });
             }
             KarCommand::Registry(action) => {
                 let engine = state.engine.clone();
@@ -5285,7 +5323,7 @@ async fn worker_loop(
                                     text: format!("{name} API 密钥已保存并生效"),
                                     warning: false,
                                 });
-                                let _ = cmd_tx.send(KarCommand::ProbeProvidersOnly).await;
+                                let _ = cmd_tx.send(KarCommand::ProviderAccountChanged { runtime: runtime_id.clone() }).await;
                             }
                             Err(err) => {
                                 let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
@@ -5355,7 +5393,7 @@ async fn worker_loop(
                                 text: format!("{name} 登录成功！"),
                                 warning: false,
                             });
-                            let _ = cmd_tx.send(KarCommand::ProbeProvidersOnly).await;
+                            let _ = cmd_tx.send(KarCommand::ProviderAccountChanged { runtime: runtime_id.clone() }).await;
                         }
                         Ok(other) => {
                             let detail = match other {
@@ -5400,7 +5438,7 @@ async fn worker_loop(
                                 text: format!("已退出 {name} 账号"),
                                 warning: false,
                             });
-                            let _ = cmd_tx.send(KarCommand::ProbeProvidersOnly).await;
+                            let _ = cmd_tx.send(KarCommand::ProviderAccountChanged { runtime: runtime_id.clone() }).await;
                         }
                         Ok(kar::account::LogoutResult::Failed { detail, .. })
                         | Ok(kar::account::LogoutResult::Unsupported { detail, .. }) => {
@@ -5695,6 +5733,7 @@ fn init_store_and_providers(
         state.chat_list_cache.clear();
     }
     state.sidebar_changes = sidebar_journals::Changes::watch(&store_dir);
+    state.catalog_requests.clear();
     state.store_dir = store_dir.clone();
     state.workspace = workspace.clone();
 
@@ -5756,7 +5795,7 @@ fn init_store_and_providers(
         .iter()
         .map(|p| (p.id.clone(), p.goals_supported))
         .collect();
-    state.emit(KarBridgeEvent::ProvidersUpdated { providers: fast_providers, accounts_checked: false });
+    state.emit(KarBridgeEvent::ProvidersUpdated { providers: fast_providers, accounts_checked: false, workspace: state.workspace.clone() });
 
     // Executable discovery precedes account and model checks.
     state.spawn_provider_probe();

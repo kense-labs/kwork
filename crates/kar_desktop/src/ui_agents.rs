@@ -14,7 +14,7 @@ use kui::{
 use crate::{
     kar_bridge::KarCommand,
     prefs::{CustomAcpAgent, all_approval_modes},
-    types::{ProviderAvailability, ProviderReadiness, runtime_display_name},
+    types::{ModelCatalogState, ProviderAvailability, ProviderReadiness, ProviderStatusInfo, runtime_display_name},
     ui_motion::{
         Tactile, disclosure_line, icon_button_sm, overflow_label, primary_button_sm, soft_button,
         soft_button_sm, spinner, text_button_sm,
@@ -46,6 +46,70 @@ impl crate::ui_primitives::UiLocale {
 }
 
 impl KarWorkbench {
+    pub(crate) fn request_model_catalog(&self, runtime: &str) {
+        if self
+            .providers
+            .iter()
+            .find(|p| p.id == runtime)
+            .is_none_or(ProviderStatusInfo::is_ready)
+        {
+            self.bridge.send(KarCommand::RetryModelCatalog {
+                runtime: runtime.to_owned(),
+                workspace: self.effective_workspace_dir(),
+            });
+        }
+    }
+
+    pub(crate) fn model_catalog_notice(
+        &self,
+        provider: &ProviderStatusInfo,
+        s: &StudioPalette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let loc = self.ui_locale;
+        let (message, retry) = match provider.model_catalog {
+            ModelCatalogState::Loading => (loc.pick("正在读取模型列表…", "Loading models…"), false),
+            ModelCatalogState::Failed => {
+                (loc.pick("未能读取模型列表", "Couldn't load models"), true)
+            }
+            ModelCatalogState::Unsupported => (
+                loc.pick(
+                    "此智能体不提供模型列表",
+                    "This agent doesn't publish a model list",
+                ),
+                false,
+            ),
+            ModelCatalogState::Available if provider.models.is_empty() => (
+                loc.pick(
+                    "此智能体未列出其他模型",
+                    "This agent listed no other models",
+                ),
+                true,
+            ),
+            ModelCatalogState::Available => return None,
+        };
+        let runtime = provider.id.clone();
+        Some(
+            div()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .px(px(8.))
+                .py(px(5.))
+                .text_size(s.font_size(FS_META))
+                .text_color(s.muted)
+                .child(div().min_w_0().child(message))
+                .when(retry, |row| {
+                    row.child(
+                        text_button_sm("retry-model-catalog", loc.pick("重试", "Retry"), s)
+                            .on_press(cx, move |wb, _, _| wb.request_model_catalog(&runtime)),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
     pub(crate) fn new_chat_approval_picker(
         &self,
         id: &'static str,
@@ -222,7 +286,10 @@ impl KarWorkbench {
                     .child(default_action)
                     .child(manage.aria(manage_label).expanded(expanded).on_press(
                         cx,
-                        move |_, _, cx| {
+                        move |wb, _, cx| {
+                            if !expanded {
+                                wb.request_model_catalog(&id);
+                            }
                             active.update(cx, |value, _| *value = (!expanded).then(|| id.clone()));
                             cx.notify();
                         },
@@ -365,27 +432,9 @@ impl KarWorkbench {
                     let include_hidden = *show_hidden_models.read(cx);
                     let rt_id = agent.id.clone();
 
-                    let mut catalog: Vec<(String, String)> = agent
-                        .models
-                        .iter()
-                        .map(|m| {
-                            let lbl = if m.label.trim().is_empty() {
-                                m.id.clone()
-                            } else {
-                                m.label.clone()
-                            };
-                            (m.id.clone(), lbl)
-                        })
-                        .collect();
-                    if let Some(customs) = self.prefs.custom_models.get(&rt_id) {
-                        for cm in customs {
-                            if !catalog.iter().any(|(id, _)| id == cm) {
-                                catalog.push((cm.clone(), format!("{cm} · {}", loc.pick("自定义", "Custom"))));
-                            }
-                        }
-                    }
-                    // Sort favorites to the front
-                    catalog.sort_by_key(|(mid, _)| !self.prefs.is_model_favorite(&rt_id, mid));
+                    let catalog = self.prefs.model_choices(
+                        &rt_id, &agent.models, selected.as_deref(), &mq, include_hidden, loc,
+                    );
 
                     let mut pills = div().w_full().flex().flex_wrap().gap(px(6.));
                     // Auto-default chip
@@ -411,15 +460,6 @@ impl KarWorkbench {
 
                     for (mix, (mid, mlbl)) in catalog.into_iter().enumerate() {
                         let is_hidden = self.prefs.is_model_hidden(&rt_id, &mid);
-                        if is_hidden && !include_hidden && selected.as_ref() != Some(&mid) {
-                            continue;
-                        }
-                        if !mq.is_empty()
-                            && !mid.to_lowercase().contains(&mq)
-                            && !mlbl.to_lowercase().contains(&mq)
-                        {
-                            continue;
-                        }
                         let is_sel = selected.as_ref() == Some(&mid);
                         let is_fav = self.prefs.is_model_favorite(&rt_id, &mid);
                         let mid_sel = mid.clone();
@@ -555,6 +595,7 @@ impl KarWorkbench {
                                     ),
                             )
                             .child(pills)
+                            .children(self.model_catalog_notice(agent, s, cx))
                             .child(
                                 settings_input_action_row()
                                     .child(div().flex_1().min_w_0().child(custom_model_inp.clone()))

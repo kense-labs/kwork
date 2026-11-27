@@ -15,7 +15,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::{
     engine::Engine,
-    types::{ProviderAuthState, ProviderAvailability, ProviderModelOption, ProviderStatusInfo},
+    types::{ModelCatalogState, ProviderAuthState, ProviderAvailability, ProviderModelOption, ProviderStatusInfo},
 };
 
 pub(crate) const ID: &str = "aster";
@@ -108,6 +108,8 @@ pub(crate) fn seed() -> ProviderStatusInfo {
         can_install: release().is_some(),
         install_lines: vec![],
         models: vec![],
+        model_catalog: ModelCatalogState::Loading,
+        catalog_workspace: None,
         quota_summary: None,
     }
 }
@@ -162,6 +164,30 @@ async fn metadata(binary: &Path, workspace: &Path) -> Result<Value> {
     result.context("Aster ACP 初始化超时")?
 }
 
+fn catalog_models(catalog: &Value) -> Vec<ProviderModelOption> {
+    catalog["availableModels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let id = row["modelId"].as_str()?;
+            Some(ProviderModelOption {
+                id: id.into(),
+                label: row["name"].as_str().unwrap_or(id).into(),
+                is_default: catalog["currentModelId"] == id,
+                // Aster's effort-setting wire contract differs from Kar's generic ACP adapters.
+                effort_levels: vec![],
+            })
+        })
+        .collect()
+}
+
+pub(crate) async fn read_models(workspace: &Path) -> Result<Vec<ProviderModelOption>> {
+    let binary = find_binary().context("Aster is unavailable")?;
+    let meta = metadata(&binary, workspace).await?;
+    Ok(catalog_models(&meta["modelState"]))
+}
+
 pub(crate) async fn probe(engine: Option<&Engine>, workspace: &Path) -> ProviderStatusInfo {
     let mut provider = seed();
     let Some(binary) = find_binary() else {
@@ -190,21 +216,8 @@ pub(crate) async fn probe(engine: Option<&Engine>, workspace: &Path) -> Provider
             provider.auth = ProviderAuthState::Unknown {
                 note: "模型认证由 Aster 配置管理".into(),
             };
-            provider.models = catalog["availableModels"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|row| {
-                    let id = row["modelId"].as_str()?;
-                    Some(ProviderModelOption {
-                        id: id.into(),
-                        label: row["name"].as_str().unwrap_or(id).into(),
-                        is_default: catalog["currentModelId"] == id,
-                        // Aster's effort-setting wire contract differs from Kar's generic ACP adapters.
-                        effort_levels: vec![],
-                    })
-                })
-                .collect();
+            provider.models = catalog_models(catalog);
+            provider.model_catalog = ModelCatalogState::Available;
         }
         Err(err) => {
             provider.availability = ProviderAvailability::Failed {

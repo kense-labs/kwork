@@ -13,7 +13,7 @@ use crate::{
     engine::Engine,
     kar_bridge::{KarBridgeEvent, augmented_path_os},
     prefs::CustomAcpAgent,
-    types::{ProviderAuthState, ProviderAvailability, ProviderStatusInfo},
+    types::{ModelCatalogState, ProviderAuthState, ProviderAvailability, ProviderStatusInfo},
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -47,8 +47,15 @@ pub(crate) fn name(runtime: &str) -> Option<String> {
 }
 
 pub(crate) fn merge(providers: &mut Vec<ProviderStatusInfo>, installed: &[Installed]) {
-    providers.retain(|p| !p.id.starts_with("acp:") && !p.id.starts_with("acp-profile:"));
+    providers.retain(|p| {
+        if crate::aster::is_aster(&p.id) || !(p.id.starts_with("acp:") || p.id.starts_with("acp-profile:")) {
+            return true;
+        }
+        installed.iter().any(|item| item.runtime == p.id
+            && matches!(&p.availability, ProviderAvailability::Available { version, .. } if *version == item.version))
+    });
     for item in installed {
+        if providers.iter().any(|p| p.id == item.runtime) { continue; }
         providers.push(ProviderStatusInfo {
             id: item.runtime.clone(),
             protocol: "acp".into(),
@@ -64,6 +71,8 @@ pub(crate) fn merge(providers: &mut Vec<ProviderStatusInfo>, installed: &[Instal
             can_install: false,
             install_lines: vec![],
             models: vec![],
+            model_catalog: ModelCatalogState::Loading,
+            catalog_workspace: None,
             quota_summary: None,
         });
     }

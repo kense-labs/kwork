@@ -2561,6 +2561,9 @@ impl KarWorkbench {
                 }
             }
             KarBridgeEvent::StoreReady { .. } => {
+                for provider in &mut self.providers {
+                    provider.clear_model_catalog();
+                }
                 self.bridge.send(KarCommand::Registry(crate::registry::Action::List));
                 for agent in self.prefs.custom_acp_agents.iter().filter(|agent| agent.enabled) {
                     self.bridge.send(KarCommand::Registry(crate::registry::Action::Register(agent.clone())));
@@ -2571,10 +2574,23 @@ impl KarWorkbench {
                     self.bridge.send(KarCommand::StoreForgeCredentials(crate::kar_bridge::ForgeCredentials(legacy)));
                 }
             }
+            KarBridgeEvent::ModelCatalogInvalidated { runtime } => {
+                if let Some(provider) = self.providers.iter_mut().find(|p| p.id == runtime) {
+                    provider.clear_model_catalog();
+                }
+            }
             KarBridgeEvent::ProvidersProbing(probing) => {
                 self.providers_probing = probing;
             }
-            KarBridgeEvent::ProvidersUpdated { providers: mut list, accounts_checked } => {
+            KarBridgeEvent::ModelCatalogUpdated { runtime, workspace, status, models } => {
+                if workspace == self.effective_workspace_dir()
+                    && let Some(provider) = self.providers.iter_mut().find(|p| p.id == runtime && p.is_ready())
+                {
+                    provider.apply_picker_catalog(workspace, status, models);
+                    self.reconcile_selected_model();
+                }
+            }
+            KarBridgeEvent::ProvidersUpdated { providers: mut list, accounts_checked, workspace } => {
                 self.provider_accounts_checked = accounts_checked;
                 if accounts_checked {
                     for provider in &list {
@@ -2584,20 +2600,18 @@ impl KarWorkbench {
                     }
                 }
                 crate::registry::merge(&mut list, &self.registry_installed);
+                let current_workspace = self.effective_workspace_dir();
+                for provider in &mut list {
+                    let previous = self.providers.iter().find(|item| item.id == provider.id);
+                    provider.merge_scan_catalog(&workspace, &current_workspace, previous);
+                }
                 if crate::aster::is_aster(&self.selected_runtime)
                     && let Some(aster) = list.iter().find(|p| crate::aster::is_aster(&p.id))
                 {
                     self.selected_runtime = aster.id.clone();
                 }
-                if let Some(sel_model) = &self.selected_model
-                    && let Some(agent) = list.iter().find(|p| p.id == self.selected_runtime)
-                    && !agent.models.is_empty()
-                    && !agent.models.iter().any(|m| &m.id == sel_model)
-                    && !self.prefs.has_custom_model(&agent.id, sel_model)
-                {
-                    self.selected_model = None;
-                }
                 self.providers = list;
+                self.reconcile_selected_model();
                 self.refresh_agent_notice(cx);
             }
             KarBridgeEvent::SidebarMetadata { dir, rows } => {
@@ -3639,6 +3653,18 @@ impl KarWorkbench {
         }
     }
 
+    fn reconcile_selected_model(&mut self) {
+        if let Some(selected) = &self.selected_model
+            && let Some(provider) = self.providers.iter().find(|p| p.id == self.selected_runtime)
+            && provider.model_catalog == crate::types::ModelCatalogState::Available
+            && !provider.models.is_empty()
+            && !provider.models.iter().any(|m| &m.id == selected)
+            && !self.prefs.has_custom_model(&provider.id, selected)
+        {
+            self.selected_model = None;
+        }
+    }
+
     pub(crate) fn save_agent_choice(&mut self, cx: &mut Context<Self>) {
         self.write_chat_preference(
             "agent-choice",
@@ -3889,6 +3915,15 @@ impl KarWorkbench {
         self.sync_workspace_inventory(&workspace);
         if workspace == self.panel_workspace {
             return;
+        }
+
+        for provider in &mut self.providers {
+            if provider.catalog_workspace.as_ref().is_some_and(|(path, _)| path != &workspace) {
+                provider.clear_model_catalog();
+            }
+        }
+        if matches!(self.access_mode, ChatAccessMode::NoneSelected) {
+            self.request_model_catalog(&self.selected_runtime);
         }
 
         let previous = std::mem::replace(&mut self.panel_workspace, workspace.clone());

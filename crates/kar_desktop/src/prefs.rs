@@ -9,7 +9,7 @@ use kui::components::shortcut_recorder::ShortcutPlatform;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::ui_primitives::UiLocale;
+use crate::{types::ProviderModelOption, ui_primitives::UiLocale};
 
 // ── Preference Enums ────────────────────────────────────────────────────────
 
@@ -708,6 +708,47 @@ impl DesktopPreferences {
             .is_some_and(|models| models.iter().any(|id| id == model))
     }
 
+    /// The composer and agent settings should offer the same models for a provider.
+    pub(crate) fn model_choices(
+        &self,
+        runtime: &str,
+        reported: &[ProviderModelOption],
+        selected: Option<&str>,
+        query: &str,
+        show_hidden: bool,
+        loc: UiLocale,
+    ) -> Vec<(String, String)> {
+        let mut choices: Vec<_> = reported
+            .iter()
+            .map(|model| {
+                let label = if model.label.trim().is_empty() {
+                    &model.id
+                } else {
+                    &model.label
+                };
+                (model.id.clone(), label.clone())
+            })
+            .collect();
+        if let Some(custom) = self.custom_models.get(runtime) {
+            for id in custom {
+                if !choices.iter().any(|(known, _)| known == id) {
+                    choices.push((
+                        id.clone(),
+                        format!("{id} · {}", loc.pick("自定义", "Custom")),
+                    ));
+                }
+            }
+        }
+        choices.retain(|(id, label)| {
+            (show_hidden || selected == Some(id.as_str()) || !self.is_model_hidden(runtime, id))
+                && (query.is_empty()
+                    || id.to_lowercase().contains(query)
+                    || label.to_lowercase().contains(query))
+        });
+        choices.sort_by_key(|(id, _)| !self.is_model_favorite(runtime, id));
+        choices
+    }
+
     pub fn toggle_model_hidden(&mut self, runtime: &str, model: &str) {
         let key = ModelKey::new(runtime, model);
         if !self.hidden_models.remove(&key) {
@@ -1075,6 +1116,50 @@ pub fn chord_from_keystroke(ks: &Keystroke) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_choices_share_custom_favorites_and_retain_the_hidden_selection() {
+        let mut prefs = DesktopPreferences::default();
+        let runtime = "codex";
+        prefs
+            .custom_models
+            .insert(runtime.into(), vec!["custom".into(), "live".into()]);
+        prefs
+            .custom_models
+            .insert("other".into(), vec!["unrelated".into()]);
+        prefs.toggle_model_favorite(runtime, "custom");
+        prefs.toggle_model_hidden(runtime, "hidden");
+        let model = |id: &str, label: &str| ProviderModelOption {
+            id: id.into(),
+            label: label.into(),
+            is_default: false,
+            effort_levels: vec![],
+        };
+        let models = vec![model("live", "Published"), model("hidden", "")];
+        let choices = |selected, query, hidden| {
+            prefs.model_choices(runtime, &models, selected, query, hidden, UiLocale::En)
+        };
+        assert_eq!(
+            choices(None, "", false),
+            [
+                ("custom".into(), "custom · Custom".into()),
+                ("live".into(), "Published".into())
+            ]
+        );
+        assert_eq!(
+            choices(None, "published", false),
+            [("live".into(), "Published".into())]
+        );
+        assert!(choices(None, "hidden", false).is_empty());
+        assert_eq!(
+            choices(Some("hidden"), "hidden", false),
+            [("hidden".into(), "hidden".into())]
+        );
+        assert_eq!(
+            choices(None, "hidden", true),
+            choices(Some("hidden"), "hidden", false)
+        );
+    }
 
     #[test]
     fn reading_width_fits_narrow_panes_and_can_fill_an_ultrawide_pane() {

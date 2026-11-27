@@ -1323,7 +1323,7 @@ async fn decluttered_studio_worktree_unstage_terminal_and_code_selection_e2e() {
         if let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_millis(300), bridge.rx.recv()).await
         {
             match ev {
-                KarBridgeEvent::ProvidersUpdated { providers, accounts_checked: false } if !providers.is_empty() => {
+                KarBridgeEvent::ProvidersUpdated { providers, accounts_checked: false, .. } if !providers.is_empty() => {
                     saw_fast_providers = true;
                 }
                 KarBridgeEvent::TerminalOutputChunk { id, chunk } if id == run_id => {

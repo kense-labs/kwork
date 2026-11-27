@@ -1,6 +1,6 @@
 //! Shared domain types for Kar Desktop Workbench (Chat, Office Selection Binding, Providers).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use kar::{
     FailureClass, RetryTiming, TurnFailure,
@@ -747,6 +747,20 @@ impl ProviderModelOption {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelCatalogState {
+    Loading,
+    Available,
+    Unsupported,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CatalogSource {
+    Scan,
+    Picker,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderStatusInfo {
     pub workspace_commands: Option<(PathBuf, Vec<crate::studio_hub::SlashCommandItem>)>,
@@ -760,6 +774,8 @@ pub struct ProviderStatusInfo {
     pub can_install: bool,
     pub install_lines: Vec<(String, String)>,
     pub models: Vec<ProviderModelOption>,
+    pub model_catalog: ModelCatalogState,
+    pub(crate) catalog_workspace: Option<(PathBuf, CatalogSource)>,
     pub quota_summary: Option<String>,
 }
 
@@ -779,6 +795,80 @@ pub enum ProviderReadiness {
 }
 
 impl ProviderStatusInfo {
+    pub(crate) fn clear_model_catalog(&mut self) {
+        self.models.clear();
+        self.catalog_workspace = None;
+        self.model_catalog = ModelCatalogState::Loading;
+    }
+
+    pub(crate) fn apply_picker_catalog(
+        &mut self,
+        workspace: PathBuf,
+        status: ModelCatalogState,
+        models: Vec<ProviderModelOption>,
+    ) {
+        if self
+            .catalog_workspace
+            .as_ref()
+            .is_some_and(|(path, _)| *path == workspace)
+            && self.model_catalog == ModelCatalogState::Available
+            && status != ModelCatalogState::Available
+        {
+            return;
+        }
+        self.catalog_workspace = Some((workspace, CatalogSource::Picker));
+        self.model_catalog = status;
+        self.models = models;
+    }
+
+    pub(crate) fn merge_scan_catalog(
+        &mut self,
+        scanned: &Path,
+        active: &Path,
+        previous: Option<&Self>,
+    ) {
+        if !self.is_ready() {
+            self.clear_model_catalog();
+            return;
+        }
+        if scanned == active {
+            self.catalog_workspace = Some((scanned.to_owned(), CatalogSource::Scan));
+        } else {
+            self.clear_model_catalog();
+        }
+        let Some(previous) = previous.filter(|p| p.is_ready()) else {
+            return;
+        };
+        let Some((path, source)) = &previous.catalog_workspace else {
+            return;
+        };
+        if path != active
+            || matches!(
+                (&previous.auth, &self.auth),
+                (ProviderAuthState::LoggedIn { summary: a, plan: ap }, ProviderAuthState::LoggedIn { summary: b, plan: bp })
+                    if a != b || ap != bp
+            )
+        {
+            return;
+        }
+        // A background success can rescue a failed picker read; a later scan must
+        // not replace a successful, project-specific selection with older results.
+        let keep_previous = if self.model_catalog == ModelCatalogState::Available {
+            *source == CatalogSource::Picker
+                && previous.model_catalog == ModelCatalogState::Available
+        } else {
+            scanned != active
+                || previous.model_catalog == ModelCatalogState::Available
+                || *source == CatalogSource::Picker
+        };
+        if keep_previous {
+            self.catalog_workspace
+                .clone_from(&previous.catalog_workspace);
+            self.models.clone_from(&previous.models);
+            self.model_catalog = previous.model_catalog;
+        }
+    }
+
     pub fn effort_levels(&self, model: Option<&str>) -> &[String] {
         if runtime_supports_effort(&self.id) {
             ProviderModelOption::levels_for(&self.models, model)
@@ -1134,6 +1224,69 @@ pub struct PendingPromptAttempt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_successful_catalogs_for_the_active_project_and_account_are_reused() {
+        use ModelCatalogState::*;
+        let project = Path::new("/project-a");
+        let other = Path::new("/project-b");
+        let row = |id: &str| ProviderModelOption {
+            id: id.to_owned(),
+            label: id.to_owned(),
+            is_default: false,
+            effort_levels: vec![],
+        };
+        let scan = |status, ids: &[&str]| ProviderStatusInfo {
+            id: "codex".into(),
+            protocol: "codex".into(),
+            workspace_commands: None,
+            availability: ProviderAvailability::Available {
+                version: "test".into(),
+                command: None,
+            },
+            auth: ProviderAuthState::LoggedIn {
+                summary: "a".into(),
+                plan: None,
+            },
+            mcp_office_supported: false,
+            steering_supported: false,
+            goals_supported: false,
+            can_install: false,
+            install_lines: vec![],
+            quota_summary: None,
+            catalog_workspace: None,
+            model_catalog: status,
+            models: ids.iter().map(|id| row(id)).collect(),
+        };
+        let mut first = scan(Available, &["from-scan"]);
+        first.merge_scan_catalog(project, project, None);
+        for state in [Loading, Failed] {
+            first.apply_picker_catalog(project.to_owned(), state, vec![]);
+            assert_eq!(first.models, [row("from-scan")]);
+        }
+        let mut rescued = scan(Available, &["recovered"]);
+        let mut failed = scan(Failed, &[]);
+        failed.apply_picker_catalog(project.to_owned(), Failed, vec![]);
+        rescued.merge_scan_catalog(project, project, Some(&failed));
+        assert_eq!(rescued.models, [row("recovered")]);
+        first.apply_picker_catalog(project.to_owned(), Available, vec![row("from-picker")]);
+        for mut incoming in [scan(Failed, &[]), scan(Available, &["from-scan"])] {
+            incoming.merge_scan_catalog(project, project, Some(&first));
+            assert_eq!(incoming.models, [row("from-picker")]);
+        }
+        let mut switched = scan(Available, &["old"]);
+        switched.merge_scan_catalog(project, other, Some(&first));
+        assert!(switched.models.is_empty());
+        assert_eq!(switched.model_catalog, Loading);
+
+        let mut account = scan(Available, &["new-account"]);
+        account.auth = ProviderAuthState::LoggedIn {
+            summary: "b".into(),
+            plan: None,
+        };
+        account.merge_scan_catalog(project, project, Some(&first));
+        assert_eq!(account.models, [row("new-account")]);
+    }
 
     #[test]
     fn effort_choices_follow_the_selected_or_default_model() {

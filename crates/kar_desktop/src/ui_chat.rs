@@ -3231,17 +3231,13 @@ impl KarWorkbench {
                 view.open = open;
                 if open {
                     view.provider = self.selected_runtime.clone();
-                    let provider = self.providers.iter().find(|p| p.id == view.provider);
+                    self.request_model_catalog(&view.provider);
                     view.editor.update(cx, |editor, cx| {
                         editor.set_placeholder(loc.pick("搜索模型…", "Search models…"));
                         editor.set_value("", window, cx);
                     });
                     view.query.clear();
-                    view.cursor = picker_models(provider, "", loc)
-                        .iter()
-                        .position(|(model, _)| *model == self.selected_model)
-                        .unwrap_or_default();
-                    view.scroll.scroll_to_item(view.cursor);
+                    view.follow_selected_model();
                     view.focus_on_mount = true;
                 } else if view.editor.read(cx).focus.is_focused(window) {
                     // Window-level Escape also closes popovers before the focused field sees the event.
@@ -3255,7 +3251,14 @@ impl KarWorkbench {
         }
         let runtime = search.read(cx).provider.clone();
         let provider = self.providers.iter().find(|p| p.id == runtime);
-        let options = picker_models(provider, &search.read(cx).query, loc);
+        let options = self.picker_models(&runtime, &search.read(cx).query);
+        // On a cold start the selected model may arrive after the menu is already open.
+        if open && search.read(cx).following_selection {
+            let selected = self.selected_model.as_ref().filter(|_| runtime == self.selected_runtime);
+            if let Some(index) = options.iter().position(|(model, _)| model.as_ref() == selected) {
+                search.update(cx, |view, _| view.highlight(index, true));
+            }
+        }
         let cursor = search.read(cx).cursor.min(options.len().saturating_sub(1));
         let preview = options.get(cursor).map(|(model, _)| model);
         let scroll = search.read(cx).scroll.clone();
@@ -3306,14 +3309,8 @@ impl KarWorkbench {
                         search.update(cx, |view, cx| {
                             view.provider.clone_from(&id);
                             view.query.clear();
-                            let provider = this.providers.iter().find(|p| p.id == id);
-                            view.cursor = picker_models(provider, "", this.ui_locale)
-                                .iter()
-                                .position(|(model, _)| {
-                                    id == this.selected_runtime && model == &this.selected_model
-                                })
-                                .unwrap_or(0);
-                            view.scroll.scroll_to_item(view.cursor);
+                            this.request_model_catalog(&id);
+                            view.follow_selected_model();
                             view.editor.update(cx, |editor, cx| {
                                 editor.set_value("", win, cx);
                                 editor.focus(win, cx);
@@ -3373,7 +3370,7 @@ impl KarWorkbench {
                     .on_mouse_move(move |_, _, cx| {
                         if search.read(cx).cursor != index {
                             search.update(cx, |view, cx| {
-                                view.cursor = index;
+                                view.highlight(index, false);
                                 cx.notify();
                             });
                         }
@@ -3386,7 +3383,12 @@ impl KarWorkbench {
                     })),
             );
         }
-        if options.is_empty() {
+        let catalog_notice = provider
+            .filter(|_| open && ready)
+            .and_then(|provider| self.model_catalog_notice(provider, s, cx));
+        if let Some(notice) = catalog_notice {
+            list = list.child(notice);
+        } else if options.is_empty() {
             let message = match provider.map(ProviderStatusInfo::readiness) {
                 Some(ProviderReadiness::NeedsLogin) => {
                     loc.pick("此智能体需要登录。", "Sign in to use this agent.")
@@ -3618,9 +3620,10 @@ impl KarWorkbench {
         else {
             return;
         };
-        if model
-            .as_ref()
-            .is_some_and(|id| !provider.models.iter().any(|m| &m.id == id))
+        if model.as_ref().is_some_and(|id| {
+            !provider.models.iter().any(|entry| &entry.id == id)
+                && !self.prefs.has_custom_model(runtime, id)
+        })
         {
             return;
         }
@@ -6096,6 +6099,7 @@ struct ModelPickerSearch {
     provider: String,
     query: String,
     cursor: usize,
+    following_selection: bool,
     open: bool,
     focus_on_mount: bool,
     scroll: ScrollHandle,
@@ -6103,6 +6107,20 @@ struct ModelPickerSearch {
 }
 
 impl ModelPickerSearch {
+    fn follow_selected_model(&mut self) {
+        self.cursor = 0;
+        self.following_selection = true;
+        self.scroll.scroll_to_item(0);
+    }
+
+    fn highlight(&mut self, index: usize, scroll: bool) {
+        self.following_selection = false;
+        self.cursor = index;
+        if scroll {
+            self.scroll.scroll_to_item(index);
+        }
+    }
+
     fn new(bench: WeakEntity<KarWorkbench>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
             let mut editor = Editor::new("Search models", InputMode::Combobox, window, cx);
@@ -6124,26 +6142,24 @@ impl ModelPickerSearch {
                         let query = editor.read(cx).value().trim().to_lowercase();
                         if query != view.query {
                             view.query = query;
-                            view.cursor = 0;
-                            view.scroll.scroll_to_item(0);
+                            view.highlight(0, true);
                         }
                     }
                     EditEvent::Navigate(_) | EditEvent::Submitted => {
                         let host = bench.read(cx);
-                        let provider = host.providers.iter().find(|p| p.id == view.provider);
-                        let options = picker_models(provider, &view.query, host.ui_locale);
+                        let options = host.picker_models(&view.provider, &view.query);
                         if options.is_empty() {
                             return;
                         }
                         if let EditEvent::Navigate(down) = event {
                             let last = options.len() - 1;
-                            view.cursor = if *down {
+                            let index = if *down {
                                 (view.cursor + 1).min(last)
                             } else {
                                 view.cursor.saturating_sub(1).min(last)
                             };
-                            view.scroll.scroll_to_item(view.cursor);
-                        } else if let Some((model, _)) = options.get(view.cursor) {
+                            view.highlight(index, true);
+                        } else if let Some((model, _)) = options.get(view.cursor.min(options.len() - 1)) {
                             let effort = (view.provider == host.selected_runtime)
                                 .then(|| host.reasoning_effort.clone())
                                 .flatten();
@@ -6171,6 +6187,7 @@ impl ModelPickerSearch {
             provider: String::new(),
             query: String::new(),
             cursor: 0,
+            following_selection: false,
             open: false,
             focus_on_mount: false,
             scroll: ScrollHandle::new(),
@@ -6179,49 +6196,46 @@ impl ModelPickerSearch {
     }
 }
 
-fn picker_models(
-    provider: Option<&ProviderStatusInfo>,
-    query: &str,
-    loc: UiLocale,
-) -> Vec<(Option<String>, String)> {
-    let Some(p) = provider.filter(|p| p.is_ready()) else {
-        return Vec::new();
-    };
-    let default = p
-        .models
-        .iter()
-        .find(|model| model.is_default)
-        .map(|model| {
-            format!(
-                "{} · {}",
-                loc.pick("智能体默认", "Agent default"),
-                model.label
-            )
-        })
-        .unwrap_or_else(|| loc.pick("智能体默认模型", "Agent default model").to_owned());
-    // A model-name query should select that exact model, including the current catalogue default.
-    std::iter::once((None, default))
-        .filter(|_| {
-            query.is_empty()
-                || loc
-                    .pick("智能体默认模型", "Agent default model")
-                    .to_lowercase()
-                    .contains(query)
-        })
-        .chain(
-            p.models
+impl KarWorkbench {
+    fn picker_models(&self, runtime: &str, query: &str) -> Vec<(Option<String>, String)> {
+        let Some(provider) = self
+            .providers
+            .iter()
+            .find(|p| p.id == runtime && p.is_ready())
+        else {
+            return Vec::new();
+        };
+        let selected = (runtime == self.selected_runtime)
+            .then_some(self.selected_model.as_deref())
+            .flatten();
+        let loc = self.ui_locale;
+        let default_label = loc.pick("智能体默认模型", "Agent default model");
+        let mut choices = Vec::new();
+        // Typing a model's own name should select that explicit model rather than the default alias.
+        if query.is_empty() || default_label.to_lowercase().contains(query) {
+            let label = provider
+                .models
                 .iter()
-                .map(|m| (Some(m.id.clone()), m.label.clone())),
-        )
-        .filter(|(id, label)| {
-            label.to_lowercase().contains(query)
-                || id
-                    .as_ref()
-                    .is_some_and(|id| id.to_lowercase().contains(query))
-        })
-        .collect()
+                .find(|model| model.is_default)
+                .map(|model| {
+                    format!(
+                        "{} · {}",
+                        loc.pick("智能体默认", "Agent default"),
+                        model.label
+                    )
+                })
+                .unwrap_or_else(|| default_label.to_owned());
+            choices.push((None, label));
+        }
+        choices.extend(
+            self.prefs
+                .model_choices(runtime, &provider.models, selected, query, false, loc)
+                .into_iter()
+                .map(|(id, label)| (Some(id), label)),
+        );
+        choices
+    }
 }
-
 fn effort_label(value: &str, loc: UiLocale) -> &str {
     match value {
         "minimal" => loc.pick("最低", "Minimal"),
