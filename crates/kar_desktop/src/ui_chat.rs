@@ -85,6 +85,16 @@ use crate::{
 /// Most lines of a tool's output or a file change shown before it is cut short.
 const DETAIL_MAX_LINES: usize = 24;
 
+fn approval_icon(mode: ApprovalMode, s: &StudioPalette) -> (ProIcon, Hsla) {
+    if crate::prefs::is_approval_allow(mode) {
+        (ProIcon::Bolt, s.pro.accent_info)
+    } else if mode == ApprovalMode::Deny {
+        (ProIcon::Lock, s.pro.amber_ink)
+    } else {
+        (ProIcon::Shield, s.muted)
+    }
+}
+
 impl KarWorkbench {
     pub(crate) fn pending_decisions(&self) -> impl Iterator<Item = &PendingRequest> {
         self.projected.pending_requests.iter().filter(|request| {
@@ -2021,14 +2031,8 @@ impl KarWorkbench {
         };
         let cur_approval = self.effective_chat_approvals();
         let is_full_auto = crate::prefs::is_approval_allow(cur_approval);
-        let is_read_only = cur_approval == ApprovalMode::Deny;
-        let (perm_icon, perm_icon_col) = if is_full_auto {
-            (ProIcon::Bolt, s.pro.accent_info)
-        } else if is_read_only {
-            (ProIcon::Lock, s.pro.amber_ink)
-        } else {
-            (ProIcon::Shield, s.muted)
-        };
+        let is_auto_deny = cur_approval == ApprovalMode::Deny;
+        let (perm_icon, perm_icon_col) = approval_icon(cur_approval, s);
         let perm_pill = menu_host(
             Tactile::ghost("cmp-options", s)
                 .h(px(CTRL_H))
@@ -2040,11 +2044,11 @@ impl KarWorkbench {
                     b.fills(s.pro.accent_soft.opacity(0.65), s.pro.accent_soft)
                         .ink(s.pro.accent_info, s.pro.accent_info)
                 })
-                .when(is_read_only, |b| {
+                .when(is_auto_deny, |b| {
                     b.fills(s.pro.amber_soft.opacity(0.65), s.pro.amber_soft)
                         .ink(s.pro.amber_ink, s.pro.amber_ink)
                 })
-                .when(!is_full_auto && !is_read_only, |b| b.ink(s.muted, s.ink))
+                .when(!is_full_auto && !is_auto_deny, |b| b.ink(s.muted, s.ink))
                 .lit(self.open_menu == Some(Menu::ComposerApproval))
                 .aria(loc.pick("对话执行权限模式", "Conversation permission mode"))
                 .when(self.open_menu != Some(Menu::ComposerApproval), |button| {
@@ -3166,9 +3170,9 @@ impl KarWorkbench {
         let mut rows: Vec<AnyElement> = vec![
             menu_caption(
                 if open {
-                    loc.pick("当前对话的执行权限（点击即刻切换）", "Permission policy for this chat")
+                    loc.pick("当前对话权限", "Chat permissions")
                 } else {
-                    loc.pick("新对话默认执行权限", "Default permission policy")
+                    loc.pick("新对话权限", "New chat permissions")
                 },
                 s,
             )
@@ -3177,80 +3181,15 @@ impl KarWorkbench {
 
         for (ix, candidate) in crate::prefs::all_approval_modes().into_iter().enumerate() {
             let selected = candidate == active_mode;
-            let is_allow = crate::prefs::is_approval_allow(candidate);
-            let is_deny = candidate == ApprovalMode::Deny;
-            let (icon, icon_col, title, desc) = if is_allow {
-                (
-                    ProIcon::Bolt,
-                    s.pro.accent_info,
-                    loc.pick("全自动执行", "Auto-run"),
-                    loc.pick(
-                        "自动批准运行命令与修改文件，适合连续自治任务",
-                        "Approve tool & command execution automatically",
-                    ),
-                )
-            } else if is_deny {
-                (
-                    ProIcon::Lock,
-                    s.pro.amber_ink,
-                    loc.pick("仅只读保护", "Read-only"),
-                    loc.pick(
-                        "仅允许阅读与分析代码，自动拒绝高权限写入操作",
-                        "Allow reading & analysis, decline write permissions",
-                    ),
-                )
-            } else {
-                (
-                    ProIcon::Shield,
-                    s.ink,
-                    loc.pick("每次先问我（推荐）", "Ask first (Recommended)"),
-                    loc.pick(
-                        "涉及执行命令或敏感改动前，在对话中由你确认",
-                        "Review and approve sensitive actions inline",
-                    ),
-                )
-            };
-
+            let label = loc.approval_label(candidate);
+            let (icon, color) = approval_icon(candidate, s);
             rows.push(
-                Tactile::ghost(("approval-opt", ix), s)
-                    .w_full()
-                    .px(px(10.))
-                    .py(px(7.))
-                    .radius(R_SM)
+                menu_item(("approval-opt", ix), Some(pro_icon(icon, ICON, color)), label, s)
                     .lit(selected)
-                    .items_start()
-                    .gap(px(9.))
-                    .child(div().pt(px(2.)).flex_none().child(pro_icon(icon, ICON_SM, icon_col)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap(px(6.))
-                                    .child(
-                                        div()
-                                            .text_size(s.font_size(FS_CONTROL))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(s.ink)
-                                            .child(title),
-                                    )
-                                    .when(selected, |d| d.child(menu_check(s))),
-                            )
-                            .child(
-                                div()
-                                    .text_size(s.font_size(FS_META))
-                                    .line_height(s.line_height(LH_META))
-                                    .text_color(s.muted)
-                                    .child(desc),
-                            ),
-                    )
+                    .when(selected, |row| {
+                        row.aria(format!("{label}{}", loc.pick("，已选中", ", selected")))
+                            .child(menu_check(s))
+                    })
                     .on_press(cx, move |wb, _, cx| {
                         wb.set_active_or_new_chat_approvals(candidate, cx);
                         wb.close_menu(cx);
@@ -3271,11 +3210,12 @@ impl KarWorkbench {
                 div()
                     .px(px(10.))
                     .py(px(4.))
+                    .truncate()
                     .text_size(s.font_size(FS_TAG))
                     .text_color(s.muted)
                     .child(format!(
                         "{} · {native_mode}",
-                        loc.pick("智能体协作模式", "Agent mode")
+                        loc.pick("智能体模式", "Agent mode")
                     ))
                     .into_any_element(),
             );
@@ -3285,13 +3225,15 @@ impl KarWorkbench {
             menu_icon_item(
                 "approval-new-chat-settings",
                 ProIcon::Sliders,
-                loc.pick("设置所有新对话的默认权限…", "Configure global defaults…"),
+                loc.pick("默认权限设置…", "Edit defaults…"),
                 s,
             )
             .on_press(cx, |wb, _, cx| wb.open_settings(SettingsTab::Agents, cx))
             .into_any_element(),
         );
-        self.render_menu(Menu::ComposerApproval, placement, 296., rows, s, cx)
+        // Give larger type enough room for the longest label and the selection check.
+        let width = 64. + 8. * f32::from(s.font_size(FS_CONTROL));
+        self.render_menu(Menu::ComposerApproval, placement, width, rows, s, cx)
     }
 
     pub(crate) fn render_effort_menu(

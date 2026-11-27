@@ -38,9 +38,9 @@ impl crate::ui_primitives::UiLocale {
     pub(crate) fn approval_label(self, mode: ApprovalMode) -> &'static str {
         #[allow(unreachable_patterns)]
         match mode {
-            ApprovalMode::Host => self.pick("每次确认", "Ask me"),
-            ApprovalMode::Deny => self.pick("仅只读", "Read-only"),
-            _ => self.pick("自动执行", "Full auto"),
+            ApprovalMode::Host => self.pick("每次询问", "Ask first"),
+            ApprovalMode::Deny => self.pick("自动拒绝", "Auto-deny"),
+            _ => self.pick("自动批准", "Auto-approve"),
         }
     }
 }

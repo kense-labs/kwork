@@ -248,7 +248,7 @@ impl KarWorkbench {
                 .child(add_doc_menu)
                 .into_any_element()
         };
-        let header = crate::ui_primitives::titlebar_row(window)
+        let header = crate::ui_primitives::titlebar_controls_row(window)
             .relative()
             .pl(px(left_pad))
             .pr(px(right_pad))
@@ -307,8 +307,7 @@ impl KarWorkbench {
                     .when(has_more, |d| {
                         d.child(more_doc_menu)
                     }),
-            )
-            .child(div().absolute().left_0().right_0().bottom_0().h(px(1.)).bg(s.line));
+            );
 
         let body = match self.right_surface.clone() {
             RightPaneSurface::GitWorkbench => self.render_git_workbench_body(pane_w, &s, window, cx),
@@ -457,6 +456,7 @@ impl KarWorkbench {
             .flex_col()
             .overflow_hidden()
             .child(header)
+            .child(div().flex_none().h(px(1.)).bg(s.line))
             .child(div().flex_1().min_h_0().overflow_hidden().child(body))
             .into_any_element()
     }

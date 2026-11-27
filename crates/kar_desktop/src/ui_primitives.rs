@@ -85,14 +85,19 @@ pub(crate) fn titlebar_center_y(window: &Window) -> f32 {
     }
 }
 
-pub(crate) fn titlebar_row(window: &Window) -> Div {
+pub(crate) fn titlebar_controls_row(window: &Window) -> Div {
     div()
-        .h(px(HEADER_H))
-        .pb(px(HEADER_H - 2. * titlebar_center_y(window)))
+        .h(px(2. * titlebar_center_y(window)))
         .window_control_area(WindowControlArea::Drag)
         .flex_none()
         .flex()
         .items_center()
+}
+
+pub(crate) fn titlebar_row(window: &Window) -> Div {
+    titlebar_controls_row(window)
+        .h(px(HEADER_H))
+        .pb(px(HEADER_H - 2. * titlebar_center_y(window)))
 }
 
 
