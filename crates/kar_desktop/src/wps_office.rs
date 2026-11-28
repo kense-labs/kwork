@@ -1405,7 +1405,7 @@ impl KarWorkbench {
                 "status": "save_dialog_opened",
                 "tab_id": tab.id,
                 "suggested_filename": suggested,
-                "message": "已在 Kwrok 中为用户弹出原生另存为对话框",
+                "message": "已在 Kwork 中为用户弹出原生另存为对话框",
             }))
             .map_err(|e| e.to_string());
         }

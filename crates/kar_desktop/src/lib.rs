@@ -76,7 +76,7 @@ use crate::ui_primitives::{
     render_kar_brand_lockup, render_office_chip, titlebar_row, ui_font,
 };
 
-pub const APP_NAME: &str = "Kwrok";
+pub const APP_NAME: &str = "Kwork";
 
 struct SystemCodeFont(SharedString);
 impl Global for SystemCodeFont {}
@@ -85,6 +85,8 @@ impl Global for SystemCodeFont {}
 pub fn init_runtime_ui(cx: &mut App) {
     kantor_ui::set_embedded_host(true);
     kantor_ui::i18n::set_lang(kantor_ui::i18n::Lang::Zh);
+    sheets_engine::set_content_translator(kantor_ui::i18n::t);
+    slides_engine::display_text::set_display_translator(kantor_ui::i18n::t);
     gpui_kit::init(cx);
     kantor_ui::widget_strings::init();
     kantor_ui::find_bar::init(cx);
@@ -126,6 +128,7 @@ fn apply_ui_language(locale: ui_primitives::UiLocale, cx: &mut App) {
     };
     cx.set_global(kit);
     kantor_ui::i18n::set_lang(office);
+    kantor_ui::widget_strings::sync_locale();
     cx.refresh_windows();
 }
 
@@ -339,7 +342,7 @@ impl SmokeIntegrationView {
         let panels = cx.new(|cx| {
             ResizablePanels::new(
                 "smoke-split",
-                "Kwrok KUI + Kantor Split",
+                "Kwork KUI + Kantor Split",
                 vec![
                     Pane::new("kui-pane", "KUI Controls", 0.34, move |_, window, cx| {
                         weak_left

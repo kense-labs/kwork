@@ -96,13 +96,39 @@ impl OfficeTab {
     }
 
     pub fn new_blank(id: u64, kind: OfficeKind, window: &mut Window, cx: &mut App) -> Self {
+        let zh = kantor_ui::i18n::lang() == kantor_ui::i18n::Lang::Zh;
+        let suffix = if id <= 1 {
+            String::new()
+        } else {
+            format!(" {id}")
+        };
         let view = match kind {
-            OfficeKind::Word => OfficeEditorView::Word(cx.new(|cx| DocsView::new(None, window, cx))),
+            OfficeKind::Word => {
+                let ent = cx.new(|cx| DocsView::new(None, window, cx));
+                if zh {
+                    ent.update(cx, |v, cx| {
+                        v.set_untitled_name(format!("未命名文档{suffix}.docx"), cx);
+                    });
+                }
+                OfficeEditorView::Word(ent)
+            }
             OfficeKind::Excel => {
-                OfficeEditorView::Excel(cx.new(|cx| SheetsView::new(None, window, cx)))
+                let ent = cx.new(|cx| SheetsView::new(None, window, cx));
+                if zh {
+                    ent.update(cx, |v, cx| {
+                        v.set_untitled_name(format!("未命名表格{suffix}.xlsx"), cx);
+                    });
+                }
+                OfficeEditorView::Excel(ent)
             }
             OfficeKind::Ppt => {
-                OfficeEditorView::Ppt(cx.new(|cx| SlidesView::new(None, window, cx)))
+                let ent = cx.new(|cx| SlidesView::new(None, window, cx));
+                if zh {
+                    ent.update(cx, |v, cx| {
+                        v.set_untitled_name(format!("未命名演示{suffix}.pptx"), cx);
+                    });
+                }
+                OfficeEditorView::Ppt(ent)
             }
             OfficeKind::Pdf => {
                 OfficeEditorView::Pdf(cx.new(|cx| PdfView::new(None, window, cx)))

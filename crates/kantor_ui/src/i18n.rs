@@ -164,252 +164,91 @@ pub fn indonesian(en: &str) -> Option<&'static str> {
     catalog().get(en).copied()
 }
 
+/// Simplified Chinese catalog files (`English<TAB>SimplifiedChinese`), mirroring [`CATALOG_FILES`].
+pub const ZH_CATALOG_FILES: &[(&str, &str)] = &[
+    ("common.tsv", include_str!("../i18n_zh/common.tsv")),
+    ("kantor.tsv", include_str!("../i18n_zh/kantor.tsv")),
+    ("sheets.tsv", include_str!("../i18n_zh/sheets.tsv")),
+    ("docs.tsv", include_str!("../i18n_zh/docs.tsv")),
+    ("slides.tsv", include_str!("../i18n_zh/slides.tsv")),
+    ("pdf.tsv", include_str!("../i18n_zh/pdf.tsv")),
+    ("widgets.tsv", include_str!("../i18n_zh/widgets.tsv")),
+    ("content.tsv", include_str!("../i18n_zh/content.tsv")),
+];
+
+fn adapt_shortcut_symbols(zh: String, mac: bool) -> String {
+    if !mac || (!zh.contains("Ctrl+") && !zh.contains("Shift+") && !zh.contains("Alt+")) {
+        return zh;
+    }
+    zh.replace("Ctrl+Shift+", "⌘⇧")
+        .replace("Ctrl+Alt+", "⌘⌥")
+        .replace("Alt+Shift+", "⌥⇧")
+        .replace("Ctrl+", "⌘")
+        .replace("Shift+Tab", "⇧Tab")
+        .replace("Shift+Enter", "⇧↩")
+        .replace("Shift+F", "⇧F")
+        .replace("Alt+", "⌥")
+}
+
 /// Simplified Chinese dictionary for embedded Kantor Office views (`DocsView`, `SheetsView`,
-/// `SlidesView`, `FindBar`, and `gpui_kit` widgets). Uses native `⌘` shortcut symbols on macOS.
+/// `SlidesView`, `PdfView`, `FindBar`, and `gpui_kit` widgets). Uses native `⌘` shortcut symbols on macOS.
 pub fn chinese(en: &str) -> Option<&'static str> {
     static ZH_MAP: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     let map = ZH_MAP.get_or_init(|| {
         let mac = cfg!(target_os = "macos");
-        let mut m: HashMap<&'static str, &'static str> = HashMap::from([
-            // Common & Widgets
-            ("File", "文件"),
-            ("Edit", "编辑"),
-            ("Format", "格式"),
-            ("Data", "数据"),
-            ("Home", "开始"),
-            ("Open", "打开"),
-            ("Open File…", "打开文件…"),
-            ("Save", "保存"),
-            ("Save As…", "另存为…"),
-            ("Close", "关闭"),
-            ("Print", "打印"),
-            ("Print…", "打印…"),
-            ("Export as PDF…", "导出为 PDF…"),
-            ("Undo", "撤销"),
-            ("Redo", "重做"),
-            ("Cut", "剪切"),
-            ("Copy", "复制"),
-            ("Paste", "粘贴"),
-            ("Delete", "删除"),
-            ("Find", "查找"),
-            ("Find…", "查找…"),
+        let mut m: HashMap<&'static str, &'static str> = HashMap::with_capacity(3800);
+        for (_, text) in ZH_CATALOG_FILES {
+            for (en_key, zh_val) in parse_catalog(text) {
+                let adapted = adapt_shortcut_symbols(zh_val, mac);
+                let k: &'static str = Box::leak(en_key.into_boxed_str());
+                let v: &'static str = Box::leak(adapted.into_boxed_str());
+                m.insert(k, v);
+            }
+        }
+        // Inline `tr(en, id)` strings in `office_password.rs`, `file_access.rs`, `pdf_ui/src/batch.rs`,
+        // plus embedded host status messages.
+        m.extend([
+            ("Password", "密码"),
+            (
+                "“{}” is protected. Enter the password to open it.",
+                "“{}”受密码保护，请输入密码以打开文件。",
+            ),
+            (
+                "The password is incorrect. Try again.",
+                "密码不正确，请重试。",
+            ),
+            ("Kantor can't open this file: {}", "无法打开此文件：{}"),
+            (
+                "Kantor needs your permission to open “{}”",
+                "需要你的授权才能打开“{}”",
+            ),
+            (
+                "Kantor needs your permission to use the folder “{}”",
+                "需要你的授权才能访问文件夹“{}”",
+            ),
+            (
+                "macOS lets apps from the App Store use only the files and folders you choose. Click Grant Access, then choose it in the next window.",
+                "受系统文件沙盒限制，应用只能访问你授权的文件与文件夹。请点击“授予访问权限”，然后在弹出的窗口中选择该位置。",
+            ),
+            ("Grant Access…", "授予访问权限…"),
+            ("Grant Access", "授予访问权限"),
+            (
+                "Kantor wasn't given access to every file and folder this batch uses.",
+                "尚未获得该批处理任务所需的全部文件与文件夹访问权限。",
+            ),
             ("Find in document", "在文档中查找"),
-            ("Replace", "替换"),
             ("Replace all", "全部替换"),
-            ("Replace All", "全部替换"),
             ("Replace with…", "替换为…"),
             ("Match case", "区分大小写"),
             ("Whole words", "全词匹配"),
             ("Previous match", "上一个匹配"),
             ("Next match", "下一个匹配"),
             ("No matches", "无匹配结果"),
-            ("{} of {}", "{} / {}"),
-            ("Select All", "全选"),
-            ("Show password", "显示密码"),
-            ("Hide password", "隐藏密码"),
-            ("Decrease", "减少"),
-            ("Increase", "增加"),
-            ("Please select", "请选择"),
-            ("Search…", "搜索…"),
-            ("More options", "更多选项"),
-            ("More formatting", "更多格式"),
-            ("Previous", "上一个"),
-            ("Next", "下一个"),
-            ("Reset All", "全部重置"),
-            ("Unnamed", "未命名"),
-            ("Collapse", "收起"),
-            ("Expand", "展开"),
-            ("Bold", "加粗"),
-            ("Italic", "斜体"),
-            ("Underline", "下划线"),
-            ("Strikethrough", "删除线"),
-            ("Align Left", "左对齐"),
-            ("Align Center", "居中对齐"),
-            ("Align Right", "右对齐"),
-            ("Justify", "两端对齐"),
-            ("Cancel", "取消"),
-            ("OK", "确定"),
-            ("Apply", "应用"),
-            ("Done", "完成"),
-            ("Settings", "设置"),
-            ("Zoom In", "放大"),
-            ("Zoom Out", "缩小"),
-            ("Font", "字体"),
-            ("Font size", "字号"),
-            ("Insert", "插入"),
-            ("Shapes", "形状"),
-            ("Table", "表格"),
-            ("Picture", "图片"),
-            ("Comment", "批注"),
-            ("Header", "页眉"),
-            ("Footer", "页脚"),
-            ("Rename", "重命名"),
-            ("Close Tab", "关闭标签页"),
-            ("Page Setup", "页面设置"),
-            ("Page Setup…", "页面设置…"),
-            ("Margins", "页边距"),
-            ("Orientation", "纸张方向"),
-            ("Portrait", "纵向"),
-            ("Landscape", "横向"),
-            ("Remove", "移除"),
-            ("Yes", "是"),
-            ("No", "否"),
-            ("Don't Save", "不保存"),
-            ("None", "无"),
-            ("Normal", "正文"),
-            ("Heading 1", "标题 1"),
-            ("Heading 2", "标题 2"),
-            ("Heading 3", "标题 3"),
-            ("Title", "大标题"),
-            ("Subtitle", "副标题"),
-            ("Paper size", "纸张大小"),
-            ("Letter", "信纸 (Letter)"),
-            ("Legal", "法律纸 (Legal)"),
-            ("Page setup: size, orientation, margins", "页面设置：纸张、方向与页边距"),
-            ("Print and export", "打印与导出"),
-            ("Insert table", "插入表格"),
-            ("Insert picture (PNG or JPEG)", "插入图片 (PNG / JPEG)"),
-            ("Insert row below", "在下方插入行"),
-            ("Insert row above", "在上方插入行"),
-            ("Insert column right", "在右侧插入列"),
-            ("Insert column left", "在左侧插入列"),
-            ("Delete row", "删除行"),
-            ("Delete column", "删除列"),
-            ("Delete table", "删除表格"),
-            ("Show or hide comments", "显示或隐藏批注"),
-            ("Review: comments and tracked changes", "审阅：批注与修订"),
-            ("Check Spelling as You Type", "输入时检查拼写"),
-            ("Nothing to undo", "没有可撤销的操作"),
-            ("Nothing to redo", "没有可重做的操作"),
-            ("Page {} of {}", "第 {} / {} 页"),
-            ("Page {} of {} · {}", "第 {} / {} 页 · {}"),
-            ("Section {}", "第 {} 节"),
-            ("Saved {}", "已保存 {}"),
             ("Save failed: {}", "保存失败：{}"),
             ("Opened {}", "已打开 {}"),
             ("Agent: {}", "智能体：{}"),
-            // Sheets
-            ("Ready", "就绪"),
-            ("Value or =formula", "输入数值或 =公式"),
-            ("Please wait until the workbook is ready", "正在加载工作簿，请稍候"),
-            ("Larger Font", "增大字号"),
-            ("Smaller Font", "减小字号"),
-            ("Wrap Text", "自动换行"),
-            ("Wrap text", "自动换行"),
-            ("Merge & Center", "合并后居中"),
-            ("All Borders", "所有框线"),
-            ("Outside Borders", "外侧框线"),
-            ("No Borders", "无框线"),
-            ("Borders", "边框"),
-            ("Fill Colour", "填充颜色"),
-            ("Fill colour", "填充颜色"),
-            ("No Fill", "无填充"),
-            ("Text Colour", "文字颜色"),
-            ("Text colour", "文字颜色"),
-            ("Conditional Formatting", "条件格式"),
-            ("Data Validation…", "数据验证…"),
-            ("Insert Chart", "插入图表"),
-            ("PivotTable", "数据透视表"),
-            ("Filter", "筛选"),
-            ("Freeze Panes", "冻结窗格"),
-            ("Freeze First Column", "冻结首列"),
-            ("Freeze Top Row", "冻结首行"),
-            ("Unfreeze Panes", "取消冻结窗格"),
-            ("Insert Column Left", "在左侧插入列"),
-            ("Insert Column Right", "在右侧插入列"),
-            ("Delete Columns", "删除列"),
-            ("Autofit Column Width", "自动调整列宽"),
-            ("Insert Row Above", "在上方插入行"),
-            ("Insert Row Below", "在下方插入行"),
-            ("Delete Rows", "删除行"),
-            ("Autofit Row Height", "自动调整行高"),
-            ("Calculating…", "计算中…"),
-            ("Calculated", "计算完成"),
-            ("Calculated in {} s", "计算完成（{} 秒）"),
-            ("Opening {}…", "正在打开 {}…"),
-            ("Saving…", "正在保存…"),
-            ("Saving {}…", "正在保存 {}…"),
-            ("Undone", "已撤销"),
-            ("Redone", "已重做"),
-            // Slides
-            ("Delete slide", "删除幻灯片"),
-            ("Insert text box", "插入文本框"),
-            ("Insert rectangle", "插入矩形"),
-            ("Insert ellipse", "插入椭圆"),
-            ("Edit table or chart data", "编辑表格或图表数据"),
-            ("Numbered list", "编号列表"),
-            ("Speaker notes", "演讲者备注"),
-            ("Click to add notes", "点击此处添加演讲者备注"),
-            ("Shape fill", "形状填充"),
-            ("Shape outline: colour and width", "形状轮廓：颜色与线宽"),
-            ("No fill", "无填充"),
-            ("No outline", "无轮廓"),
-            ("Theme colours", "主题颜色"),
-            ("Width", "宽度"),
-            ("Slide {} of {}", "第 {} / {} 页"),
-            ("Text box", "文本框"),
-            ("Placeholder", "占位框"),
-            ("Ellipse", "椭圆"),
-            ("Rectangle", "矩形"),
-            ("Rounded rectangle", "圆角矩形"),
-            ("Line", "线条"),
-            ("Shape ({})", "形状 ({})"),
-            ("Group", "组合"),
-            ("Ungroup", "取消组合"),
+            ("Autosaved {}", "已自动保存 {}"),
         ]);
-        if mac {
-            m.extend([
-                ("Bold · Ctrl+B", "加粗 · ⌘B"),
-                ("Italic · Ctrl+I", "斜体 · ⌘I"),
-                ("Underline · Ctrl+U", "下划线 · ⌘U"),
-                ("Normal text · Ctrl+Alt+0", "正文 · ⌘⌥0"),
-                ("Heading 1 · Ctrl+Alt+1", "标题 1 · ⌘⌥1"),
-                ("Heading 2 · Ctrl+Alt+2", "标题 2 · ⌘⌥2"),
-                ("Heading 3 · Ctrl+Alt+3", "标题 3 · ⌘⌥3"),
-                ("Align left · Ctrl+L", "左对齐 · ⌘L"),
-                ("Center · Ctrl+E", "居中 · ⌘E"),
-                ("Align right · Ctrl+R", "右对齐 · ⌘R"),
-                ("Justify · Ctrl+J", "两端对齐 · ⌘J"),
-                ("Bulleted list · Ctrl+Shift+8", "项目符号列表 · ⌘⇧8"),
-                ("Numbered list · Ctrl+Shift+7", "编号列表 · ⌘⇧7"),
-                ("Decrease list level · Shift+Tab", "降低列表级别 · ⇧Tab"),
-                ("Increase list level · Tab", "提高列表级别 · Tab"),
-                ("Zoom out · Ctrl+-", "缩小 · ⌘-"),
-                ("Zoom in · Ctrl+=", "放大 · ⌘="),
-                ("Actual size · Ctrl+0", "适应页面 / 实际大小 · ⌘0"),
-                ("Track Changes  Ctrl+Shift+E", "修订模式  ⌘⇧E"),
-                ("Insert footnote  Ctrl+Alt+F", "插入脚注  ⌘⌥F"),
-                ("Insert endnote  Ctrl+Alt+D", "插入尾注  ⌘⌥D"),
-                ("New comment  Ctrl+Alt+M", "新建批注  ⌘⌥M"),
-                ("New slide · Ctrl+M", "新建幻灯片 · ⌘M"),
-                ("Duplicate slide · Ctrl+D", "复制幻灯片 · ⌘D"),
-                ("Bulleted list · Tab / Shift+Tab change the level", "项目符号列表 · Tab / ⇧Tab 调整级别"),
-                ("Present · F5 (Shift+F5 from this slide)", "放映幻灯片 · F5（⇧F5 从当前页开始）"),
-            ]);
-        } else {
-            m.extend([
-                ("Bold · Ctrl+B", "加粗 · Ctrl+B"),
-                ("Italic · Ctrl+I", "斜体 · Ctrl+I"),
-                ("Underline · Ctrl+U", "下划线 · Ctrl+U"),
-                ("Normal text · Ctrl+Alt+0", "正文 · Ctrl+Alt+0"),
-                ("Heading 1 · Ctrl+Alt+1", "标题 1 · Ctrl+Alt+1"),
-                ("Heading 2 · Ctrl+Alt+2", "标题 2 · Ctrl+Alt+2"),
-                ("Heading 3 · Ctrl+Alt+3", "标题 3 · Ctrl+Alt+3"),
-                ("Align left · Ctrl+L", "左对齐 · Ctrl+L"),
-                ("Center · Ctrl+E", "居中 · Ctrl+E"),
-                ("Align right · Ctrl+R", "右对齐 · Ctrl+R"),
-                ("Justify · Ctrl+J", "两端对齐 · Ctrl+J"),
-                ("Bulleted list · Ctrl+Shift+8", "项目符号列表 · Ctrl+Shift+8"),
-                ("Numbered list · Ctrl+Shift+7", "编号列表 · Ctrl+Shift+7"),
-                ("Decrease list level · Shift+Tab", "降低列表级别 · Shift+Tab"),
-                ("Increase list level · Tab", "提高列表级别 · Tab"),
-                ("Zoom out · Ctrl+-", "缩小 · Ctrl+-"),
-                ("Zoom in · Ctrl+=", "放大 · Ctrl+="),
-                ("Actual size · Ctrl+0", "实际大小 · Ctrl+0"),
-                ("New slide · Ctrl+M", "新建幻灯片 · Ctrl+M"),
-                ("Duplicate slide · Ctrl+D", "复制幻灯片 · Ctrl+D"),
-            ]);
-        }
         m
     });
     map.get(en).copied()
@@ -470,9 +309,15 @@ pub const fn tk(en: &'static str) -> &'static str {
 /// Whether `query` matches `text` or its translation, for searches that
 /// should find a command by either language's name.
 pub fn both_languages(en: &str) -> String {
-    match indonesian(en) {
-        Some(id) if id != en => format!("{en} {id}"),
-        _ => en.to_owned(),
+    match lang() {
+        Lang::Zh => match chinese(en) {
+            Some(zh) if zh != en => format!("{en} {zh}"),
+            _ => en.to_owned(),
+        },
+        _ => match indonesian(en) {
+            Some(id) if id != en => format!("{en} {id}"),
+            _ => en.to_owned(),
+        },
     }
 }
 
@@ -695,5 +540,46 @@ mod tests {
             unused.len(),
             unused.join("\n")
         );
+    }
+
+    #[std::prelude::v1::test]
+    fn catalog_zh_has_every_key_and_well_formed_lines() {
+        let missing: Vec<String> = keys_in_sources()
+            .into_iter()
+            .filter(|(k, _)| chinese(k).is_none())
+            .map(|(k, at)| format!("{at}: {k:?}"))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} string(s) have no Simplified Chinese in crates/kantor_ui/i18n_zh/*.tsv:\n{}",
+            missing.len(),
+            missing.join("\n")
+        );
+
+        let mut problems = Vec::new();
+        for (file, text) in ZH_CATALOG_FILES {
+            for (n, line) in text.lines().enumerate() {
+                if line.trim().is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let Some((en, zh)) = line.split_once('\t') else {
+                    problems.push(format!("zh/{file}:{}: no tab: {line:?}", n + 1));
+                    continue;
+                };
+                if en.trim().is_empty() || zh.trim().is_empty() {
+                    problems.push(format!("zh/{file}:{}: empty side: {line:?}", n + 1));
+                }
+                if zh.contains('\t') {
+                    problems.push(format!("zh/{file}:{}: more than one tab", n + 1));
+                }
+                if en.matches("{}").count() != zh.matches("{}").count() {
+                    problems.push(format!(
+                        "zh/{file}:{}: placeholders differ: {line:?}",
+                        n + 1
+                    ));
+                }
+            }
+        }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
     }
 }

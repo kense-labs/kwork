@@ -109,6 +109,7 @@ pub struct BrowserTab {
     pub snapshot: Option<Arc<Image>>,
     pub snapshot_dims: Option<(u32, u32)>,
     pub last_error_banner: Option<String>,
+    pub page_load_failed: bool,
 }
 
 impl BrowserTab {
@@ -133,6 +134,7 @@ impl BrowserTab {
             snapshot: None,
             snapshot_dims: None,
             last_error_banner: None,
+            page_load_failed: false,
         }
     }
 
@@ -194,6 +196,7 @@ pub struct BrowserHost {
     pub(crate) snapshot_tx:
         async_channel::Sender<(u64, SnapshotPurpose, Result<CapturedSnapshot, String>)>,
     pub(crate) was_occluded: bool,
+    pub(crate) webview_suppressed: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -290,6 +293,7 @@ impl BrowserHost {
             event_tx,
             snapshot_tx,
             was_occluded: false,
+            webview_suppressed: false,
             _subscriptions: vec![sub_addr, sub_eval],
         }
     }
@@ -330,6 +334,77 @@ fn epoch_ms_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
+}
+
+fn format_browser_load_error(code: i64, url: &str, raw_msg: &str, zh: bool) -> String {
+    let host = compact_url_display(url);
+    let is_local = url.starts_with("http://localhost")
+        || url.starts_with("http://127.0.0.1")
+        || url.starts_with("http://[::1]");
+    match code {
+        -1004 if is_local => {
+            if zh {
+                format!("无法连接到本地服务 {host} — 请先在终端启动对应的开发服务器（如 npm run dev / vite / cargo run）")
+            } else {
+                format!("Cannot connect to {host} — start your local dev server first")
+            }
+        }
+        -1004 => {
+            if zh {
+                format!("无法连接到服务器 {host}（连接被拒绝或端口未开放）")
+            } else {
+                format!("Could not connect to server {host}")
+            }
+        }
+        -1003 => {
+            if zh {
+                format!("无法解析域名 {host} — 请检查网址拼写或当前网络连接")
+            } else {
+                format!("DNS lookup failed for {host} — check the address or network connection")
+            }
+        }
+        -1009 => {
+            if zh {
+                "当前未连接到互联网，请检查系统网络设置后重试".into()
+            } else {
+                "The Internet connection appears to be offline".into()
+            }
+        }
+        -1001 => {
+            if zh {
+                format!("打开 {host} 请求超时 — 目标网站响应缓慢或当前网络不可达")
+            } else {
+                format!("Timed out while loading {host}")
+            }
+        }
+        -1022 => {
+            if zh {
+                format!("安全传输策略拦截了明文连接 ({host})")
+            } else {
+                format!("App Transport Security blocked cleartext connection ({host})")
+            }
+        }
+        -1206..=-1200 => {
+            if zh {
+                format!("HTTPS 安全连接或证书校验失败 ({host})：{raw_msg}")
+            } else {
+                format!("TLS/SSL handshake failed ({host}): {raw_msg}")
+            }
+        }
+        _ => {
+            if zh {
+                if raw_msg.trim().is_empty() {
+                    format!("页面加载失败 ({host})")
+                } else {
+                    format!("页面加载失败：{raw_msg}")
+                }
+            } else if raw_msg.trim().is_empty() {
+                format!("Failed to load {host}")
+            } else {
+                format!("Failed to load page: {raw_msg}")
+            }
+        }
+    }
 }
 
 fn discover_workspace_html_files(root: &std::path::Path, max_files: usize) -> Vec<PathBuf> {
@@ -395,6 +470,7 @@ impl KarWorkbench {
         &mut self,
         browser_pane_mounted: bool,
         occluded: bool,
+        window: &mut Window,
     ) {
         if occluded && !self.browser.was_occluded {
             // Refresh the active tab's PNG backing frame right as an overlay opens.
@@ -410,13 +486,21 @@ impl KarWorkbench {
         }
         self.browser.was_occluded = occluded;
 
-        let active_id = if browser_pane_mounted && !occluded {
+        let suppressed = !browser_pane_mounted || occluded;
+        let was_suppressed = self.browser.webview_suppressed;
+        self.browser.webview_suppressed = suppressed;
+        if was_suppressed && !suppressed {
+            window.request_animation_frame();
+        }
+
+        let active_id = if !suppressed {
             self.browser.active_tab().map(|t| t.id)
         } else {
             None
         };
         for tab in &mut self.browser.tabs {
-            let should_show = Some(tab.id) == active_id && !tab.url.is_empty();
+            let should_show =
+                Some(tab.id) == active_id && !tab.url.is_empty() && !tab.page_load_failed;
             if !should_show && tab.last_visible {
                 if let Some(ref wv) = tab.webview {
                     wv.set_visible(false);
@@ -495,6 +579,7 @@ impl KarWorkbench {
             tab.loading = false;
             tab.inspect_mode = false;
             tab.last_error_banner = None;
+            tab.page_load_failed = false;
             if let Some(ref wv) = tab.webview {
                 let _ = wv.load_html(&html);
             } else {
@@ -535,20 +620,65 @@ impl KarWorkbench {
             self.browser.active_idx = 0;
         }
 
+        let mut watch_tab_id = None;
         if let Some(tab) = self.browser.active_tab_mut() {
+            watch_tab_id = Some(tab.id);
             tab.url.clone_from(&url);
             tab.pending_html = None;
             tab.loading = true;
             tab.inspect_mode = false;
             tab.last_error_banner = None;
-            if let Some(ref wv) = tab.webview
-                && let Err(err) = wv.load_url(&url)
-            {
-                tab.loading = false;
-                tab.last_error_banner = Some(err);
+            tab.page_load_failed = false;
+            if let Some(ref wv) = tab.webview {
+                if let Err(err) = wv.load_url(&url) {
+                    tab.loading = false;
+                    tab.page_load_failed = true;
+                    tab.last_error_banner = Some(err);
+                } else {
+                    wv.focus();
+                }
             }
         }
+        if let Some(tid) = watch_tab_id {
+            self.spawn_browser_loading_watchdog(tid, window, cx);
+        }
         cx.notify();
+    }
+
+    fn spawn_browser_loading_watchdog(
+        &self,
+        tab_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn_in(window, async move |weak, cx| {
+            for delay_ms in [4_000u64, 10_000, 18_000] {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(delay_ms))
+                    .await;
+                let mut keep_polling = false;
+                let _ = weak.update_in(cx, |wb, _, cx| {
+                    if let Some(tab) = wb.browser.tab_by_id_mut(tab_id)
+                        && tab.loading
+                    {
+                        if let Some(ref wv) = tab.webview {
+                            if !wv.is_loading() {
+                                tab.loading = false;
+                                tab.can_go_back = wv.can_go_back();
+                                tab.can_go_forward = wv.can_go_forward();
+                                cx.notify();
+                            } else {
+                                keep_polling = true;
+                            }
+                        }
+                    }
+                });
+                if !keep_polling {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     pub fn new_browser_subtab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -856,6 +986,8 @@ impl KarWorkbench {
                 if let Some(tab) = self.browser.tab_by_id_mut(tab_id) {
                     tab.loading = true;
                     tab.inspect_mode = false;
+                    tab.page_load_failed = false;
+                    tab.last_error_banner = None;
                     if !url.is_empty() && !url.starts_with("about:blank") {
                         tab.url.clone_from(&url);
                     }
@@ -879,6 +1011,7 @@ impl KarWorkbench {
                 let tx = self.browser.snapshot_tx.clone();
                 if let Some(tab) = self.browser.tab_by_id_mut(tab_id) {
                     tab.loading = false;
+                    tab.page_load_failed = false;
                     if !url.is_empty() && !url.starts_with("about:blank") {
                         tab.url = url;
                     }
@@ -891,6 +1024,31 @@ impl KarWorkbench {
                     }
                 }
             }
+            WebViewEvent::LoadFailed { url, code, message } => {
+                let zh = self.ui_locale == crate::ui_primitives::UiLocale::Zh;
+                if let Some(tab) = self.browser.tab_by_id_mut(tab_id) {
+                    let effective_url = if url.is_empty() {
+                        tab.url.clone()
+                    } else {
+                        url
+                    };
+                    let friendly = format_browser_load_error(code, &effective_url, &message, zh);
+                    tab.loading = false;
+                    tab.inspect_mode = false;
+                    tab.page_load_failed = true;
+                    tab.last_error_banner = Some(friendly.clone());
+                    if let Some(ref wv) = tab.webview {
+                        wv.set_visible(false);
+                    }
+                    tab.last_visible = false;
+                    tab.push_console(BrowserConsoleItem {
+                        level: ConsoleLevel::Error,
+                        message: friendly,
+                        source: format!("navigation ({code})"),
+                        timestamp_ms: epoch_ms_now(),
+                    });
+                }
+            }
             WebViewEvent::NewWindowRequested(url) => {
                 if !url.is_empty() {
                     self.open_url_in_browser(&url, true, window, cx);
@@ -900,9 +1058,9 @@ impl KarWorkbench {
                 BrowserIpcEvent::State {
                     url,
                     title,
+                    ready_state,
                     can_go_back,
                     can_go_forward,
-                    ..
                 } => {
                     if let Some(tab) = self.browser.tab_by_id_mut(tab_id) {
                         if !url.is_empty() && !url.starts_with("about:blank") {
@@ -910,6 +1068,10 @@ impl KarWorkbench {
                         }
                         if !title.is_empty() {
                             tab.title = title;
+                        }
+                        if matches!(ready_state.as_str(), "interactive" | "complete") {
+                            tab.loading = false;
+                            tab.page_load_failed = false;
                         }
                         if let Some(ref wv) = tab.webview {
                             tab.can_go_back = wv.can_go_back() || can_go_back;
@@ -1107,6 +1269,7 @@ impl KarWorkbench {
         let err_cnt = self.browser.tabs[active_idx].error_count;
         let warn_cnt = self.browser.tabs[active_idx].warn_count;
         let err_banner = self.browser.tabs[active_idx].last_error_banner.clone();
+        let active_failed = self.browser.tabs[active_idx].page_load_failed;
         let cached_snapshot = self.browser.tabs[active_idx].snapshot.clone();
         let has_live_page = !active_url.is_empty();
         let compact_toolbar = pane_w < 540.;
@@ -1199,7 +1362,9 @@ impl KarWorkbench {
 
         // ── 2. Unified Browser Navigation & Developer Toolbar ─────────────────
         let addr_focused = self.browser.address_editor.read(cx).focus.is_focused(window);
+        let addr_text = self.browser.address_editor.read(cx).value().trim().to_owned();
         let addr_ent = self.browser.address_editor.clone();
+        let bench_for_addr = cx.weak_entity();
         let is_localhost = active_url.starts_with("http://localhost")
             || active_url.starts_with("http://127.0.0.1")
             || active_url.starts_with("http://[::1]");
@@ -1224,12 +1389,14 @@ impl KarWorkbench {
             pro_icon(ProIcon::Globe, 12., s.muted)
         };
 
+        let show_go_btn = !addr_text.is_empty() && (addr_focused || !has_live_page || active_failed);
         let omnibox = div()
             .id("browser-omnibox")
             .flex_1()
             .min_w(px(110.))
             .h(px(30.))
-            .px(px(8.))
+            .pl(px(8.))
+            .pr(px(5.))
             .rounded(px(R_CTRL))
             .bg(s.card)
             .border_1()
@@ -1243,27 +1410,39 @@ impl KarWorkbench {
             .gap(px(6.))
             .cursor_text()
             .on_mouse_down(MouseButton::Left, move |_, win, cx| {
+                let _ = bench_for_addr.update(cx, |wb, _| {
+                    if let Some(tab) = wb.browser.active_tab()
+                        && let Some(ref wv) = tab.webview
+                    {
+                        wv.focus_parent();
+                    }
+                });
                 addr_ent.update(cx, |ed, cx| ed.focus(win, cx));
             })
             .child(origin_badge)
-            .child(if addr_focused || !has_live_page {
+            .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .h(px(20.))
-                    .child(self.browser.address_editor.clone())
-                    .into_any_element()
-            } else {
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(s.font_size(FS_CONTROL))
-                    .text_color(s.ink)
-                    .child(compact_url_display(&active_url))
-                    .into_any_element()
+                    .child(self.browser.address_editor.clone()),
+            )
+            .when(show_go_btn, |bar| {
+                bar.child(
+                    Tactile::soft("browser-omnibox-go", s)
+                        .h(px(22.))
+                        .px(px(7.))
+                        .radius(4.)
+                        .gap(px(3.))
+                        .tip(loc.pick("打开网址或搜索（回车）", "Navigate or search (Enter)"))
+                        .child(pro_icon(ProIcon::ArrowRight, 11.5, s.pro.accent_info))
+                        .on_press(cx, |wb, win, cx| {
+                            let raw = wb.browser.address_editor.read(cx).value().to_owned();
+                            wb.navigate_active_browser(&raw, win, cx);
+                        }),
+                )
             })
-            .when(has_live_page, |bar| {
+            .when(has_live_page && !show_go_btn, |bar| {
                 let copy_url = active_url.clone();
                 bar.child(
                     Tactile::ghost("browser-copy-url", s)
@@ -1449,14 +1628,24 @@ impl KarWorkbench {
                     s,
                 )
                 .disabled(!has_live_page)
-                .on_press(cx, |wb, _, cx| {
-                    if let Some(tab) = wb.browser.active_tab_mut()
-                        && let Some(ref wv) = tab.webview
-                    {
-                        tab.loading = true;
-                        let _ = wv.reload();
+                .on_press(cx, |wb, win, cx| {
+                    let mut retry_url = None;
+                    if let Some(tab) = wb.browser.active_tab_mut() {
+                        if tab.page_load_failed || tab.webview.is_none() {
+                            retry_url = Some(tab.url.clone());
+                        } else if let Some(ref wv) = tab.webview {
+                            tab.loading = true;
+                            tab.page_load_failed = false;
+                            tab.last_error_banner = None;
+                            let _ = wv.reload();
+                        }
                     }
-                    cx.notify();
+                    if let Some(url) = retry_url {
+                        wb.navigate_active_browser_resolved(url, win, cx);
+                    } else if let Some(tid) = wb.browser.active_tab().map(|t| t.id) {
+                        wb.spawn_browser_loading_watchdog(tid, win, cx);
+                        cx.notify();
+                    }
                 })
                 .into_any_element()
             })
@@ -1475,6 +1664,8 @@ impl KarWorkbench {
                             tab.title.clear();
                             tab.loading = false;
                             tab.inspect_mode = false;
+                            tab.page_load_failed = false;
+                            tab.last_error_banner = None;
                         }
                         wb.browser
                             .address_editor
@@ -1559,7 +1750,7 @@ impl KarWorkbench {
                 )
         });
 
-        let error_strip = err_banner.map(|err| {
+        let error_strip = err_banner.clone().filter(|_| !active_failed).map(|err| {
             div()
                 .px(px(12.))
                 .py(px(6.))
@@ -1572,12 +1763,107 @@ impl KarWorkbench {
                 .child(err)
         });
 
-        // ── 4. Main Content Area (Start Page OR Live System WebView Canvas) ───
+        // ── 4. Main Content Area (Start Page, Error Recovery Card, OR Live System WebView) ──
         let stage_area: AnyElement = if !has_live_page {
             self.render_browser_start_page(s, cx)
+        } else if active_failed {
+            let retry_url = active_url.clone();
+            let detail = err_banner.unwrap_or_else(|| {
+                loc.pick("无法打开该网址，请检查地址或网络连接。", "Failed to load this URL.")
+                    .to_owned()
+            });
+            div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .p(px(24.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    card_box(s)
+                        .w_full()
+                        .max_w(px(460.))
+                        .p(px(22.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(pro_icon(ProIcon::AlertTriangle, 18., s.pro.amber_ink))
+                                .child(
+                                    div()
+                                        .text_size(s.font_size(FS_SECTION))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(s.ink)
+                                        .child(loc.pick("网页暂时无法打开", "Page Could Not Be Loaded")),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(s.font_size(FS_UI))
+                                .line_height(px(21.))
+                                .text_color(s.text)
+                                .child(detail),
+                        )
+                        .child(
+                            div()
+                                .px(px(8.))
+                                .py(px(5.))
+                                .rounded(px(R_SM))
+                                .bg(s.tray)
+                                .font_family(mono_font(cx))
+                                .text_size(px(FS_TAG))
+                                .text_color(s.muted)
+                                .truncate()
+                                .child(active_url.clone()),
+                        )
+                        .child(
+                            div()
+                                .pt(px(4.))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(
+                                    primary_button_sm(
+                                        "browser-err-retry",
+                                        loc.pick("重新加载", "Retry"),
+                                        s,
+                                    )
+                                    .on_press(cx, move |wb, win, cx| {
+                                        wb.navigate_active_browser_resolved(retry_url.clone(), win, cx);
+                                    }),
+                                )
+                                .child(
+                                    soft_button_sm(
+                                        "browser-err-home",
+                                        loc.pick("返回起始页", "Start page"),
+                                        s,
+                                    )
+                                    .on_press(cx, |wb, win, cx| {
+                                        wb.hide_all_browser_webviews();
+                                        if let Some(tab) = wb.browser.active_tab_mut() {
+                                            tab.url.clear();
+                                            tab.title.clear();
+                                            tab.loading = false;
+                                            tab.page_load_failed = false;
+                                            tab.last_error_banner = None;
+                                        }
+                                        wb.browser
+                                            .address_editor
+                                            .update(cx, |ed, cx| ed.set_value("", win, cx));
+                                        cx.notify();
+                                    }),
+                                ),
+                        ),
+                )
+                .into_any_element()
         } else {
             let bench = cx.weak_entity();
-            let occluded = self.browser.was_occluded;
+            let suppressed = self.browser.webview_suppressed;
             let constrained = viewport.constrained_size();
             let zoom_level = zoom;
 
@@ -1622,12 +1908,13 @@ impl KarWorkbench {
                                 width: w,
                                 height: h,
                             };
-                            let _ = bench.update(cx, |wb, _| {
+                            let _ = bench.update(cx, |wb, cx| {
                                 let tx = wb.browser.event_tx.clone();
+                                let hide_now = wb.browser.webview_suppressed || suppressed;
                                 let Some(tab) = wb.browser.tab_by_id_mut(active_tab_id) else {
                                     return;
                                 };
-                                if occluded || tab.url.is_empty() {
+                                if hide_now || tab.url.is_empty() || tab.page_load_failed {
                                     if tab.last_visible {
                                         if let Some(ref wv) = tab.webview {
                                             wv.set_visible(false);
@@ -1661,7 +1948,9 @@ impl KarWorkbench {
                                         }
                                         Err(err) => {
                                             tab.loading = false;
+                                            tab.page_load_failed = true;
                                             tab.last_error_banner = Some(err);
+                                            cx.notify();
                                         }
                                     }
                                 } else if let Some(ref wv) = tab.webview {
@@ -1939,6 +2228,49 @@ impl KarWorkbench {
                     )),
             );
 
+        let quick_sites_section = {
+            let sites = [
+                (loc.pick("必应搜索", "Bing"), "https://cn.bing.com"),
+                (loc.pick("百度", "Baidu"), "https://www.baidu.com"),
+                ("GitHub", "https://github.com"),
+                ("MDN Docs", "https://developer.mozilla.org/zh-CN/"),
+            ];
+            let mut chips = div().flex().flex_wrap().gap(px(8.));
+            for (ix, (label, site_url)) in sites.into_iter().enumerate() {
+                chips = chips.child(
+                    Tactile::soft(("browser-quick-site", ix), s)
+                        .h(px(32.))
+                        .px(px(11.))
+                        .radius(R_CTRL)
+                        .gap(px(6.))
+                        .child(pro_icon(ProIcon::Globe, 12.5, s.pro.accent_info))
+                        .child(
+                            div()
+                                .text_size(s.font_size(FS_META))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(s.ink)
+                                .child(label),
+                        )
+                        .on_press(cx, move |wb, win, cx| {
+                            wb.open_url_in_browser(site_url, false, win, cx);
+                        }),
+                );
+            }
+            card_box(s)
+                .p(px(16.))
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .text_size(s.font_size(FS_UI))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(s.ink)
+                        .child(loc.pick("常用网站快速访问", "Quick Access")),
+                )
+                .child(chips)
+        };
+
         div()
             .id("browser-start-scroll")
             .flex_1()
@@ -1969,6 +2301,7 @@ impl KarWorkbench {
                                     .child(loc.pick("内置浏览器与实时预览", "Browser & Live Preview")),
                             ),
                     )
+                    .child(quick_sites_section)
                     .child(ports_section)
                     .when_some(html_section, |d, c| d.child(c))
                     .when_some(recent_section, |d, c| d.child(c))

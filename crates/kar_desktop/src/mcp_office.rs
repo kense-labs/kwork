@@ -1,6 +1,6 @@
 //! Live Model Context Protocol (`kar::serve_mcp_tools`) bridge connecting Kar CLI agents
 //! directly to open Kantor Office (`DocsView`, `SheetsView`, `SlidesView`) tabs, KUI Briefs,
-//! and Kwrok's built-in System WebView Browser (`WKWebView` / `WebView2`).
+//! and Kwork's built-in System WebView Browser (`WKWebView` / `WebView2`).
 
 use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
@@ -24,10 +24,10 @@ use crate::{
 };
 
 const MCP_INSTRUCTIONS: &str = "\
-Kwrok hosts live WPS-grade Kantor Office editors (`Word .docx`, `Excel .xlsx`, `PPT .pptx`, `PDF .pdf`), native KUI Interactive Briefs, AND a live built-in System WebView Browser right beside this conversation.\n\
+Kwork hosts live WPS-grade Kantor Office editors (`Word .docx`, `Excel .xlsx`, `PPT .pptx`, `PDF .pdf`), native KUI Interactive Briefs, AND a live built-in System WebView Browser right beside this conversation.\n\
 \n\
 IMPORTANT DOCUMENT AUTHORING WORKFLOW:\n\
-1. PROACTIVELY USE BUILT-IN OFFICE: Whenever the user asks to write, draft, compose, or polish an article, essay, report, notice, contract, Word document, spreadsheet, or presentation — even if no file is open yet — ALWAYS call `office_create_document` first (or `office_open_document` for an existing local file) to open it live in Kwrok's side-by-side Office canvas instead of dumping long walls of text into chat or running ad-hoc scripts.\n\
+1. PROACTIVELY USE BUILT-IN OFFICE: Whenever the user asks to write, draft, compose, or polish an article, essay, report, notice, contract, Word document, spreadsheet, or presentation — even if no file is open yet — ALWAYS call `office_create_document` first (or `office_open_document` for an existing local file) to open it live in Kwork's side-by-side Office canvas instead of dumping long walls of text into chat or running ad-hoc scripts.\n\
 2. WPS-GRADE TYPOGRAPHY: When authoring Word documents with `office_edit_word` / `office_format_word` / `office_page_setup` / `office_edit_word_table`:\n\
    - Set proper hierarchy (`Title` centered + bold, `Heading1`–`Heading3` with `keep_next: true`), Chinese fonts (`黑体`/`宋体`/`仿宋`/`楷体`/`PingFang SC`) & sizes (`二号`/`三号`/`小四` or `size_pt`), body `first_line_indent_chars: 2` (2em first-line indent for Chinese prose), comfortable `line_spacing` (`1.5`–`1.6` or `line_spacing_exact_pt: 28` for `official_zh`), structured tables (`border_style: \"three_line\"` or `\"grid\"` with `header_row: true`), and page setup / page numbers.\n\
 3. VISUAL & LIFECYCLE CLOSURE: After writing or formatting a document, call `office_render_preview` to visually inspect the rendered page PNG (verifying centered title, indentation, table borders, and zero `layout_warnings` such as orphaned headings), then call `office_save_tab` (passing `path` if `NEEDS_SAVE_AS` is returned) so the file is cleanly saved on disk, and reply in chat with a concise summary.\n\
@@ -153,7 +153,7 @@ pub(crate) fn office_tool_specs() -> Vec<(&'static str, &'static str, Value)> {
     vec![
         (
             "office_create_document",
-            "Create a new Word (.docx), Excel (.xlsx), or PowerPoint (.pptx) document, bind its file path on disk (default `<workspace>/<title>.<ext>`), apply an optional typography preset (`clean_article`, `official_zh`, `academic`, `modern_business`), and open it live in Kwrok's built-in Office pane.",
+            "Create a new Word (.docx), Excel (.xlsx), or PowerPoint (.pptx) document, bind its file path on disk (default `<workspace>/<title>.<ext>`), apply an optional typography preset (`clean_article`, `official_zh`, `academic`, `modern_business`), and open it live in Kwork's built-in Office pane.",
             json!({
                 "type": "object",
                 "properties": {
@@ -177,7 +177,7 @@ pub(crate) fn office_tool_specs() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "office_open_document",
-            "Open an existing local Word (.docx/.doc/.rtf/.odt), Excel (.xlsx/.xls/.ods/.csv), PowerPoint (.pptx/.ppt/.odp), or PDF (.pdf) file into Kwrok's built-in Office pane.",
+            "Open an existing local Word (.docx/.doc/.rtf/.odt), Excel (.xlsx/.xls/.ods/.csv), PowerPoint (.pptx/.ppt/.odp), or PDF (.pdf) file into Kwork's built-in Office pane.",
             json!({
                 "type": "object",
                 "properties": {
@@ -189,7 +189,7 @@ pub(crate) fn office_tool_specs() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "office_list_tabs",
-            "List open Word (.docx), Excel (.xlsx), PowerPoint (.pptx), and PDF (.pdf) tabs in the Kwrok Office pane.",
+            "List open Word (.docx), Excel (.xlsx), PowerPoint (.pptx), and PDF (.pdf) tabs in the Kwork Office pane.",
             json!({
                 "type": "object",
                 "properties": {},
@@ -452,14 +452,14 @@ pub(crate) fn office_tool_specs() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "office_save_tab",
-            "Save an open Word, Excel, or PowerPoint tab to disk. Supports saving in place, Save-As to a new `path` (binding that path to the open tab), or `prompt_user: true` to open Kwrok's native Save-As dialog. Returns structured `NEEDS_SAVE_AS` + `suggested_path` when an untitled tab has no path yet.",
+            "Save an open Word, Excel, or PowerPoint tab to disk. Supports saving in place, Save-As to a new `path` (binding that path to the open tab), or `prompt_user: true` to open Kwork's native Save-As dialog. Returns structured `NEEDS_SAVE_AS` + `suggested_path` when an untitled tab has no path yet.",
             json!({
                 "type": "object",
                 "properties": {
                     "tab_id": { "type": "integer", "description": "Optional tab_id; defaults to active tab." },
                     "path": { "type": "string", "description": "Optional workspace-relative or absolute path for Save-As (required when saving an untitled document unless `prompt_user: true`)." },
                     "overwrite": { "type": "boolean", "description": "Whether to overwrite if `path` already exists (default true)." },
-                    "prompt_user": { "type": "boolean", "description": "Open Kwrok's native macOS Save-As file dialog for the user." }
+                    "prompt_user": { "type": "boolean", "description": "Open Kwork's native macOS Save-As file dialog for the user." }
                 },
                 "additionalProperties": false
             }),
@@ -512,7 +512,7 @@ pub(crate) fn office_tool_specs() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "browser_open",
-            "Open or navigate Kwrok's built-in system WebView browser to a URL, `:port` shorthand (e.g. `:5173`), or workspace HTML file.",
+            "Open or navigate Kwork's built-in system WebView browser to a URL, `:port` shorthand (e.g. `:5173`), or workspace HTML file.",
             json!({
                 "type": "object",
                 "properties": {
@@ -525,7 +525,7 @@ pub(crate) fn office_tool_specs() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "browser_status",
-            "Inspect open tabs, active URL/title, loading state, viewport preset, and console error counts in Kwrok's built-in browser.",
+            "Inspect open tabs, active URL/title, loading state, viewport preset, and console error counts in Kwork's built-in browser.",
             json!({
                 "type": "object",
                 "properties": {},
@@ -1315,13 +1315,15 @@ impl KarWorkbench {
                             if let Some(tab) = wb.browser.tab_by_id_mut(target_tab_id) {
                                 if tab.webview.is_none() {
                                     needs_draw = true;
-                                } else if !tab.loading && step >= 2 {
+                                } else if !tab.loading && (step >= 2 || tab.page_load_failed) {
                                     ready_payload = serde_json::to_string_pretty(&json!({
-                                        "status": "opened",
+                                        "status": if tab.page_load_failed { "load_failed" } else { "opened" },
                                         "tab_id": tab.id,
                                         "url": tab.url,
                                         "title": tab.title,
                                         "loading": tab.loading,
+                                        "page_load_failed": tab.page_load_failed,
+                                        "load_error": tab.last_error_banner,
                                         "error_count": tab.error_count,
                                     }))
                                     .ok();
@@ -1603,12 +1605,12 @@ pub(crate) fn format_webkit_json_reply(raw: &str) -> String {
     }
 }
 
-/// Locate the executable capable of running `--mcp-stdio-bridge` (`Kwrok` or `kar-desktop`) so
-/// stdio-only ACP runtimes (including Kwrok's built-in harness) can connect to `ServedMcpTools`.
+/// Locate the executable capable of running `--mcp-stdio-bridge` (`Kwork` or `kar-desktop`) so
+/// stdio-only ACP runtimes (including Kwork's built-in harness) can connect to `ServedMcpTools`.
 pub fn resolve_stdio_bridge_exe() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let stem = exe.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
-    if matches!(stem, "Kwrok" | "kar-desktop") {
+    if matches!(stem, "Kwork" | "Kwrok" | "kar-desktop") {
         return Some(exe);
     }
     let bin_name = if cfg!(windows) {

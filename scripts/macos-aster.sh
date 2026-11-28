@@ -47,7 +47,11 @@ if [[ ! -f "$cache/aster-acp" ]] || [[ "$(sha256_of "$cache/aster-acp")" != "$bi
     mv -f "$tmp/aster-acp" "$cache/aster-acp"
 fi
 
-for arch in $(lipo -archs "$app/Contents/MacOS/Kwrok"); do
+main_bin="$app/Contents/MacOS/Kwork"
+if [[ ! -f "$main_bin" ]]; then
+    main_bin="$app/Contents/MacOS/Kwrok"
+fi
+for arch in $(lipo -archs "$main_bin"); do
     lipo "$cache/aster-acp" -verify_arch "$arch"
 done
 

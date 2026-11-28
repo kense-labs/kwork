@@ -929,7 +929,7 @@ async fn handle_guest_view(
         }
     }
     let html = format!(
-        "<!doctype html><html lang='zh'><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><meta http-equiv='refresh' content='5'><title>Kwrok · 只读对话</title><style>:root{{color-scheme:light dark}}body{{font:1rem/1.6 system-ui;max-width:48rem;margin:auto;padding:1rem}}p{{white-space:pre-wrap;overflow-wrap:anywhere}}strong{{opacity:.7}}</style><h1>只读对话</h1>{items}</html>"
+        "<!doctype html><html lang='zh'><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><meta http-equiv='refresh' content='5'><title>Kwork · 只读对话</title><style>:root{{color-scheme:light dark}}body{{font:1rem/1.6 system-ui;max-width:48rem;margin:auto;padding:1rem}}p{{white-space:pre-wrap;overflow-wrap:anywhere}}strong{{opacity:.7}}</style><h1>只读对话</h1>{items}</html>"
     );
     (
         [

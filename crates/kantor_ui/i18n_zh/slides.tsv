@@ -1,0 +1,174 @@
+# English<TAB>Simplified Chinese, one string per line (see kantor_ui/src/i18n.rs).
+New slide · Ctrl+M	新建幻灯片 · Ctrl+M
+Duplicate slide · Ctrl+D	复制幻灯片 · Ctrl+D
+Delete slide	删除幻灯片
+Insert text box	插入文本框
+Insert rectangle	插入矩形
+Insert ellipse	插入椭圆
+Insert picture (PNG or JPEG)	插入图片 (PNG / JPEG)
+Edit table or chart data	编辑表格或图表数据
+Bold · Ctrl+B	加粗 · Ctrl+B
+Italic · Ctrl+I	斜体 · Ctrl+I
+Underline · Ctrl+U	下划线 · Ctrl+U
+Bulleted list · Tab / Shift+Tab change the level	项目符号列表 · Tab / Shift+Tab 调整级别
+Numbered list	编号列表
+Speaker notes	演讲者备注
+Present · F5 (Shift+F5 from this slide)	放映幻灯片 · F5（Shift+F5 从当前页开始）
+Print and export	打印与导出
+Print slides…	打印幻灯片…
+Print notes pages…	打印备注页…
+Print handouts: 1 slide per page…	打印讲义：每页 1 张幻灯片…
+Print handouts: {} slides per page…	打印讲义：每页 {} 张幻灯片…
+Background 1	背景 1
+Text 1	文本 1
+Background 2	背景 2
+Text 2	文本 2
+Accent {}	强调色 {}
+Select a shape or picture to change its fill or outline	请选择形状或图片以修改其填充或轮廓
+Theme colours	主题颜色
+No fill	无填充
+No outline	无轮廓
+Width	宽度
+Shape fill	形状填充
+Shape outline: colour and width	形状轮廓：颜色与线宽
+Click to add notes	单击此处添加演讲者备注
+The notes can't be edited: {}	无法编辑备注：{}
+This text can't be edited	此文本无法编辑
+Replaced 1 match	已替换 1 处匹配项
+Replaced {} matches	已替换 {} 处匹配项
+Agent: {}	智能体：{}
++ Row above	+ 上方插行
+Insert a row above the current cell	在当前单元格上方插入一行
++ Row below	+ 下方插行
+Insert a row below the current cell	在当前单元格下方插入一行
+− Row	− 删除行
+Delete the current row	删除当前行
++ Column left	+ 左侧插列
+Insert a column left of the current cell	在当前单元格左侧插入一列
++ Column right	+ 右侧插列
+Insert a column right of the current cell	在当前单元格右侧插入一列
+− Column	− 删除列
+Delete the current column	删除当前列
++ Category above	+ 上方类别
+Insert a category above the current cell	在当前单元格上方插入类别
++ Category below	+ 下方类别
+Insert a category below the current cell	在当前单元格下方插入类别
+− Category	− 删除类别
+Delete the current category	删除当前类别
++ Series left	+ 左侧系列
+Insert a series left of the current cell	在当前单元格左侧插入系列
++ Series right	+ 右侧系列
+Insert a series right of the current cell	在当前单元格右侧插入系列
+◀ Move series	◀ 前移系列
+Move series ▶	后移系列 ▶
+Move the series earlier in the plot order	将系列在绘图顺序中前移
+Move the series later in the plot order	将系列在绘图顺序中后移
+− Series	− 删除系列
+Remove the series of the current cell	移除当前单元格所在的系列
+Select a table or a chart to edit its data	请选择表格或图表以编辑其数据
+Category {}	类别 {}
+Series {}	系列 {}
+Cell fill	单元格填充
+Category	类别
+Edit table	编辑表格
+Edit chart data	编辑图表数据
+Opened {} (has unsupported content; Save creates a copy)	已打开 {}（含不支持的内容；保存时将另存为副本）
+Opened {}	已打开 {}
+Restored unsaved changes to {}	已恢复 {} 中未保存的更改
+This slide can't be edited: {}	无法编辑此幻灯片：{}
+This text can't be edited yet: it has {}	暂无法编辑此文本：其中包含{}
+Select text to format it	请选择要设置格式的文本
+Select a text box or placeholder to make a list	请选择文本框或占位符以创建列表
+Nothing to undo	没有可撤销的操作
+Nothing to redo	没有可重做的操作
+Slide {} of {}	第 {} / {} 张幻灯片
+Text box	文本框
+Placeholder	占位符
+Ellipse	椭圆
+Rectangle	矩形
+Rounded rectangle	圆角矩形
+Line	线条
+Shape ({})	形状 ({})
+Print failed: {}	打印失败：{}
+Preparing to print {}…	正在准备打印 {}…
+Exporting {}…	正在导出 {}…
+Exported {} (1 slide)	已导出 {}（共 1 张幻灯片）
+Exported {} ({} slides)	已导出 {}（共 {} 张幻灯片）
+Opened {} (1 page) in the PDF viewer to print	已在 PDF 阅读器中打开 {}（共 1 页）以供打印
+Opened {} ({} pages) in the PDF viewer to print	已在 PDF 阅读器中打开 {}（共 {} 页）以供打印
+Export to PDF failed: {}	导出 PDF 失败：{}
+{} has content Kantor can't keep ({}), so it's saved as a new file; the original stays as it is	{} 包含 Kwork 无法保留的内容（{}），已另存为新文件，原文件保持不变
+Saved {}	已保存 {}
+Save failed: {}	保存失败：{}
+This file has content Kantor can't keep yet: {}. Save writes a new copy; the original is never overwritten.	此文件包含 Kwork 暂无法保留的内容：{}。保存时将写入新副本，绝不会覆盖原文件。
+full page slides	整页幻灯片
+notes pages	备注页
+handouts, 1 slide per page	讲义，每页 1 张幻灯片
+handouts, {} slides per page	讲义，每页 {} 张幻灯片
+Opened {} (imported; Save creates a .pptx copy)	已打开 {}（已导入；保存时将另存为 .pptx 副本）
+Group	组合
+Ungroup	取消组合
+Regroup	重新组合
+Convert to Shapes	转换为形状
+Kantor can't lay out this SmartArt layout yet: choose another layout with Change Layout to add or remove items	Kwork 暂不支持重排此 SmartArt 布局：请通过“更改布局”选择其他布局后再增删项目
+This SmartArt layout has one level: add shapes before or after	此 SmartArt 布局仅有一级：请在前面或后面添加形状
+A SmartArt keeps at least one item	SmartArt 至少需保留一个项目
+Add Shape After	在后面添加形状
+Add Shape Before	在前面添加形状
+Add Shape Above	在上方添加形状
+Add Shape Below	在下方添加形状
+Select a SmartArt shape	请选择一个 SmartArt 形状
+Slides · the selected SmartArt shape	演示 · 所选 SmartArt 形状
+SmartArt	SmartArt
+Select the whole group to copy it	请选择整个组合以进行复制
+Select two or more shapes to group them	请选择两个或多个形状以进行组合
+Select a group to ungroup it	请选择一个组合以取消组合
+Select a SmartArt graphic to convert it	请选择一个 SmartArt 图形以进行转换
+This SmartArt text can't be edited: Kantor can't tell which item it belongs to	无法编辑此 SmartArt 文本：Kwork 无法识别其所属项目
+A Labeled Hierarchy's labels take no shapes above or below them: add labels before or after them	标记层次结构的标签不能在上方或下方添加形状：请在前面或后面添加标签
+The top of a Labeled Hierarchy has no shapes beside it: add shapes below or above it	标记层次结构的顶层形状旁不能并列添加形状：请在其下方或上方添加形状
+The top of this Labeled Hierarchy can't be deleted while it has several shapes under it	此标记层次结构顶层形状下包含多个子形状时，无法直接删除
+# Chart data of the newer chart types
+This type of chart shows one series	此图表类型仅显示一个系列
+A category's levels are separated by " / "	类别的各个层级之间以 " / " 分隔
+The centre of a Radial Cycle has no shapes beside or above it: add shapes below it	射线循环的中心形状旁或上方不能添加形状：请在其下方添加形状
+A Radial Cycle has two levels: add shapes before or after the ones round the centre	射线循环仅有两级：请在环绕中心的形状之前或之后添加形状
+The centre of this Radial Cycle can't be deleted while it has shapes round it	此射线循环周围存在环绕形状时，无法删除中心形状
+This SmartArt has no layout part to change	此 SmartArt 没有可更改的布局组件
+Change Layout	更改布局
+Process	流程
+Cycle	循环
+Hierarchy	层次结构
+Relationship	关系
+Matrix	矩阵
+Pyramid	棱锥图
+Basic Block List	基本块列表
+Vertical Bullet List	垂直项目符号列表
+Horizontal Bullet List	水平项目符号列表
+Basic Process	基本流程
+Continuous Block Process	连续块流程
+Step Up Process	梯形流程
+Basic Cycle	基本循环
+Radial Cycle	射线循环
+Organization Chart	组织结构图
+Horizontal Hierarchy	水平层次结构
+Labeled Hierarchy	标记层次结构
+Basic Venn	基本维恩图
+Basic Matrix	基本矩阵
+Basic Pyramid	基本棱锥图
+Horizontal Picture List	水平图片列表
+Picture Accent List	图片重点列表
+Bending Picture Accent List	弯曲图片重点列表
+Vertical Picture List	垂直图片列表
+Picture Caption List	图片说明列表
+Titled Picture Blocks	带标题的图片块
+Picture Grid	图片网格
+Add Assistant	添加助理
+Standard	标准
+Both	两边悬挂
+Left Hanging	左悬挂
+Right Hanging	右悬挂
+Select an Organization Chart shape	请选择一个组织结构图形状
+Only an Organization Chart has assistants	仅组织结构图支持添加助理
+Only an Organization Chart's shapes have a hanging layout	仅组织结构图中的形状支持悬挂布局
+SmartArt layout changed	已更改 SmartArt 布局

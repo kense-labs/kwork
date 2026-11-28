@@ -384,7 +384,7 @@ impl Launch {
     }
 
     async fn open(&self, wire: &mut Wire) -> Result<(String, Value)> {
-        wire.call("initialize",json!({"clientInfo":{"name":"kwrok_planner","title":"Kwrok","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}),false).await?;
+        wire.call("initialize",json!({"clientInfo":{"name":"kwrok_planner","title":"Kwork","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}),false).await?;
         wire.send(json!({"method":"initialized"})).await?;
         let config = wire
             .call(

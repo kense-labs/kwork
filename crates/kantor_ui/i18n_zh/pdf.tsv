@@ -1,0 +1,680 @@
+# English<TAB>Simplified Chinese, one string per line (see kantor_ui/src/i18n.rs).
+Bookmarks	书签
+Copied	已复制
+Fit Page	适合页面
+Fit Width	适合宽度
+Go to Page…	跳转到页面…
+Kantor can't open “{}”	Kwork 无法打开“{}”
+Opened {} (1 page)	已打开 {}（共 1 页）
+Opened {} ({} pages)	已打开 {}（共 {} 页）
+Opened {} in the PDF viewer to print	已在 PDF 阅读器中打开 {} 以供打印
+PDF · a whole page in the window	PDF · 在窗口中完整显示单页
+PDF · show or hide the document's bookmarks	PDF · 显示或隐藏文档书签
+PDF · show or hide the page thumbnails	PDF · 显示或隐藏页面缩略图
+PDF · the pages fill the window's width	PDF · 页面铺满窗口宽度
+PDF · turn the pages on screen (the file isn't changed)	PDF · 旋转屏幕视图（不修改原文件）
+PDF · type a page number	PDF · 输入页码跳转
+Page Thumbnails	页面缩略图
+Page thumbnails	页面缩略图
+Password	密码
+Read-only (Save As writes a copy)	只读（“另存为”可保存副本）
+Rotate View Clockwise	顺时针旋转视图
+Rotate View Counterclockwise	逆时针旋转视图
+Rotate clockwise	顺时针旋转
+Rotate counterclockwise	逆时针旋转
+Sidebar: thumbnails and bookmarks	侧边栏：缩略图与书签
+Still reading the text of those pages; copy again in a moment	正在读取页面文本，请稍后再试复制
+The document is trying to open {}. Open only links from sources you trust.	文档正尝试打开 {}。请仅打开来自受信任来源的链接。
+The file is damaged and could not be repaired. If it came as an attachment or a download, get it again.	文件已损坏且无法修复。如果该文件来自邮件附件或下载内容，请重新获取。
+The file is encrypted in a way Kantor can't read. Open it in another PDF viewer.	此文件采用了 Kwork 暂不支持的加密方式，请使用其他 PDF 阅读器打开。
+The password is incorrect. Try again.	密码错误，请重试。
+There is no page {} in this document	此文档没有第 {} 页
+This document has no bookmarks.	此文档没有书签。
+This document is password-protected	此文档受密码保护
+of {}	/ {}
+“{}” is protected. Enter the password to open it.	“{}”受密码保护，请输入密码以打开。
+Kantor can't open {}	Kwork 无法打开 {}
+Organize Pages	组织页面
+PDF · all pages as a grid: drag to reorder, rotate, delete, insert	PDF · 网格视图管理所有页面：拖拽重排、旋转、删除或插入页面
+Rotate Pages Left	向左旋转页面
+PDF · turn the selected pages counterclockwise (saved in the file)	PDF · 将所选页面逆时针旋转（更改将保存至文件）
+Rotate Pages Right	向右旋转页面
+PDF · turn the selected pages clockwise (saved in the file)	PDF · 将所选页面顺时针旋转（更改将保存至文件）
+Delete Pages	删除页面
+PDF · delete the selected pages	PDF · 删除所选页面
+Duplicate Pages	复制页面
+PDF · copies of the selected pages after them	PDF · 在所选页面之后插入其副本
+Extract Pages…	提取页面…
+PDF · save the selected pages as a new PDF	PDF · 将所选页面另存为新 PDF
+Insert Pages from File…	从文件插入页面…
+PDF · pages of other PDFs or pictures, after the selected page	PDF · 在所选页面之后插入其他 PDF 页面或图片
+Insert Blank Page	插入空白页
+PDF · a blank page after the selected page	PDF · 在所选页面之后插入空白页
+Combine Files…	合并 PDF…
+PDF · PDFs and pictures in one new PDF	PDF · 将多个 PDF 和图片合并为一个新 PDF
+Split Document…	拆分 PDF…
+PDF · into files of N pages, at bookmarks or by page ranges	PDF · 按固定页数、书签或页码范围拆分文档
+Add Page Numbers…	添加页码…
+PDF · number the pages	PDF · 为页面添加页码
+Watermark…	水印…
+PDF · text across the pages, such as DRAFT	PDF · 在页面上添加文字水印（如“草稿”）
+Reduce File Size…	减小文件大小…
+PDF · save a smaller copy	PDF · 另存为体积更小的副本
+Reduce File Size	减小文件大小
+Kantor writes a smaller copy of this document: unused objects are removed, repeated pictures and fonts are stored once and everything is compressed. Pictures keep their quality. This document doesn't change.	Kwork 将为此文档生成体积更小的副本：清理未使用的对象、合并重复的图片与字体并压缩所有数据。图片画质保持不变，原文档不会被修改。
+The copy has no password, even if this document has one.	即使当前文档设有密码，生成的副本也不会保留密码保护。
+Save Smaller Copy…	保存压缩副本…
+No files to combine	没有可合并的文件
+part {}	第 {} 部分
+Type pages like 1-3, 5, 8- (or leave it empty for all pages)	输入页码范围，如 1-3, 5, 8-（留空表示全部页面）
+Add PDFs or pictures to combine	添加要合并的 PDF 或图片
+Combined	合并文档
+Combining files…	正在合并文件…
+Combined {} files into {}	已将 {} 个文件合并为 {}
+Page 1 of N	第 1 页，共 N 页
+e.g. 1-3, 4-10, 11-	例如 1-3, 4-10, 11-
+Type how many pages go in each file (1 or more)	输入每个文件的页数（1 或更大整数）
+Top left	左上
+Top center	中上
+This document has no bookmarks to split at	此文档没有可用于拆分的书签
+Type the pages of each file, like 1-3, 4-10, 11-	输入每个文件的页码范围，如 1-3, 4-10, 11-
+Top right	右上
+pages {}	第 {} 页
+Bottom left	左下
+Bottom center	中下
+Bottom right	右下
+Choose a folder for the parts	选择保存拆分文件的文件夹
+Splitting…	正在拆分…
+Split into {} files in {}	已拆分为 {} 个文件，保存在 {}
+Split failed: {}	拆分失败：{}
+All pages	全部页面
+Adding page numbers…	正在添加页码…
+Numbered {} pages	已为 {} 页添加页码
+e.g. DRAFT or CONFIDENTIAL	例如：草稿 或 机密 (DRAFT / CONFIDENTIAL)
+Type the watermark's text	请输入水印文字
+The watermark can use Latin letters, digits and punctuation only	水印目前仅支持拉丁字母、数字和标点符号
+Font size: type a number from 6 to 400	字号：请输入 6 至 400 之间的数值
+Adding the watermark…	正在添加水印…
+Watermarked {} pages	已为 {} 页添加水印
+Couldn't change the pages: {}	无法修改页面：{}
+smaller	已压缩
+Reducing the file size…	正在减小文件大小…
+Saved {}: {} (was {})	已保存 {}：{}（原为 {}）
+Couldn't reduce the file size: {}	无法减小文件大小：{}
+Move up	上移
+Combine Files	合并 PDF
+PDFs and pictures are combined in this order into a new PDF, which opens in Kantor.	PDF 和图片将按此顺序合并为一个新 PDF，并在 Kwork 中打开。
+Add Files…	添加文件…
+Add at least two files to combine.	请至少添加两个要合并的文件。
+Combine…	合并…
+Every N pages	每 N 页拆分一份
+At top-level bookmarks	按一级书签拆分
+By page ranges	按页码范围拆分
+Makes 1 file	将生成 1 个文件
+Makes {} files	将生成 {} 个文件
+Split Document	拆分 PDF
+Pages per file	每个文件的页数
+Pages of each file	每个文件的页码范围
+Each top-level bookmark starts a file named after it.	每个一级书签都将作为新文件的起始页，并以该书签命名。
+The files are saved in a folder you choose next. This document doesn't change.	拆分后的文件将保存到您接下来选择的文件夹中，原文档保持不变。
+Split…	拆分…
+Start at	起始页码
+Diagonal	对角线
+Angle	角度
+Color	颜色
+1 page	1 页
+{} pages	{} 页
+Drag pages to reorder them, or onto another open PDF. Right-click for more. Drop PDFs or pictures here to insert them.	拖拽页面可调整顺序，也可拖入其他已打开的 PDF。右键单击查看更多操作；将 PDF 或图片拖放到此处即可插入。
+Rotated 1 page	已旋转 1 页
+Rotated {} pages	已旋转 {} 页
+Deleted 1 page	已删除 1 页
+Deleted {} pages	已删除 {} 页
+A PDF needs at least one page	PDF 文档至少需要保留一页
+Duplicated 1 page	已复制 1 页
+Duplicated {} pages	已复制 {} 页
+Moved 1 page to page {}	已将 1 页移动至第 {} 页
+Moved {} pages to page {}	已将 {} 页移动至第 {} 页
+Blank page	空白页
+Inserted a blank page	已插入空白页
+Insert pages from PDFs or pictures	从 PDF 或图片插入页面
+Only PDFs and pictures (PNG, JPEG) can be inserted	仅支持插入 PDF 及图片（PNG、JPEG）
+Inserting pages…	正在插入页面…
+Inserted 1 page	已插入 1 页
+Inserted {} pages	已插入 {} 页
+Copied 1 page	已复制 1 页
+Copied {} pages	已复制 {} 页
+No pages copied: select pages and copy them first	尚未复制任何页面：请先选中页面并复制
+Extracted {} pages to {}	已提取 {} 页至 {}
+Couldn't extract the pages: {}	无法提取页面：{}
+Undid: {}	已撤销：{}
+Redid: {}	已重做：{}
+Move Pages	移动页面
+Rotate Pages	旋转页面
+Insert Pages	插入页面
+Paste Pages	粘贴页面
+Watermark	水印
+Page Numbers	页码
+Rotate Left	向左旋转
+Rotate Right	向右旋转
+Duplicate	创建副本
+From File Before…	在前面从文件插入…
+From File After…	在后面从文件插入…
+Blank Page Before	在前面插入空白页
+Blank Page After	在后面插入空白页
+Couldn't read {}: {}	无法读取 {}：{}
+Extract Page…	提取页面…
+Extract {} Pages…	提取 {} 页…
+Select All Pages	全选页面
+{} is password-protected: open it, then copy its pages and paste them here	{} 受密码保护：请先打开该文件，再复制其中的页面并粘贴到此处
+Still saving…	正在保存…
+Not saved: the password protection can't be kept	未保存：无法保留原密码保护
+Save without the password?	是否保存为无密码文档？
+Kantor can't protect “{}” with its password again. Saved now, it opens without a password. Use Save As to keep the protected original.	Kwork 无法重新使用原密码加密“{}”。若现在保存，打开时将不再需要密码。如需保留受密码保护的原文件，请使用“另存为”。
+Save Without Password	无密码保存
+Couldn't print: {}	无法打印：{}
+No changes to save	没有需要保存的更改
+Tools	工具
+Page tools	页面工具
+PKCS #7, detached (adbe.pkcs7.detached)	PKCS #7 分离式签名 (adbe.pkcs7.detached)
+PKCS #7 with SHA-1 (adbe.pkcs7.sha1)	PKCS #7 SHA-1 签名 (adbe.pkcs7.sha1)
+CAdES / PAdES (ETSI.CAdES.detached)	CAdES / PAdES 签名 (ETSI.CAdES.detached)
+Document time stamp (RFC 3161)	文档时间戳 (RFC 3161)
+Other ({})	其他 ({})
+The signature's byte range doesn't cover the signed revision correctly.	签名的字节范围未能正确覆盖已签名的修订版本。
+The document was altered or damaged after signing: the signed bytes don't match the signature.	文档在签名后已被篡改或损坏：签名覆盖的字节数据与签名不匹配。
+The signature doesn't match the signer's certificate.	数字签名与签名者证书不匹配。
+The signature names a different signing certificate than the one it carries.	签名所声明的签名证书与其携带的证书不一致。
+The signer's certificate isn't in the signature.	数字签名中未包含签名者证书。
+Kantor can't check this kind of signature ({}).	Kwork 无法验证此类数字签名（{}）。
+The signature data can't be read.	无法读取数字签名数据。
+A certificate in the chain was revoked on {}.	证书链中的某张证书已于 {} 被吊销。
+The document was modified after it was signed.	文档在签名后已被修改。
+The document was changed after signing in ways the certifying signer didn't allow.	文档在签名后发生了认证签名者所不允许的更改。
+The signer's identity can't be confirmed: the certificate chain ends at a root that isn't trusted.	无法确认签名者身份：证书链的根证书不受信任。
+The signer's identity can't be confirmed: an issuer's certificate is missing.	无法确认签名者身份：缺少颁发机构证书。
+A certificate in the chain had expired at the time it was checked.	验证时证书链中的某张证书已过期。
+A certificate in the chain wasn't valid yet at the time it was checked.	验证时证书链中的某张证书尚未生效。
+A certificate in the chain isn't allowed to issue certificates.	证书链中的某张证书无权颁发下级证书。
+A certificate's key usage doesn't allow it to be used this way.	证书的密钥用法不允许用于此用途。
+A certificate has a critical extension Kantor doesn't understand.	证书包含 Kwork 无法识别的关键扩展项。
+Revocation not checked: Kantor couldn't confirm that the certificates weren't revoked.	未检查吊销状态：Kwork 无法确认证书是否已被吊销。
+The signature's time stamp couldn't be verified.	无法验证签名的时间戳。
+The time stamp authority isn't trusted; the signature was checked as of now.	时间戳颁发机构不受信任；已按当前时间验证签名。
+The document was changed after signing, in ways the signer allowed.	文档在签名后有更改，但均在签名者允许的范围内。
+The document hasn't been changed since it was signed.	自签名以来，文档未被修改。
+The signed revision is unchanged; only signatures or validation data were added after it.	已签名的修订版本未发生更改；此后仅追加了签名或验证数据。
+Long-term validation data added	已添加长期验证 (LTV) 数据
+Signature added ({})	已添加签名（{}）
+Document time stamp added	已添加文档时间戳
+Form field filled in	已填写表单域
+Form field filled in: {}	已填写表单域：{}
+{} added on page {}	已添加{}（第 {} 页）
+{} added	已添加{}
+{} changed on page {}	已修改{}（第 {} 页）
+{} changed	已修改{}
+Annotation removed on page {}	已移除第 {} 页上的批注
+Page content changed on page {}	第 {} 页的页面内容已更改
+Page content changed	页面内容已更改
+Pages added, removed or reordered	页面已被添加、删除或重新排序
+Document properties changed	文档属性已更改
+Other change ({})	其他更改（{}）
+Trusted root (not checked)	受信任的根证书（未检查吊销状态）
+Not revoked (OCSP response in the file)	未吊销（文件内含 OCSP 响应）
+Not revoked (CRL in the file)	未吊销（文件内含 CRL）
+Not revoked (checked online, OCSP)	未吊销（已通过 OCSP 在线验证）
+Not revoked (checked online, CRL)	未吊销（已通过 CRL 在线验证）
+Revoked on {}	已于 {} 吊销
+The issuer publishes no revocation information	颁发机构未发布吊销信息
+Not checked (OCSP responder certificate)	未检查（OCSP 响应方证书）
+Not checked	未检查
+Stamp	图章
+Highlight	高亮
+Squiggly underline	波浪下划线
+Polygon	多边形
+Polyline	折线
+Attachment	附件
+Link	链接
+Insertion mark	插入符
+Redaction	密文标记
+Sound	声音
+Annotation	批注
+Digital Signature	数字签名
+Non-Repudiation	不可否认性
+Key Encipherment	密钥加密
+Data Encipherment	数据加密
+Key Agreement	密钥协商
+Certificate Sign	证书签名
+CRL Sign	CRL 签名
+Encipher Only	仅加密
+Decipher Only	仅解密
+Valid	有效
+Valid, with allowed changes	有效（含允许的更改）
+Validity unknown	有效性未知
+Invalid	无效
+Signed and the signature is valid.	文档已签名，且签名有效。
+Signed and all signatures are valid.	文档已签名，且所有签名均有效。
+At least one signature has problems.	至少有一个签名存在问题。
+Signature Panel	签名面板
+Checking signatures…	正在验证签名…
+This document isn't signed.	此文档未签名。
+Kantor can't read this document's signatures.	Kwork 无法读取此文档的签名。
+page {}	第 {} 页
+Empty signature field {} {}	空白签名域 {} {}
+Some certificates can be checked online: Kantor asks the certificate authorities for missing certificates and whether they were revoked.	部分证书支持在线验证：Kwork 会向证书颁发机构查询缺失的中间证书及证书吊销状态。
+Check Online	在线验证
+Turn on Let Signature Checks Use the Internet (command palette) to check certificates online.	请先在命令面板中开启“允许签名验证访问互联网”以在线检查证书。
+Check Again	重新验证
+Document time stamp	文档时间戳
+Signed by {}	签名者：{}
+Org.	组织
+Reason	原因
+Location	位置
+trusted time stamp	受信任的时间戳
+time stamp	时间戳
+signer's computer clock	签名者计算机时钟
+Certified: no changes allowed	已认证：不允许任何更改
+Certified: form filling, signing and comments allowed	已认证：允许填写表单、签名和添加批注
+Certified: form filling and signing allowed	已认证：允许填写表单和签名
+Certifies	认证权限
+valid	有效
+authority not trusted	颁发机构不受信任
+invalid	无效
+Time stamp	时间戳
+Trusted root (system)	受信任的根证书（系统）
+Trusted root (bundled with Kantor)	受信任的根证书（Kwork 内置）
+Trusted root (added)	受信任的根证书（手动添加）
+Root not trusted	根证书不受信任
+Chain incomplete	证书链不完整
+Issued by	颁发者
+Revision	修订版本
+Changes after signing	签名后的更改
+Certificate…	证书…
+View Signed Version	查看已签名版本
+Go to page {}	跳转到第 {} 页
+Time stamp authority	时间戳颁发机构
+Not limited	无限制
+Expired at the time checked	验证时已过期
+Not yet valid at the time checked	验证时未生效
+Not allowed to issue certificates	无权颁发证书
+Key usage doesn't allow this use	密钥用法不允许此用途
+Has a critical extension Kantor doesn't understand	包含 Kwork 无法识别的关键扩展项
+Issued to	颁发给
+Valid from	有效期自
+Valid to	有效期至
+Serial number	序列号
+Public key	公钥
+Key usage	密钥用法
+Extended key usage	增强型密钥用法
+Revocation	吊销状态
+SHA-256 fingerprint	SHA-256 指纹
+SHA-1 fingerprint	SHA-1 指纹
+Certificate Details	证书详细信息
+Signatures	数字签名
+{} (signed version, revision {})	{}（已签名版本，修订版本 {}）
+Kantor couldn't open the signed version	Kwork 无法打开已签名版本
+A scan or photo of your signature (PNG keeps a transparent background).	您的手写签名扫描件或照片（PNG 格式可保留透明背景）。
+Add Date	添加日期
+Add Image / Stamp…	添加图片 / 印章…
+Add Mark	添加标记
+Add Shape	添加形状
+Add Signature	添加签名
+Add Signature…	添加签名…
+Add Stamp	添加图章
+Add Sticky Note	添加便笺
+Add Text	添加文本
+Add Text Box	添加文本框
+Add a signature or a saved stamp	添加签名或已保存的印章
+Change Color	更改颜色
+Change Font	更改字体
+Change Font Size	更改字号
+Change Line Width	更改线宽
+Change Opacity	更改不透明度
+Changing pages invalidates the document's digital signature: save these changes as a copy	修改页面会导致文档的数字签名失效：请将这些更改另存为副本
+Check Mark	勾选标记
+Choose Image…	选择图片…
+Choose a PNG or JPEG picture	选择 PNG 或 JPEG 图片
+Choose a picture of your signature	选择您的签名图片
+Click the page where it goes	在页面上单击要放置的位置
+Copies the selected stamp to the same place on these pages. Leave empty for all pages, or type pages like 1-3, 5.	将所选印章复制到指定页面的相同位置。留空表示应用到所有页面，或输入页码范围（如 1-3, 5）。
+Couldn't use {}: {}	无法使用 {}：{}
+Cross Mark	叉号标记
+Delete Comment	删除批注
+Draw	手绘涂鸦
+Drawing	手绘线条
+Fill & Sign	填写并签名
+Fill Form	填写表单
+Fill in forms, add text, dates, check marks, signatures and stamps	填写表单，添加文本、日期、勾选标记、手写签名与印章
+Flatten	固化图层
+Flatten Anyway	仍然固化
+Flatten stamps into the pages?	是否将印章固化到页面内容中？
+Flattened stamps and signatures are drawn into the page content of the copy, so they can't be moved or deleted. Kept as annotations, they stay movable.	固化后的印章和签名将直接写入副本的页面内容中，无法再移动或删除；若保留为批注，则仍可移动调整。
+Highlight Text	高亮文本
+Highlight, notes, text boxes, drawing and stamps	高亮、便笺、文本框、手绘线条与印章
+Keep as Annotations	保留为批注
+Keep the signature valid	保持数字签名有效
+Line width	线宽
+Mark Completed	标记为已完成
+Mark Not Completed	标记为未完成
+Move Comment	移动批注
+My Signatures & Stamps	我的签名与印章
+No comments yet. Use Comment on the toolbar to highlight text, add notes, draw or stamp.	暂无批注。使用工具栏上的“批注”工具可高亮文本、添加便笺、手绘涂鸦或加盖印章。
+Only PNG and JPEG pictures can be placed	仅支持放置 PNG 和 JPEG 格式的图片
+PDF · copy the selected stamp to every page or the pages you type	PDF · 将所选印章批量复制到全部页面或指定页面
+PDF · draw, type or pick a picture of your signature	PDF · 手写、输入或选择图片创建您的签名
+PDF · fill in forms, add text, dates, marks, signatures and stamps	PDF · 填写表单，添加文本、日期、标记、签名与印章
+PDF · highlight, notes, text boxes, drawing and stamps	PDF · 高亮、便笺、文本框、手绘线条与印章
+PDF · place a PNG or JPEG picture, such as a company stamp, on a page	PDF · 在页面上放置 PNG 或 JPEG 图片（如公章、签章）
+PDF · put every form field back to its default	PDF · 将所有表单域恢复为默认值
+PDF · show or hide the list of comments	PDF · 显示或隐藏批注列表
+Pink	粉红色
+Place	放置
+Place on Pages	批量放置到页面
+Place on Pages…	批量放置到页面…
+Placed on {} pages	已放置到 {} 页
+Remember on this computer	在此计算机上记住
+Remove from My Stamps	从“我的印章”中移除
+Reset Form	重置表单
+Resize Comment	调整批注大小
+Rotate Stamp	旋转印章
+Save a Copy…	另存为副本…
+Select	选择
+Select a stamp or comment to place on other pages	请选择要批量放置到其他页面的印章或批注
+Sign	签名
+Signature	签名
+Signature {}	签名 {}
+Signatures added here are pictures, not certificate-based digital signatures	此处添加的签名为图片签章，并非基于数字证书的数字签名
+Stamp {}	印章 {}
+Sticky Note	便笺
+Still reading the page's comments; try again in a moment	正在读取页面批注，请稍后再试
+Strikethrough Text	删除线文本
+This document has form fields you can fill in.	此文档包含可填写的表单域。
+This document has no form fields	此文档没有可填写的表单域
+This document is certified with a digital signature that allows no changes.	此文档已通过数字签名认证，且不允许任何更改。
+This document is certified with a digital signature that allows no changes. Saving would invalidate it. Save your changes as a copy and keep the signed original.	此文档已通过数字签名认证，不允许任何更改。直接保存会使原签名失效，请将更改另存为副本以保留已签名的原文件。
+This document is certified with a signature that allows no changes	此文档已通过签名认证，不允许任何更改
+This document is certified with a signature that allows only filling in forms and signing	此文档已通过签名认证，仅允许填写表单和签名
+This document is digitally signed. Comments, stamps and form entries are saved after the signed part, so the signature stays valid; page changes would invalidate it.	此文档包含数字签名。批注、印章和表单填写内容将追加保存在已签名数据之后，数字签名依然有效；但增删或修改页面会使签名失效。
+This document is digitally signed. Only filling in its form keeps the signature valid; Kantor saves entries after the signed part.	此文档包含数字签名。仅填写表单可保持签名有效；Kwork 会将填写内容追加保存在已签名数据之后。
+This document is digitally signed. Saving these page changes (rotating, deleting, moving or inserting pages, a watermark, page numbers or a smaller file) would invalidate its signature. Save them as a copy and keep the signed original.	此文档包含数字签名。保存此类页面更改（旋转、删除、移动或插入页面，添加水印、页码或压缩文件大小）会使原签名失效。请另存为副本并保留已签名的原文件。
+This form uses XFA, which Kantor can't fill. Open it in Adobe Acrobat or Reader to fill it in.	此表单采用 XFA 格式，Kwork 暂不支持填写。请使用 Adobe Acrobat 或 Reader 打开并填写。
+This places a picture of your signature on the page. It is not a certificate-based digital signature.	此操作将在页面上放置您的签名图片，并非基于数字证书的数字签名。
+This would invalidate the digital signature by changing the page content. Keep the stamps and signatures as annotations to keep the signature valid.	此操作会修改页面内容，从而导致数字签名失效。请将印章和签名保留为批注，以保持数字签名有效。
+Type here	在此输入
+Type your name	输入您的姓名
+Underline Text	下划线文本
+Write a reply	输入回复…
+p. {}	第 {} 页
+Sign with Certificate…	使用证书签名…
+Sign with Certificate	使用证书签名
+PDF · digitally sign with your certificate (.p12/.pfx file, token or system store)	PDF · 使用您的数字证书签名（支持 .p12/.pfx 文件、USB Key 令牌或系统证书库）
+A digital signature with your certificate: it shows who signed and that the document hasn't changed since. The signed document is saved as a new file.	使用您的数字证书进行数字签名：可证明签名者身份，并确保文档自签名后未被篡改。签名后的文档将另存为新文件。
+Add Token Module…	添加令牌模块…
+Add a time stamp	添加时间戳
+Add validation data (LTV)	添加长期验证数据 (LTV)
+Appearance	签名外观
+Certificate	数字证书
+Certify	认证文档
+Choose a certificate file (.p12 or .pfx)	选择证书文件（.p12 或 .pfx）
+Choose a certificate first.	请先选择一张数字证书。
+Choose the token's PKCS #11 module	选择硬件令牌的 PKCS #11 模块
+Date: {}	日期：{}
+Digitally signed by {}	数字签名者：{}
+Drag a box on the page where the signature goes.	请在页面上框选签名放置区域。
+Draw a Box	框选签名区域
+Field “{}”	表单域“{}”
+File: {}	文件：{}
+Invisible	不可见签名
+Location: {}	位置：{}
+Reason: {}	原因：{}
+Looking for certificates…	正在查找证书…
+No Picture	无图片
+No certificates found. Open your certificate file (.p12 or .pfx), or add your token's module.	未找到数字证书。请打开您的证书文件（.p12 或 .pfx），或添加硬件令牌模块。
+No signing certificates on the tokens this module sees. Is the token plugged in?	在此模块识别到的令牌中未找到可用于签名的证书。请检查硬件令牌是否已插好。
+Not signed	未签名
+Not signed: {}	未签名：{}
+Open Certificate File…	打开证书文件…
+Save your changes first, then sign the saved document.	请先保存您的更改，再对保存后的文档进行签名。
+Signed and saved as {}	已完成签名并另存为 {}
+Signing…	正在签名…
+Sign…	签名…
+System certificate store	系统证书库
+The password or PIN is wrong.	密码或 PIN 码错误。
+The token is locked after too many wrong PINs.	由于 PIN 码连续输错次数过多，硬件令牌已被锁定。
+Time stamps and validation data need the internet. Turn on “Let Signature Checks Use the Internet” first.	添加时间戳和长期验证数据需要联网。请先开启“允许签名验证访问互联网”。
+Time stamps go online: turn on “Let Signature Checks Use the Internet” in the command palette.	获取时间戳需要联网：请先在命令面板中开启“允许签名验证访问互联网”。
+Token: {}	硬件令牌：{}
+Type the address of a time-stamp server.	请输入时间戳服务器地址。
+Type the token's PIN.	请输入硬件令牌的 PIN 码。
+Password or PIN	密码或 PIN 码
+Reason (optional)	签名原因（可选）
+Location (optional)	签署位置（可选）
+Time-stamp server address (https://…)	时间戳服务器地址 (https://…)
+Don't Certify	普通签名（不认证）
+No Changes Allowed	不允许任何更改
+Form Filling and Signing	允许填写表单和签名
+Also Comments	允许填写表单、签名和添加批注
+Batch…	批量处理…
+Batch	批量处理
+Add Folder…	添加文件夹…
+Add PDFs	添加 PDF
+Add Step	添加步骤
+Add a step	添加处理步骤
+Add a watermark	添加水印
+Add folders of PDFs	添加包含 PDF 的文件夹
+Add page numbers	添加页码
+Add the PDFs to process	添加待处理的 PDF 文件
+Add the steps to run on every file.	添加要对每个文件依次执行的处理步骤。
+All	全部
+Back to Steps	返回步骤设置
+Batch: {} of {} files done	批量处理：已完成 {} / {} 个文件
+Cancelled	已取消
+Choose a Picture File…	选择图片文件…
+Choose a folder for the results	选择结果输出文件夹
+Choose a table of values (CSV, Excel or JSON)	选择数据表格（CSV、Excel 或 JSON）
+Choose…	选择…
+Comments, stamps, signature pictures and drawings become part of the pages. Skipped on digitally signed files.	批注、印章、签名图片和手绘线条将固化为页面内容的一部分。已含数字签名的文件将跳过此步骤。
+Couldn't open {}: {}	无法打开 {}：{}
+Couldn't save the batch: {}	无法保存批处理方案：{}
+Failed: {}	失败：{}
+Fields not in this file: {}	此文件中不存在的表单域：{}
+Files ({})	文件 ({})
+Fill in form fields	填写表单域
+First	首页
+Flatten annotations	固化批注
+For every file	对每个文件统一设置
+In a folder	保存到指定文件夹
+Kept as it is in the batch file.	保持批处理方案中的原有设置。
+Last	末页
+Name suffix	文件名后缀
+Next to the originals	保存在原文件旁
+No files yet: add PDFs or a folder, or drop them here.	尚未添加文件：请添加 PDF 文件或文件夹，或直接拖放到此处。
+Nothing to flatten	没有可固化的批注
+Open Batch…	打开批处理方案…
+Open a saved batch	打开已保存的批处理方案
+Opened the batch {}	已打开批处理方案 {}
+Originals are never replaced. Digitally signed files keep their signatures valid: steps that would break them are skipped.	绝不会覆盖原文件。已数字签名的文件将保持签名有效：任何会破坏签名的步骤都将自动跳过。
+Page numbers	页码
+Password-protected: give its password (PDF password, or a Password column in the table)	受密码保护：请提供密码（填写“PDF 密码”，或在数据表中包含 Password 列）
+Place a signature picture	放置签名图片
+Place a stamp	加盖印章
+Processing {} of {} files…	正在处理第 {} / {} 个文件…
+Remove Step	移除步骤
+Replace the existing files?	是否覆盖已存在的文件？
+Results	处理结果
+Run	开始执行
+Same Spot as the Selected Stamp	与所选印章位置相同
+Save Batch…	保存批处理方案…
+Saved as {}	已另存为 {}
+Saved as {} (signatures kept valid)	已另存为 {}（数字签名保持有效）
+Saved the batch as {}	批处理方案已保存为 {}
+Select a stamp or signature placed in this document first	请先在当前文档中选中一个已放置的印章或签名
+Skip Them	跳过已存在文件
+Skipped	已跳过
+Skipped: digitally signed, and this would invalidate the signature	已跳过：文件包含数字签名，执行此操作会导致签名失效
+Skipped: no form fields to fill	已跳过：没有可填写的表单域
+Skipped: no row for this file in the table	已跳过：数据表中没有对应此文件的行
+Skipped: the certification allows no changes	已跳过：文档认证权限不允许任何更改
+Skipped: the certification allows only form filling and signing	已跳过：文档认证权限仅允许填写表单和签名
+Skipped: the result file already exists	已跳过：目标结果文件已存在
+Skipped: {}	已跳过：{}
+Step	步骤
+Step {}: choose a picture	步骤 {}：请选择图片
+Step {}: choose a table of values or type name=value	步骤 {}：请选择数据表格或输入“字段名=值”
+Step {}: type pages like 1-3, 5	步骤 {}：请输入页码范围（如 1-3, 5）
+Step {}: type the watermark's text	步骤 {}：请输入水印文字
+Step {}: width: type points from 4 to 2000, or leave it empty	步骤 {}：宽度请输入 4 至 2000 之间的磅值，或留空
+Step “{}” (from the batch file)	步骤“{}”（来自批处理方案）
+Steps, in order	按顺序执行的步骤
+The table (CSV, Excel or JSON) has a “file” column with each PDF's name and a column per form field, headed with the field's name.	数据表格（CSV、Excel 或 JSON）需包含名为“file”的列（填写各 PDF 文件名），以及以各表单域名称为列标题的数据列。
+Type a suffix for the results' names, or choose a folder: the originals are never replaced	请为输出文件输入名称后缀，或选择输出文件夹：原文件绝不会被覆盖
+Values not allowed: {}	不允许的值：{}
+Width (pt)	宽度 (pt)
+e.g. 1-3, 5	例如 1-3, 5
+e.g. Company=PT Maju; City=Surabaya	例如 Company=华兴科技; City=上海
+{} ({} rows)	{}（{} 行）
+{} already exists.	{} 已存在。
+{} done, {} skipped, {} failed	{} 个完成，{} 个跳过，{} 个失败
+{} result files already exist, like {}.	已有 {} 个结果文件存在，例如 {}。
+… and {} more	… 以及另外 {} 项
+PDF · stamp, sign, fill or number many PDFs at once	PDF · 一次为多个 PDF 批量盖章、签名、填表或添加页码
+My signature {}	我的签名 {}
+My stamp {}	我的印章 {}
+Signature field name	签名域名称
+Step {}: choose a certificate	步骤 {}：请选择数字证书
+Step {}: type the address of a time-stamp server	步骤 {}：请输入时间戳服务器地址
+Step {}: type the signature field's name	步骤 {}：请输入签名域名称
+Step {}: type a page number	步骤 {}：请输入页码
+Step {}: {}	步骤 {}：{}
+Signature only	仅数字签名
+Time stamp	时间戳
+Time stamp and LTV	时间戳与长期验证 (LTV)
+Box on a Page	页面指定区域
+Signature Field	现有签名域
+Field name	表单域名称
+Reason	原因
+Always the last step, so the signature covers everything the batch did. The password or PIN is asked for when the batch runs; it is never saved.	数字签名始终作为最后一步执行，以确保签名涵盖批处理所做的全部更改。密码或 PIN 码将在运行时提示输入，绝不会被保存。
+The batch signs every file with this certificate. Its password or PIN is used for this run only and is never saved.	批处理将使用此证书对每个文件进行签名。证书密码或 PIN 码仅用于本次运行，绝不会被保存。
+Opening the certificate…	正在打开证书…
+Not signed: the file's security settings don't allow signing with the password that opens it (give the owner password)	未签名：文件的安全设置不允许仅凭打开密码进行签名（请提供所有者密码）
+Not signed: the file is certified and allows no changes, not even another signature	未签名：文件已认证且不允许任何更改（包括追加签名）
+Not signed: the file is already signed, and only the first signature can certify a document	未签名：文件已有签名，仅首个签名可执行文档认证
+Not signed: the file has no signature field with the step's name	未签名：文件中不存在该步骤指定名称的签名域
+Not signed: the step's signature field is already signed	未签名：该步骤指定的签名域已有签名
+Not signed: the file is certified, and a new visible signature would change its pages (sign an empty signature field, or invisibly)	未签名：文件已认证，新建可见签名框会更改页面内容（请对空白签名域签名，或使用不可见签名）
+Not signed: the file doesn't have the step's page	未签名：文件不包含该步骤指定的页码
+The document's security settings don't allow signing it with the password that opened it. Open it with the owner password to sign it.	文档的安全设置不允许仅凭打开密码进行签名。请使用所有者密码打开文档后再签名。
+Skipped: the file's security settings don't allow this with the password that opens it (give the owner password)	已跳过：文件的安全设置不允许仅凭打开密码执行此操作（请提供所有者密码）
+Password for protected PDFs (optional)	受保护 PDF 的密码（可选）
+PDF password	PDF 密码
+Password-protected PDFs stay protected. Give one password for all of them here, or a Password column in a fill step's table; it is used for this run only and never saved.	受密码保护的 PDF 处理后仍保留密码保护。您可在此输入统一密码，或在填表步骤的数据表中提供 Password 列；密码仅用于本次运行，绝不会被保存。
+Set up a provider in e-Sign Providers first.	请先在“电子签章服务商”中配置服务商账户。
+{} isn't set up: add your provider account in e-Sign Providers.	尚未配置 {}：请在“电子签章服务商”中添加您的服务商账户。
+Kantor isn't allowed to send documents to {}. Turn it on in e-Sign Providers.	尚未授权 Kwork 向 {} 发送文档。请在“电子签章服务商”中开启授权。
+The provider refused the credentials: {}	服务商拒绝了凭据：{}
+No e-meterai quota left: {}	e-Meterai 电子税票额度已用尽：{}
+Type the one-time password (OTP): {}	请输入一次性验证码 (OTP)：{}
+The provider rebuilt the file, which breaks the earlier signatures ({}). Nothing was saved.	服务商重新生成了文件，导致原有签名失效（{}）。未保存任何更改。
+Server address (optional)	服务器地址（可选）
+Saved. No system keychain was found, so the credentials are in a file only you can read.	已保存。未检测到系统钥匙串，凭据已保存在仅您本人可读的本地文件中。
+Saved.	已保存。
+Saved. Still missing: {}.	已保存。仍缺少：{}。
+Connected: the provider accepted the credentials.	已连接：服务商已验证通过该凭据。
+Test failed: {}	测试连接失败：{}
+Removed.	已移除。
+Save your changes first, then use the saved document.	请先保存您的更改，再对保存后的文档执行此操作。
+Password-protected PDFs can't be sent to a provider. Remove the password first.	无法将受密码保护的 PDF 发送给服务商，请先移除文档密码。
+Document number (optional)	文档编号（可选）
+Click where the e-meterai goes, or drag a square.	在页面上单击要加盖 e-Meterai 的位置，或拖拽框选正方形区域。
+Choose the document type.	请选择文档类型。
+Place the e-meterai on a page first.	请先在页面上指定 e-Meterai 的加盖位置。
+This provider rebuilds the file, which breaks the signatures already in it. Tick the box to go ahead anyway.	此服务商会重新生成文件，从而导致文档中已有的签名失效。勾选复选框可强制继续。
+Sending to {}…	正在发送至 {}…
+e-Meterai {} added and saved as {}	已加盖 e-Meterai {} 并另存为 {}
+e-Meterai added and saved as {}	已加盖 e-Meterai 并另存为 {}
+These signatures are no longer valid: {}	以下数字签名已失效：{}
+No e-meterai added	未加盖 e-Meterai
+Your account at the provider (e-mail, phone or user ID)	您在服务商处的账号（邮箱、手机号或用户 ID）
+One-time password (OTP)	一次性验证码 (OTP)
+Type your account at the provider.	请输入您在服务商处的账号。
+No code is needed for this account.	此账号无需输入验证码。
+Signing with {}…	正在通过 {} 签名…
+e-Meterai	e-Meterai 电子税票
+Certified signatures	认证电子签名
+API not public yet	API 暂未公开
+Not set up	未配置
+Documentation: {}	开发文档：{}
+Kantor can't use this provider yet: {}	Kwork 暂无法使用此服务商：{}
+Your account	您的账号
+Credentials are saved in the system keychain; type a field to replace it.	凭据已安全保存在系统钥匙串中；在输入框中重新输入即可更新对应项。
+Allow Kantor to send documents to {}	允许 Kwork 向 {} 发送文档
+Use the provider's sandbox (test) environment	使用服务商的沙盒（测试）环境
+Server address	服务器地址
+Documents go straight from this computer to the provider, only when you stamp or sign. Credentials stay in the system keychain.	仅当您执行盖章或签名时，文档才会从本机直接发送至对应服务商。所有凭据均保存在系统钥匙串中。
+e-Sign Providers	电子签章服务商
+e-Meterai and certified electronic signatures come from licensed providers. Add the account you have with one of them.	e-Meterai 电子税票与认证电子签名由持牌服务商提供。请添加您在任一服务商处注册的账户。
+Save and Test	保存并测试
+Loading…	加载中…
+On page {}, {} × {} mm	位于第 {} 页，{} × {} 毫米
+Not placed yet	尚未指定位置
+Add e-Meterai	加盖 e-Meterai
+An e-meterai of Rp {} from your provider account. Kantor sends the document to the provider, which stamps it; the stamped document is saved as a new file.	使用您服务商账户中的 Rp {} e-Meterai 电子税票。Kwork 会将文档发送至服务商完成加盖，并将加盖后的文档另存为新文件。
+Document type	文档类型
+Place Again	重新指定位置
+Place on Page	在页面上指定位置
+This document is signed, and this provider rebuilds files: the signatures already in it will no longer be valid.	此文档已含数字签名，而该服务商会重新生成文件：文档中原有的签名将会失效。
+Stamp anyway	仍然加盖
+This document is signed. Kantor checks the stamped file and won't save it if the provider broke the signatures.	此文档已含数字签名。Kwork 会校验加盖后的文件，若服务商破坏了原有签名则不会保存。
+Stamping…	正在加盖…
+Stamp…	加盖…
+Kantor sends only the document's fingerprint (hash); the provider returns the signature.	Kwork 仅发送文档摘要（哈希值），由服务商返回数字签名。
+Kantor sends the document to the provider, which signs it.	Kwork 将文档发送至服务商，由服务商完成签名。
+Sign with Provider	通过服务商签名
+A certified electronic signature from your account at a licensed provider (PSrE). {} The signed document is saved as a new file.	使用您在持牌电子认证服务商 (PSrE) 的账户添加认证电子签名。{} 签名后的文档将另存为新文件。
+Send Code	发送验证码
+Code sent: {}	验证码已发送：{}
+Sign anyway	仍然签名
+Your account at the provider	您在服务商处的账号
+Document type code (e.g. VD010)	文档类型代码（如 VD010）
+Step {}: type your account at the provider	步骤 {}：请输入您在服务商处的账号
+Step {}: type the document type	步骤 {}：请输入文档类型
+Signer	签名者
+Bottom right of the page. Each file uses one e-meterai from your quota.	默认加盖于页面右下角。每个文件将消耗您账户中的一枚 e-Meterai 额度。
+Client ID	客户端 ID (Client ID)
+Client secret	客户端密钥 (Client Secret)
+Token address (from VIDA; optional in the sandbox)	令牌服务地址（由 VIDA 提供；沙盒环境下可选）
+HMAC client ID	HMAC 客户端 ID
+HMAC client secret	HMAC 客户端密钥
+Peruri's e-Meterai API isn't public: it needs a contract with Peruri or a distributor.	Peruri 的 e-Meterai API 未向公众开放：需与 Peruri 或授权分销商签署合作协议。
+Pajakku shares its e-Meterai API documentation and sandbox only after a non-disclosure agreement.	Pajakku 仅在签署保密协议 (NDA) 后提供 e-Meterai API 文档与沙盒环境。
+Mitracomm's e-Meterai API documentation isn't public.	Mitracomm 的 e-Meterai API 文档未向公众开放。
+Finnet's e-Meterai API documentation isn't public.	Finnet 的 e-Meterai API 文档未向公众开放。
+Privy's public documentation covers identity checks only; its signing and e-Meterai APIs aren't published.	Privy 的公开文档仅涵盖身份核验；其电子签名与 e-Meterai API 未公开。
+Tilaka's signing API, including hash signing, is documented only for partners.	Tilaka 的电子签名 API（含哈希签名）仅向合作伙伴提供文档。
+Peruri's PSrE signing API documentation isn't public.	Peruri 的 PSrE 电子签名 API 文档未向公众开放。
+VIDA's signing APIs are public but need the signer's e-KYC data (photo of the ID card and a selfie) with every request, and its hash signing isn't documented yet.	VIDA 的电子签名 API 已公开，但每次请求均需附带签名者的 e-KYC 身份核验数据（身份证照片与自拍照），且哈希签名接口文档尚未公开。
+Digisign's API documentation isn't public.	Digisign 的 API 文档未向公众开放。
+Not stamped: the file doesn't have the step's page	未加盖：文件不包含该步骤指定的页码
+Not stamped: the file is signed and this provider rebuilds files, which would break the signatures	未加盖：文件已含数字签名，而该服务商会重新生成文件并导致原有签名失效
+Not stamped: the file is certified and allows no changes	未加盖：文件已认证且不允许任何更改
+Add e-Meterai…	加盖 e-Meterai…
+Sign with Provider…	通过服务商签名…
+e-Sign Providers…	电子签章服务商…
+PDF · stamp an e-meterai through your provider account (VIDA, Mekari Sign)	PDF · 通过您的服务商账户（VIDA、Mekari Sign）加盖 e-Meterai 电子税票
+PDF · certified electronic signature from your account at a licensed provider (PSrE)	PDF · 使用持牌电子认证服务商 (PSrE) 账户添加认证电子签名
+PDF · set up e-meterai and certified-signature provider accounts	PDF · 配置 e-Meterai 电子税票与认证电子签名服务商账户
+That isn't the document's owner password. An unprotected copy needs the owner (permissions) password.	这不是文档的所有者密码。生成无密码保护的副本需要输入所有者（权限）密码。
+This document is signed and password-protected. Removing the password would break its signatures, so it can't be stamped.	此文档同时包含数字签名和密码保护。移除密码会破坏原有签名，因此无法加盖电子税票。
+Owner password	所有者密码
+Tick “Stamp an unprotected copy” to stamp this password-protected PDF.	请勾选“在无密码副本上加盖”以对此受密码保护的 PDF 加盖电子税票。
+The stamped copy has no password.	加盖后的副本将不再包含密码保护。
+This PDF is password-protected, and the provider needs the whole document. Kantor can stamp a copy without the password; the copy can't be protected again without breaking the e-meterai. The original file stays as it is.	此 PDF 受密码保护，而服务商需要读取完整文档。Kwork 可在移除密码的副本上加盖电子税票；加盖后无法重新加密（否则会破坏 e-Meterai 签章）。原文件保持不变。
+Stamp an unprotected copy	在无密码副本上加盖
+The signed copy keeps the document's password.	签名后的副本将保留原文档的密码保护。
+Stamp unprotected copies of password-protected files	对受密码保护的文件生成无密码副本并加盖
+The provider needs the whole document, so a password-protected file is stamped only as a copy without the password, made with its owner password (PDF password, or a Password column in the table). Off, such files are skipped.	由于服务商需要读取完整文档，受密码保护的文件仅能凭其所有者密码（通过“PDF 密码”或数据表中的 Password 列提供）生成无密码副本后再加盖。若关闭此选项，将跳过此类文件。
+An invisible certified signature on every file. Providers that send a one-time password for each signature can't sign in a batch. Password-protected files are signed with their password and stay protected (providers that need the whole document skip them).	为每个文件添加不可见的认证电子签名。每次签名均需发送一次性验证码 (OTP) 的服务商不支持批量签名。受密码保护的文件将使用其密码完成签名并继续保留密码保护（需要上传完整文档的服务商将跳过此类文件）。
+Not stamped: the file is password-protected, and the provider needs the whole document (the step can stamp an unprotected copy instead)	未加盖：文件受密码保护，而服务商需要完整文档（可开启“在无密码副本上加盖”选项）
+Not stamped: an unprotected copy needs the file's owner (permissions) password, not the password that opens it	未加盖：生成无密码副本需要文件的所有者（权限）密码，而非打开密码
+Not stamped: the file is signed and password-protected; removing the password would break its signatures	未加盖：文件同时包含数字签名和密码保护；移除密码会破坏原有签名
+Not signed: the file is password-protected, and this provider needs the whole document	未签名：文件受密码保护，而此服务商需要上传完整文档
+Stamped an unprotected copy: the result has no password (adding it back would break the e-meterai)	已在无密码副本上加盖：输出文件无密码保护（重新加密会破坏 e-Meterai 签章）

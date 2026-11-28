@@ -17,7 +17,7 @@ use kar_desktop::{
 };
 
 const USAGE: &str = "\
-Kwrok — native GPUI desktop for Kar conversations and Kantor Office
+Kwork — native GPUI desktop for Kar conversations and Kantor Office
 
 USAGE:
   kar-desktop [OPTIONS] [FILE...]
@@ -49,7 +49,7 @@ OPTIONS:
   --expand-git-diff            Expand the first modified file's inline PatchReview diff in the Git dock
   --open-files-tab             Open the Workspace File Tree in the right dock
   --open-browser               Open the Built-in System WebView Browser in the right dock
-  --browser-url <URL>          Open <URL> inside Kwrok's Built-in Browser on launch
+  --browser-url <URL>          Open <URL> inside Kwork's Built-in Browser on launch
   --open-terminal-tab          Open the Integrated Workspace Terminal in the right dock
   --run-terminal <CMD>         Run an initial command inside the Integrated Workspace Terminal
   --enable-worktree-mode       Pre-toggle new chat isolation mode to Git Worktree

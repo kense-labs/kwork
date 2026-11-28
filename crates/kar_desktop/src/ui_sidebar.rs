@@ -11,7 +11,7 @@ use gpui::{prelude::*, *};
 use gpui_kit::component::tooltip::Tooltip;
 use kui::{
     components::pro_chrome::{
-        pro_fold, pro_mark_selected, pro_pill_indicator, pro_progress_ring, pro_selection_sensor,
+        pro_mark_selected, pro_pill_indicator, pro_progress_ring, pro_selection_sensor,
     },
     primitives::pro_icons::{ProIcon, pro_icon},
 };
@@ -773,85 +773,7 @@ impl KarWorkbench {
             list_col = list_col.child(docs_col);
         }
 
-        // Settled threads share the conversation scroll area.
-        let settled_count = settled_entries.len();
-        let settled_shelf = (settled_count > 0).then(|| {
-            let settled_open = self.settled_shelf_open && settled_count > 0;
-            let shelf_height = (settled_count as f32 * (THREAD_ROW_H + 2.) + 4.)
-                .min(f32::from(window.viewport_size().height) * 0.4);
-            let mut settled_body = div().px(px(8.)).pb(px(6.)).flex().flex_col().gap(px(2.));
-            for entry in settled_entries {
-                settled_body = settled_body.child(self.render_sidebar_thread_card(
-                    running_threads.contains(&entry.info.id),
-                    entry.clone(),
-                    "set",
-                    active_chat_id,
-                    now_ms,
-                    true,
-                    None,
-                    &nav_sensor,
-                    &s,
-                    window,
-                    cx,
-                ));
-            }
-            div()
-                .flex_none()
-                .px(px(6.))
-                .pt(px(2.))
-                .pb(px(4.))
-                .child(
-                    Tactile::ghost("side-settled-toggle", &s)
-                        .w_full()
-                        .h(px(34.))
-                        .px(px(8.))
-                        .justify_between()
-                        .child(
-                            div()
-                                .text_size(s.font_size(FS_META))
-                                .text_color(s.muted)
-                                .child(if self.sidebar_metadata.values().any(|meta| meta.archived) { loc.pick("已结项与归档", "Settled and archived") } else { loc.pick("已结项", "Settled") }),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .font_features(tnum_features())
-                                .text_size(s.font_size(FS_META))
-                                .text_color(s.muted)
-                                .child(format!("{settled_count}"))
-                                .child(pro_icon(
-                                    if settled_open {
-                                        ProIcon::ChevronDown
-                                    } else {
-                                        ProIcon::ChevronRight
-                                    },
-                                    11.,
-                                    s.faint,
-                                )),
-                        )
-                        .when(settled_count == 0, |btn| btn.inert())
-                        .on_press(cx, |this, _, cx| {
-                            this.settled_shelf_open = !this.settled_shelf_open;
-                            cx.notify();
-                        }),
-                )
-                .child(pro_fold(
-                    "kar-settled-fold",
-                    settled_open,
-                    shelf_height,
-                    0.,
-                    move || {
-                        div()
-                            .id("settled-threads-scroll")
-                            .h(px(shelf_height))
-                            .overflow_y_scroll()
-                            .child(settled_body)
-                            .into_any_element()
-                    },
-                ))
-        });
+        let _ = settled_entries;
 
         let nav_row = |id, icon, label: &'static str, selected| {
             Tactile::ghost(id, &s)
@@ -995,8 +917,7 @@ impl KarWorkbench {
             .when(!has_query, |d| d.child(navigation))
             .child(thread_header)
             .when_some(undo_banner, |d, b| d.child(b))
-            .child(list_col)
-            .when_some(settled_shelf, |d, sh| d.child(sh));
+            .child(list_col);
 
         let has_running_task = self.sidebar_open && self.has_running_task();
         div()
@@ -1684,6 +1605,17 @@ impl KarWorkbench {
             .on_press(cx, |this, window, cx| {
                 this.open_menu = None;
                 this.toggle_command_palette(window, cx);
+            })
+            .into_any_element(),
+            menu_icon_item(
+                "side-more-archived",
+                ProIcon::Inbox,
+                loc.pick("已结项与归档…", "Settled & archived…"),
+                s,
+            )
+            .on_press(cx, |this, _, cx| {
+                this.open_menu = None;
+                this.open_settings(SettingsTab::Archived, cx);
             })
             .into_any_element(),
             menu_divider(s).into_any_element(),

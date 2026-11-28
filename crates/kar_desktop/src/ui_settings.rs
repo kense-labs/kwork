@@ -40,6 +40,7 @@ pub enum SettingsTab {
     General,
     Appearance,
     Keybindings,
+    Archived,
     Voice,
     Agents,
     SkillsMcp,
@@ -52,10 +53,11 @@ pub enum SettingsTab {
 }
 
 impl SettingsTab {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::General,
         Self::Appearance,
         Self::Keybindings,
+        Self::Archived,
         Self::Voice,
         Self::Agents,
         Self::SkillsMcp,
@@ -67,10 +69,11 @@ impl SettingsTab {
         Self::Logs,
     ];
 
-    pub const PRIMARY_NAV: [Self; 7] = [
+    pub const PRIMARY_NAV: [Self; 8] = [
         Self::General,
         Self::Appearance,
         Self::Keybindings,
+        Self::Archived,
         Self::Agents,
         Self::SkillsMcp,
         Self::Schedules,
@@ -90,6 +93,7 @@ impl SettingsTab {
             Self::General => locale.pick("通用偏好", "General"),
             Self::Appearance => locale.pick("外观与字号", "Appearance"),
             Self::Keybindings => locale.pick("快捷键", "Shortcuts"),
+            Self::Archived => locale.pick("已结项与归档", "Settled & Archived"),
             Self::Agents => self.title(locale),
             Self::SkillsMcp => locale.pick("技能与工具", "Skills & Tools"),
             Self::Schedules => locale.pick("自动化与协同", "Automation & Sync"),
@@ -103,6 +107,7 @@ impl SettingsTab {
             Self::General => "settings-general",
             Self::Appearance => "settings-appearance",
             Self::Keybindings => "settings-keybindings",
+            Self::Archived => "settings-archived",
             Self::Voice => "settings-voice",
             Self::Agents => "settings-agents",
             Self::SkillsMcp => "settings-skills",
@@ -120,6 +125,7 @@ impl SettingsTab {
             Self::General => "通用偏好",
             Self::Appearance => "外观与字号",
             Self::Keybindings => "快捷键",
+            Self::Archived => "已结项与归档",
             Self::Voice => "语音听写",
             Self::Agents => "智能体与账号",
             Self::SkillsMcp => "技能与工具",
@@ -137,6 +143,7 @@ impl SettingsTab {
             Self::General => "General",
             Self::Appearance => "Appearance & Themes",
             Self::Keybindings => "Keybindings",
+            Self::Archived => "Settled & Archived Chats",
             Self::Voice => "Voice & Dictation",
             Self::Agents => "Agents & Accounts",
             Self::SkillsMcp => "Skills & MCP",
@@ -176,6 +183,12 @@ const SETTINGS_DEEP_INDEX: &[DeepSettingItem] = &[
         title_zh: "删除/归档二次确认与 ⌘Q 防误触退出",
         title_en: "Delete/archive confirmations & ⌘Q quit mode",
         keywords: "confirm delete archive unpin terminal quit hold 二次确认 删除 归档 退出 防误触",
+    },
+    DeepSettingItem {
+        tab: SettingsTab::Archived,
+        title_zh: "已结项与归档对话管理（查看、恢复到侧边栏或清理）",
+        title_en: "Settled & archived conversations (reopen, restore, or delete)",
+        keywords: "settled archived history restore unarchive 已结项 归档 历史对话 恢复 取消归档",
     },
     DeepSettingItem {
         tab: SettingsTab::Appearance,
@@ -539,7 +552,7 @@ impl KarWorkbench {
                 loc.pick("应用内消息气泡", "In-app notifications"),
                 loc.pick(
                     "应用处于前台时展示轻量状态提示条。",
-                    "Show subtle toast alerts while Kwrok has focus.",
+                    "Show subtle toast alerts while Kwork has focus.",
                 ),
                 in_app_sw,
                 stacked,
@@ -561,7 +574,7 @@ impl KarWorkbench {
                             cx,
                             |wb, _, cx| {
                                 crate::forge_devices_voice::send_macos_notification(
-                                    "Kwrok 通知测试",
+                                    "Kwork 通知测试",
                                     "后台对话需要确认或已完成时将在此处提醒你",
                                     wb.prefs.notification_sound,
                                 );
@@ -703,6 +716,30 @@ impl KarWorkbench {
         let more_open = *more_open_state.read(cx);
         let more_toggle_state = more_open_state.clone();
 
+        let archived_count = self
+            .chat_list
+            .iter()
+            .filter(|e| {
+                self.deferred_delete_chat
+                    .as_ref()
+                    .is_none_or(|(id, _, _)| *id != e.info.id)
+                    && (self.settled_chats.contains(&e.info.id)
+                        || self
+                            .sidebar_metadata
+                            .get(&e.info.id)
+                            .is_some_and(|m| m.archived || m.settled))
+            })
+            .count();
+        let manage_archived_btn = soft_button(
+            "general-open-archived-tab",
+            format!(
+                "{} ({archived_count})",
+                loc.pick("查看与管理", "Manage")
+            ),
+            s,
+        )
+        .on_press(cx, |wb, _, cx| wb.select_settings_tab(SettingsTab::Archived, cx));
+
         let sidebar_box = card_box(s)
             .flex()
             .flex_col()
@@ -718,6 +755,17 @@ impl KarWorkbench {
                 loc.pick("把进行中的对话置顶", "Show working chats first"),
                 loc.pick("在每个文件夹里优先显示正在工作或等待确认的对话。", "Show working chats first in each folder."),
                 running_first_switch,
+                stacked,
+                s,
+            ))
+            .child(settings_divider(s))
+            .child(settings_row_item(
+                loc.pick("已结项与归档对话", "Settled & archived chats"),
+                loc.pick(
+                    "已结项与归档的对话统一收纳在设置中，保持侧边栏清爽。",
+                    "Keep settled and archived threads organized inside Settings.",
+                ),
+                manage_archived_btn.into_any_element(),
                 stacked,
                 s,
             ));
@@ -882,6 +930,296 @@ impl KarWorkbench {
                                 }),
                             )
                             .when(more_open, |d| d.child(advanced_box)),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_archived_threads_settings(
+        &self,
+        s: &StudioPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let loc = self.ui_locale;
+        let now_ms = crate::remote_link::now_epoch_ms();
+        let filter_ed = window.use_keyed_state("settings-archived-filter", cx, |win, cx| {
+            let mut ed = Editor::new(
+                loc.pick("搜索已结项或归档对话", "Filter settled & archived"),
+                InputMode::Search,
+                win,
+                cx,
+            );
+            ed.font_size = FS_UI;
+            ed.set_placeholder(loc.pick(
+                "按对话标题或所属项目筛选…",
+                "Filter by title or project…",
+            ));
+            ed
+        });
+        let query = filter_ed.read(cx).value().trim().to_lowercase();
+        let filter_focus = filter_ed.focus_handle(cx);
+
+        let mut entries: Vec<_> = self
+            .chat_list
+            .iter()
+            .filter(|e| {
+                self.deferred_delete_chat
+                    .as_ref()
+                    .is_none_or(|(id, _, _)| *id != e.info.id)
+                    && (self.settled_chats.contains(&e.info.id)
+                        || self
+                            .sidebar_metadata
+                            .get(&e.info.id)
+                            .is_some_and(|m| m.archived || m.settled))
+            })
+            .collect();
+        entries.sort_by_key(|e| std::cmp::Reverse(e.last_activity_ms.unwrap_or(0)));
+
+        let total_count = entries.len();
+        if !query.is_empty() {
+            entries.retain(|e| {
+                let proj = self
+                    .project_registry
+                    .project_for_chat(&e.info.workspace, e.info.id)
+                    .map(|p| p.name.as_str())
+                    .or_else(|| e.info.workspace.file_name()?.to_str())
+                    .map_or("Kwork", crate::studio_hub::project_display_name);
+                e.title.to_lowercase().contains(&query) || proj.to_lowercase().contains(&query)
+            });
+        }
+
+        let search_box = div()
+            .h(px(34.))
+            .w_full()
+            .px(px(10.))
+            .rounded(px(R_SM))
+            .bg(s.card)
+            .border_1()
+            .border_color(if filter_focus.is_focused(window) {
+                s.pro.accent_info
+            } else {
+                s.line
+            })
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(pro_icon(ProIcon::Search, 14., s.muted))
+            .child(div().flex_1().min_w_0().h(px(20.)).child(filter_ed));
+
+        let list_card: AnyElement = if entries.is_empty() {
+            card_box(s)
+                .p(px(28.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(8.))
+                .child(pro_icon(ProIcon::Inbox, 22., s.muted))
+                .child(
+                    div()
+                        .text_size(s.font_size(FS_UI))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(s.ink)
+                        .child(if total_count == 0 {
+                            loc.pick("暂无已结项或归档的对话", "No settled or archived chats")
+                        } else {
+                            loc.pick("未找到匹配的对话", "No matching chats")
+                        }),
+                )
+                .child(
+                    div()
+                        .text_size(s.font_size(FS_META))
+                        .text_color(s.muted)
+                        .child(loc.pick(
+                            "在侧边栏对话右侧菜单中选择「标记为已结项」或「归档对话」后，会集中收纳在此处。",
+                            "Threads marked as settled or archived from the sidebar appear here.",
+                        )),
+                )
+                .into_any_element()
+        } else {
+            let mut list = card_box(s).flex().flex_col();
+            for (idx, entry) in entries.into_iter().enumerate() {
+                if idx > 0 {
+                    list = list.child(settings_divider(s));
+                }
+                let chat_id = entry.info.id;
+                let is_archived = self
+                    .sidebar_metadata
+                    .get(&chat_id)
+                    .is_some_and(|m| m.archived);
+                let is_settled = self.settled_chats.contains(&chat_id)
+                    || self
+                        .sidebar_metadata
+                        .get(&chat_id)
+                        .is_some_and(|m| m.settled);
+                let proj_name = self
+                    .project_registry
+                    .project_for_chat(&entry.info.workspace, chat_id)
+                    .map(|p| p.name.as_str())
+                    .or_else(|| entry.info.workspace.file_name()?.to_str())
+                    .map_or("Kwork", crate::studio_hub::project_display_name)
+                    .to_owned();
+                let title = if entry.turn_count == 0 && entry.title == "新对话" {
+                    loc.pick("新对话", "New thread").to_owned()
+                } else {
+                    entry.title.clone()
+                };
+                let del_title = title.clone();
+                let age = crate::types::localized_relative_age(entry.last_activity_ms, now_ms, loc);
+                let badge_text = if is_archived {
+                    loc.pick("已归档", "Archived")
+                } else {
+                    loc.pick("已结项", "Settled")
+                };
+
+                list = list.child(
+                    div()
+                        .px(px(14.))
+                        .py(px(10.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(12.))
+                        .child(
+                            Tactile::ghost(("archived-open-row", idx), s)
+                                .flex_1()
+                                .min_w_0()
+                                .py(px(4.))
+                                .px(px(6.))
+                                .radius(R_SM)
+                                .gap(px(10.))
+                                .child(pro_icon(ProIcon::Thread, 15., s.muted))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(6.))
+                                                .child(
+                                                    div()
+                                                        .min_w_0()
+                                                        .truncate()
+                                                        .text_size(s.font_size(FS_UI))
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .text_color(s.ink)
+                                                        .child(title),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_none()
+                                                        .px(px(6.))
+                                                        .py(px(1.))
+                                                        .rounded(px(R_PILL))
+                                                        .bg(s.soft)
+                                                        .text_size(s.font_size(FS_TAG))
+                                                        .text_color(s.muted)
+                                                        .child(badge_text),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(s.font_size(FS_META))
+                                                .text_color(s.muted)
+                                                .truncate()
+                                                .child(if age.is_empty() {
+                                                    proj_name
+                                                } else {
+                                                    format!("{proj_name} · {age}")
+                                                }),
+                                        ),
+                                )
+                                .on_press(cx, move |wb, win, cx| {
+                                    wb.close_all_overlays(cx);
+                                    wb.open_chat(chat_id, win, cx);
+                                }),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(
+                                    soft_button(
+                                        SharedString::from(format!("archived-restore-{chat_id}")),
+                                        loc.pick("移回对话栏", "Restore"),
+                                        s,
+                                    )
+                                    .on_press(cx, move |wb, _, cx| {
+                                        if is_archived {
+                                            wb.bridge.send(KarCommand::UpdateSidebar {
+                                                chat_id,
+                                                action: crate::kar_bridge::SidebarAction::Archive(
+                                                    false,
+                                                ),
+                                            });
+                                        }
+                                        if is_settled {
+                                            wb.settled_chats.remove(&chat_id);
+                                            wb.prefs.settled_chats.remove(&chat_id);
+                                            wb.save_prefs();
+                                            wb.bridge.send(KarCommand::UpdateSidebar {
+                                                chat_id,
+                                                action: crate::kar_bridge::SidebarAction::Settle(
+                                                    false,
+                                                ),
+                                            });
+                                        }
+                                        wb.notify_toast(
+                                            loc.pick(
+                                                "已将对话恢复到左侧列表",
+                                                "Restored chat to sidebar",
+                                            ),
+                                            cx,
+                                        );
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(
+                                    icon_button(
+                                        SharedString::from(format!("archived-delete-{chat_id}")),
+                                        ProIcon::Trash,
+                                        loc.pick("删除对话", "Delete chat"),
+                                        s,
+                                    )
+                                    .on_press(cx, move |wb, _, cx| {
+                                        wb.stage_deferred_chat_delete(
+                                            chat_id,
+                                            del_title.clone(),
+                                            cx,
+                                        );
+                                    }),
+                                ),
+                        ),
+                );
+            }
+            list.into_any_element()
+        };
+
+        div()
+            .id("settings-archived-scroll")
+            .size_full()
+            .overflow_y_scroll()
+            .child(
+                settings_page_shell()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.))
+                            .child(settings_section_title(
+                                loc.pick("已结项与归档记录", "Settled & Archived Threads"),
+                                s,
+                            ))
+                            .child(search_box)
+                            .child(list_card),
                     ),
             )
             .into_any_element()
@@ -1102,12 +1440,28 @@ impl KarWorkbench {
                 SettingsTab::General => pro_icon(ProIcon::Sliders, 15., color),
                 SettingsTab::Appearance => pro_icon(ProIcon::Eye, 15., color),
                 SettingsTab::Keybindings => pro_icon(ProIcon::Code, 15., color),
+                SettingsTab::Archived => pro_icon(ProIcon::Inbox, 15., color),
                 SettingsTab::Agents => pro_icon(ProIcon::Users, 15., color),
                 SettingsTab::SkillsMcp => render_skills_puzzle_icon(15., color),
                 SettingsTab::Schedules => render_schedule_repeat_icon(15., color),
                 SettingsTab::Usage => render_usage_pulse_icon(15., color),
                 _ => pro_icon(ProIcon::Settings, 15., color),
             };
+            let rail_archived_count = (tab == SettingsTab::Archived && !compact).then(|| {
+                self.chat_list
+                    .iter()
+                    .filter(|e| {
+                        self.deferred_delete_chat
+                            .as_ref()
+                            .is_none_or(|(id, _, _)| *id != e.info.id)
+                            && (self.settled_chats.contains(&e.info.id)
+                                || self
+                                    .sidebar_metadata
+                                    .get(&e.info.id)
+                                    .is_some_and(|m| m.archived || m.settled))
+                    })
+                    .count()
+            }).filter(|&n| n > 0);
             let open = open_result.clone();
             nav_items = nav_items.child(
                 div()
@@ -1139,6 +1493,18 @@ impl KarWorkbench {
                                         })
                                         .text_color(if selected { s.ink } else { s.text })
                                         .child(overflow_label("settings-nav-label", title)),
+                                )
+                            })
+                            .when_some(rail_archived_count, |b, cnt| {
+                                b.child(
+                                    div()
+                                        .px(px(6.))
+                                        .py(px(1.))
+                                        .rounded(px(R_PILL))
+                                        .bg(s.soft)
+                                        .text_size(s.font_size(FS_TAG))
+                                        .text_color(s.muted)
+                                        .child(cnt.to_string()),
                                 )
                             })
                             .on_press(cx, move |wb, win, cx| open(tab, wb, win, cx)),
@@ -1292,6 +1658,7 @@ impl KarWorkbench {
             SettingsTab::General => self.render_general_settings(s, window, cx),
             SettingsTab::Appearance => self.render_appearance_settings(s, window, cx),
             SettingsTab::Keybindings => self.render_keybindings_settings(s, window, cx),
+            SettingsTab::Archived => self.render_archived_threads_settings(s, window, cx),
             SettingsTab::Voice => self.render_voice_settings(s, window, cx),
             SettingsTab::Agents => div()
                 .id("kar-settings-agents-scroll")
@@ -1512,6 +1879,8 @@ mod tests {
             ("工程与维护", Some(SettingsTab::Usage)),
             ("Voice & Dictation", Some(SettingsTab::Voice)),
             ("whisper", Some(SettingsTab::Voice)),
+            ("已结项", Some(SettingsTab::Archived)),
+            ("归档", Some(SettingsTab::Archived)),
         ] {
             assert_eq!(SettingsMatches::for_query(input).first(), target, "{input}");
         }

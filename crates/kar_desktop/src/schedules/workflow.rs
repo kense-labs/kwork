@@ -32,7 +32,7 @@ pub enum Action {
     },
 }
 
-const TEMPLATE: &str = "\n\nKwrok Office · 打开此工作区文档作为任务上下文：\n";
+const TEMPLATE: &str = "\n\nKwork Office · 打开此工作区文档作为任务上下文：\n";
 
 fn cadence(value: &Value) -> Result<ScheduleCadence> {
     Ok(match value["type"].as_str() {

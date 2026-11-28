@@ -904,7 +904,7 @@ impl WorkerState {
     ) -> kar::Result<ChatSession> {
         if runtime == crate::aster::ID {
             let engine = self.engine.as_ref().ok_or_else(|| KarError::Refused("Kar 工作台服务不可用".into()))?;
-            let binary = crate::aster::find_binary().ok_or_else(|| KarError::Refused("内置智能体运行环境不可用，请重新安装 Kwrok".into()))?;
+            let binary = crate::aster::find_binary().ok_or_else(|| KarError::Refused("内置智能体运行环境不可用，请重新安装 Kwork".into()))?;
             let pinned = crate::aster::register(engine, &binary).await.map_err(|e| KarError::Refused(e.to_string()))?;
             return store.create(&pinned, None, opts).await;
         }
@@ -2671,7 +2671,7 @@ async fn worker_loop(
     let host_label = std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
         .map(|u| format!("{} ({u})", crate::APP_NAME))
-        .unwrap_or_else(|_| "Kwrok 桌面主机".into());
+        .unwrap_or_else(|_| "Kwork 桌面主机".into());
     let remote_link = Arc::new(std::sync::Mutex::new(RemoteLinkCore::new_persistent(
         &initial_store_dir,
         host_label,
@@ -5176,7 +5176,7 @@ async fn worker_loop(
                             id: OFFICE_SERVER_NAME.into(),
                             name: "Kantor Office".into(),
                             status: "可连接".into(),
-                            source: "Kwrok 桌面端".into(),
+                            source: "Kwork 桌面端".into(),
                             tool_count: seeded.tools.len(),
                             builtin_office: true,
                             error: None,

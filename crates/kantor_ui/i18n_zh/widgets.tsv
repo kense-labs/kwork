@@ -1,0 +1,43 @@
+# English<TAB>Simplified Chinese: built-in text of the gpui_kit widgets (see kantor_ui/src/i18n.rs).
+Select All	全选
+Show password	显示密码
+Hide password	隐藏密码
+Decrease	减少
+Increase	增加
+Replace All	全部替换
+Please select	请选择
+Search…	搜索…
+Type a command or search…	输入命令或搜索…
+More options	更多选项
+Previous	上一个
+Next	下一个
+No matching settings	未找到匹配的设置
+Try a different keyword.	请尝试其他关键词。
+Reset All	全部重置
+Palette	调色板
+Hue	色相
+Saturation	饱和度
+Lightness	亮度
+Opacity	不透明度
+Unnamed	未命名
+Collapse	收起
+Expand	展开
+Select date	选择日期
+Su	日
+Mo	一
+Tu	二
+We	三
+Th	四
+Fr	五
+Sa	六
+January	1月
+February	2月
+March	3月
+April	4月
+June	6月
+July	7月
+August	8月
+September	9月
+October	10月
+November	11月
+December	12月

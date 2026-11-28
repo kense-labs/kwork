@@ -29,7 +29,7 @@ def run(*args):
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "THIRD_PARTY_LICENSES.txt")
     packages = sys.argv[2:] or ["kantor"]
-    product = "Kwrok" if "kar_desktop" in packages else "Kantor"
+    product = "Kwork" if "kar_desktop" in packages else "Kantor"
     meta = json.loads(run("cargo", "metadata", "--format-version", "1", "--locked"))
     members = set(meta["workspace_members"])
 

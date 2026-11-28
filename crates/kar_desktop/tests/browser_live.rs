@@ -314,7 +314,29 @@ fn verify_over_stdio_bridge(
         }
     }
 
-    // 3. browser_open -> navigate live WKWebView to loopback server
+    // 2b. Verify failed navigation (closed loopback port) reports `load_failed` immediately
+    //     without hanging `loading = true` forever, and recovers cleanly on next navigation!
+    let dead_open = rpc(json!({
+        "jsonrpc": "2.0",
+        "id": 20,
+        "method": "tools/call",
+        "params": {
+            "name": "browser_open",
+            "arguments": { "url": "http://127.0.0.1:9/" }
+        }
+    }))?;
+    let dead_text = dead_open["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    if !dead_text.contains("\"status\": \"load_failed\"")
+        || !dead_text.contains("\"loading\": false")
+    {
+        return Err(format!(
+            "closed-port navigation did not report load_failed cleanly: {dead_open}"
+        ));
+    }
+
+    // 3. browser_open -> navigate live WKWebView to loopback server (verifies recovery after failure)
     let target_url = format!("http://{http_addr}/");
     let opened = rpc(json!({
         "jsonrpc": "2.0",
@@ -444,6 +466,29 @@ fn verify_over_stdio_bridge(
         .map_err(|e| format!("decode png base64: {e}"))?;
     if png_bytes.len() < 64 || &png_bytes[..8] != b"\x89PNG\r\n\x1a\n" {
         return Err("browser_screenshot did not return valid PNG bytes".into());
+    }
+
+    // Optional live external HTTPS smoke check (`KWROK_VERIFY_EXTERNAL_WEB=1`).
+    if std::env::var("KWROK_VERIFY_EXTERNAL_WEB").as_deref() == Ok("1") {
+        let ext = rpc(json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {
+                "name": "browser_open",
+                "arguments": { "url": "www。baidu。com" }
+            }
+        }))?;
+        let ext_txt = ext["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        eprintln!("[live-external-https] {ext_txt}");
+        if !ext_txt.contains("\"status\": \"opened\"")
+            || !ext_txt.contains("baidu.com")
+            || ext_txt.contains("\"page_load_failed\": true")
+        {
+            return Err(format!("external HTTPS load failed: {ext_txt}"));
+        }
     }
 
     drop(stdin);

@@ -416,11 +416,23 @@ impl Default for WorkbenchConfig {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         // Finder launches an app bundle with "/" as its working directory.
         let bundled = cfg!(target_os = "macos")
-            && std::env::current_exe().is_ok_and(|exe| exe.ends_with("Contents/MacOS/Kwrok"));
-        let bundle_data = bundled
-            .then(std::env::home_dir)
-            .flatten()
-            .map(|home| home.join("Library/Application Support/Kwrok"));
+            && std::env::current_exe().is_ok_and(|exe| {
+                exe.ends_with("Contents/MacOS/Kwork") || exe.ends_with("Contents/MacOS/Kwrok")
+            });
+        let bundle_data = bundled.then(std::env::home_dir).flatten().map(|home| {
+            let kwork_dir = home.join("Library/Application Support/Kwork");
+            let legacy_dir = home.join("Library/Application Support/Kwrok");
+            if !kwork_dir.join(".kar-desktop-chats").exists()
+                && legacy_dir.join(".kar-desktop-chats").exists()
+            {
+                let _ = std::fs::rename(&legacy_dir, &kwork_dir);
+            }
+            if kwork_dir.exists() || !legacy_dir.exists() {
+                kwork_dir
+            } else {
+                legacy_dir
+            }
+        });
         let state_dir = bundle_data.as_ref().unwrap_or(&cwd);
         let chat_dir = std::env::var_os("KAR_CHAT_DIR")
             .filter(|v| !v.is_empty())
@@ -3021,7 +3033,7 @@ impl KarWorkbench {
                     && self.prefs.system_notifications != crate::prefs::NotificationLevel::Off
                 {
                     crate::forge_devices_voice::send_macos_notification(
-                        "Kwrok 需要你的确认",
+                        "Kwork 需要你的确认",
                         "智能体正在等待权限审批或问题回复",
                         self.prefs.notification_sound,
                     );
@@ -3038,7 +3050,7 @@ impl KarWorkbench {
                         && self.prefs.system_notifications != crate::prefs::NotificationLevel::Off
                     {
                         crate::forge_devices_voice::send_macos_notification(
-                            "Kwrok 对话执行受阻",
+                            "Kwork 对话执行受阻",
                             "最新一轮智能体任务未能完成，请查看详情",
                             self.prefs.notification_sound,
                         );
@@ -3047,7 +3059,7 @@ impl KarWorkbench {
                             == crate::prefs::NotificationLevel::All
                     {
                         crate::forge_devices_voice::send_macos_notification(
-                            "Kwrok 任务已完成",
+                            "Kwork 任务已完成",
                             "智能体已完成本轮回复与改动",
                             self.prefs.notification_sound,
                         );
@@ -5616,7 +5628,7 @@ impl KarWorkbench {
                         self.quit_pending_since = Some(Instant::now());
                         self.notify_toast(
                             self.ui_locale
-                                .pick("再按一次 ⌘Q 退出 Kwrok", "Press ⌘Q again to quit"),
+                                .pick("再按一次 ⌘Q 退出 Kwork", "Press ⌘Q again to quit"),
                             cx,
                         );
                     }
@@ -7293,7 +7305,7 @@ impl Render for KarWorkbench {
         let single_dock = compact && show_doc;
         let browser_mounted = show_doc
             && self.right_surface == RightPaneSurface::Browser
-            && dock_reveal > 0.96;
+            && (single_dock || dock_reveal > 0.85);
         let browser_occluded = overlay_open
             || drawer_active
             || self.command_palette_open
@@ -7301,7 +7313,7 @@ impl Render for KarWorkbench {
             || self.any_dialog_open(cx)
             || self.pane_drag.is_some()
             || kantor_ui::overlay::menu_shield(window).is_some();
-        self.sync_browser_webview_visibility(browser_mounted, browser_occluded);
+        self.sync_browser_webview_visibility(browser_mounted, browser_occluded, window);
         if in_conversation_stage && !single_dock && !drawer_active && !overlay_open
             && !self.command_palette_open && !self.any_dialog_open(cx)
         {

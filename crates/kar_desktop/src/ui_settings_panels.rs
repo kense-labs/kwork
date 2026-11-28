@@ -1,5 +1,5 @@
 //! Rich Settings sub-panels (`Appearance`, `Keybindings`, `Voice`, `ProjectsGit`, `Devices`,
-//! and `Maintenance & About`) built strictly with Pure GPUI + KUI + Kwrok's unified design system.
+//! and `Maintenance & About`) built strictly with Pure GPUI + KUI + Kwork's unified design system.
 
 use gpui::{prelude::*, *};
 use kui::{
@@ -101,7 +101,7 @@ impl KarWorkbench {
         let active_named = self.prefs.named_theme_id.clone();
         let mut swatch_grid = div().w_full().flex().flex_wrap().gap(px(8.));
 
-        // Classic Kwrok Architectural Monochrome card
+        // Classic Kwork Architectural Monochrome card
         let mono_selected = active_named.is_none();
         swatch_grid = swatch_grid.child(
             Tactile::soft("theme-card-monochrome", s)
@@ -132,7 +132,7 @@ impl KarWorkbench {
                                         .text_size(s.font_size(FS_META))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(s.ink)
-                                        .child(loc.pick("经典极简黑白（默认）", "Kwrok Monochrome")),
+                                        .child(loc.pick("经典极简黑白（默认）", "Kwork Monochrome")),
                                 )
                                 .when(mono_selected, |d| {
                                     d.child(pro_icon(ProIcon::Check, ICON_XS, s.pro.green_ink))
@@ -1316,8 +1316,8 @@ impl KarWorkbench {
             )
             .with_placeholder(
                 loc.pick(
-                    "例如：GPUI 或 kwrok => Kwrok",
-                    "e.g. GPUI or kwrok => Kwrok",
+                    "例如：GPUI 或 kwork => Kwork",
+                    "e.g. GPUI or kwork => Kwork",
                 ),
                 cx,
             )
@@ -2651,7 +2651,7 @@ impl KarWorkbench {
                     .child(
                         settings_page_shell().child(
                             div()
-                                .child(settings_section_title(loc.pick("关于 Kwrok 与软件更新", "About Kwrok & Updates"), s))
+                                .child(settings_section_title(loc.pick("关于 Kwork 与软件更新", "About Kwork & Updates"), s))
                                 .child(about_card),
                         ),
                     ),

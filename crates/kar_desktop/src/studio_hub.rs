@@ -1542,7 +1542,7 @@ pub async fn probe_inventory_with_office(workspace: &Path, runtime_id: &str, off
         }).collect();
         snap.mcp_servers.push(McpServerCardItem {
             id: OFFICE_SERVER_NAME.into(), name: "Kantor Office".into(), status: "可连接".into(),
-            source: "Kwrok 桌面端".into(), tool_count: snap.tools.len(), builtin_office: true, error: None,
+            source: "Kwork 桌面端".into(), tool_count: snap.tools.len(), builtin_office: true, error: None,
         });
     }
     snap.observed_at = "刚刚同步".into();
@@ -2310,7 +2310,7 @@ impl Default for DiagLogRing {
             DiagLevel::Info,
             "workbench",
             Some("BOOT"),
-            "Kwrok GPUI + KUI 渲染管线与 Tokio 桥接线程初始化完成",
+            "Kwork GPUI + KUI 渲染管线与 Tokio 桥接线程初始化完成",
             vec![("unsafe_code".into(), "forbid".into()), ("renderer".into(), "Metal GPUI".into())],
         );
         ring

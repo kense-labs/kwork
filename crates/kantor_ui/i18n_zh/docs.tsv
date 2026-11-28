@@ -1,0 +1,436 @@
+# English<TAB>Simplified Chinese, one string per line (see kantor_ui/src/i18n.rs).
+This section's footer already has page numbers	本节页脚已包含页码
+Page {PAGE} of {PAGES}	第 {PAGE} 页，共 {PAGES} 页
+Page numbers added to the footer	已将页码添加至页脚
+Back to the document text (or double-click it)	返回文档正文（或双击正文区域）
+Close Header and Footer	关闭页眉和页脚
+Edit the header and footer	编辑页眉和页脚
+Edit the other one on this page	编辑本页的另一项
+Editing the footer: double-click the text or press Esc to go back	正在编辑页脚：双击正文或按 Esc 返回
+Editing the header: double-click the text or press Esc to go back	正在编辑页眉：双击正文或按 Esc 返回
+Even Page Footer	偶数页页脚
+Even Page Header	偶数页页眉
+First Page Footer	首页页脚
+First Page Header	首页页眉
+Odd Page Footer	奇数页页脚
+Odd Page Header	奇数页页眉
+Footer from bottom	页脚距底端
+Header from top	页眉距顶端
+Go to Footer	转至页脚
+Go to Header	转至页眉
+Insert the number of pages	插入总页数
+Insert the page number	插入当前页码
+Kantor can't edit this header or footer	Kwork 无法编辑此页眉或页脚
+Link to Previous	链接到前一节
+Same as Previous	与上一节相同
+Section {}	第 {} 节
+Section break inserted: Page setup now changes this section only	已插入分节符：页面设置现在仅应用于本节
+A section break can't go inside a table	无法在表格内部插入分节符
+Page number	页码
+Page count	总页数
+Left	左
+Centre	居中
+Right	右
+Different first page	首页不同
+Different odd and even pages	奇偶页不同
+Put the caret after a footnote or endnote number	请将光标置于脚注或尾注编号之后
+Footnote deleted	已删除脚注
+Endnote deleted	已删除尾注
+Bold · Ctrl+B	加粗 · Ctrl+B
+Italic · Ctrl+I	斜体 · Ctrl+I
+Underline · Ctrl+U	下划线 · Ctrl+U
+Normal text · Ctrl+Alt+0	正文 · Ctrl+Alt+0
+Heading 1 · Ctrl+Alt+1	标题 1 · Ctrl+Alt+1
+Heading 2 · Ctrl+Alt+2	标题 2 · Ctrl+Alt+2
+Heading 3 · Ctrl+Alt+3	标题 3 · Ctrl+Alt+3
+Align left · Ctrl+L	左对齐 · Ctrl+L
+Center · Ctrl+E	居中 · Ctrl+E
+Align right · Ctrl+R	右对齐 · Ctrl+R
+Justify · Ctrl+J	两端对齐 · Ctrl+J
+Bulleted list · Ctrl+Shift+8	项目符号列表 · Ctrl+Shift+8
+Numbered list · Ctrl+Shift+7	编号列表 · Ctrl+Shift+7
+Decrease list level · Shift+Tab	降低列表级别 · Shift+Tab
+Increase list level · Tab	提高列表级别 · Tab
+Insert picture (PNG or JPEG)	插入图片 (PNG / JPEG)
+Insert row below	在下方插入行
+Insert column right	在右侧插入列
+Delete row	删除行
+Delete column	删除列
+Delete table	删除表格
+Rewrite or translate with AI	AI 改写或翻译
+Zoom out · Ctrl+-	缩小 · Ctrl+-
+Zoom in · Ctrl+=	放大 · Ctrl+=
+Insert table	插入表格
+Actual size · Ctrl+0	实际大小 · Ctrl+0
+Print and export	打印与导出
+Top	上
+Bottom	下
+Normal	常规
+Narrow	窄
+Moderate	适中
+Wide	宽
+2.54 cm all sides	上下左右均为 2.54 厘米
+1.27 cm all sides	上下左右均为 1.27 厘米
+2.54 cm top/bottom, 1.91 cm sides	上下 2.54 厘米，左右 1.91 厘米
+2.54 cm top/bottom, 5.08 cm sides	上下 2.54 厘米，左右 5.08 厘米
+Custom	自定义
+{} landscape	{} 横向
+Section {} of {}: changes apply to this section	第 {} 节（共 {} 节）：更改仅应用于本节
+Apply custom margins  Enter	应用自定义页边距  Enter
+Paper size	纸张大小
+Custom margins (cm)	自定义页边距 (cm)
+Page setup: size, orientation, margins	页面设置：纸张大小、方向与页边距
+Jan	1月
+Feb	2月
+Mar	3月
+Apr	4月
+May	5月
+Jun	6月
+Jul	7月
+Aug	8月
+Sep	9月
+Oct	10月
+Nov	11月
+Dec	12月
+Write a comment	输入批注内容
+Comment deleted	已删除批注
+Track Changes on: your edits are marked as {}'s	修订已开启：您的修改将标记为 {} 的修订
+Track Changes off	修订已关闭
+No tracked change at the caret	光标处没有修订记录
+This document has no tracked changes	此文档没有修订记录
+Accepted 1 tracked change	已接受 1 处修订
+Accepted {} tracked changes	已接受 {} 处修订
+Rejected 1 tracked change	已拒绝 1 处修订
+Rejected {} tracked changes	已拒绝 {} 处修订
+Accepted: no tracked changes left	已接受：文档中已无剩余修订
+Accepted: 1 tracked change left	已接受：剩余 1 处修订
+Accepted: {} tracked changes left	已接受：剩余 {} 处修订
+Rejected: no tracked changes left	已拒绝：文档中已无剩余修订
+Rejected: 1 tracked change left	已拒绝：剩余 1 处修订
+Rejected: {} tracked changes left	已拒绝：剩余 {} 处修订
+Edit comment	编辑批注
+Delete comment	删除批注
+Delete thread	删除批注串
+Reply	回复
+Resolve	解决
+Reopen	重新打开
+Resolved	已解决
+1 reply	1 条回复
+{} replies	{} 条回复
+Comment resolved	批注已解决
+Comment reopened	批注已重新打开
+Review: comments and tracked changes	审阅：批注与修订
+Review: 1 tracked change	审阅：1 处修订
+Review: {} tracked changes	审阅：{} 处修订
+Review: 1 comment	审阅：1 条批注
+Review: {} comments	审阅：{} 条批注
+Review: {} tracked changes, {} comments	审阅：{} 处修订，{} 条批注
+{} (Track Changes is on)	{}（修订模式已开启）
+Check Spelling as You Type	输入时检查拼写
+Track Changes  Ctrl+Shift+E	修订  Ctrl+Shift+E
+Insert footnote  Ctrl+Alt+F	插入脚注  Ctrl+Alt+F
+Insert endnote  Ctrl+Alt+D	插入尾注  Ctrl+Alt+D
+New comment  Ctrl+Alt+M	新建批注  Ctrl+Alt+M
+Show or hide comments	显示或隐藏批注
+Accept change	接受修订
+Reject change	拒绝修订
+Next change	下一处修订
+Previous change	上一处修订
+Accept all changes	接受所有修订
+Reject all changes	拒绝所有修订
+Restored unsaved changes to {}	已恢复 {} 中未保存的更改
+Tables inside tables aren't supported yet	暂不支持嵌套表格
+The caret isn't in a table	光标不在表格内
+Can't insert {}: {}	无法插入 {}：{}
+Nothing to undo	没有可撤销的操作
+Nothing to redo	没有可重做的操作
+Page {} of {} · {}	第 {} / {} 页 · {}
+{} has content Kantor can't keep ({}), so it's saved as a new file; the original stays as it is	{} 包含 Kwork 无法保留的内容（{}），已另存为新文件，原文件保持不变
+Print failed: {}	打印失败：{}
+Preparing to print {}…	正在准备打印 {}…
+Exporting {}…	正在导出 {}…
+Exported {} (1 page)	已导出 {}（共 1 页）
+Exported {} ({} pages)	已导出 {}（共 {} 页）
+Opened 1 page in the PDF viewer to print	已在 PDF 阅读器中打开 1 页以供打印
+Opened {} pages in the PDF viewer to print	已在 PDF 阅读器中打开 {} 页以供打印
+Export to PDF failed: {}	导出 PDF 失败：{}
+Saved {}	已保存 {}
+Save failed: {}	保存失败：{}
+{} × {} table	{} × {} 表格
+This file has content Kantor can't show or keep yet: {}. Save writes a new copy; the original is never overwritten.	此文件包含 Kwork 暂无法显示或保留的内容：{}。保存时将写入新副本，绝不会覆盖原文件。
+Opened {} (has unsupported content; Save creates a copy)	已打开 {}（含不支持的内容；保存时将另存为副本）
+Opened {} ({} shown as placeholders, kept as they are when saving)	已打开 {}（{} 已显示为占位框，保存时将原样保留）
+Opened {}	已打开 {}
+1 word	1 个词
+{} words	{} 个词
+1 character	1 个字符
+{} characters	{} 个字符
+{} of {}	{} / {}
+Replaced 1 match	已替换 1 处匹配项
+Replaced {} matches	已替换 {} 处匹配项
+The text changed since it was sent; run the rewrite again.	发送后文本已发生更改，请重新运行改写。
+Rewritten (Undo restores the original)	已完成改写（撤销可恢复原文）
+Agent: {}	智能体：{}
+Opened {} (imported; Save creates a .docx copy)	已打开 {}（已导入；保存时将另存为 .docx 副本）
+Center	居中
+Set	设置
+Leader	前导符
+Tab stop position (cm)	制表位位置 (cm)
+Default tab stops (cm)	默认制表位 (cm)
+No tab stops: default stops apply	未设置制表位：使用默认制表位
+{} tab: click to change, then click the ruler to set one	{}制表符：单击切换类型，再单击标尺设置制表位
+The fields are up to date	域已更新至最新状态
+No field to update here: put the caret in a field, or select the text with the fields	此处没有可更新的域：请将光标置于域内，或选中包含域的文本
+This document has no table of contents	此文档没有目录
+The table of contents is up to date	目录已是最新状态
+The bookmark “{}” isn't in this document	此文档中不存在书签“{}”
+Open this link?	是否打开此链接？
+Links can be harmful to your computer and data. Open only links from sources you trust: {}	链接可能危害您的计算机和数据安全。请仅打开来自受信任来源的链接：{}
+Layout Options	布局选项
+In Line with Text	嵌入型
+With Text Wrapping	文字环绕
+Square	四周型
+Tight	紧密型
+Through	穿越型
+Top and Bottom	上下型
+Behind Text	衬于文字下方
+In Front of Text	浮于文字上方
+Write the text box's text	输入文本框内容
+Text box updated	已更新文本框
+This text box has pictures, tables or other objects; Kantor shows it and keeps it as it is, but can't edit it yet	此文本框包含图片、表格或其他对象；Kwork 可正常显示并在保存时原样保留，但暂不支持编辑
+Footnote	脚注
+Endnote	尾注
+A bookmark's text	书签文字
+Above/below	上方/下方
+Add	添加
+Add path to file name	在文件名中添加路径
+Bookmark	书签
+Bookmark name	书签名
+Bookmark names start with a letter and have only letters, numbers and underscores	书签名须以字母开头，且仅能包含字母、数字和下划线
+Bookmark text	书签文字
+Bookmark “{}” added	已添加书签“{}”
+Bookmark “{}” deleted	已删除书签“{}”
+Choose what the cross-reference points to	选择交叉引用指向的目标
+Cross-reference	交叉引用
+Endnote number	尾注编号
+Entire caption	整项题注
+Equation	公式
+Field	字段
+Field code	域代码
+Field codes shown: Alt+F9 shows the results again	已显示域代码：按 Alt+F9 可切回显示域结果
+Field results shown	已显示域结果
+Figure	图
+Footnote number	脚注编号
+Go To	定位
+Heading	标题
+Heading number	标题编号
+Heading text	标题文字
+Insert Field	插入域
+Insert as hyperlink	以超链接形式插入
+Insert reference to	引用内容
+No field at the caret	光标处没有域
+Nothing of this kind in the document	文档中没有此类项目
+Paragraph number	段落编号
+Reference type	引用类型
+The document's author	文档作者
+The document's title	文档标题
+The file's name	文件名
+The number of pages	总页数
+The page a bookmark is on	书签所在页码
+The page number	页码
+The time now	当前时间
+This document has no bookmarks	此文档没有书签
+Today's date	当天日期
+# Tracked formatting changes (balloons in the markup column)
+Formatted: {}	设置格式：{}
+Font: Bold	字体：加粗
+Font: Not Bold	字体：取消加粗
+Font: Italic	字体：斜体
+Font: Not Italic	字体：取消斜体
+No underline	无下划线
+Font: (Default)	字体：（默认）
+Font: {} pt	字号：{} 磅
+Font size: (Default)	字号：（默认）
+Font color	字体颜色
+Style: {}	样式：{}
+Centered	居中
+Justified	两端对齐
+Indent	缩进
+Spacing	间距
+Line spacing	行距
+Bulleted or numbered	项目符号或编号
+Not a list	无列表
+Page break before	段前分页
+Tab stops	制表位
+Other formatting	其他格式
+- (hyphen)	-（连字符）
+. (period)	.（句点）
+: (colon)	:（冒号）
+— (em dash)	—（长破折号）
+– (en dash)	–（短破折号）
+Chapter starts with style: Heading	章节起始样式：标题
+Continue from previous section	续前节
+Include chapter number	包含章节号
+Number format, chapter numbers, where numbering starts	编号格式、章节号与起始页码
+Page Number Format	页码格式
+Page numbering	页码编号
+Start at:	起始页码：
+Start at: type a whole number	起始页码：请输入整数
+Use separator	使用分隔符
+Format Page Numbers…	设置页码格式…
+SmartArt text updated	已更新 SmartArt 文本
+This SmartArt shape shows several items: keep one line per item	此 SmartArt 形状显示多个项目：请每行输入一个项目
+Kantor can't read this SmartArt's drawing	Kwork 无法读取此 SmartArt 的图形
+Formatted Table	设置表格格式
+Row	行
+Table Properties…	表格属性…
+Table alignment	表格对齐方式
+Indent from left (cm)	左缩进 (cm)
+Merged Cells	合并单元格
+Merge Cells	合并单元格
+Split Cells…	拆分单元格…
+Split	拆分
+Number of columns	列数
+Number of rows	行数
+This action will not be marked as a change.	此操作不会标记为修订。
+Select two or more cells to merge	请选择两个或多个要合并的单元格
+These cells can't be merged	无法合并所选单元格
+The number of rows must divide the rows the merged cell spans	拆分行数必须能整除所合并单元格跨越的行数
+A table can have at most 63 columns	表格最多支持 63 列
+Shape text	形状文本
+SmartArt text	SmartArt 文本
+Write the shape's text	输入形状文本
+Write the SmartArt's text, one line per item	输入 SmartArt 文本，每行一个项目
+Shape text updated	已更新形状文本
+Delete Shape	删除形状
+This SmartArt shape doesn't show an item	此 SmartArt 形状不对应任何项目
+SmartArt shape added	已添加 SmartArt 形状
+Organization Chart layout changed	已更改组织结构图布局
+SmartArt shape deleted	已删除 SmartArt 形状
+Field code: {} (was {})	域代码：{}（原为 {}）
+Editing the text box: click outside it or press Esc to go back	正在编辑文本框：单击框外区域或按 Esc 返回
+A formula: numbers, bookmarks, table cells	公式计算：数值、书签、表格单元格
+One text or another, by a comparison	条件判断：按比较结果返回不同文本
+1 or 0, by a comparison	条件比较：按比较结果返回 1 或 0
+Numbers figures, tables and other items	为图、表格及其他项目自动编号
+The nearest paragraph in a style	指定样式的最近段落内容
+A list number inside a paragraph	段落内的列表编号
+Gives a bookmark a value	为书签赋值
+A table of contents	目录
+A table of contents entry	目录项
+An index of the XE entries	索引（汇总 XE 索引项）
+An index entry	索引项
+The number of words	字数统计
+The number of pages in the section	本节总页数
+Type the field's code; F9 updates it	输入域代码；按 F9 更新域
+# Columns (Layout ▸ Columns)
+Apply these columns  Enter	应用分栏设置  Enter
+Apply to	应用于
+Col #	栏号
+Columns: one, two, three, more…	分栏：一栏、两栏、三栏、更多分栏…
+Line between	分隔线
+More Columns	更多分栏
+One	一栏
+Two	两栏
+Three	三栏
+Selected text	所选文字
+Spacing (cm)	间距 (cm)
+This point forward	插入点之后
+This section	本节
+Type a number of columns	请输入栏数
+Whole document	整篇文档
+Width (cm)	宽度 (cm)
+Width and spacing	宽度和间距
+
+# Mail merge (Mailings bar)
+Select Recipients (workbook or CSV file)	选择收件人（工作簿或 CSV 文件）
+{} recipients from {}	共 {} 位收件人（来自 {}）
+Can't read the data source: {}	无法读取数据源：{}
+Select recipients first (Mailings ▸ Select Recipients)	请先选择收件人（邮件 ▸ 选择收件人）
+No recipients are selected	未选择任何收件人
+Every record was skipped	已跳过所有记录
+Merged {} records into a new document	已将 {} 条记录合并至新文档
+Opened {} merged records in the PDF viewer to print	已在 PDF 阅读器中打开 {} 条合并记录以供打印
+Save the merged documents in this folder	将合并后的文档保存到此文件夹
+Saved {} merged documents in {}	已将 {} 份合并文档保存至 {}
+Merge failed: {}	邮件合并失败：{}
+Use a workbook or CSV file: its first row names the fields	请使用工作簿或 CSV 文件：首行作为字段名
+Edit Recipient List…	编辑收件人列表…
+Sheet, header row, filter, sort and which recipients merge	工作表、标题行、筛选、排序及参与合并的收件人
+Insert Merge Field	插入合并域
+A field filled in from each recipient	按每位收件人数据填充的合并域
+Record {} of {}	第 {} / {} 条记录
+No recipients	无收件人
+No data source	无数据源
+Finish & Merge	完成并合并
+Edit Individual Documents	编辑单个文档
+Save as Documents (.docx), One per Recipient…	另存为文档 (.docx)，每位收件人一份…
+Save as PDF, One per Recipient…	另存为 PDF，每位收件人一份…
+Print Documents…	打印文档…
+File names	文件名
+{Field} is the recipient's value, {#} the record number; empty: the document's name	{Field} 为收件人字段值，{#} 为记录序号；留空则使用文档名
+Close Mailings	关闭邮件合并
+Mailings	邮件
+First record	首条记录
+Previous record	上一条记录
+Next record	下一条记录
+Last record	末条记录
+Mailings: merge fields filled in from a list	邮件合并：从列表自动填充合并域
+Merged document: {} records, each in its own section	合并文档：共 {} 条记录，每条记录独立成节
+Header row	标题行
+Ascending	升序
+Descending	降序
+Add Filter	添加筛选条件
+Or	或
+{} more recipients	另有 {} 位收件人
+{} of {} recipients will merge	将合并 {} / {} 位收件人
+Mail Merge Recipients	邮件合并收件人
+Address Block…	地址块…
+Greeting Line…	问候语…
+Match Fields…	匹配域…
+Match Fields	匹配域
+The recipient's name and address, laid out as letters are addressed	按信函收件地址格式排版的收件人姓名与地址
+A greeting such as Dear Mr. Randall, from each recipient's name	根据每位收件人姓名生成的问候语（如“尊敬的张先生：”）
+Which columns of the list are the name and address fields	指定列表中的哪些列对应姓名和地址字段
+Insert Address Block	插入地址块
+Insert Greeting Line	插入问候语
+Recipient's name	收件人姓名
+Insert company name	插入公司名称
+Insert postal address	插入邮政地址
+Never include the country/region in the address	地址中从不包含国家/地区
+Always include the country/region in the address	地址中始终包含国家/地区
+Only include the country/region if different than:	仅当国家/地区不同于以下项时包含：
+Format address according to the destination country/region	按目的地国家/地区格式排版地址
+Greeting line format	问候语格式
+Greeting line for invalid recipient names	收件人姓名无效时的备用问候语
+Address Block and Greeting Line take these fields from the columns of your list.	“地址块”和“问候语”将从列表各列中读取以下字段。
+(not matched)	（未匹配）
+Not matched: {}	未匹配：{}
+Courtesy Title	称谓
+First Name	名
+Middle Name	中间名
+Last Name	姓
+Suffix	后缀
+Nickname	昵称
+Company	公司
+Address 1	地址 1
+Address 2	地址 2
+City	城市
+Postal Code	邮政编码
+Country or Region	国家或地区
+Spouse/Partner Courtesy Title	配偶称谓
+Spouse/Partner First Name	配偶名字
+United States of America	美国
+United Kingdom	英国
+Indonesia	印度尼西亚
+Germany	德国
+France	法国
+Japan	日本
+Australia	澳大利亚
+Netherlands	荷兰
+Equal to	等于
+Not equal to	不等于
+Less than or equal	小于或等于
+Greater than or equal	大于或等于
+Is blank	为空
+Is not blank	不为空

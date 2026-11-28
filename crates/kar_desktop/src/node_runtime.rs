@@ -1,9 +1,9 @@
 //! Managed user-space Node.js LTS runtime & PATH discovery for npm-distributed CLI agents
 //! (`DeepSeek Harness`, `CodeBuddy Code`, `Qwen`, `Pi`, and ACP registry npm packages).
 //!
-//! When macOS launches `Kwrok.app` from Dock/Finder, `PATH` is minimal (`/usr/bin:/bin:...`)
+//! When macOS launches `Kwork.app` from Dock/Finder, `PATH` is minimal (`/usr/bin:/bin:...`)
 //! and a fresh machine may not have Node.js/npm installed at all. Rather than failing with
-//! `unsupported operation: npm`, Kwrok discovers existing Node version managers (`nvm`, `fnm`,
+//! `unsupported operation: npm`, Kwork discovers existing Node version managers (`nvm`, `fnm`,
 //! `volta`, `mise`, `asdf`, Homebrew) and, if `npm` is still absent, provisions an isolated,
 //! SHA-256-verified Node.js LTS toolchain under `~/.local/share/kwork/runtimes/node/`.
 
@@ -324,7 +324,7 @@ pub(crate) fn save_dsh_api_key(api_key: &str) -> Result<()> {
     Ok(())
 }
 
-/// Save a quick OpenAI-compatible provider block to Kwrok's built-in runtime config (`~/.aster/config.acl`).
+/// Save a quick OpenAI-compatible provider block to Kwork's built-in runtime config (`~/.aster/config.acl`).
 pub(crate) fn save_builtin_model_config(
     provider_slug: &str,
     base_url: &str,
@@ -381,7 +381,7 @@ pub(crate) fn ensure_builtin_config_template() -> Option<PathBuf> {
             let _ = std::fs::create_dir_all(parent);
         }
         let starter = "\
-# Kwrok 默认运行环境模型配置
+# Kwork 默认运行环境模型配置
 # 取消下方注释并填入你的 API Key 即可生效：
 #
 # default_model = \"deepseek/deepseek-chat\"

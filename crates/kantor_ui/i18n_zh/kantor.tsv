@@ -1,0 +1,653 @@
+# English<TAB>Simplified Chinese, one string per line (see kantor_ui/src/i18n.rs).
+# The app shell (crates/kantor) and shared kantor_ui widgets.
+All commands	全部命令
+Coming soon	即将推出
+Commands	命令
+Create	创建
+Docs, Sheets and Slides — native, fast, yours.	文档、表格与演示 — 原生、极速、专属于你。
+Edit .xlsx spreadsheets	编辑 .xlsx 电子表格
+New  →	新建  →
+New document	新建文档
+New presentation	新建演示文稿
+New spreadsheet	新建电子表格
+Open file	打开文件
+Present .pptx decks	放映 .pptx 演示文稿
+Write .docx documents	编写 .docx 文档
+Show sidebar	显示侧边栏
+Hide sidebar	隐藏侧边栏
+Show inspector	显示属性面板
+Hide inspector	隐藏属性面板
+Split right	向右分屏
+Split down	向下分屏
+Autosave On	自动保存已开启
+Autosave Off	自动保存已关闭
+{} panes	{} 个窗格
+Explorer	资源管理器
+Inspector	属性面板
+No open documents	暂无打开的文档
+Recent	最近打开
+Not saved yet	尚未保存
+Unsaved changes	有未保存的更改
+Saved	已保存
+Opened with unsupported content	打开时含不支持的内容
+Has content Kantor can't keep	包含 Kwork 无法保留的内容
+Paragraph	段落
+Style	样式
+Document	文档
+Folder	文件夹
+Length	篇幅
+{} pages · {} words · {} characters · {} paragraphs	{} 页 · {} 词 · {} 字符 · {} 段落
+State	状态
+Not shown or kept	不显示且不保留
+Not kept	不保留
+{}. Save writes a new copy; the original is never overwritten.	{}。“保存”将另存为新副本，绝不会覆盖原文件。
+Shape	形状
+Name	名称
+Position	位置
+Size	大小
+Selection	所选内容
+Slide	幻灯片
+{} of {}	{} / {}
+Layout	布局
+Presentation	演示文稿
+Cell	单元格
+Address	地址
+Formula	公式
+Content	内容
+Value	值
+Workbook	工作簿
+Sheets	工作表
+Used range	已用区域
+{} rows × {} columns	{} 行 × {} 列
+Open a document to see its details here.	打开文档即可在此查看详细信息。
+{} is not built yet — it's on the roadmap.	{} 尚未实装 — 已列入开发计划。
+Kantor can't open the file “{}” because the file format or file extension is not valid. Verify that the file has not been corrupted and that the file extension matches the format of the file.	Kwork 无法打开文件“{}”，因为文件格式或文件扩展名无效。请确认文件未损坏，且文件扩展名与文件格式相匹配。
+Kantor can't open these files because their file format or file extension is not valid: {}. Verify that the files have not been corrupted and that their file extensions match their formats.	Kwork 无法打开以下文件，因为文件格式或文件扩展名无效：{}。请确认文件未损坏，且文件扩展名与各自格式相匹配。
+Open document	打开文档
+Formulas: open a spreadsheet first	公式：请先打开电子表格
+Rewrite: open a document and select some text first	改写：请先打开文档并选中一段文本
+Saving “{}”…	正在保存“{}”…
+Saving {} documents…	正在保存 {} 个文档…
+Kantor closes when the save has finished.	保存完成后 Kwork 将自动关闭。
+Don't Close	暂不关闭
+{} (saving…)	{}（正在保存…）
+Save changes to “{}”?	是否保存对“{}”的更改？
+{} documents have unsaved changes	{} 个文档有未保存的更改
+Save All	全部保存
+Your changes will be lost if you don't save them.	如果不保存，您的更改将会丢失。
+Closing when the save has finished…	保存完成后即将关闭…
+Not closed: “{}” wasn't saved.	已取消关闭：“{}”未保存。
+Uploading “{}” to the cloud…	正在将“{}”上传至云端…
+Uploading {} documents to the cloud…	正在将 {} 个文档上传至云端…
+Your changes are saved. Closing when they're on the server too.	更改已保存在本地，同步至服务器后即将关闭。
+just now	刚刚
+1 minute ago	1 分钟前
+{} minutes ago	{} 分钟前
+1 hour ago	1 小时前
+{} hours ago	{} 小时前
+yesterday	昨天
+1 day ago	1 天前
+{} days ago	{} 天前
+1 damaged recovery copy couldn't be read; kept in {}	有 1 份损坏的恢复副本无法读取，已保留在 {} 中
+{} damaged recovery copies couldn't be read; kept in {}	有 {} 份损坏的恢复副本无法读取，已保留在 {} 中
+Autosave on: documents with a file save {} s after your last change	自动保存已开启：已关联文件的文档将在最后一次修改 {} 秒后自动保存
+Autosave off (recovery copies still protect unsaved work)	自动保存已关闭（恢复副本仍会保护未保存的内容）
+No unsaved work to recover	没有需要恢复的未保存内容
+Couldn't keep a recovery copy of “{}” ({}). Save your work.	无法为“{}”保留恢复副本（{}），请及时保存文档。
+“{}” changed on disk since it was opened: not autosaved	“{}”打开后在磁盘上发生了变动：未执行自动保存
+Never saved	从未保存
+{} · {} · changes from {}	{} · {} · 更改于 {}
+Discard	丢弃
+Restore	恢复
+Kantor closed before this document was saved. Restore it to keep working on your changes; nothing is written to the original file until you save.	Kwork 在此文档保存前已关闭。恢复后可继续编辑您的更改；在您手动保存前，不会修改原文件。
+Kantor closed before these {} documents were saved. Restore them to keep working on your changes; nothing is written to the original files until you save.	Kwork 在这 {} 个文档保存前已关闭。恢复后可继续编辑您的更改；在您手动保存前，不会修改原文件。
+Recover unsaved work	恢复未保存的内容
+Not Now	稍后再说
+Discard All	全部丢弃
+Restore All	全部恢复
+Couldn't restore “{}”: {}	无法恢复“{}”：{}
+Couldn't discard “{}”: {}	无法丢弃“{}”：{}
+Kantor {} is ready — Restart to update	Kwork {} 已就绪 — 重启以完成更新
+Kantor {} is available — Download	Kwork {} 现已可用 — 立即下载
+Downloading Kantor {}… {}%	正在下载 Kwork {}… {}%
+Checking for updates…	正在检查更新…
+{} ready, restart to update	{} 已就绪，重启以完成更新
+{} available	{} 可用
+downloading {}	正在下载 {}
+checking for updates	正在检查更新
+{} channel	{} 通道
+updates off	更新已关闭
+Updates are off ([update] enabled = false in settings.toml)	自动更新已关闭（settings.toml 中 [update] enabled = false）
+Kantor {} is ready: choose Restart to Update	Kwork {} 已就绪：请选择“重启并更新”
+Kantor {} is up to date	Kwork {} 已是最新版本
+Update check failed: {}	检查更新失败：{}
+Couldn't install Kantor {}: {}	无法安装 Kwork {}：{}
+No update is ready. Use Check for Updates… first.	暂无就绪的更新，请先使用“检查更新…”。
+Update failed, nothing changed: {}	更新失败，未做任何更改：{}
+Agent: new {}	智能体：新建 {}
+Agent: opened {}	智能体：已打开 {}
+Agent: {}	智能体：{}
+Agent: {} in {}	智能体：{}（位于 {}）
+Copied: {}  (run it in a terminal; `kantor mcp --print-config` has more)	已复制：{}（请在终端中运行；更多配置可执行 `kantor mcp --print-config`）
+Describe it, e.g. total Sales where Region is Jakarta	描述公式需求，例如：计算“地区”为“雅加达”的“销售额”总和
+{} has no formula to explain.	{} 中没有可解释的公式。
+The suggested formula doesn't parse: {}. Try rephrasing.	建议的公式无法解析：{}。请尝试换一种表述。
+{}. Try rephrasing.	{}。请尝试换一种表述。
+Couldn't insert: {}	无法插入：{}
+Asking {}…	正在请求 {}…
+Receiving… ({} characters)	正在接收…（{} 个字符）
+Checked: shows {}	已验证：计算结果为 {}
+Ask AI for a formula	AI 生成公式
+Explain formula	解释公式
+AI features are off. Turn them on and choose a provider in AI Settings.	AI 功能已关闭。请在“AI 设置”中开启并选择服务提供商。
+Sends the column headers, up to 20 sample rows and the address {} to {}. Write in English or Bahasa Indonesia.	会将列标题、最多 20 行示例数据及单元格地址 {} 发送至 {}。请使用英文或印尼语描述。
+Sends this formula and the column headers to {}.	会将此公式及列标题发送至 {}。
+Result now: {}	当前结果：{}
+AI Settings…	AI 设置…
+Ask again	重新提问
+Ask	提问
+Insert in {}	插入到 {}
+no provider	未配置服务商
+1 paragraph	1 个段落
+{} paragraphs	{} 个段落
+Can't rewrite this: {}.	无法改写此内容：{}。
+Sends only the selected paragraphs' text to {}. Replace keeps paragraph styles; formatting inside a paragraph becomes that of its first word.	仅将所选段落的纯文本发送至 {}。“替换”会保留段落样式，段落内的字符格式将统一为首词格式。
+Rewrite selection	改写所选内容
+Translate to English	翻译为英文
+Translate to Indonesian	翻译为印尼语
+More formal	更正式
+Shorter	更精炼
+Fix grammar	修正语法
+Paste your API key	粘贴您的 API 密钥
+Optional	可选
+Model id	模型 ID
+Connecting to {}…	正在连接 {}…
+Connected: {} answered.	已连接：{} 响应正常。
+Key removed.	密钥已移除。
+Couldn't save settings: {}	无法保存设置：{}
+Saving the key in the system keychain…	正在将密钥保存到系统钥匙串…
+Saved. No system keychain was found, so the key is in ~/.config/kantor/ai-keys.toml (readable only by you).	已保存。未找到系统钥匙串，因此密钥已保存在 ~/.config/kantor/ai-keys.toml（仅您本人可读）。
+Couldn't save the key: {}	无法保存密钥：{}
+A key is saved in the system keychain; type a new one to replace it. {}.	系统钥匙串中已存有密钥；输入新密钥即可替换。{}。
+AI features	AI 功能
+On	开启
+Off: Kantor never contacts an AI provider	关闭：Kwork 绝不连接任何 AI 服务提供商
+Provider	服务提供商
+API key	API 密钥
+Base URL	接口地址 (Base URL)
+Model	模型
+Any model id the provider offers; empty uses the default shown.	可填写该服务商提供的任意模型 ID；留空则使用所显示的默认模型。
+Kantor has no AI service of its own: requests go straight from this computer to the provider chosen here, and only when you use an AI command. Each command sends only what it needs: for formulas, the column headers, up to 20 sample rows near the selection and the active cell's address; for rewriting, the selected paragraphs. Nothing is sent while AI features are off. API keys are kept in the system keychain, never in the settings file.	Kwork 不设自有 AI 服务器：仅当您主动执行 AI 命令时，请求才会从本机直接发送至此处所选的服务提供商。每项命令仅发送必要数据：生成公式时发送列标题、选区附近最多 20 行示例数据及活动单元格地址；改写文本时仅发送所选段落。AI 功能关闭期间不会发送任何数据。API 密钥保存在系统钥匙串中，绝不写入配置文件。
+AI Settings	AI 设置
+Testing…	正在测试…
+Test connection	测试连接
+Ollama (local)	Ollama（本地）
+Other (OpenAI-compatible)	其他（兼容 OpenAI 接口）
+Create a key at console.anthropic.com	前往 console.anthropic.com 创建密钥
+Create a key at platform.openai.com	前往 platform.openai.com 创建密钥
+Create a key at openrouter.ai/keys	前往 openrouter.ai/keys 创建密钥
+Create a key at console.groq.com	前往 console.groq.com 创建密钥
+Create a key at platform.deepseek.com	前往 platform.deepseek.com 创建密钥
+Create a key at aistudio.google.com	前往 aistudio.google.com 创建密钥
+Runs on this computer; nothing leaves it. Install from ollama.com	在本机本地运行，数据不出本机。可从 ollama.com 下载安装
+Optional; sent as a Bearer token	可选；将作为 Bearer 令牌发送
+(No Spelling Suggestions)	（无拼写建议）
+Ignore All	全部忽略
+Add to Dictionary	添加到词典
+“{}” changed since Kantor last saved it	“{}”自 Kwork 上次保存后已被外部修改
+Another app or person may have edited it. Replace it with your version, or save yours as a new file to keep both.	其他应用或他人可能已修改此文件。您可以用当前版本覆盖它，或另存为新文件以同时保留两个版本。
+Match case	区分大小写
+Whole word	全字匹配
+Look in formulas	在公式中查找
+Previous match	上一个匹配
+Next match	下一个匹配
+Toggle replace	显示/隐藏替换
+Replace all	全部替换
+No results	无结果
+1 match	1 处匹配
+{} matches	{} 处匹配
+Type a command…	输入命令…
+Search themes…	搜索主题…
+Search fonts…	搜索字体…
+{} commands	{} 项命令
+{} themes	{} 个主题
+{} fonts	{} 种字体
+navigate	导航
+choose	选择
+close	关闭
+No matches	无匹配结果
+Automatic	自动
+Automatic ({})	自动 ({})
+system	跟随系统
+Theme: {}	主题：{}
+Font: {}	字体：{}
+New Spreadsheet	新建电子表格
+New Document	新建文档
+Open from Cloud…	从云端打开…
+Sync Now	立即同步
+Cloud Accounts…	云端账户…
+Copy MCP Setup for Claude Code	复制 Claude Code 的 MCP 配置
+Make Read-Only	设为只读
+Allow Editing	允许编辑
+Print Notes Pages…	打印备注页…
+Print Handouts…	打印讲义…
+Edit Table or Chart Data…	编辑表格或图表数据…
+Format as General	设为常规格式
+Format as Number	设为数值格式
+Format as Percent	设为百分比格式
+Format as Rupiah	设为印尼盾格式
+Format as Dollars	设为美元格式
+Format as Date	设为日期格式
+Fill: Light Yellow	填充：浅黄色
+Fill: Light Blue	填充：浅蓝色
+Fill: Light Green	填充：浅绿色
+Fill: Light Grey	填充：浅灰色
+No Fill	无填充
+Text Colour: Red	文字颜色：红色
+Text Colour: Blue	文字颜色：蓝色
+Text Colour: Green	文字颜色：绿色
+Text Colour: Automatic	文字颜色：自动
+Increase Font Size	增大字号
+Decrease Font Size	减小字号
+All Borders	所有框线
+Outside Borders	外侧框线
+No Borders	无框线
+Wrap Text	自动换行
+Merge & Center / Unmerge	合并后居中 / 取消合并
+Align Top	顶端对齐
+Align Middle	垂直居中
+Align Bottom	底端对齐
+Sort A to Z	升序排列 (A 到 Z)
+Sort Z to A	降序排列 (Z 到 A)
+Custom Sort…	自定义排序…
+Filter	筛选
+Clear Filters	清除筛选
+Reapply Filters	重新应用筛选
+Insert Row Above	在上方插入行
+Insert Row Below	在下方插入行
+Delete Rows	删除行
+Insert Column Left	在左侧插入列
+Insert Column Right	在右侧插入列
+Delete Columns	删除列
+Autofit Column Width	自动调整列宽
+Row Height…	行高…
+Autofit Row Height	自动调整行高
+Standard Column Width	标准列宽
+Freeze Top Row	冻结首行
+Freeze First Column	冻结首列
+Freeze Panes	冻结窗格
+Unfreeze Panes	取消冻结窗格
+Hide Rows	隐藏行
+Unhide Rows	取消隐藏行
+Hide Columns	隐藏列
+Unhide Columns	取消隐藏列
+Select All Cells	全选单元格
+Fill Down	向下填充
+Fill Right	向右填充
+Calculate Now	立即计算
+Automatic Calculation	自动计算
+Manual Calculation	手动计算
+New Conditional Formatting Rule…	新建条件格式规则…
+Manage Conditional Formatting Rules…	管理条件格式规则…
+Clear Conditional Formatting from Selected Cells	清除所选单元格的条件格式
+Clear Conditional Formatting from Entire Sheet	清除整个工作表的条件格式
+Insert Chart	插入图表
+Insert Line Chart	插入折线图
+Insert Pie Chart	插入饼图
+Chart Panel	图表窗格
+Format as Table…	套用表格格式…
+Table Design	表格设计
+Convert Table to Range	将表格转换为区域
+Page Setup…	页面设置…
+Set Print Area	设置打印区域
+Clear Print Area	取消打印区域
+Insert PivotTable…	插入数据透视表…
+PivotTable Fields	数据透视表字段
+Delete PivotTable	删除数据透视表
+Refresh PivotTable	刷新数据透视表
+Refresh All PivotTables	刷新所有数据透视表
+Pick From Validation List	从下拉验证列表中选择
+Data Validation…	数据验证…
+Circle Invalid Data	圈释无效数据
+Clear Validation Circles	清除无效数据标识圈
+Toggle Sidebar	显示/隐藏侧边栏
+Toggle Inspector	显示/隐藏属性面板
+Split Right	向右分屏
+Split Down	向下分屏
+Close Pane	关闭窗格
+Next Tab	下一个标签页
+Previous Tab	上一个标签页
+Go Home	返回主页
+Heading 1	标题 1
+Heading 2	标题 2
+Heading 3	标题 3
+Normal Text	正文
+Bulleted List	项目符号列表
+Numbered List	编号列表
+Insert Table	插入表格
+Delete Row	删除行
+Delete Column	删除列
+Delete Table	删除表格
+Insert Picture…	插入图片…
+Header and Footer…	页眉和页脚…
+Tabs…	制表位…
+Add Page Numbers	添加页码
+Insert Page Number Field	插入页码域
+Docs · i, ii, iii or A, B, C; chapter numbers; start at a number	文档 · i, ii, iii 或 A, B, C；章节号；起始页码
+Update Field	更新域
+Update Table of Contents	更新目录
+Insert Section Break (Next Page)	插入分节符（下一页）
+Track Changes	修订
+Insert Footnote	插入脚注
+Insert Endnote	插入尾注
+Edit Footnote or Endnote	编辑脚注或尾注
+New Comment	新建批注
+Show or Hide Comments	显示或隐藏批注
+Accept Tracked Change	接受修订
+Reject Tracked Change	拒绝修订
+Accept All Tracked Changes	接受所有修订
+Reject All Tracked Changes	拒绝所有修订
+Next Tracked Change	下一处修订
+Previous Tracked Change	上一处修订
+Paper Size: A4	纸张大小：A4
+Paper Size: Letter	纸张大小：信纸 (Letter)
+Paper Size: Legal	纸张大小：法律纸 (Legal)
+Paper Size: A5	纸张大小：A5
+Paper Size: F4 / Folio	纸张大小：F4 / 对开纸
+Orientation: Portrait	纸张方向：纵向
+Orientation: Landscape	纸张方向：横向
+Margins: Normal	页边距：常规
+Margins: Narrow	页边距：窄
+Margins: Moderate	页边距：适中
+Margins: Wide	页边距：宽
+Check Spelling as You Type	输入时检查拼写
+Toggle Ruler	显示/隐藏标尺
+Actual Size	实际大小
+New Presentation	新建演示文稿
+New Slide	新建幻灯片
+Duplicate Slide	复制幻灯片
+Delete Slide	删除幻灯片
+Move Slide Up	上移幻灯片
+Move Slide Down	下移幻灯片
+Duplicate Shape	复制形状
+Shape Fill…	形状填充…
+Shape Outline…	形状轮廓…
+Toggle Speaker Notes	显示/隐藏演讲者备注
+Insert Text Box	插入文本框
+Insert Rectangle	插入矩形
+Insert Ellipse	插入椭圆
+Present	开始放映
+Present From This Slide	从当前幻灯片开始放映
+Ask AI for a Formula…	AI 生成公式…
+Explain This Formula	解释此公式
+Rewrite / Translate Selection…	改写 / 翻译所选内容…
+Choose Theme…	选择主题…
+Choose UI Font…	选择界面字体…
+Turn Autosave On or Off	开启或关闭自动保存
+Recover Unsaved Work…	恢复未保存的内容…
+Check for Updates…	检查更新…
+Restart to Update	重启并更新
+Quit Kantor	退出 Kwork
+Nextcloud, OpenCloud or any WebDAV drive	Nextcloud、OpenCloud 或任意 WebDAV 云盘
+Upload a cloud document saved offline, recheck a lock	上传离线保存的云端文档，重新检查锁定状态
+Add, test or remove a WebDAV account	添加、测试或移除 WebDAV 账户
+AI agents can edit open documents (kantor mcp)	AI 智能体可编辑已打开的文档 (kantor mcp)
+Current document	当前文档
+Refuse edits to this document until you allow them	在您允许之前禁止修改此文档
+End read-only; a cloud file takes the lock (Edit now)	结束只读模式；云端文件将获取编辑锁（立即编辑）
+Docs pages as laid out · Slides, one page per slide · Sheets as Excel prints	文档按页面版式打印 · 演示每页一张幻灯片 · 表格按 Excel 分页打印
+Opens the pages as a PDF in the system viewer to print	在系统阅读器中以 PDF 打开页面以便打印
+Slides: each slide above its speaker notes	演示：每张幻灯片上方配幻灯片、下方配演讲者备注
+Slides: 3 slides per page with lines for notes (the Print menu has 1–9)	演示：每页 3 张幻灯片并附笔记横线（“打印”菜单支持 1–9 张）
+Slides · the selected table's cells, rows and columns, or a chart's values	演示 · 编辑所选表格的单元格、行列，或图表的数据值
+Last edit	上一步编辑
+Last undone edit	上一步已撤销的编辑
+Selection (cells as tab-separated text)	所选内容（单元格复制为制表符分隔文本）
+Copy and delete the selection	复制并删除所选内容
+Plain text, at the caret or selected cell	在光标处或所选单元格粘贴纯文本
+Text, cells or slides	文本、单元格或幻灯片
+Find and replace	查找和替换
+Selected cells	所选单元格
+Selection or paragraphs	所选内容或段落
+Number format	数字格式
+Number format · 1,234.50	数字格式 · 1,234.50
+Number format · 12.50%	数字格式 · 12.50%
+Number format · Rp1,250,000	数字格式 · Rp1,250,000
+Number format · $1,234.50	数字格式 · $1,234.50
+Number format · 2026-11-07	数字格式 · 2026-11-07
+Sheets · cell background	表格 · 单元格背景色
+Sheets · one point larger	表格 · 字号增大 1 磅
+Sheets · one point smaller	表格 · 字号减小 1 磅
+Sheets · every edge of the selection	表格 · 所选区域的所有框线
+Sheets · outline of the selection	表格 · 所选区域的外侧框线
+Sheets · remove borders	表格 · 清除框线
+Sheets · toggle	表格 · 切换开关
+Sheets · selected cells	表格 · 所选单元格
+Sheets · vertical alignment	表格 · 垂直对齐方式
+Sheets · by the active cell's column (smallest to largest, oldest to newest)	表格 · 按活动单元格所在列排序（从小到大、从早到晚）
+Sheets · by the active cell's column, descending	表格 · 按活动单元格所在列降序排列
+Sheets · sort by several columns	表格 · 按多列条件排序
+Sheets · filter buttons on or off for the data or table	表格 · 开启或关闭数据区域或表格的筛选按钮
+Sheets · show every row the sheet's filters hide	表格 · 显示当前工作表被筛选隐藏的所有行
+Sheets · filter again after edits	表格 · 编辑数据后重新应用筛选条件
+Sheets · rows of the selection	表格 · 所选区域所在的行
+Sheets · columns of the selection	表格 · 所选区域所在的列
+Sheets · fit the selected columns to their content	表格 · 根据内容自动调整所选列的列宽
+Sheets · set the selected rows' height in points	表格 · 按磅值设置所选行的行高
+Sheets · fit the selected rows to their content	表格 · 根据内容自动调整所选行的行高
+Sheets · reset the selected columns	表格 · 将所选列恢复为标准列宽
+Sheets · keep row 1 in view	表格 · 滚动时保持第 1 行可见
+Sheets · keep column A in view	表格 · 滚动时保持 A 列可见
+Sheets · rows above and columns left of the active cell	表格 · 冻结活动单元格上方的行与左侧的列
+Sheets · hide the selected rows	表格 · 隐藏所选行
+Sheets · show hidden rows in the selection (not filtered ones)	表格 · 显示选区内的隐藏行（不含被筛选隐藏的行）
+Sheets · hide the selected columns	表格 · 隐藏所选列
+Sheets · show hidden columns in the selection	表格 · 显示选区内的隐藏列
+Sheets · copy the top row down the selection	表格 · 将选区首行内容向下填充至整个选区
+Sheets · copy the left column across the selection	表格 · 将选区首列内容向右填充至整个选区
+Sheets · recalculate every formula	表格 · 重新计算所有公式
+Sheets · recalculate after every edit	表格 · 每次编辑后自动重新计算
+Sheets · recalculate only with F9 (for big workbooks)	表格 · 仅按 F9 时重新计算（适用于大型工作簿）
+Sheets · highlight cells, top/bottom, data bars, colour scales, icon sets or a formula	表格 · 突出显示单元格规则、最前/最后规则、数据条、色阶、图标集或公式规则
+Sheets · edit, delete and reorder the rules of the selection or the sheet	表格 · 编辑、删除及调整选区或当前工作表的条件格式规则顺序
+Sheets · remove the rules that touch the selection	表格 · 清除涉及所选区域的条件格式规则
+Sheets · remove every rule of the active sheet	表格 · 清除当前活动工作表的所有条件格式规则
+Sheets · a column chart of the selection or the data around the active cell (other types in the toolbar's chart menu)	表格 · 基于选区或活动单元格周边数据创建柱形图（其他图表类型见工具栏图表菜单）
+Sheets · a line chart of the selection	表格 · 基于所选区域创建折线图
+Sheets · a pie chart of the selection	表格 · 基于所选区域创建饼图
+Sheets · type, title, legend, axis titles, series colours, data labels, axis options and data of the selected chart	表格 · 设置所选图表的类型、标题、图例、坐标轴标题、系列颜色、数据标签、坐标轴选项及数据源
+Sheets · put the selected chart on a new chart sheet or on another sheet	表格 · 将所选图表移至新图表工作表或其他工作表
+Sheets · make the selection or the data around the active cell a table with a style	表格 · 将选区或活动单元格周边数据转换为带样式的表格
+Sheets · style, header and total rows, banding, totals and name of the table at the active cell	表格 · 设置活动单元格所在表格的样式、标题行与汇总行、镶边行列、汇总方式及表名称
+Sheets · keep the cells, remove the table at the active cell	表格 · 保留单元格数据与格式，将活动单元格所在的表格转为普通区域
+Sheets · paper, orientation, scaling, margins, header and footer, print area and titles	表格 · 设置纸张大小、方向、缩放、页边距、页眉页脚、打印区域及打印标题
+Sheets · print only the selected cells of this sheet	表格 · 仅打印当前工作表中选中的单元格区域
+Sheets · print the whole used range of this sheet again	表格 · 恢复打印当前工作表的全部已用区域
+Sheets · summarise the table, selection or data around the active cell	表格 · 汇总表格、所选区域或活动单元格周边的数据
+Sheets · show or hide the field list of the PivotTable at the active cell	表格 · 显示或隐藏活动单元格所在数据透视表的字段列表
+Sheets · remove the PivotTable at the active cell	表格 · 删除活动单元格所在的数据透视表
+Sheets · recompute the PivotTable at the active cell from its data	表格 · 根据源数据重新计算活动单元格所在的数据透视表
+Sheets · recompute every PivotTable in the workbook	表格 · 重新计算工作簿中的所有数据透视表
+Sheets · open the active cell's data validation drop-down	表格 · 打开活动单元格的数据验证下拉列表
+Sheets · allow only a list, numbers, dates, times, text length or a formula; input message and error alert	表格 · 限制仅允许序列、数值、日期、时间、文本长度或公式，并设置输入信息与出错警告
+Sheets · ring cells whose values break their data validation	表格 · 用红圈标出不符合数据验证规则的单元格
+Sheets · data validation	表格 · 数据验证
+Sheets · describe it in English or Indonesian	表格 · 用英文或印尼语描述所需公式
+Sheets · AI, active cell	表格 · AI 解析活动单元格公式
+Open documents, recent files	已打开的文档、最近使用的文件
+Cell and workbook details	单元格与工作簿详情
+New pane beside	在右侧新建分屏窗格
+New pane below	在下方新建分屏窗格
+Or the tab, if it has one pane	若仅有一个窗格则关闭标签页
+All its panes	关闭其所有窗格
+Start screen	开始界面
+Docs · paragraph style	文档 · 段落样式
+Docs · paragraphs	文档 · 段落对齐
+Docs · lists	文档 · 列表
+Docs · 3 × 3 (toolbar grid for other sizes)	文档 · 插入 3 × 3 表格（其他行列数可在工具栏网格中选择）
+Docs · table	文档 · 表格操作
+Docs · PNG or JPEG	文档 · PNG 或 JPEG 图片
+Docs · paper size, orientation, margins	文档 · 纸张大小、方向、页边距
+Docs · tab stops: position, alignment, leader, default stops	文档 · 制表位：位置、对齐方式、前导符、默认制表位
+Docs · "Page 1 of 9" centred in the footer	文档 · 在页脚居中插入“第 1 / 9 页”样式页码
+Docs · the page number at the caret	文档 · 在光标处插入当前页码
+Docs · the fields in the selection, or the one at the caret: dates, cross-references, contents	文档 · 更新选区内的域或光标处的域：日期、交叉引用、目录
+Docs · rebuild it from the headings, with page numbers	文档 · 根据各级标题重新生成目录并更新页码
+Docs · a new section with its own page setup, headers and footers	文档 · 创建拥有独立页面设置和页眉页脚的新节
+Docs · turn on or off: your typing and deletions are marked for review	文档 · 开启或关闭修订模式：将您输入和删除的内容标记为待审阅修订
+Docs · a numbered note at the bottom of the page	文档 · 在页面底端插入编号脚注
+Docs · a numbered note at the end of the document	文档 · 在文档末尾插入编号尾注
+Docs · the note whose number is at the caret	文档 · 编辑光标所在编号对应的脚注或尾注
+Docs · on the selection or the word at the caret	文档 · 针对所选内容或光标所在词语添加批注
+Docs · the comment cards beside the pages	文档 · 显示或隐藏页面侧边的批注卡片
+Docs · the insertion or deletion at the caret, then the next one	文档 · 处理光标处的插入或删除修订并跳至下一处
+Docs · insertions, deletions, paragraph marks and formatting	文档 · 接受文档中所有的插入、删除、段落标记与格式修订
+Docs · back to the text before the changes	文档 · 拒绝所有修订并还原为修改前的文本
+Docs · select the next insertion or deletion	文档 · 定位并选中下一处插入或删除修订
+Docs · select the previous insertion or deletion	文档 · 定位并选中上一处插入或删除修订
+Docs · page size, 21 × 29.7 cm	文档 · 纸张大小，21 × 29.7 厘米
+Docs · page size, 21.59 × 27.94 cm	文档 · 纸张大小，21.59 × 27.94 厘米
+Docs · page size, 21.59 × 35.56 cm	文档 · 纸张大小，21.59 × 35.56 厘米
+Docs · page size, 14.8 × 21 cm	文档 · 纸张大小，14.8 × 21 厘米
+Docs · page size, 21.5 × 33 cm	文档 · 纸张大小，21.5 × 33 厘米
+Docs · page setup	文档 · 页面设置
+Docs · 2.54 cm all sides	文档 · 上下左右均为 2.54 厘米
+Docs · 1.27 cm all sides	文档 · 上下左右均为 1.27 厘米
+Docs · 2.54 cm top/bottom, 1.91 cm sides	文档 · 上下 2.54 厘米，左右 1.91 厘米
+Docs · 2.54 cm top/bottom, 5.08 cm sides	文档 · 上下 2.54 厘米，左右 5.08 厘米
+Docs, Slides · underline misspelled words in red	文档、演示 · 用红色波浪线标出拼写错误的单词
+Docs · show or hide the ruler	文档 · 显示或隐藏标尺
+Docs, Sheets, PDF · zoom in	文档、表格、PDF · 放大视图
+Docs, Sheets, PDF · zoom out	文档、表格、PDF · 缩小视图
+Zoom to 100%	缩放到 100%
+Sheets · show the sheet at its actual size	表格 · 按实际大小 (100%) 显示工作表
+Zoom to Selection	缩放到选定区域
+Sheets · zoom so the selected cells fill the window	表格 · 调整缩放比例使所选单元格铺满窗口
+Sheets · View ▸ Zoom: 200%, 100%, 75%, 50%, 25%, fit selection or custom	表格 · 视图 ▸ 缩放：200%、100%、75%、50%、25%、缩放到选定区域或自定义
+Docs · page zoom 100% · PDF: Ctrl+1	文档 · 页面缩放 100% · PDF：Ctrl+1
+Slides · the selected shape	演示 · 所选形状
+Slides · the selected shapes	演示 · 所选的多个形状
+Slides · the selected group	演示 · 所选组合对象
+Slides · the last ungrouped group	演示 · 上一次取消组合的对象组
+Slides · the selected SmartArt	演示 · 所选 SmartArt 图形
+Slides · Tab / Shift Tab change the level	演示 · Tab / Shift Tab 调整列表级别
+Slides · theme colours, no fill	演示 · 主题颜色、无填充
+Slides · colour and width	演示 · 轮廓颜色与线宽
+Slides · the notes pane under the slide	演示 · 幻灯片下方的演讲者备注窗格
+Slides · PNG or JPEG	演示 · PNG 或 JPEG 图片
+Slides · from the first slide	演示 · 从第一张幻灯片开始放映
+Provider, API key, model · off by default	服务提供商、API 密钥、模型 · 默认关闭
+Docs · AI: Indonesian ↔ English, formal, shorter, grammar	文档 · AI：印尼语 ↔ 英语互译、更正式、更精炼、修正语法
+Saves .xlsx/.docx/.pptx files with a name after you stop typing	停止输入后自动保存已命名的 .xlsx/.docx/.pptx 文件
+Documents left unsaved when Kantor closed unexpectedly	Kwork 意外关闭时未保存的文档
+Kantor {} · sends only its version and OS	Kwork {} · 仅发送版本号与操作系统信息
+Install the downloaded update and reopen your documents	安装已下载的更新并重新打开当前文档
+Spelling…	拼写检查…
+Sheets · check the spelling of the text cells, from the active cell or in the selection	表格 · 从活动单元格起或在选区内检查文本单元格的拼写
+New Note / Edit Note	新建备注 / 编辑备注
+Sheets · write a note on the active cell (Review > Notes)	表格 · 为活动单元格添加或编辑备注（审阅 > 备注）
+Delete Note	删除备注
+Sheets · delete the notes of the selected cells	表格 · 删除所选单元格的备注
+Show/Hide Note	显示/隐藏备注
+Sheets · keep the active cell's note shown, or show it only on hover	表格 · 始终显示活动单元格的备注，或仅在鼠标悬停时显示
+Show All Notes	显示所有备注
+Sheets · show every note, or only on hover again	表格 · 显示所有备注，或恢复为仅在鼠标悬停时显示
+Next Note	下一条备注
+Sheets · go to the next cell with a note	表格 · 跳转到下一个含备注的单元格
+Previous Note	上一条备注
+Sheets · go to the previous cell with a note	表格 · 跳转到上一个含备注的单元格
+Delete Footnote or Endnote	删除脚注或尾注
+Docs · date, page number, document properties, references to bookmarks	文档 · 日期、页码、文档属性、书签引用
+Docs · edit them on the page: different first page, odd and even pages, link to previous	文档 · 在页面中直接编辑：首页不同、奇偶页不同、链接到前一节
+Docs · every field's code instead of its result, or back (Shift+F9: the one at the caret)	文档 · 切换显示所有域代码或域结果（Shift+F9：仅切换光标处的域）
+Docs · name the selection to go to it or refer to it	文档 · 为所选内容命名书签以便跳转或交叉引用
+Docs · the note being edited, or the one whose number is at the caret	文档 · 删除正在编辑的脚注/尾注，或光标处编号对应的脚注/尾注
+Docs · to a heading, bookmark, footnote, endnote or caption	文档 · 引用标题、书签、脚注、尾注或题注
+Insert Bookmark…	插入书签…
+Insert Cross-reference…	插入交叉引用…
+Insert Field…	插入域…
+Show Field Codes	显示域代码
+Sheets · fill, outline and text alignment of the selected shape or text box	表格 · 设置所选形状或文本框的填充、轮廓及文本对齐方式
+Insert Page Break	插入分页符
+Sheets · start a new printed page above and left of the active cell	表格 · 在活动单元格上方和左侧插入手动分页符
+Remove Page Break	删除分页符
+Sheets · remove the manual page break above or left of the active cell	表格 · 删除活动单元格上方或左侧的手动分页符
+Reset All Page Breaks	重置所有分页符
+Sheets · remove every manual page break of this sheet	表格 · 清除当前工作表中的所有手动分页符
+Page Break Preview	分页预览
+Custom Lists…	自定义序列…
+Sheets · lists that sort orders and the fill handle follow (Low, Medium, High)	表格 · 排序次序和填充柄遵循的自定义序列（如：低、中、高）
+Sheets · show where the pages break; drag the breaks and the print area	表格 · 查看分页位置，并可直接拖动分页符与打印区域边界
+Normal View	普通视图
+Sheets · leave Page Break Preview	表格 · 退出分页预览返回普通视图
+Sheets · a table style of this workbook: format of each table element, stripe sizes, default style	表格 · 自定义当前工作簿的表格样式：各表格元素格式、条纹行数及默认样式
+Let Formulas Download from the Internet	允许公式从互联网下载内容
+Sheets · IMAGE and WEBSERVICE (turn on or off)	表格 · 开启或关闭 IMAGE 与 WEBSERVICE 联网函数
+Formulas may download from the internet (IMAGE, WEBSERVICE)	已允许公式从互联网下载内容（IMAGE、WEBSERVICE）
+Formulas don't download from the internet: IMAGE and WEBSERVICE show #BLOCKED!	已禁止公式从互联网下载内容：IMAGE 和 WEBSERVICE 将显示 #BLOCKED!
+Docs · table alignment and indent	文档 · 表格对齐方式与缩进
+Docs · number of columns and rows	文档 · 设置表格的列数与行数
+# Cloud single sign-on (workspace/cloud/sso.rs, accounts.rs).
+You're signed in. You can close this tab and go back to Kantor.	您已成功登录。现在可以关闭此浏览器标签页并返回 Kwork。
+Sign-in didn't finish. Go back to Kantor and try again.	登录未完成。请返回 Kwork 后重试。
+The drive refused the sign-in. Ask your administrator whether Kantor may use single sign-on on this drive.	云盘拒绝了登录请求。请咨询管理员是否允许 Kwork 在此云盘使用单点登录 (SSO)。
+This drive doesn't say where to sign in. Enter your organisation's sign-in server.	此云盘未提供登录入口地址，请输入您所在组织的登录服务器地址。
+Sign-in failed: {}	登录失败：{}
+This sign-in server has no sign-in with a code. Use the browser sign-in instead.	此登录服务器不支持验证码登录，请改用浏览器登录。
+The sign-in server gave no refresh token, so Kantor can't stay signed in. Ask your administrator to allow offline access for Kantor.	登录服务器未返回刷新令牌，因此 Kwork 无法保持登录状态。请联系管理员为 Kwork 开启离线访问权限 (offline access)。
+Your sign-in to {} has ended. Your edits are kept on this computer. Sign in again in Cloud Accounts, then choose Sync Now.	您在 {} 的登录会话已过期。您的修改已保存在本机，请在“云端账户”中重新登录后选择“立即同步”。
+Fill in the server address first.	请先填写服务器地址。
+Finding where to sign in…	正在查找登录入口…
+Waiting for you to sign in in the browser…	正在等待您在浏览器中完成登录…
+Waiting for you to enter the code…	正在等待您输入验证码…
+Signed in. The sign-in is kept in the system keychain.	已登录。登录凭证已保存在系统钥匙串中。
+Signed in. No system keychain was found, so the sign-in is kept in cloud-keys.toml next to settings.toml (readable only by you).	已登录。未找到系统钥匙串，登录凭证已保存在 settings.toml 同目录的 cloud-keys.toml 中（仅您本人可读）。
+Single sign-on · {}	单点登录 (SSO) · {}
+Sign in again	重新登录
+Organisation sign-in (SSO)	组织账户登录 (SSO)
+Sign-in server (optional)	登录服务器（可选）
+Only needed when the drive doesn't say where to sign in (Nextcloud): your organisation's identity provider.	仅当云盘未自动提供登录入口时（如 Nextcloud）需要填写：即您所在组织的身份认证服务地址。
+Client ID (optional)	客户端 ID（可选）
+Kantor opens your browser to sign in with your organisation's account. Without a browser on this computer, use a code instead. The sign-in is kept in the system keychain; no password is stored.	Kwork 将打开浏览器以使用您的组织账户登录。若当前计算机无法使用浏览器，可改用设备验证码登录。登录凭证保存在系统钥匙串中，不存储任何密码。
+In a browser on any device, go to {} and enter this code:	请在任意设备的浏览器中访问 {} 并输入以下验证码：
+Use a code instead	改用验证码登录
+Sign in with your organisation	使用组织账户登录
+Account removed: signed out, and its sign-in deleted from the keychain.	账户已移除：已退出登录，并从系统钥匙串中删除了登录凭证。
+Signed in. Opening your drive… The first time can take a minute.	已登录，正在打开您的云盘… 首次加载可能需要约一分钟。
+Saving the sign-in in the system keychain… If your computer asks for the keyring password, enter it.	正在将登录凭证保存到系统钥匙串… 若系统提示输入钥匙串密码，请按提示输入。
+Columns: One	分栏：一栏
+Columns: Two	分栏：两栏
+Columns: Three	分栏：三栏
+Columns: Left	分栏：偏左
+Columns: Right	分栏：偏右
+Docs · the caret's section (or the selected text) in one column	文档 · 将光标所在节（或所选文本）设为一栏
+Docs · two columns of equal width	文档 · 分为等宽的两栏
+Docs · three columns of equal width	文档 · 分为等宽的三栏
+Docs · two columns, the left one narrower	文档 · 分为两栏，左栏较窄
+Docs · two columns, the right one narrower	文档 · 分为两栏，右栏较窄
+More Columns…	更多分栏…
+Docs · number of columns, widths and spacing, line between, apply to	文档 · 设置栏数、栏宽与间距、分隔线及应用范围
+Insert Column Break	插入分栏符
+Docs · the text after the caret starts the next column	文档 · 使光标后的文本从下一栏顶端开始
+PDF · show the digital signatures and whether they are valid	PDF · 显示数字签名及其验证状态
+Let Signature Checks Use the Internet	允许数字签名验证联网查询
+PDF · fetch missing certificates and revocation status when you ask (turn on or off)	PDF · 在您请求验证时联网获取缺失证书与吊销状态（开启或关闭）
+Signature checks may use the internet when you click Check Online	点击“在线验证”时允许联网检查数字签名
+Signature checks use only what the file contains	数字签名验证仅使用文件内嵌信息（不联网）
+
+# Mail merge (palette)
+Mailings (Mail Merge)	邮件（邮件合并）
+Docs · letters, certificates and labels filled in from a workbook or CSV file	文档 · 从工作簿或 CSV 文件批量填充生成信函、证书与标签
+Docs · mail merge: each recipient's name and address, laid out by country	文档 · 邮件合并：按国家/地区格式排版每位收件人的姓名与地址块
+Docs · mail merge: Dear Mr. Randall, from each recipient's name	文档 · 邮件合并：根据每位收件人姓名生成问候语
+Docs · mail merge: which columns are the name and address fields	文档 · 邮件合并：匹配数据列与姓名、地址等合并域的对应关系
+Select Recipients…	选择收件人…
+Docs · mail merge: the workbook or CSV file with the recipients	文档 · 邮件合并：选择包含收件人列表的工作簿或 CSV 文件
+Preview Results	预览结果
+Docs · mail merge: show a recipient's values in the merge fields, or the field names	文档 · 邮件合并：在合并域中切换显示收件人实际数据或域名称
+Highlight Merge Fields	突出显示合并域
+Docs · mail merge: shade the merge fields	文档 · 邮件合并：为合并域添加底纹以便识别
+Finish & Merge: Edit Individual Documents	完成并合并：编辑单个文档
+Docs · mail merge: every recipient in one new document, a section each	文档 · 邮件合并：将所有收件人生成到同一新文档中，每人独立一节
+Finish & Merge: Save as PDF, One per Recipient…	完成并合并：按收件人逐个存为 PDF…
+Docs · mail merge: a PDF for each recipient, named from a field	文档 · 邮件合并：为每位收件人生成单独的 PDF，并按指定字段命名

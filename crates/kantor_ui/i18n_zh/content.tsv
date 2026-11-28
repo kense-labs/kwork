@@ -1,0 +1,76 @@
+# English<TAB>Simplified Chinese: text Kantor writes into new content of files (pivot captions, chart titles), and engine notes shown in the UI.
+Row Labels	行标签
+Column Labels	列标签
+Grand Total	总计
+Total {}	汇总 {}
+{} Total	{} 汇总
+(blank)	(空白)
+(Multiple Items)	(多项)
+Column{}	列{}
+Click to add title	单击此处添加标题
+Click to add subtitle	单击此处添加副标题
+Click to add text	单击此处添加文本
+Chart Title	图表标题
+Series{}	系列{}
+Waterfall: Increase	增加
+Waterfall: Decrease	减少
+Total	总计
+Cumulative %	累计百分比
+1 formula kept as values	1 个公式已转为数值保留
+{} formulas kept as values	{} 个公式已转为数值保留
+tracked changes	修订
+comments	批注
+fields spanning paragraphs	跨段落的域
+fields without an end	未闭合的域
+fields across hyperlinks or other elements	跨越超链接或其他元素的域
+content controls around table rows or cells	包裹表格行或单元格的内容控件
+charts	图表
+floating images and shapes	浮动图片与形状
+drawings	绘图对象
+shapes and embedded objects	形状与嵌入对象
+content controls	内容控件
+equations	公式
+nested tables	嵌套表格
+embedded documents	嵌入文档
+horizontally merged cells	水平合并的单元格
+fields	域
+slide sections (dropped when slides are added, removed or reordered)	幻灯片分节（增删或重排幻灯片时将被移除）
+custom slide shows (dropped when slides are added, removed or reordered)	自定义放映（增删或重排幻灯片时将被移除）
+{} in a table	表格中的{}
+a missing slide part ({})	缺失的幻灯片组件（{}）
+speaker notes that can't be read ({})	无法读取的演讲者备注（{}）
+footnotes were left out	已忽略脚注
+comments were left out	已忽略批注
+text boxes and drawings were left out	已忽略文本框与绘图对象
+pictures in formats other than PNG and JPEG were left out	已忽略非 PNG / JPEG 格式的图片
+comments not imported	未导入批注
+text boxes not imported	未导入文本框
+floating pictures and shapes not imported	未导入浮动图片与形状
+floating objects in headers and footers not imported	未导入页眉和页脚中的浮动对象
+grouped shapes not imported	未导入组合形状
+freeform shapes not imported	未导入任意多边形
+TIFF pictures not imported	未导入 TIFF 图片
+hidden text left out	已忽略隐藏文字
+embedded objects not imported	未导入嵌入对象
+nested tables flattened	嵌套表格已展平
+drawing shapes were left out	已忽略绘图形状
+pictures in formats Kantor can't show (SVG, TIFF) were left out	已忽略 Kwork 暂不支持显示的图片格式（SVG、TIFF）
+embedded objects without a preview picture were left out	已忽略无预览图的嵌入对象
+tracked formatting changes were left out (shown as made)	已忽略格式修订记录（按修改后样式显示）
+form controls were left out	已忽略窗体控件
+1 chart left out	已忽略 1 个图表
+1 embedded object left out	已忽略 1 个嵌入对象
+1 video or sound left out	已忽略 1 个音视频对象
+1 picture in a format Kantor can't show left out	已忽略 1 张 Kwork 暂不支持显示的图片
+1 shape Kantor can't read left out	已忽略 1 个 Kwork 无法读取的形状
+slide transitions and animations were left out	已忽略幻灯片切换与动画效果
+{} charts left out	已忽略 {} 个图表
+{} embedded objects left out	已忽略 {} 个嵌入对象
+{} videos and sounds left out	已忽略 {} 个音视频对象
+{} pictures in a format Kantor can't show left out	已忽略 {} 张 Kwork 暂不支持显示的图片
+{} shapes Kantor can't read left out	已忽略 {} 个 Kwork 无法读取的形状
+1 TIFF picture shown as a box	1 张 TIFF 图片已显示为占位框
+{} TIFF pictures shown as boxes	{} 张 TIFF 图片已显示为占位框
+Group{}	组{}
+Map: no map data saved with this chart	地图：此图表未保存地图数据
+Map: the map data saved with this chart can't be read	地图：无法读取此图表保存的地图数据

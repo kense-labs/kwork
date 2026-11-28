@@ -87,20 +87,17 @@ pub const WIDGET_STRINGS: &[(&str, &str, &[&str])] = &[
     ("Calendar.month.December", tk("December"), &[]),
 ];
 
-/// The locale gpui-component is switched to for Indonesian.
+/// The locale gpui-component is switched to for Indonesian / Simplified Chinese.
 const LOCALE: &str = "id";
+const ZH_LOCALE: &str = "zh";
 
 /// Namespace of Kantor's keys in the rust-i18n extension (the backend sees
 /// `kantor.Input.Cut`).
 const NAMESPACE: &str = "kantor";
 
-/// The Indonesian for a gpui-component key, with its `{}`s turned back into
-/// the `%{name}` arguments rust-i18n fills in.
-pub fn indonesian(key: &str) -> Option<String> {
-    let (_, en, args) = WIDGET_STRINGS.iter().find(|(k, _, _)| *k == key)?;
-    let id = i18n::indonesian(en)?;
-    let mut out = String::with_capacity(id.len() + 8);
-    let mut rest = id;
+fn format_widget_template(translated: &str, args: &[&str]) -> String {
+    let mut out = String::with_capacity(translated.len() + 8);
+    let mut rest = translated;
     let mut names = args.iter();
     while let Some(i) = rest.find("{}") {
         out.push_str(&rest[..i]);
@@ -112,52 +109,97 @@ pub fn indonesian(key: &str) -> Option<String> {
         rest = &rest[i + 2..];
     }
     out.push_str(rest);
-    Some(out)
+    out
 }
 
-/// Answers gpui-component's lookups in the `id` locale from the catalog.
+/// The Indonesian for a gpui-component key, with its `{}`s turned back into
+/// the `%{name}` arguments rust-i18n fills in.
+pub fn indonesian(key: &str) -> Option<String> {
+    let (_, en, args) = WIDGET_STRINGS.iter().find(|(k, _, _)| *k == key)?;
+    let id = i18n::indonesian(en)?;
+    Some(format_widget_template(id, args))
+}
+
+/// The Simplified Chinese for a gpui-component key, with its `{}`s turned back into
+/// the `%{name}` arguments rust-i18n fills in.
+pub fn chinese(key: &str) -> Option<String> {
+    let (_, en, args) = WIDGET_STRINGS.iter().find(|(k, _, _)| *k == key)?;
+    let zh = i18n::chinese(en)?;
+    Some(format_widget_template(zh, args))
+}
+
+/// Answers gpui-component's lookups in the `id` and `zh` locales from the catalog.
 struct Backend;
 
 impl rust_i18n::Backend for Backend {
     fn available_locales(&self) -> Vec<Cow<'_, str>> {
-        vec![Cow::Borrowed(LOCALE)]
+        vec![Cow::Borrowed(LOCALE), Cow::Borrowed(ZH_LOCALE)]
     }
 
     fn translate(&self, locale: &str, key: &str) -> Option<Cow<'_, str>> {
-        if locale != LOCALE {
-            return None;
-        }
         let key = key.strip_prefix(NAMESPACE)?.strip_prefix('.')?;
-        indonesian(key).map(Cow::Owned)
+        match locale {
+            LOCALE => indonesian(key).map(Cow::Owned),
+            ZH_LOCALE => chinese(key).map(Cow::Owned),
+            _ => None,
+        }
     }
 
     fn messages_for_locale(&self, locale: &str) -> Option<Vec<(Cow<'_, str>, Cow<'_, str>)>> {
-        (locale == LOCALE).then(|| {
-            WIDGET_STRINGS
-                .iter()
-                .filter_map(|(k, _, _)| {
-                    let id = indonesian(k)?;
-                    Some((Cow::Owned(format!("{NAMESPACE}.{k}")), Cow::Owned(id)))
-                })
-                .collect()
-        })
+        match locale {
+            LOCALE => Some(
+                WIDGET_STRINGS
+                    .iter()
+                    .filter_map(|(k, _, _)| {
+                        let id = indonesian(k)?;
+                        Some((Cow::Owned(format!("{NAMESPACE}.{k}")), Cow::Owned(id)))
+                    })
+                    .collect(),
+            ),
+            ZH_LOCALE => Some(
+                WIDGET_STRINGS
+                    .iter()
+                    .filter_map(|(k, _, _)| {
+                        let zh = chinese(k)?;
+                        Some((Cow::Owned(format!("{NAMESPACE}.{k}")), Cow::Owned(zh)))
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        }
     }
 }
 
-/// Put the widgets in the interface language. Call once, after
-/// `gpui_kit::init`.
+/// Put the widgets in the interface language. Call once after `gpui_kit::init`,
+/// and call [`sync_locale`] whenever the host switches UI language at runtime.
 pub fn init() {
-    if i18n::lang() != Lang::Id {
-        return;
+    sync_locale();
+}
+
+/// Synchronize `gpui_kit::component` locale with [`i18n::lang`].
+pub fn sync_locale() {
+    match i18n::lang() {
+        Lang::Id => {
+            install();
+            gpui_kit::component::set_locale(LOCALE);
+        }
+        Lang::Zh => {
+            install();
+            gpui_kit::component::set_locale(ZH_LOCALE);
+        }
+        Lang::En => {
+            gpui_kit::component::set_locale("en");
+        }
     }
-    install();
-    gpui_kit::component::set_locale(LOCALE);
 }
 
 /// Hand gpui-component the catalog backend (once per process).
 fn install() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
     static BACKEND: Backend = Backend;
-    gpui_kit::component::_rust_i18n_extend(&BACKEND, NAMESPACE);
+    INSTALLED.call_once(|| {
+        gpui_kit::component::_rust_i18n_extend(&BACKEND, NAMESPACE);
+    });
 }
 
 #[cfg(test)]

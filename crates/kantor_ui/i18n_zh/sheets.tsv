@@ -1,0 +1,1313 @@
+# English<TAB>Simplified Chinese, one string per line (see kantor_ui/src/i18n.rs).
+# Sheets: toolbar, menus, dialogs and status text of crates/sheets_ui.
+# Toolbar
+Larger Font	增大字号
+Smaller Font	减小字号
+Wrap Text	自动换行
+Merge & Center	合并后居中
+All Borders	所有框线
+Outside Borders	外侧框线
+No Borders	无框线
+Fill Colour	填充颜色
+No Fill	无填充
+Text Colour	文字颜色
+More formatting	更多格式
+Conditional Formatting	条件格式
+Data Validation…	数据验证…
+Circle Invalid Data	圈释无效数据
+Clear Validation Circles	清除无效数据标识圈
+Insert Chart	插入图表
+PivotTable	数据透视表
+Print and export	打印与导出
+Page Setup…	页面设置…
+Set Print Area	设置打印区域
+Clear Print Area	取消打印区域
+Ask AI for a formula	AI 生成公式
+Format as Table…	套用表格格式…
+Insert PivotTable…	插入数据透视表…
+Refresh PivotTable	刷新数据透视表
+Refresh All PivotTables	刷新所有数据透视表
+Delete PivotTable	删除数据透视表
+Rupiah (Rp)	印尼盾 (Rp)
+Dollar ($)	美元 ($)
+# Header menus and grid commands
+Insert Column Left	在左侧插入列
+Insert Column Right	在右侧插入列
+Delete Columns	删除列
+Autofit Column Width	自动调整列宽
+Standard Column Width	标准列宽
+Hide Columns	隐藏列
+Unhide Columns	取消隐藏列
+Custom Sort…	自定义排序…
+Filter	筛选
+Freeze Panes	冻结窗格
+Freeze First Column	冻结首列
+Freeze Top Row	冻结首行
+Unfreeze Panes	取消冻结窗格
+Insert Row Above	在上方插入行
+Insert Row Below	在下方插入行
+Delete Rows	删除行
+Row Height…	行高…
+Autofit Row Height	自动调整行高
+Hide Rows	隐藏行
+Unhide Rows	取消隐藏行
+Selected all cells	已全选单元格
+Filling	正在填充
+Filled {}	已填充 {}
+Nothing to fill from	没有可用于填充的源内容
+Inserted {} row	已插入 {} 行
+Inserted {} rows	已插入 {} 行
+Deleted {} row	已删除 {} 行
+Deleted {} rows	已删除 {} 行
+Inserted {} column	已插入 {} 列
+Inserted {} columns	已插入 {} 列
+Deleted {} column	已删除 {} 列
+Deleted {} columns	已删除 {} 列
+The selected rows are already hidden	所选行处于隐藏状态
+The selected columns are already hidden	所选列处于隐藏状态
+Hid {} row	已隐藏 {} 行
+Hid {} rows	已隐藏 {} 行
+Hid {} column	已隐藏 {} 列
+Hid {} columns	已隐藏 {} 列
+No hidden rows in the selection	所选区域内没有隐藏行
+No hidden columns in the selection	所选区域内没有隐藏列
+Unhid {} row	已取消隐藏 {} 行
+Unhid {} rows	已取消隐藏 {} 行
+Unhid {} column	已取消隐藏 {} 列
+Unhid {} columns	已取消隐藏 {} 列
+Unhid {} row; {} hidden by a filter stay hidden	已取消隐藏 {} 行；被筛选隐藏的 {} 行仍保持隐藏
+Unhid {} rows; {} hidden by a filter stay hidden	已取消隐藏 {} 行；被筛选隐藏的 {} 行仍保持隐藏
+{} row hidden by a filter; clear the filter to show it	有 {} 行被筛选隐藏；清除筛选后即可显示
+{} rows hidden by a filter; clear the filter to show them	有 {} 行被筛选隐藏；清除筛选后即可显示
+Fitted column widths to their content	已根据内容自动调整列宽
+Reset column widths	已恢复标准列宽
+Column widths unchanged	列宽未更改
+Panes unfrozen	已取消冻结窗格
+Froze the top {} row	已冻结顶部 {} 行
+Froze the top {} rows	已冻结顶部 {} 行
+Froze the first {} column	已冻结前 {} 列
+Froze the first {} columns	已冻结前 {} 列
+Froze panes above and left of {}	已冻结 {} 上方和左侧的窗格
+# Status line
+Ready	就绪
+Value or =formula	输入数值或 =公式
+Please wait until the workbook is ready	正在加载工作簿，请稍候
+Edit cancelled	已取消编辑
+{} updated — manual calculation, press F9 to recalculate	{} 已更新 — 当前为手动计算，按 F9 重新计算
+Copied {}	已复制 {}
+Cut {}	已剪切 {}
+Nothing to paste	没有可粘贴的内容
+Pasted {}	已粘贴 {}
+Alignment	对齐方式
+Vertical alignment	垂直对齐
+Fill colour	填充颜色
+Text colour	文字颜色
+Font size	字号
+Wrap text	自动换行
+Borders	边框
+Merged	已合并单元格
+Unmerged	已取消合并单元格
+Opened {}	已打开 {}
+Opened {} (imported; Save creates an .xlsx copy)	已打开 {}（已导入；“保存”将另存为 .xlsx 副本）
+Undone	已撤销
+Redone	已重做
+Nothing to undo	没有可撤销的操作
+Nothing to redo	没有可重做的操作
+Please wait until the save finishes	请等待保存完成
+No matches	无匹配结果
+Formula inserted in {}	已在 {} 中插入公式
+Deleted	已删除
+Moved	已移动
+Resized	已调整大小
+Nothing to replace: the matches are computed values	无可替换内容：匹配项均为公式计算结果
+Replaced in 1 cell	已替换 1 个单元格中的内容
+Replaced in {} cells	已替换 {} 个单元格中的内容
+Replaced in {}	已在 {} 中替换
+# Calculation
+Opening {}…	正在打开 {}…
+Calculating {}…	正在计算 {}…
+{} and recalculating {}…	{}，正在重新计算 {}…
+Manual calculation ({} formulas) — press F9 to recalculate	手动计算（共 {} 个公式）— 按 F9 重新计算
+ in {} s	（{} 秒）
+Calculated in {} s	计算完成（{} 秒）
+Calculated	计算完成
+Automatic calculation	自动计算
+Manual calculation — press F9 to recalculate	手动计算 — 按 F9 重新计算
+Calculating…	计算中…
+Manual · Calculate (F9)	手动 · 立即计算 (F9)
+Manual calculation	手动计算
+{} s · editing resumes when it is done	{} 秒 · 计算完成后即可继续编辑
+# Saving, printing, recovery
+Saving…	正在保存…
+Saving {}…	正在保存 {}…
+Saving {}… (then again with your latest changes)	正在保存 {}…（随后将继续保存最新更改）
+Autosaved {}	已自动保存 {}
+Saved {}	已保存 {}
+Saved {} with values of sheet "{}" only; CSV can't hold the other {}	已保存 {}（仅保留工作表 "{}" 的值；CSV 格式无法保存其余 {} 个工作表）
+Save failed: {}	保存失败：{}
+Couldn't save “{}”: {}. Your changes are still open; try Save As.	无法保存“{}”：{}。您的更改仍保留在当前窗口中，请尝试“另存为”。
+Print failed: {}	打印失败：{}
+Preparing to print {}…	正在准备打印 {}…
+Exporting {}…	正在导出 {}…
+Preparing to print: page {} of {}…	正在准备打印：第 {} / {} 页…
+Exporting: page {} of {}…	正在导出：第 {} / {} 页…
+Exported {} (1 page)	已导出 {}（共 1 页）
+Exported {} ({} pages)	已导出 {}（共 {} 页）
+Opened 1 page in the PDF viewer to print	已在 PDF 阅读器中打开 1 页以供打印
+Opened {} pages in the PDF viewer to print	已在 PDF 阅读器中打开 {} 页以供打印
+Export to PDF failed: {}	导出 PDF 失败：{}
+Restored unsaved changes to {}	已恢复 {} 中未保存的更改
+Restored unsaved changes	已恢复未保存的更改
+Restoring {}…	正在恢复 {}…
+# Row height
+Unhid 1 row	已取消隐藏 1 行
+Those rows are hidden by a filter; clear the filter to show them	这些行已被筛选隐藏；清除筛选后即可显示
+Row height {} pt: row {}	行高 {} 磅：第 {} 行
+Row height {} pt: rows {}–{}	行高 {} 磅：第 {}–{} 行
+Fitted the height of row {}	已自动调整第 {} 行的行高
+Fitted the height of rows {}–{}	已自动调整第 {}–{} 行的行高
+Row height unchanged	行高未更改
+Points	磅
+Row height must be a number of points from 0 to {}	行高必须是 0 到 {} 之间的磅值
+Row {}	第 {} 行
+Rows {}–{}	第 {}–{} 行
+Row height (pt) · {}	行高 (磅) · {}
+Enter to apply	按 Enter 应用
+Cell value	单元格值
+Specific text	特定文本
+Dates occurring	发生日期
+Duplicate or unique values	重复值或唯一值
+Top or bottom ranked values	排名前后的数据
+Above or below average	高于或低于平均值
+Blanks	空值
+Use a formula	使用公式确定要设置格式的单元格
+Data bar	数据条
+Color scale	色阶
+Icon set	图标集
+e.g. A2:A20	例如 A2:A20
+a number, text or =formula	数值、文本或 =公式
+and	与
+text to look for	要查找的文本
+e.g. =$B2>100	例如 =$B2>100
+Kantor can't edit this kind of rule yet (it can delete or move it)	Kwork 暂不支持编辑此类规则（可将其删除或调整顺序）
+Rank: type a whole number	排名数量：请输入整数
+Rule changed	规则已更新
+Conditional formatting rule added	已添加条件格式规则
+Conditional formatting added to {}	已为 {} 添加条件格式
+No conditional formatting rules here	此处没有条件格式规则
+1 rule cleared	已清除 1 条规则
+{} rules cleared	已清除 {} 条规则
+Edit Formatting Rule	编辑格式规则
+New Formatting Rule	新建格式规则
+Applies to	应用于
+Rule type	规则类型
+Cell value is	单元格值
+Value	值
+And	至
+Text	文本
+Looking for	查找内容
+A date occurring	发生日期
+Duplicate values	重复值
+Unique values	唯一值
+Format the	设置格式范围
+Top	上
+Bottom	下
+Number	数量
+% of the selected range	所选区域的百分比 (%)
+Values	数值范围
+Above average	高于平均值
+Below average	低于平均值
+Equal to or above average	高于或等于平均值
+Equal to or below average	低于或等于平均值
+1 std dev above average	高于平均值 1 个标准偏差
+1 std dev below average	低于平均值 1 个标准偏差
+2 std dev above average	高于平均值 2 个标准偏差
+2 std dev below average	低于平均值 2 个标准偏差
+3 std dev above average	高于平均值 3 个标准偏差
+3 std dev below average	低于平均值 3 个标准偏差
+Cells that are	单元格状态
+Blank	为空
+Not blank	非空
+Format where	公式条件
+The formula is true for the cells to format; references are relative to the first cell of the range.	为满足公式计算结果为真的单元格设置格式；相对引用以应用区域左上角第一个单元格为基准。
+Bar colour	数据条颜色
+Fill	填充
+Solid	实心填充
+Colours	颜色
+Reverse icon order	反转图标次序
+Show icon only	仅显示图标
+No Cell Icon	无单元格图标
+Custom format	自定义格式
+Font colour	字体颜色
+Stop if true (rules below don't apply to these cells)	如果为真则停止（后续规则不再应用于这些单元格）
+This sheet has no conditional formatting rules.	当前工作表没有条件格式规则。
+No rules apply to the selected cells.	所选单元格没有适用的条件格式规则。
+Applies to {}	应用于 {}
+Stop	停止
+Move up (applies sooner)	上移（优先应用）
+Move down	下移
+Delete rule	删除规则
+Conditional Formatting Rules	条件格式规则管理器
+Show rules for	显示其规则
+Current selection	当前所选区域
+This sheet	当前工作表
+Selection {}	选区 {}
+The first rule applies first; a rule with Stop ends the list for its cells.	排在前面的规则优先应用；勾选“停止”的规则命中后将不再对该单元格执行后续规则。
+New Rule…	新建规则…
+Highlight Cells Rules	突出显示单元格规则
+Top/Bottom Rules	最前/最后规则
+Data Bars	数据条
+Color Scales	色阶
+Icon Sets	图标集
+Gradient Fill	渐变填充
+Solid Fill	实心填充
+{} Data Bar	{}数据条
+{} Color Scale	{}色阶
+Clear Rules from Selected Cells	清除所选单元格的规则
+Clear Rules from Entire Sheet	清除整个工作表的规则
+Manage Rules…	管理规则…
+Greater Than…	大于…
+Less Than…	小于…
+Between…	介于…
+Equal To…	等于…
+Text that Contains…	文本包含…
+A Date Occurring…	发生日期…
+Duplicate Values…	重复值…
+Top 10 Items…	前 10 项…
+Top 10%…	前 10%…
+Bottom 10 Items…	后 10 项…
+Bottom 10%…	后 10%…
+Above Average…	高于平均值…
+Below Average…	低于平均值…
+greater than	大于
+less than	小于
+between	介于
+not between	未介于
+equal to	等于
+not equal to	不等于
+greater than or equal to	大于或等于
+less than or equal to	小于或等于
+containing	包含
+not containing	不包含
+beginning with	开头为
+ending with	结尾为
+Yesterday	昨天
+Today	今天
+Tomorrow	明天
+In the last 7 days	最近 7 天
+Last week	上周
+This week	本周
+Next week	下周
+Last month	上月
+This month	本月
+Next month	下月
+Light Red Fill with Dark Red Text	浅红填充色深红色文本
+Yellow Fill with Dark Yellow Text	黄填充色深黄色文本
+Green Fill with Dark Green Text	绿填充色深绿色文本
+Light Red Fill	浅红色填充
+Red Text	红色文本
+Blue	蓝色
+Green	绿色
+Red	红色
+Orange	橙色
+Light Blue	浅蓝色
+Purple	紫色
+Green - Yellow - Red	绿 - 黄 - 红
+Red - Yellow - Green	红 - 黄 - 绿
+Green - White - Red	绿 - 白 - 红
+Red - White - Green	红 - 白 - 绿
+Blue - White - Red	蓝 - 白 - 红
+Red - White - Blue	红 - 白 - 蓝
+White - Red	白 - 红
+Red - White	红 - 白
+Green - White	绿 - 白
+White - Green	白 - 绿
+Green - Yellow	绿 - 黄
+Yellow - Green	黄 - 绿
+3 Arrows	三向箭头（彩色）
+3 Arrows (Gray)	三向箭头（灰色）
+3 Triangles	三个三角形
+4 Arrows	四向箭头（彩色）
+5 Arrows	五向箭头（彩色）
+3 Traffic Lights	三色交通灯（无边框）
+4 Traffic Lights	四色交通灯
+3 Signs	三种标志
+3 Symbols (Circled)	三个符号（有圆圈）
+3 Symbols	三个符号（无圆圈）
+3 Flags	三色旗
+5 Ratings	五级四格图
+Type the value to compare with	请输入用于比较的值
+Type the text to look for	请输入要查找的文本
+Give a number of items (1-1000) or a percentage (1-100)	请输入项数 (1-1000) 或百分比 (1-100)
+Type a formula, such as $B2>100	请输入公式，例如 $B2>100
+A colour scale has two or three colours	色阶需包含两种或三种颜色
+Type the cells it applies to, such as A2:A20	请输入应用到的单元格区域，例如 A2:A20
+Errors	错误值
+No errors	无错误值
+Date occurring	发生日期
+Text equal to "{}"	文本等于 "{}"
+Icon set ({} icons)	图标集（{} 个图标）
+Rating ({} steps)	等级评定（{} 级）
+{}-color scale	{}色色阶
+Cell value {} {} and {}	单元格值 {} {} 与 {}
+Cell value {} {}	单元格值 {} {}
+Text {} "{}"	文本{} "{}"
+Date occurring: {}	发生日期：{}
+Bottom {}	最后 {}
+Top {}	最前 {}
+Blank cells	空单元格
+Cells with something in them	非空单元格
+Formula: {}	公式：{}
+# chart_ui.rs
+{} chart inserted	已插入{}图表
+No title	无标题
+e.g. A1:C13	例如 A1:C13
+Data: type the chart's cells, such as A1:C13	数据源：请输入图表的数据区域，例如 A1:C13
+Data: there's no sheet called {}	数据源：找不到名为 {} 的工作表
+Chart	图表
+Kantor can't change this chart's type	Kwork 暂不支持更改此图表的类型
+Type	类型
+Title	标题
+Legend	图例
+Horizontal axis	水平（分类）轴
+Vertical axis	垂直（值）轴
+Series in	系列产生在
+Columns	列
+Rows	行
+Kantor can't change the type or data of a {} chart; titles, legend and colours can be changed.	Kwork 暂不支持更改{}图表的类型或数据源；可修改标题、图例与颜色。
+This chart's series don't come from one block of cells: a new data range replaces them.	此图表的系列并非来自单一连续区域：设置新数据区域将替换原有系列。
+Press Enter in a box to apply it.	在输入框中按 Enter 即可应用更改。
+Delete Chart	删除图表
+Kantor can't change this object: select a chart.	Kwork 无法修改此对象：请选择一个图表。
+Select a chart to change it.	请选择要修改的图表。
+Series colours	系列颜色
+Linked to source	与源格式链接
+{}: type a number, or leave it empty for Auto	{}：请输入数值，留空则为自动
+The minimum must be less than the maximum.	最小值必须小于最大值。
+The major unit must be more than 0.	主要单位必须大于 0。
+Negative or zero values can't be plotted on a logarithmic scale.	对数刻度不能绘制负值或零值。
+All Series	所有系列
+Default	默认
+Data Labels	数据标签
+Series	系列
+Category Name	类别名称
+Series Name	系列名称
+Percentage	百分比
+Label Position	标签位置
+Values in reverse order	逆序刻度值
+Categories in reverse order	逆序类别
+Logarithmic scale	对数刻度
+Axis Options	坐标轴选项
+Axis	坐标轴
+Major unit	主要单位
+Display units	显示单位
+Inside End	数据标签内
+Inside Base	轴内侧
+Outside End	数据标签外
+Above	上方
+Below	下方
+Best Fit	最佳匹配
+Hundreds	百
+Thousands	千
+10000	万
+100000	十万
+Millions	百万
+10000000	千万
+100000000	亿
+Billions	十亿
+Trillions	万亿
+Colour	颜色
+Automatic	自动
+Series {}	系列 {}
+Chart Panel	图表窗格
+Column Chart	柱形图
+Stacked Column Chart	堆积柱形图
+Bar Chart	条形图
+Stacked Bar Chart	堆积条形图
+Line Chart	折线图
+Stacked Line Chart	堆积折线图
+Pie Chart	饼图
+Area Chart	面积图
+Stacked Area Chart	堆积面积图
+Scatter Chart	散点图
+Other Chart	其他图表
+Column	柱形图
+Stacked Column	堆积柱形图
+Bar	条形图
+Stacked Bar	堆积条形图
+Line	线条
+Stacked Line	堆积折线图
+Pie	饼图
+Area	面积图
+Stacked Area	堆积面积图
+Scatter	散点图
+Other	其他
+Combo	组合图
+100% Stacked Column	百分比堆积柱形图
+100% Stacked Bar	百分比堆积条形图
+100% Stacked Line	百分比堆积折线图
+100% Stacked Area	百分比堆积面积图
+Doughnut	圆环图
+3-D Column	三维柱形图
+3-D Line	三维折线图
+3-D Area	三维面积图
+3-D Pie	三维饼图
+Pie of Pie	复合饼图
+Radar	雷达图
+Bubble	气泡图
+Stock	股价图
+Surface	曲面图
+Right	右
+Left	左
+# page_setup.rs
+Top margin: type centimetres	上边距：请输入厘米数
+Bottom margin: type centimetres	下边距：请输入厘米数
+Left margin: type centimetres	左边距：请输入厘米数
+Right margin: type centimetres	右边距：请输入厘米数
+Header margin: type centimetres	页眉边距：请输入厘米数
+Footer margin: type centimetres	页脚边距：请输入厘米数
+Pages wide: type a whole number (blank: automatic)	页宽：请输入整数（留空为自动）
+Pages tall: type a whole number (blank: automatic)	页高：请输入整数（留空为自动）
+Fit to: give pages wide, tall or both	调整为：请填写页宽、页高或同时填写两者
+Scale: type a percentage from 10 to 400	缩放比例：请输入 10 到 400 之间的百分比
+Auto	自动
+First page number: type a number, or leave it blank	起始页码：请输入页码数字，留空则为自动
+Headers and footers hold at most 255 characters	页眉和页脚最多可包含 255 个字符
+Print area: type ranges such as $A$1:$F$40	打印区域：请输入单元格区域，例如 $A$1:$F$40
+Rows to repeat: type rows such as $1:$2	顶端标题行：请输入行引用，例如 $1:$2
+Columns to repeat: type columns such as $A:$B	左端标题列：请输入列引用，例如 $A:$B
+Page setup changed	页面设置已更新
+Print area cleared	已取消打印区域
+Print area set to {}	已将打印区域设为 {}
+Page	页面
+Header/Footer	页眉/页脚
+Sheet	工作表
+Paper size	纸张大小
+Scaling	缩放
+Adjust to %	缩放比例 (%)
+Fit to pages	调整为合适页数
+Pages	页数
+wide by	页宽 ×
+tall (blank: automatic)	页高（留空为自动）
+Scale	比例
+% of normal size	% 正常尺寸
+First page number	起始页码
+Page order	打印顺序
+Down, then over	先列后行
+Over, then down	先行后列
+Presets	预设边距
+Normal	常规
+Wide	宽
+Narrow	窄
+Center on page	居中方式
+Horizontally	水平居中
+Vertically	垂直居中
+Centre	居中
+Codes: &P page · &N pages · &D date · &T time · &F file name · &A sheet name · && an ampersand	代码：&P 页码 · &N 总页数 · &D 日期 · &T 时间 · &F 文件名 · &A 工作表名 · && 符号 &
+Print area	打印区域
+Selection	所选内容
+Clear	清除
+Rows to repeat	顶端标题行
+Columns to repeat	左端标题列
+Gridlines	网格线
+Row and column headings	行号列标
+Black and white	单色打印
+(none)	（无）
+Page 1	第 1 页
+Page 1 of ?	第 1 页，共 ? 页
+Sheet name	工作表名
+File name	文件名
+Date	日期
+Sheet name · Page 1	工作表名 · 第 1 页
+File name · Page 1 of ?	文件名 · 第 1 页，共 ? 页
+Date and time · Page 1	日期和时间 · 第 1 页
+# print_preview.rs
+The page could not be drawn	无法渲染该页面
+Nothing to print on this sheet	当前工作表没有可打印的内容
+Drawing the page…	正在渲染页面…
+Fit ({}%)	适应窗口 ({}%)
+No pages	无页面
+Page {} of {}	第 {} / {} 页
+Previous page	上一页
+Next page	下一页
+Zoom out	缩小
+Fit the page	适应页面
+Zoom in	放大
+# pivot.rs
+Filters	筛选
+Add to Filters	添加到筛选
+Add to Columns	添加到列
+Add to Rows	添加到行
+Add to Values	添加到值
+Move to Filters	移动到筛选
+Move to Columns	移动到列
+Move to Rows	移动到行
+Move to Values	移动到值
+Whole number	整数
+Percent	百分比
+Percent (0.00)	百分比 (0.00)
+Scientific	科学记数
+Compact form	压缩形式
+Outline form	大纲形式
+Tabular form	表格形式
+Don't show subtotals	不显示分类汇总
+Subtotals at the top	在组的顶部显示所有分类汇总
+Subtotals at the bottom	在组的底部显示所有分类汇总
+PivotTable · {}	数据透视表 · {}
+PivotTable · {} (can't refresh here)	数据透视表 · {}（此处无法刷新）
+This workbook has no PivotTables to refresh	当前工作簿没有可刷新的数据透视表
+PivotTable refreshed	已刷新数据透视表
+{} PivotTables refreshed	已刷新 {} 个数据透视表
+Table name or range, e.g. Sheet1!A1:D20	表名或区域，例如 Sheet1!A1:D20
+Cell, e.g. Sheet1!H2	单元格位置，例如 Sheet1!H2
+{} fields · {} rows · table {}	{} 个字段 · {} 行 · 表 {}
+{} fields · {} rows · {}	{} 个字段 · {} 行 · {}
+{}: choose its fields in the panel	{}：请在右侧面板中勾选所需字段
+Insert PivotTable	插入数据透视表
+Data to analyse	要分析的数据源
+Put it on	放置数据透视表的位置
+New sheet	新工作表
+Existing sheet	现有工作表
+Create	创建
+{} deleted	已删除 {}
+Select a cell in a PivotTable to see its fields	请选择数据透视表中的单元格以查看字段列表
+Select a cell in a PivotTable to see its fields.	请选择数据透视表中的单元格以查看字段列表。
+{} updated	已更新 {}
+Custom name	自定义名称
+Choose at least one item	请至少勾选一项
+PivotTable Fields	数据透视表字段
+Can't be rearranged here: {}	无法在此处重新排列：{}
+Add to an area	添加到区域
+Fields · check, or drag to an area	字段 · 勾选或拖动至下方区域
+Σ Values	Σ 值
+General	常规
+Value Field Settings	值字段设置
+Name	名称
+Summarize values by	值汇总方式
+Number format	数字格式
+As in the source ({})	与数据源一致 ({})
+Show items of {}	显示 {} 的项
+(All)	（全部）
+Layout	布局
+Grand total row	总计行
+Grand total column	总计列
+Move Up	上移
+Move Down	下移
+Value Field Settings…	值字段设置…
+Choose Items…	选择项…
+Filter Items…	筛选项…
+There is no sheet {}	找不到工作表 {}
+{} is not a cell: type one like Sheet1!H2	{} 不是有效的单元格引用，请输入如 Sheet1!H2
+Sum	求和
+Count	计数
+Average	平均值
+Max	最大值
+Min	最小值
+Product	乘积
+Count Numbers	数值计数
+# sheets_ui: pivot settings (pivot_cards.rs)
+PivotTable Styles…	数据透视表样式…
+Insert Calculated Field…	插入计算字段…
+Sheets · pick a style and style options for the PivotTable at the active cell	表格 · 为活动单元格所在的数据透视表选择样式与样式选项
+Sheets · add a field worked out from the PivotTable's other fields	表格 · 添加由数据透视表其他字段通过公式计算得出的字段
+(next)	（下一项）
+(previous)	（上一项）
+Ascending (A to Z)	升序 (A 到 Z)
+By	步长
+By must be a number	“步长”必须为数字
+Calculated Field…	计算字段…
+Choose a base field	选择基本字段
+Choose a value field	选择值字段
+Column Headers	列标题
+Date Filter	日期筛选
+Dates such as 2026-01-31 or 1/31/2026	日期格式如 2026-01-31 或 1/31/2026
+Seconds	秒
+Minutes	分
+Hours	小时
+Days	天
+Months	月
+Quarters	季度
+Years	年
+Delete Calculated Field	删除计算字段
+Descending (Z to A)	降序 (Z 到 A)
+Ending at	终止于
+Field	字段
+Field Settings · {}	字段设置 · {}
+Field Settings…	字段设置…
+Fields · click to insert into the formula	字段 · 点击即可插入到公式中
+Group Selection…	将所选内容组合…
+Group items of {}	组合 {} 的项
+Grouping · {}	组合 · {}
+Group…	组合…
+Insert Calculated Field	插入计算字段
+Insert blank line after each item label	在每个项目标签后插入空行
+Label Filter	标签筛选
+Manual (data source order)	手动（按数据源顺序）
+Modify Calculated Field…	修改计算字段…
+No filter	无筛选
+Number of days	天数
+PivotTable Style	数据透视表样式
+Repeat item labels	重复所有项目标签
+Row Headers	行标题
+Show item labels in compact form	以压缩形式显示项目标签
+Show item labels in outline form	以大纲形式显示项目标签
+Show item labels in tabular form	以表格形式显示项目标签
+Show values as	值显示方式
+Starting at	起始于
+Starting at and Ending at must be numbers	“起始于”和“终止于”必须为数字
+Subtotals	分类汇总
+Top 10	前 10 项
+Type the dates such as 2026-01-31	请输入日期，例如 2026-01-31
+Value Filter	值筛选
+by {}	按 {}
+{} (labels)	{}（按标签）
+{} grouped	已组合 {}
+{} made	已创建 {}
+{} saved	已保存 {}
+{} ungrouped	已取消组合 {}
+No Calculation	无计算
+% of Grand Total	总计的百分比
+% of Column Total	列汇总的百分比
+% of Row Total	行汇总的百分比
+% Of	百分比
+% of Parent Row Total	父行汇总的百分比
+% of Parent Column Total	父列汇总的百分比
+% of Parent Total	父级汇总的百分比
+Difference From	差异
+% Difference From	差异百分比
+Running Total In	按某一字段汇总
+% Running Total In	累计百分比
+Rank Smallest to Largest	按从小到大排名
+Rank Largest to Smallest	按从大到小排名
+Index	指数
+Does Not Equal	不等于
+Begins With	开头是
+Does Not Begin With	开头不是
+Ends With	结尾是
+Does Not End With	结尾不是
+Does Not Contain	不包含
+Greater Than	大于
+Greater Than Or Equal To	大于或等于
+Less Than	小于
+Less Than Or Equal To	小于或等于
+Not Between	未介于
+Top 10 (Items)	前 10 项（项数）
+Top 10 (Percent)	前 10 项（百分比）
+Top 10 (Sum)	前 10 项（求和）
+Before Or Equal To	早于或等于
+After Or Equal To	晚于或等于
+Next Week	下周
+This Week	本周
+Last Week	上周
+Next Month	下月
+This Month	本月
+Last Month	上月
+Next Quarter	下季度
+This Quarter	本季度
+Last Quarter	上季度
+Next Year	明年
+This Year	今年
+Last Year	去年
+Year to Date	本年迄今
+Quarter 1	第 1 季度
+Quarter 2	第 2 季度
+Quarter 3	第 3 季度
+Quarter 4	第 4 季度
+# sheets_ui: data validation, filter and sort, tables
+Any value	任何值
+Decimal	小数
+List	序列
+Time	时间
+Text length	文本长度
+Custom	自定义
+Type a value	请输入一个值
+Type a date such as 2026-01-31 or 31/01/2026	请输入日期，例如 2026-01-31 或 31/01/2026
+Type a time such as 9:30	请输入时间，例如 9:30
+Type a whole number	请输入整数
+Type a number	请输入数值
+Type the cells of the list, such as =$A$1:$A$9	请输入序列所在的单元格区域，例如 =$A$1:$A$9
+Type the list's items separated by commas, or =cells	请输入以逗号分隔的序列项，或输入 =单元格区域
+A typed list holds at most 255 characters: put the items in cells	直接输入的序列最多支持 255 个字符：请将序列项放入工作表单元格中引用
+Select the cells to validate	请选择要设置数据验证的单元格
+Type the list's source	请输入序列来源
+a value or =formula	数值或 =公式
+Yes, No, Maybe   or   =$H$1:$H$9	是, 否, 待定   或   =$H$1:$H$9
+e.g. =ISNUMBER(A2)	例如 =ISNUMBER(A2)
+Applies to: type the cells, such as A2:A20	应用于：请输入单元格区域，例如 A2:A20
+Source: {}	来源：{}
+Formula: type a formula that is TRUE for valid values	公式：请输入对有效数据返回 TRUE 的公式
+Data validation set	已设置数据验证
+Data validation cleared	已清除数据验证
+Input Message	输入信息
+Error Alert	出错警告
+Allow	允许
+Minimum	最小值
+Maximum	最大值
+Dates as 2026-01-31 or 31/01/2026, or =formula	日期如 2026-01-31 或 31/01/2026，或 =公式
+Times as 9:30, or =formula	时间如 9:30，或 =公式
+Number of characters	字符长度
+A number, or =formula such as =$B$1	数值，或如 =$B$1 的 =公式
+Source	来源
+Items separated by commas, or =cells such as =$H$1:$H$9 (another sheet: =Lists!$A$1:$A$9)	用逗号分隔的选项，或如 =$H$1:$H$9 的单元格引用（跨工作表：=Lists!$A$1:$A$9）
+Formula	公式
+TRUE for a valid value; references are relative to the first cell.	计算结果为 TRUE 时表示数据有效；相对引用以所选区域首个单元格为基准。
+Ignore blank	忽略空值
+In-cell dropdown	提供下拉箭头
+Show input message when the cell is selected	选定单元格时显示输入信息
+Input message	输入信息
+Show error alert after invalid data is entered	输入无效数据时显示出错警告
+Style	样式
+Warning	警告
+Information	信息
+Error message	错误信息
+Stop: the value can't stay (Retry / Cancel).	停止：禁止输入无效值（重试 / 取消）。
+Warning: asks "Continue?" (Yes / No / Cancel).	警告：询问“是否继续？”（是 / 否 / 取消）。
+Information: tells, then keeps the value (OK / Cancel).	信息：给出提示后保留输入值（确定 / 取消）。
+Data Validation	数据验证
+Clear All	全部清除
+This value doesn't match the data validation restrictions defined for this cell.	此值不符合为该单元格定义的数据验证限制。
+Retry	重试
+The list of this cell is empty	此单元格的下拉序列为空
+{} breaks its data validation	{} 不符合数据验证规则
+Invalid value	输入值无效
+Edit the value, or press Escape to cancel	请修改输入值，或按 Esc 取消
+{} not changed	{} 未更改
+The active cell has no drop-down list	当前活动单元格没有下拉列表
+Invalid data circled	已圈释无效数据
+This sheet has no data validation	当前工作表未设置数据验证
+Validation circles cleared	已清除无效数据标识圈
+Continue?	是否继续？
+a table without a header row has no filter buttons	不带标题行的表格无法显示筛选按钮
+select the data to filter	请选择要筛选的数据区域
+nothing to filter	没有可筛选的数据
+nothing to sort	没有可排序的数据
+nothing to sort by	缺少排序依据
+the sort column is outside the range	排序列不在所选区域内
+No condition	无条件
+Equals	等于
+Does not equal	不等于
+Greater than	大于
+Greater than or equal to	大于或等于
+Less than	小于
+Less than or equal to	小于或等于
+Between	介于
+Begins with	开头是
+Ends with	结尾是
+Contains	包含
+Does not contain	不包含
+Before	早于
+After	晚于
+Type a value for the condition	请输入筛选条件的值
+{} is not a date (use 2025-03-01)	{} 不是有效日期（请使用如 2025-03-01 的格式）
+{} is not a number	{} 不是有效数值
+Type both ends of the range	请输入区间的起始值和结束值
+Search	搜索
+{} of {} rows shown	已显示 {} / {} 行
+Filter cleared: {} of {} rows shown	已清除筛选：显示 {} / {} 行
+Filter buttons on: click one to filter or sort	已开启筛选按钮：点击列标题箭头即可筛选或排序
+Filter off: every row shown	已关闭筛选：显示全部行
+No filter on this sheet	当前工作表未启用筛选
+Filter reapplied: {} of {} rows shown	已重新应用筛选：显示 {} / {} 行
+Filters cleared	已清除所有筛选
+Sorted {} rows by {} levels	已对 {} 行按 {} 个条件完成排序
+Sort smallest to largest	升序（从小到大）
+Sort largest to smallest	降序（从大到小）
+Sort oldest to newest	升序（从早到晚）
+Sort newest to oldest	降序（从晚到早）
+Sort A to Z	升序排列 (A 到 Z)
+Sort Z to A	降序排列 (Z 到 A)
+Number filter	数字筛选
+Date filter	日期筛选
+Text filter	文本筛选
+(Blanks)	(空白)
+(Select All)	(全选)
+(Select All Search Results)	(全选搜索结果)
+{} more: search to narrow	还有 {} 项：输入关键词缩小范围
+Clear filter	清除筛选
+Column {}	列 {}
+Sort by	主要关键字
+Then by	次要关键字
+Sort {}	排序 {}
+Add level	添加条件
+My data has headers	数据包含标题
+Sort	排序
+Text (* and ? match any)	文本（支持 * 和 ? 通配符）
+Sorted {} rows descending	已对 {} 行按降序排列
+Sorted {} rows ascending	已对 {} 行按升序排列
+Select the cells of the table, not whole rows or columns	请选择表格的具体单元格区域，不要整行或整列全选
+Too many columns	列数过多
+It overlaps a PivotTable	与现有数据透视表重叠
+Tables can't contain merged cells	表格中不能包含合并单元格
+It overlaps the sheet's filter: remove the filter first	与工作表现有筛选区域重叠：请先清除筛选
+No room for a header row	没有足够空间放置标题行
+No room for a data row	没有足够空间放置数据行
+No room for a total row	没有足够空间放置汇总行
+A table needs a data row	表格至少需要一行数据
+The row above the table must be empty to show the header row	表格上方一行必须为空才能显示标题行
+Turn on the total row first	请先开启汇总行
+A table name starts with a letter and has no spaces or symbols	表名称必须以字母开头，且不能包含空格或特殊符号
+This cell is already in a table: its options are in Table Design	此单元格已在表格中：请在“表格设计”中修改其选项
+Type the table's cells, such as $A$1:$D$20	请输入表格的单元格区域，例如 $A$1:$D$20
+{} created	已创建 {}
+Select a cell in a table first	请先选择表格中的一个单元格
+Table changed	表格已更新
+Table converted to a range	已将表格转换为普通区域
+Table renamed	表格已重命名
+Format as Table	套用表格格式
+Where is the data?	表数据的来源：
+My table has headers	表包含标题
+Style · {}	样式 · {}
+Table Design	表格设计
+Enter to rename	按 Enter 重命名
+Table name	表名称
+Table style options	表格样式选项
+Header Row	标题行
+Total Row	汇总行
+Banded Rows	镶边行
+Banded Columns	镶边列
+First Column	第一列
+Last Column	最后一列
+Filter Button	筛选按钮
+Total changed	汇总方式已更新
+Total row	汇总行
+Convert to Range	转换为区域
+Select a cell in a table to change it, or make one with Format as Table (Ctrl+T).	请选择表格中的单元格以进行修改，或使用“套用表格格式”(Ctrl+T) 创建表格。
+Light	浅色
+Medium	中等深浅
+Dark	深色
+Sort by {}	按 {} 排序
+Count: {}	计数：{}
+Average: {}   Count: {}   Sum: {}	平均值：{}   计数：{}   求和：{}
+Spell check complete. You're good to go!	拼写检查已完成，未发现其他问题！
+Do you want to continue checking at the beginning of the sheet?	是否从工作表开头继续检查？
+Spelling: 1 change	拼写检查：已修改 1 处
+Spelling: {} changes	拼写检查：已修改 {} 处
+English (United States)	英语（美国）
+Indonesian	印度尼西亚语
+(No Suggestions)	（无建议）
+Checking…	正在检查…
+Not in Dictionary:	不在词典中：
+Suggestions:	建议：
+Ignore Once	忽略一次
+Change	更改
+Change All	全部更改
+Dictionary language:	词典语言：
+Spelling: English (United States)	拼写检查：英语（美国）
+Spelling: Indonesian	拼写检查：印度尼西亚语
+Spelling (F7)	拼写检查 (F7)
+“{}” is a chart sheet: select a worksheet tab to use this command	“{}”是图表工作表：请切换到普通工作表标签页以使用此命令
+1 data validation rule not imported (formula not supported)	1 条数据验证规则未导入（公式暂不支持）
+{} data validation rules not imported (formula not supported)	{} 条数据验证规则未导入（公式暂不支持）
+1 conditional formatting rule not imported (data bars, colour scales, icon sets or formulas not supported)	1 条条件格式规则未导入（数据条、色阶、图标集或公式暂不支持）
+{} conditional formatting rules not imported (data bars, colour scales, icon sets or formulas not supported)	{} 条条件格式规则未导入（数据条、色阶、图标集或公式暂不支持）
+formatting not imported	格式未导入
+formatting not imported (not an Excel 97-2003 file)	格式未导入（非 Excel 97-2003 文件）
+1 data validation rule not imported (condition not supported)	1 条数据验证规则未导入（条件暂不支持）
+{} data validation rules not imported (condition not supported)	{} 条数据验证规则未导入（条件暂不支持）
+1 conditional formatting rule not imported (condition not supported)	1 条条件格式规则未导入（条件暂不支持）
+{} conditional formatting rules not imported (condition not supported)	{} 条条件格式规则未导入（条件暂不支持）
+1 picture not imported (TIFF or another format Kantor can't read)	1 张图片未导入（TIFF 或其他 Kwork 暂不支持读取的格式）
+{} pictures not imported (TIFF or another format Kantor can't read)	{} 张图片未导入（TIFF 或其他 Kwork 暂不支持读取的格式）
+1 chart not imported (combination or other types Kantor doesn't draw)	1 个图表未导入（组合图或其他 Kwork 暂不支持绘制的类型）
+{} charts not imported (combination or other types Kantor doesn't draw)	{} 个图表未导入（组合图或其他 Kwork 暂不支持绘制的类型）
+1 3-D chart shown flat	1 个三维图表已按平面样式显示
+{} 3-D charts shown flat	{} 个三维图表已按平面样式显示
+1 sheet renamed (name not allowed in Excel)	1 个工作表已重命名（原名称不符合 Excel 规范）
+{} sheets renamed (names not allowed in Excel)	{} 个工作表已重命名（原名称不符合 Excel 规范）
+1 shape, text box or control not imported	1 个形状、文本框或控件未导入
+{} shapes, text boxes or controls not imported	{} 个形状、文本框或控件未导入
+charts and pictures not imported	图表与图片未导入
+Edit Note	编辑备注
+New Note	新建备注
+Note deleted	已删除备注
+There is no note to delete	没有可删除的备注
+The active cell has no note	当前活动单元格没有备注
+Note shown	已显示备注
+Note hidden	已隐藏备注
+Notes show when the pointer is over their cell	鼠标指针悬停在单元格上时显示备注
+All notes shown	已显示所有备注
+This sheet has no notes	当前工作表没有备注
+Note saved	已保存备注
+Note on {}	{} 的备注
+Notes	备注
+# Sheet tabs (sheet_tab_ui)
+A sheet name can't be blank	工作表名称不能为空
+A sheet name can have at most 31 characters	工作表名称最多只能包含 31 个字符
+A sheet name can't contain \ / ? * [ ] or :	工作表名称不能包含 \ / ? * [ ] 或 :
+A sheet name can't begin or end with an apostrophe	工作表名称不能以单引号开头或结尾
+“History” is a name Excel keeps for itself	“History”是 Excel 保留的专用名称
+That name is already taken. Try a different one.	该名称已被占用，请使用其他名称。
+A workbook must contain at least one visible worksheet	工作簿必须至少包含一张可见的工作表
+Inserted a sheet	已插入工作表
+Deleted “{}” (Undo brings it back)	已删除“{}”（可按撤销恢复）
+Renamed to “{}”	已重命名为“{}”
+Copied “{}”	已复制“{}”
+Tab colour set	已设置工作表标签颜色
+Tab colour removed	已清除工作表标签颜色
+Hid “{}”	已隐藏“{}”
+No sheet is hidden	没有隐藏的工作表
+Unhid “{}”	已取消隐藏“{}”
+Rename sheet	重命名工作表
+Delete sheet	删除工作表
+“{}” will be deleted with everything on it. Formulas that use it will show #REF!.	“{}”及其中的全部内容将被删除。引用此工作表的公式将显示 #REF!。
+Undo brings it back.	可通过“撤销”操作恢复。
+(move to end)	（移至最后）
+Move or Copy	移动或复制工作表
+Move “{}”	移动“{}”
+Before sheet:	下列选定工作表之前：
+Create a copy	建立副本
+Lighter	较浅
+Darker	较深
+Theme Colors	主题颜色
+Standard Colors	标准色
+No Color	无颜色
+Tab Color	工作表标签颜色
+Unhide	取消隐藏
+Unhide sheet:	取消隐藏工作表：
+Background 2	背景 2
+Text 2	文本 2
+Insert	插入
+Move or Copy…	移动或复制…
+Move Left	向左移动
+Move Right	向右移动
+Tab Color…	工作表标签颜色…
+Hide	隐藏
+Unhide…	取消隐藏…
+New Sheet	新建工作表
+Insert Sheet	插入工作表
+Sheets · a new worksheet after the sheet shown	表格 · 在当前工作表之后插入新工作表
+Delete Sheet	删除工作表
+Sheets · the sheet shown	表格 · 当前显示的工作表
+Rename Sheet	重命名工作表
+Move or Copy Sheet…	移动或复制工作表…
+Hide Sheet	隐藏工作表
+Unhide Sheet…	取消隐藏工作表…
+Sheets · hidden sheets	表格 · 显示隐藏的工作表
+Move Chart…	移动图表…
+Move Chart	移动图表
+Choose where you want the chart to be placed:	选择图表放置的位置：
+New sheet:	新工作表：
+Object in:	其中的对象：
+Chart moved	已移动图表
+Select a chart to move it.	请选择要移动的图表。
+“{}” will be deleted with its chart.	“{}”及其中的图表将被删除。
+# Shapes and text boxes
+Shapes	形状
+Text Box	文本框
+Rectangle: Rounded Corners	圆角矩形
+Oval	椭圆
+Line Arrow	单箭头直线
+Arrow: Right	右箭头
+Speech Bubble: Rectangle	矩形标注
+Inserted	已插入
+Text changed	文本已更新
+Edit Text	编辑文字
+Format Shape	设置形状格式
+Format Shape…	设置形状格式…
+Select a shape or text box first	请先选择形状或文本框
+Select a shape or text box to format it.	请选择要设置格式的形状或文本框。
+Shape formatted	形状格式已更新
+Gradient fill	渐变填充
+Solid fill	纯色填充
+No line	无线条
+Solid line	实线
+Line Colour	线条颜色
+Transparency	透明度
+Dash type	短划线类型
+Round Dot	圆点
+Square Dot	方点
+Dash	短划线
+Dash Dot	点划线
+Long Dash	长划线
+Long Dash Dot	长点划线
+Long Dash Dot Dot	长双点划线
+Begin arrow	前端箭头
+End arrow	末端箭头
+No Arrow	无箭头
+Arrow	三角形箭头
+Open Arrow	开放式箭头
+Stealth Arrow	燕尾箭头
+Diamond Arrow	菱形箭头
+Oval Arrow	圆点箭头
+Middle	居中
+Body font	正文字体
+Double-click the shape to edit its text and format it.	双击形状即可编辑文字并设置文本格式。
+# Page Setup: headers per page, comments; page breaks
+Odd pages	奇数页
+Other pages	其他页
+Even pages	偶数页
+First page	首页
+Comments	批注与备注
+At end of sheet	工作表末尾
+As displayed on sheet	如同工作表中的显示状态
+Insert Page Break	插入分页符
+Remove Page Break	删除分页符
+Reset All Page Breaks	重置所有分页符
+Page break inserted	已插入分页符
+Page break removed	已删除分页符
+All manual page breaks removed	已重置所有手动分页符
+Select a cell below or right of where the page should break	请选择分页位置下方或右侧的单元格
+No manual page break here	此处没有手动分页符
+Apply these changes to all other cells with the same settings	对具有相同设置的所有其他单元格应用这些更改
+# Custom table styles (New / Modify Table Style)
+A table style name has at most 255 characters	表格样式名称最多可包含 255 个字符
+A table style with this name already exists	已存在同名的表格样式
+Type a name for the table style	请输入表格样式名称
+Border	边框
+Built-In	内置
+Thin	细实线
+Hair	极细线
+Dotted	点虚线
+Dashed	短划线
+Thick	粗实线
+Double	双线
+Duplicate…	复制样式…
+Modify…	修改…
+Set As Default	设为默认样式
+Element formatting: {}	元素格式：{}
+Format Cells · {}	设置单元格格式 · {}
+Format…	格式…
+Whole Table	整个表
+First Column Stripe	第一列条纹
+Second Column Stripe	第二列条纹
+First Row Stripe	第一行条纹
+Second Row Stripe	第二行条纹
+First Header Cell	第一个标题单元格
+Last Header Cell	最后一个标题单元格
+First Total Cell	第一个汇总单元格
+Last Total Cell	最后一个汇总单元格
+Outline	外边框
+Inside	内部边框
+Inside Horizontal	内部横线
+Inside Vertical	内部竖线
+Line colour	线条颜色
+Modify Table Style	修改表格样式
+New Table Style	新建表格样式
+New tables get {}	新建表格将默认使用 {}
+Preview	预览
+Set as default table style for this document	设为当前文档的默认表格样式
+Stripe Size	条纹大小
+Table Element	表元素
+Table style {} added	已添加表格样式 {}
+Table style {} changed	已修改表格样式 {}
+Table style {} deleted	已删除表格样式 {}
+none	无
+{} (default)	{}（默认）
+New Table Style…	新建表格样式…
+Security Warning	安全警告
+This workbook downloads pictures or data from the internet.	此工作簿会从互联网下载图片或外部数据。
+Block	阻止
+Insert Calculated Item…	插入计算项…
+Insert Calculated Item in "{}"	在 "{}" 中插入计算项
+Items · click to insert into the formula	项 · 点击即可插入到公式中
+Calculated items · click to change	计算项 · 点击即可修改
+# Custom PivotTable styles (New / Modify PivotTable Style)
+New PivotTable Style…	新建数据透视表样式…
+New PivotTable Style	新建数据透视表样式
+Modify PivotTable Style	修改数据透视表样式
+PivotTable Element	数据透视表元素
+Set as default PivotTable style for this document	设为当前文档的默认数据透视表样式
+PivotTable style {} added	已添加数据透视表样式 {}
+PivotTable style {} changed	已修改数据透视表样式 {}
+PivotTable style {} deleted	已删除数据透视表样式 {}
+New PivotTables get {}	新建数据透视表将默认使用 {}
+Sheets · make a PivotTable style of your own: a format for each part of the PivotTable	表格 · 自定义专属数据透视表样式：分别设置数据透视表各组成部分的格式
+Report Filter Labels	报表筛选标签
+Report Filter Values	报表筛选值
+Subtotal Column 1	分类汇总列 1
+Subtotal Column 2	分类汇总列 2
+Subtotal Column 3	分类汇总列 3
+Subtotal Row 1	分类汇总行 1
+Subtotal Row 2	分类汇总行 2
+Subtotal Row 3	分类汇总行 3
+Blank Row	空行
+Column Subheading 1	列副标题 1
+Column Subheading 2	列副标题 2
+Column Subheading 3	列副标题 3
+Row Subheading 1	行副标题 1
+Row Subheading 2	行副标题 2
+Row Subheading 3	行副标题 3
+Grand Total Column	总计列
+Grand Total Row	总计行
+# Slicers and timelines
+The slicer {} can't filter: {}	切片器 {} 无法执行筛选：{}
+{}: filter cleared	{}：已清除筛选
+{}: {} selected	{}：已选择 {}
+# Insert Slicer, Slicer Settings, timelines
+Insert Slicer…	插入切片器…
+Slicer Settings…	切片器设置…
+Sheets · slicers that filter the PivotTable or table at the active cell, one per field picked	表格 · 为活动单元格所在的数据透视表或表格插入可视化切片器（每个所选字段生成一个切片器）
+Sheets · caption, sorting, items with no data, style and columns of the selected slicer	表格 · 设置所选切片器的页眉标题、排序方式、无数据项显示、样式及列数
+Select a cell in a PivotTable or a table to insert a slicer.	请先选择数据透视表或表格中的单元格以插入切片器。
+Insert Slicers	插入切片器
+{} slicer(s) inserted	已插入 {} 个切片器
+Select a slicer to change its settings.	请选择要修改设置的切片器。
+Type a whole number of columns and a button height in px.	请输入整数列数及以像素 (px) 为单位的按钮高度。
+{}: settings changed	{}：设置已更新
+Slicer Settings	切片器设置
+Source Name: {} · Name to use in formulas: {}	源名称：{} · 用于公式的名称：{}
+Caption:	页眉标题：
+Display header	显示页眉
+Item Sorting and Filtering	项目排序和筛选
+Hide items with no data	隐藏没有数据的项
+Visually indicate items with no data	直观指示没有数据的项
+Show items with no data last	最后显示没有数据的项
+Style:	样式：
+Columns:	列数：
+Button height (px):	按钮高度 (px)：
+# Insert Timeline, Timeline Settings
+Insert Timeline…	插入日程表…
+Timeline Settings…	日程表设置…
+Sheets · timelines that filter the PivotTable at the active cell by dates, one per date field picked	表格 · 为活动单元格所在的数据透视表插入按日期筛选的日程表（每个日期字段生成一个日程表）
+Sheets · caption, header, selection label, scroll bar, time level and style of the selected timeline	表格 · 设置所选日程表的标题、页眉、所选内容标签、滚动条、时间级别及样式
+Select a cell in a PivotTable to insert a timeline.	请先选择数据透视表中的单元格以插入日程表。
+Insert Timelines	插入日程表
+{} timeline(s) inserted	已插入 {} 个日程表
+Select a timeline to change its settings.	请选择要修改设置的日程表。
+Timeline Settings	日程表设置
+Show	显示
+Selection Label	所选内容标签
+Scrollbar	滚动条
+Time Level	时间级别
+# Charts of the Office 2016 types
+A {} chart's data: the series' names first, then the categories, then the values of each series.	{}图表的数据源排列：依次为系列名称、类别及各系列的数值。
+Waterfall	瀑布图
+Funnel	漏斗图
+Treemap	树状图
+Sunburst	旭日图
+Histogram	直方图
+Pareto	排列图
+Box & Whisker	箱形图
+Map	地图
+Office 2016	Office 2016
+macros are kept but not run	保留宏但不会运行
+The following features cannot be saved in macro-free workbooks: VB project	无法在无宏工作簿中保存以下功能：VB 项目
+An .xlsx workbook can't hold macros: saving as .xlsx leaves them out. To keep them, save it as a macro-enabled workbook (.xlsm).	.xlsx 工作簿无法存储宏：保存为 .xlsx 将移除其中的宏。如需保留宏，请另存为启用宏的工作簿 (.xlsm)。
+Save Without Macros	不保存宏
+Save as .xlsm	另存为 .xlsm
+Top N items	前 N 项
+Bottom N items	后 N 项
+Top N percent	前 N%
+Bottom N percent	后 N%
+Above Average	高于平均值
+Below Average	低于平均值
+Type a percent from 1 to 100	请输入 1 到 100 之间的百分比
+Type a number of items from 1 to 500	请输入 1 到 500 之间的项数
+Filter by Color	按颜色筛选
+Cell Color	按单元格颜色
+Font Color	按字体颜色
+Cell Icon	按单元格图标
+Cell Values	单元格值
+List order	按序列正序
+Reverse list order	按序列逆序
+On Top	排在顶端
+On Bottom	排在底端
+This column is filtered by colour or icon. Choosing values replaces it.	此列当前按颜色或图标筛选。选择具体数值将替换该筛选条件。
+This column has a filter Kantor keeps but can't edit. Choosing values replaces it.	此列包含 Kwork 已保留但暂不支持编辑的筛选条件。选择具体数值将替换该筛选条件。
+e.g. 0.00% (none: the cell's own)	例如 0.00%（留空则沿用源单元格格式）
+Border (outline)	外边框
+IME mode	输入法模式
+No Control	无控制
+Off (English mode)	关闭（英文模式）
+Disable	禁用
+Hiragana	平假名
+Full-width katakana	全角片假名
+Half-width katakana	半角片假名
+Full-width alphanumeric	全角字母数字
+Half-width alphanumeric	半角字母数字
+Full-width hangul	全角谚文
+Half-width hangul	半角谚文
+3-D	三维
+3-D Bar	三维条形图
+3-D Clustered Column	三维簇状柱形图
+3-D Stacked Column	三维堆积柱形图
+3-D Clustered Bar	三维簇状条形图
+3-D Stacked Bar	三维堆积条形图
+3-D Stacked Area	三维堆积面积图
+Series chart type	系列图表类型
+Secondary Axis	次坐标轴
+Minor unit	次要单位
+The minor unit must be more than 0.	次要单位必须大于 0。
+The units must be more than 0.	刻度单位必须大于 0。
+Text size	文字大小
+Axis Type	坐标轴类型
+Text axis	文本坐标轴
+Date axis	日期坐标轴
+Base unit	基本单位
+Major unit in	主要单位尺度
+Minor unit in	次要单位尺度
+This shape's text has a cell link, fields or equations: Kantor shows and keeps them but can't edit them	此形状的文本包含单元格链接、域或公式：Kwork 可正常显示并保留它们，但暂不支持直接编辑
+Picture fill…	图片填充…
+Fill with a picture (PNG, JPEG, GIF or BMP)	使用图片填充（支持 PNG、JPEG、GIF 或 BMP）
+Shadow	阴影
+No shadow	无阴影
+Offset: Bottom Right	偏移：右下
+Offset: Bottom	偏移：下
+Offset: Bottom Left	偏移：左下
+Offset: Right	偏移：右
+Offset: Center	偏移：居中
+Offset: Left	偏移：左
+Offset: Top Right	偏移：右上
+Offset: Top	偏移：上
+Offset: Top Left	偏移：左上
+Effects	效果
+Page {}	第 {} 页
+Page Break Preview	分页预览
+Normal view	普通视图
+Page break moved	已移动分页符
+Print area changed	已更新打印区域
+Page Break Preview, freeze panes, hide rows and columns	分页预览、冻结窗格、隐藏行与列
+3 Stars	三星评定
+3 Traffic Lights (Rimmed)	三色交通灯（有边框）
+4 Arrows (Gray)	四向箭头（灰色）
+5 Arrows (Gray)	五向箭头（灰色）
+Bar direction	条形图方向
+Bar length (%)	数据条长度 (%)
+Cell midpoint	单元格中点
+Context	根据上下文
+Custom List…	自定义序列…
+Custom lists:	自定义序列：
+Custom Lists	自定义序列
+Custom lists saved	已保存自定义序列
+e.g. A1:A5	例如 A1:A5
+Excel's built-in lists can't be deleted	Excel 内置序列不可删除
+Icon	图标
+Icon style	图标样式
+Import	导入
+Import list from cells	从单元格导入序列
+Left-to-right	从左到右
+List entries:	输入序列：
+Longest	最长
+Longest bar	最长数据条
+Negative bar border	负值数据条边框
+Negative bar fill	负值数据条填充
+NEW LIST	新序列
+No border	无边框
+Red To Black	红到黑渐变
+Right-to-left	从右到左
+Same as positive bar	与正值数据条相同
+Shortest	最短
+Shortest bar	最短数据条
+Show bar only	仅显示数据条
+The shortest bar can't be longer than the longest	最短数据条的长度不能超过最长数据条
+Those cells hold fewer than two entries	所选单元格包含的有效项少于两项
+{}: type a percentage from 0 to 100	{}：请输入 0 到 100 之间的百分比
+Type at least two entries, one per line or separated by commas	请至少输入两个序列项，每行一项或用逗号分隔
+Type one entry per line (or separate them with commas), then Add. Sort ▸ Order and the fill handle use these lists in every workbook.	每行输入一项（或用逗号分隔），然后点击“添加”。所有工作簿中的“排序 ▸ 次序”及填充柄均可使用这些自定义序列。
+Type the cells to import, such as A1:A5	请输入要导入的单元格区域，例如 A1:A5
+when the value is below the next threshold	当值小于下一阈值时
+Black	黑色
+Gray	灰色
+Dark Red	深红色
+Yellow	黄色
+Dark Blue	深蓝色
+Allow multiple filters per field	允许每个字段使用多个筛选条件
+Filter 1	筛选 1
+Filter 2	筛选 2
+one by label or date, one by value	可同时应用一个标签/日期筛选和一个值筛选
+Zoom {}%	缩放 {}%
+Zoom	显示比例
+Zoom…	显示比例…
+Zoom with window	随窗口大小自动缩放
+Fit selection	缩放到选定区域
+Type a zoom from {}% to {}%	请输入 {}% 到 {}% 之间的缩放比例

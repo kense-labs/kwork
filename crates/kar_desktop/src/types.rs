@@ -1096,7 +1096,7 @@ impl ProviderStatusInfo {
         if crate::aster::is_aster(&self.id)
             && matches!(self.availability, ProviderAvailability::Missing)
         {
-            return Some("内置智能体运行环境不可用，请重新安装 Kwrok。".into());
+            return Some("内置智能体运行环境不可用，请重新安装 Kwork。".into());
         }
         match (&self.availability, self.readiness()) {
             (_, ProviderReadiness::NotInstalled) => Some(format!(

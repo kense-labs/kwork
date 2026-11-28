@@ -100,6 +100,11 @@ pub enum WebViewEvent {
     TitleChanged(String),
     LoadStarted(String),
     LoadFinished(String),
+    LoadFailed {
+        url: String,
+        code: i64,
+        message: String,
+    },
     NewWindowRequested(String),
     Ipc(BrowserIpcEvent),
 }
@@ -115,31 +120,70 @@ pub struct WebViewInit {
     pub on_event: WebViewEventCallback,
 }
 
+fn canonicalize_http_or_special_url(raw: &str) -> Option<String> {
+    url::Url::parse(raw).ok().map(String::from)
+}
+
+/// Normalize Chinese IME fullwidth URL punctuation (`www。baidu。com`, `localhost：5173`, `：3000`, `https：//...`)
+/// when typed without whitespace in URL/host/port position.
+fn normalize_ime_url_punctuation(trimmed: &str) -> String {
+    if let Some(rest) = trimmed.strip_prefix('：')
+        && rest.chars().next().is_some_and(|c| c.is_ascii_digit())
+    {
+        return format!(":{rest}");
+    }
+    let mut s = trimmed
+        .replace("https：//", "https://")
+        .replace("HTTPS：//", "https://")
+        .replace("http：//", "http://")
+        .replace("HTTP：//", "http://")
+        .replace("file：//", "file://");
+    if !s.contains(char::is_whitespace)
+        && (s.contains('。') || s.contains('：') || s.contains('／'))
+    {
+        let ascii_url_like = s.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(
+                    c,
+                    '.' | '-' | '_' | ':' | '/' | '?' | '&' | '=' | '%' | '#' | '+' | '~' | '。' | '：' | '／'
+                )
+        });
+        if ascii_url_like {
+            s = s.replace('。', ".").replace('：', ":").replace('／', "/");
+        }
+    }
+    s
+}
+
 /// Normalize an omnibox entry (`:5173`, `localhost:3000`, `example.com`, workspace `.html`, or search query)
-/// into a navigable URL.
+/// into a canonical, RFC 3986 percent-encoded navigable URL.
 pub fn normalize_omnibox_input(raw: &str, workspace: Option<&Path>) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
+    let raw_trimmed = raw.trim();
+    if raw_trimmed.is_empty() {
         return None;
     }
+    let normalized = normalize_ime_url_punctuation(raw_trimmed);
+    let trimmed = normalized.as_str();
 
     // `:3000` or `:5173/dashboard` shorthand -> `http://localhost:...`
     if let Some(rest) = trimmed.strip_prefix(':')
         && rest.chars().next().is_some_and(|c| c.is_ascii_digit())
     {
-        return Some(format!("http://localhost:{rest}"));
+        return canonicalize_http_or_special_url(&format!("http://localhost:{rest}"));
     }
 
     // Already has a known scheme
     let lower = trimmed.to_ascii_lowercase();
     for scheme in ["http://", "https://", "file://", "data:", "about:"] {
         if lower.starts_with(scheme) {
-            if let Some(after) = lower.strip_prefix("http://0.0.0.0:") {
+            if lower.starts_with("http://0.0.0.0:") {
                 let suffix = &trimmed["http://0.0.0.0:".len()..];
-                let _ = after;
-                return Some(format!("http://localhost:{suffix}"));
+                return canonicalize_http_or_special_url(&format!("http://localhost:{suffix}"));
             }
-            return Some(trimmed.to_owned());
+            if matches!(scheme, "data:" | "about:") {
+                return Some(trimmed.to_owned());
+            }
+            return canonicalize_http_or_special_url(trimmed).or_else(|| Some(trimmed.to_owned()));
         }
     }
 
@@ -150,10 +194,10 @@ pub fn normalize_omnibox_input(raw: &str, workspace: Option<&Path>) -> Option<St
         || lower.starts_with("127.0.0.1")
         || lower.starts_with("[::1]")
     {
-        return Some(format!("http://{trimmed}"));
+        return canonicalize_http_or_special_url(&format!("http://{trimmed}"));
     }
     if let Some(suffix) = trimmed.strip_prefix("0.0.0.0:") {
-        return Some(format!("http://localhost:{suffix}"));
+        return canonicalize_http_or_special_url(&format!("http://localhost:{suffix}"));
     }
 
     // Existing local or workspace HTML/SVG/PDF file path
@@ -174,23 +218,31 @@ pub fn normalize_omnibox_input(raw: &str, workspace: Option<&Path>) -> Option<St
         }
     }
 
-    // Bare domain or IPv4 (`vercel.com`, `docs.rs/gpui`, `192.168.1.10:8080`)
+    // Bare domain or IPv4 (`vercel.com`, `docs.rs/gpui`, `192.168.1.10:8080`, `baike.baidu.com/item/人工智能`)
     if !trimmed.contains(char::is_whitespace) {
         let host_port = trimmed.split('/').next().unwrap_or(trimmed);
         let host = host_port.split(':').next().unwrap_or(host_port);
         let is_ipv4 = host.split('.').count() == 4
             && host.split('.').all(|part| part.parse::<u8>().is_ok());
         if is_ipv4 {
-            return Some(format!("http://{trimmed}"));
+            return canonicalize_http_or_special_url(&format!("http://{trimmed}"));
         }
         if host.contains('.') && !host.starts_with('.') && !host.ends_with('.') {
-            return Some(format!("https://{trimmed}"));
+            let scheme = if host.ends_with(".local") || host_port.contains(':') {
+                "http"
+            } else {
+                "https"
+            };
+            if let Some(valid) = canonicalize_http_or_special_url(&format!("{scheme}://{trimmed}"))
+            {
+                return Some(valid);
+            }
         }
     }
 
-    // Fallback: web search query
-    let mut search = url::Url::parse("https://duckduckgo.com/").ok()?;
-    search.query_pairs_mut().append_pair("q", trimmed);
+    // Fallback: Bing web search (accessible with low latency in Mainland China & globally)
+    let mut search = url::Url::parse("https://cn.bing.com/search").ok()?;
+    search.query_pairs_mut().append_pair("q", raw_trimmed);
     Some(search.into())
 }
 
@@ -318,6 +370,9 @@ pub const BRIDGE_INIT_JS: &str = r#"
     }
   });
   window.addEventListener('load', reportState);
+  if (document.readyState === 'interactive' || document.readyState === 'complete') {
+    setTimeout(reportState, 0);
+  }
 
   // Helper: Shortest reliable CSS selector for an element
   const cssSelectorFor = (el) => {
@@ -618,12 +673,30 @@ pub const BRIDGE_INIT_JS: &str = r#"
 mod native {
     use super::*;
     use wry::{
-        PageLoadEvent, Rect, WebView, WebViewBuilder,
+        BackgroundThrottlingPolicy, PageLoadEvent, Rect, WebView, WebViewBuilder,
         dpi::{LogicalPosition, LogicalSize},
     };
 
+    const SAFARI_DESKTOP_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15";
+
     pub struct BrowserWebView {
         inner: WebView,
+        #[cfg(target_os = "macos")]
+        _nav_proxy: objc2::rc::Retained<macos_nav::KwrokNavDelegateProxy>,
+    }
+
+    fn sanitize_url_for_load(raw: &str) -> Result<String, String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err("网址不能为空".into());
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("about:") || lower.starts_with("data:") || lower.starts_with("blob:") {
+            return Ok(trimmed.to_owned());
+        }
+        url::Url::parse(trimmed)
+            .map(String::from)
+            .map_err(|e| format!("无效的网址格式 ({trimmed})：{e}"))
     }
 
     impl BrowserWebView {
@@ -638,16 +711,14 @@ mod native {
             let mut builder = WebViewBuilder::new()
                 .with_bounds(rect)
                 .with_visible(init.visible)
+                .with_user_agent(SAFARI_DESKTOP_USER_AGENT)
+                .with_background_throttling(BackgroundThrottlingPolicy::Disabled)
                 .with_devtools(true)
                 .with_hotkeys_zoom(true)
                 .with_clipboard(true)
                 .with_accept_first_mouse(true)
                 .with_back_forward_navigation_gestures(true)
                 .with_initialization_script(BRIDGE_INIT_JS)
-                .with_navigation_handler(move |url| {
-                    cb_nav(WebViewEvent::Navigated(url));
-                    true
-                })
                 .with_document_title_changed_handler(move |title| {
                     cb_title(WebViewEvent::TitleChanged(title));
                 })
@@ -665,20 +736,45 @@ mod native {
                     }
                 });
 
-            if let Some(html) = init.initial_html {
-                builder = builder.with_html(html);
-            } else if let Some(url) = init.initial_url {
-                builder = builder.with_url(url);
+            #[cfg(not(target_os = "macos"))]
+            {
+                let cb_win_nav = cb_nav.clone();
+                builder = builder.with_navigation_handler(move |url| {
+                    cb_win_nav(WebViewEvent::Navigated(url));
+                    true
+                });
             }
+
+            let pending_initial_url = if let Some(html) = init.initial_html {
+                builder = builder.with_html(html);
+                None
+            } else {
+                init.initial_url
+            };
 
             let inner = builder
                 .build_as_child(window)
-                .map_err(|err| format!("Failed to initialize system WebView: {err}"))?;
-            Ok(Self { inner })
+                .map_err(|err| format!("初始化系统浏览器组件失败：{err}"))?;
+
+            #[cfg(target_os = "macos")]
+            let nav_proxy = macos_nav::install_navigation_proxy(&inner, cb_nav);
+
+            let view = Self {
+                inner,
+                #[cfg(target_os = "macos")]
+                _nav_proxy: nav_proxy,
+            };
+
+            if let Some(url) = pending_initial_url {
+                view.load_url(&url)?;
+            }
+
+            Ok(view)
         }
 
         pub fn load_url(&self, url: &str) -> Result<(), String> {
-            self.inner.load_url(url).map_err(|e| e.to_string())
+            let valid = sanitize_url_for_load(url)?;
+            self.inner.load_url(&valid).map_err(|e| e.to_string())
         }
 
         pub fn load_html(&self, html: &str) -> Result<(), String> {
@@ -703,6 +799,18 @@ mod native {
 
         pub fn can_go_forward(&self) -> bool {
             self.inner.can_go_forward().unwrap_or(false)
+        }
+
+        pub fn is_loading(&self) -> bool {
+            #[cfg(target_os = "macos")]
+            {
+                use wry::WebViewExtMacOS;
+                unsafe { self.inner.webview().isLoading() }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                false
+            }
         }
 
         pub fn current_url(&self) -> Option<String> {
@@ -800,6 +908,260 @@ mod native {
                 f64::from(rect.height.max(1.0)),
             )
             .into(),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    mod macos_nav {
+        use super::{WebViewEvent, WebViewEventCallback};
+        use objc2::{
+            DeclaredClass, MainThreadOnly, define_class, msg_send,
+            rc::Retained,
+            runtime::{NSObject, ProtocolObject},
+        };
+        use objc2_foundation::{MainThreadMarker, NSError, NSObjectProtocol, NSString, ns_string};
+        use objc2_web_kit::{
+            WKDownload, WKNavigation, WKNavigationAction, WKNavigationActionPolicy,
+            WKNavigationDelegate, WKNavigationResponse, WKNavigationResponsePolicy, WKWebView,
+        };
+        use wry::{WebView, WebViewExtMacOS};
+
+        pub struct KwrokNavDelegateIvars {
+            orig: Option<Retained<ProtocolObject<dyn WKNavigationDelegate>>>,
+            on_event: WebViewEventCallback,
+        }
+
+        fn is_supported_web_scheme(url: &str) -> bool {
+            let lower = url.trim_start().to_ascii_lowercase();
+            lower.starts_with("http://")
+                || lower.starts_with("https://")
+                || lower.starts_with("file://")
+                || lower.starts_with("about:")
+                || lower.starts_with("data:")
+                || lower.starts_with("blob:")
+                || lower.starts_with("javascript:")
+        }
+
+        fn extract_failing_url(webview: &WKWebView, error: &NSError) -> String {
+            let info = error.userInfo();
+            if let Some(val) = info.objectForKey(ns_string!("NSErrorFailingURLStringKey"))
+                && let Ok(ns_str) = val.downcast::<NSString>()
+            {
+                let s = ns_str.to_string();
+                if !s.is_empty() {
+                    return s;
+                }
+            }
+            unsafe {
+                webview
+                    .URL()
+                    .and_then(|u| u.absoluteString())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default()
+            }
+        }
+
+        fn handle_navigation_failure(
+            ivars: &KwrokNavDelegateIvars,
+            webview: &WKWebView,
+            error: &NSError,
+        ) {
+            let code = error.code() as i64;
+            let url = extract_failing_url(webview, error);
+            // -999 = NSURLErrorCancelled (normal when redirects or newer navigations supersede a load)
+            // 204 = WebKitErrorPlugInWillHandleLoad, 102 = WebKitErrorFrameLoadInterruptedByPolicyChange
+            if matches!(code, -999 | 102 | 204) {
+                let still_loading = unsafe { webview.isLoading() };
+                if !still_loading {
+                    (ivars.on_event)(WebViewEvent::LoadFinished(url));
+                }
+                return;
+            }
+            let message = error.localizedDescription().to_string();
+            (ivars.on_event)(WebViewEvent::LoadFailed { url, code, message });
+        }
+
+        define_class!(
+            #[unsafe(super(NSObject))]
+            #[thread_kind = MainThreadOnly]
+            #[ivars = KwrokNavDelegateIvars]
+            pub struct KwrokNavDelegateProxy;
+
+            unsafe impl NSObjectProtocol for KwrokNavDelegateProxy {}
+
+            unsafe impl WKNavigationDelegate for KwrokNavDelegateProxy {
+                #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
+                fn decide_action(
+                    &self,
+                    webview: &WKWebView,
+                    action: &WKNavigationAction,
+                    handler: &block2::DynBlock<dyn Fn(WKNavigationActionPolicy)>,
+                ) {
+                    let url = unsafe {
+                        action
+                            .request()
+                            .URL()
+                            .and_then(|u| u.absoluteString())
+                            .map(|s| s.to_string())
+                    };
+                    let Some(url_str) = url else {
+                        handler.call((WKNavigationActionPolicy::Cancel,));
+                        return;
+                    };
+
+                    // Block custom native-app deep-link schemes (`baiduboxapp://`, `bilibili://`, `weixin://`, etc.)
+                    // so portal websites probing installed apps never fail provisional navigation with -1002.
+                    if !is_supported_web_scheme(&url_str) {
+                        handler.call((WKNavigationActionPolicy::Cancel,));
+                        return;
+                    }
+
+                    let is_main_frame = unsafe { action.targetFrame() }
+                        .is_some_and(|frame| unsafe { frame.isMainFrame() });
+                    if is_main_frame
+                        && !url_str.starts_with("about:blank")
+                        && !url_str.to_ascii_lowercase().starts_with("javascript:")
+                    {
+                        (self.ivars().on_event)(WebViewEvent::Navigated(url_str));
+                    }
+
+                    if let Some(ref orig) = self.ivars().orig {
+                        unsafe {
+                            orig.webView_decidePolicyForNavigationAction_decisionHandler(
+                                webview, action, handler,
+                            );
+                        }
+                    } else {
+                        handler.call((WKNavigationActionPolicy::Allow,));
+                    }
+                }
+
+                #[unsafe(method(webView:decidePolicyForNavigationResponse:decisionHandler:))]
+                fn decide_response(
+                    &self,
+                    webview: &WKWebView,
+                    response: &WKNavigationResponse,
+                    handler: &block2::DynBlock<dyn Fn(WKNavigationResponsePolicy)>,
+                ) {
+                    if let Some(ref orig) = self.ivars().orig {
+                        unsafe {
+                            orig.webView_decidePolicyForNavigationResponse_decisionHandler(
+                                webview, response, handler,
+                            );
+                        }
+                    } else {
+                        handler.call((WKNavigationResponsePolicy::Allow,));
+                    }
+                }
+
+                #[unsafe(method(webView:didCommitNavigation:))]
+                fn did_commit(&self, webview: &WKWebView, navigation: Option<&WKNavigation>) {
+                    if let Some(ref orig) = self.ivars().orig {
+                        unsafe {
+                            orig.webView_didCommitNavigation(webview, navigation);
+                        }
+                    }
+                }
+
+                #[unsafe(method(webView:didFinishNavigation:))]
+                fn did_finish(&self, webview: &WKWebView, navigation: Option<&WKNavigation>) {
+                    if let Some(ref orig) = self.ivars().orig {
+                        unsafe {
+                            orig.webView_didFinishNavigation(webview, navigation);
+                        }
+                    }
+                }
+
+                #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
+                fn did_fail_provisional(
+                    &self,
+                    webview: &WKWebView,
+                    _navigation: Option<&WKNavigation>,
+                    error: &NSError,
+                ) {
+                    handle_navigation_failure(self.ivars(), webview, error);
+                }
+
+                #[unsafe(method(webView:didFailNavigation:withError:))]
+                fn did_fail_navigation(
+                    &self,
+                    webview: &WKWebView,
+                    _navigation: Option<&WKNavigation>,
+                    error: &NSError,
+                ) {
+                    handle_navigation_failure(self.ivars(), webview, error);
+                }
+
+                #[unsafe(method(webView:navigationAction:didBecomeDownload:))]
+                fn action_download(
+                    &self,
+                    webview: &WKWebView,
+                    action: &WKNavigationAction,
+                    download: &WKDownload,
+                ) {
+                    if let Some(ref orig) = self.ivars().orig {
+                        unsafe {
+                            orig.webView_navigationAction_didBecomeDownload(
+                                webview, action, download,
+                            );
+                        }
+                    }
+                }
+
+                #[unsafe(method(webView:navigationResponse:didBecomeDownload:))]
+                fn response_download(
+                    &self,
+                    webview: &WKWebView,
+                    response: &WKNavigationResponse,
+                    download: &WKDownload,
+                ) {
+                    if let Some(ref orig) = self.ivars().orig {
+                        unsafe {
+                            orig.webView_navigationResponse_didBecomeDownload(
+                                webview, response, download,
+                            );
+                        }
+                    }
+                }
+
+                #[unsafe(method(webViewWebContentProcessDidTerminate:))]
+                fn process_terminated(&self, webview: &WKWebView) {
+                    if let Some(ref orig) = self.ivars().orig {
+                        unsafe {
+                            orig.webViewWebContentProcessDidTerminate(webview);
+                        }
+                    }
+                    let url = unsafe {
+                        webview
+                            .URL()
+                            .and_then(|u| u.absoluteString())
+                            .map(|s| s.to_string())
+                            .unwrap_or_default()
+                    };
+                    (self.ivars().on_event)(WebViewEvent::LoadFailed {
+                        url,
+                        code: -1,
+                        message: "网页渲染进程意外退出，请点击刷新重试".into(),
+                    });
+                }
+            }
+        );
+
+        pub fn install_navigation_proxy(
+            webview: &WebView,
+            on_event: WebViewEventCallback,
+        ) -> Retained<KwrokNavDelegateProxy> {
+            let wk = webview.webview();
+            let mtm = MainThreadMarker::new().expect("WKWebView must be created on the main thread");
+            let orig = unsafe { wk.navigationDelegate() };
+            let alloc = mtm
+                .alloc::<KwrokNavDelegateProxy>()
+                .set_ivars(KwrokNavDelegateIvars { orig, on_event });
+            let proxy: Retained<KwrokNavDelegateProxy> = unsafe { msg_send![super(alloc), init] };
+            unsafe {
+                wk.setNavigationDelegate(Some(ProtocolObject::from_ref(&*proxy)));
+            }
+            proxy
         }
     }
 
@@ -908,6 +1270,10 @@ mod native {
             false
         }
 
+        pub fn is_loading(&self) -> bool {
+            false
+        }
+
         pub fn current_url(&self) -> Option<String> {
             self.url.lock().ok().and_then(|g| g.clone())
         }
@@ -954,10 +1320,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn omnibox_normalizes_ports_localhost_domains_files_and_search_queries() {
+    fn omnibox_normalizes_ports_localhost_domains_ime_unicode_and_bing_search() {
         assert_eq!(
             normalize_omnibox_input(":5173", None).as_deref(),
-            Some("http://localhost:5173")
+            Some("http://localhost:5173/")
+        );
+        assert_eq!(
+            normalize_omnibox_input("：3000", None).as_deref(),
+            Some("http://localhost:3000/")
         );
         assert_eq!(
             normalize_omnibox_input(":3000/login?next=1", None).as_deref(),
@@ -969,7 +1339,7 @@ mod tests {
         );
         assert_eq!(
             normalize_omnibox_input("0.0.0.0:4173", None).as_deref(),
-            Some("http://localhost:4173")
+            Some("http://localhost:4173/")
         );
         assert_eq!(
             normalize_omnibox_input("http://0.0.0.0:4173/app", None).as_deref(),
@@ -977,19 +1347,31 @@ mod tests {
         );
         assert_eq!(
             normalize_omnibox_input("127.0.0.1:9000", None).as_deref(),
-            Some("http://127.0.0.1:9000")
+            Some("http://127.0.0.1:9000/")
         );
         assert_eq!(
             normalize_omnibox_input("192.168.1.42:8000", None).as_deref(),
-            Some("http://192.168.1.42:8000")
+            Some("http://192.168.1.42:8000/")
         );
         assert_eq!(
             normalize_omnibox_input("openai.com/codex", None).as_deref(),
             Some("https://openai.com/codex")
         );
         assert_eq!(
+            normalize_omnibox_input("www。baidu。com", None).as_deref(),
+            Some("https://www.baidu.com/")
+        );
+        assert_eq!(
+            normalize_omnibox_input("https://baike.baidu.com/item/人工智能", None).as_deref(),
+            Some("https://baike.baidu.com/item/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD")
+        );
+        assert_eq!(
             normalize_omnibox_input("gpui rust layout guide", None).as_deref(),
-            Some("https://duckduckgo.com/?q=gpui+rust+layout+guide")
+            Some("https://cn.bing.com/search?q=gpui+rust+layout+guide")
+        );
+        assert_eq!(
+            normalize_omnibox_input("百度热搜", None).as_deref(),
+            Some("https://cn.bing.com/search?q=%E7%99%BE%E5%BA%A6%E7%83%AD%E6%90%9C")
         );
         assert!(normalize_omnibox_input("   ", None).is_none());
 

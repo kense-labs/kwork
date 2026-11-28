@@ -27,7 +27,11 @@ asset() {
 }
 
 slices=()
-for arch in $(lipo -archs "$app/Contents/MacOS/Kwrok"); do
+main_bin="$app/Contents/MacOS/Kwork"
+if [[ ! -f "$main_bin" ]]; then
+    main_bin="$app/Contents/MacOS/Kwrok"
+fi
+for arch in $(lipo -archs "$main_bin"); do
     case "$arch" in
         arm64) triple=aarch64-apple-darwin ;;
         x86_64) triple=x86_64-apple-darwin ;;
