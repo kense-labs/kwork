@@ -33,6 +33,7 @@ use crate::{
 
 const MAX_CONSOLE_ITEMS: usize = 200;
 const MAX_RECENT_URLS: usize = 10;
+pub const MAX_BROWSER_TABS: usize = 24;
 
 const SVG_CROSSHAIR_PICKER: &str = r#"<circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.2" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-linecap="round" stroke-width="1.8"/>"#;
 const SVG_CAMERA_SHOT: &str = r#"<path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.38a1.5 1.5 0 0 0 1.25-.67l.74-1.11A1.5 1.5 0 0 1 11.12 3.5h1.76a1.5 1.5 0 0 1 1.25.67l.74 1.11a1.5 1.5 0 0 0 1.25.67h1.38A2.5 2.5 0 0 1 20 8.5v8A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-8Z" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12.2" r="3.2" stroke="currentColor" stroke-width="1.8"/>"#;
@@ -110,6 +111,9 @@ pub struct BrowserTab {
     pub snapshot_dims: Option<(u32, u32)>,
     pub last_error_banner: Option<String>,
     pub page_load_failed: bool,
+    pub nav_seq: u64,
+    pub custom_title_pinned: bool,
+    pub opened_by_script: bool,
 }
 
 impl BrowserTab {
@@ -135,6 +139,9 @@ impl BrowserTab {
             snapshot_dims: None,
             last_error_banner: None,
             page_load_failed: false,
+            nav_seq: 0,
+            custom_title_pinned: false,
+            opened_by_script: false,
         }
     }
 
@@ -202,7 +209,7 @@ pub struct BrowserHost {
 
 impl BrowserHost {
     pub fn new(window: &mut Window, cx: &mut Context<KarWorkbench>) -> Self {
-        let (event_tx, event_rx) = async_channel::bounded::<(u64, WebViewEvent)>(256);
+        let (event_tx, event_rx) = async_channel::unbounded::<(u64, WebViewEvent)>();
         let (snapshot_tx, snapshot_rx) =
             async_channel::bounded::<(u64, SnapshotPurpose, Result<CapturedSnapshot, String>)>(32);
 
@@ -452,16 +459,46 @@ fn discover_workspace_html_files(root: &std::path::Path, max_files: usize) -> Ve
 
 impl KarWorkbench {
     /// Hide every live child WebView immediately (called when overlays open, layout collapses,
-    /// or non-browser surfaces are active).
+    /// or non-browser surfaces are active), returning AppKit firstResponder to GPUI if held.
     pub(crate) fn hide_all_browser_webviews(&mut self) {
         for tab in &mut self.browser.tabs {
-            if tab.last_visible {
-                if let Some(ref wv) = tab.webview {
+            if let Some(ref wv) = tab.webview {
+                if wv.is_focused() {
+                    wv.focus_parent();
+                }
+                if tab.last_visible {
                     wv.set_visible(false);
                 }
-                tab.last_visible = false;
             }
+            tab.last_visible = false;
         }
+    }
+
+    /// Tear down all background WebViews when the user explicitly closes the Browser dock tab,
+    /// stopping any active `<video>`/`<audio>` playback, WebSockets, or background timers.
+    pub fn teardown_browser_on_dock_close(&mut self) {
+        for tab in &mut self.browser.tabs {
+            if let Some(ref wv) = tab.webview
+                && wv.is_focused()
+            {
+                wv.focus_parent();
+            }
+            tab.webview = None;
+            tab.last_visible = false;
+            tab.loading = false;
+            tab.inspect_mode = false;
+            tab.snapshot = None;
+            tab.snapshot_dims = None;
+        }
+    }
+
+    pub fn focus_chat_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer_editor
+            .update(cx, |ed, cx| ed.focus(window, cx));
+    }
+
+    pub fn is_chat_composer_focused(&self, window: &Window, cx: &App) -> bool {
+        self.composer_editor.read(cx).focus.is_focused(window)
     }
 
     /// Reconcile native WebView visibility at the root of `KarWorkbench::render` so hidden/occluded
@@ -503,6 +540,9 @@ impl KarWorkbench {
                 Some(tab.id) == active_id && !tab.url.is_empty() && !tab.page_load_failed;
             if !should_show && tab.last_visible {
                 if let Some(ref wv) = tab.webview {
+                    if wv.is_focused() {
+                        wv.focus_parent();
+                    }
                     wv.set_visible(false);
                 }
                 tab.last_visible = false;
@@ -525,6 +565,124 @@ impl KarWorkbench {
         cx.notify();
     }
 
+    pub fn focus_browser_address_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(tab) = self.browser.active_tab()
+            && let Some(ref wv) = tab.webview
+        {
+            wv.focus_parent();
+        }
+        self.browser.address_editor.update(cx, |ed, cx| {
+            ed.focus(window, cx);
+            ed.select_all(window, cx);
+        });
+        cx.notify();
+    }
+
+    pub fn reload_active_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut retry_url = None;
+        let mut watch_info = None;
+        if let Some(tab) = self.browser.active_tab_mut() {
+            if tab.url.is_empty() {
+                return;
+            }
+            if tab.page_load_failed || tab.webview.is_none() {
+                retry_url = Some(tab.url.clone());
+            } else if let Some(ref wv) = tab.webview {
+                tab.nav_seq = tab.nav_seq.wrapping_add(1);
+                tab.loading = true;
+                tab.page_load_failed = false;
+                tab.last_error_banner = None;
+                let _ = wv.reload();
+                watch_info = Some((tab.id, tab.nav_seq));
+            }
+        }
+        if let Some(url) = retry_url {
+            self.navigate_active_browser_resolved(url, false, window, cx);
+        } else if let Some((tid, seq)) = watch_info {
+            self.spawn_browser_loading_watchdog(tid, seq, window, cx);
+            cx.notify();
+        }
+    }
+
+    pub fn browser_go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut watch_info = None;
+        if let Some(tab) = self.browser.active_tab_mut()
+            && let Some(ref wv) = tab.webview
+            && wv.can_go_back()
+        {
+            tab.nav_seq = tab.nav_seq.wrapping_add(1);
+            tab.page_load_failed = false;
+            tab.last_error_banner = None;
+            let _ = wv.go_back();
+            tab.can_go_back = wv.can_go_back();
+            tab.can_go_forward = wv.can_go_forward();
+            watch_info = Some((tab.id, tab.nav_seq));
+        }
+        if let Some((tid, seq)) = watch_info {
+            self.spawn_browser_loading_watchdog(tid, seq, window, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn browser_go_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut watch_info = None;
+        if let Some(tab) = self.browser.active_tab_mut()
+            && let Some(ref wv) = tab.webview
+            && wv.can_go_forward()
+        {
+            tab.nav_seq = tab.nav_seq.wrapping_add(1);
+            tab.page_load_failed = false;
+            tab.last_error_banner = None;
+            let _ = wv.go_forward();
+            tab.can_go_back = wv.can_go_back();
+            tab.can_go_forward = wv.can_go_forward();
+            watch_info = Some((tab.id, tab.nav_seq));
+        }
+        if let Some((tid, seq)) = watch_info {
+            self.spawn_browser_loading_watchdog(tid, seq, window, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn adjust_browser_zoom(&mut self, delta: Option<f64>, cx: &mut Context<Self>) {
+        if let Some(tab) = self.browser.active_tab_mut() {
+            let next = match delta {
+                Some(d) => ((tab.zoom + d) * 20.0).round() / 20.0,
+                None => 1.0,
+            }
+            .clamp(0.5, 2.5);
+            tab.zoom = next;
+            if let Some(ref wv) = tab.webview {
+                wv.set_zoom(next);
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn reset_active_browser_to_home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.hide_all_browser_webviews();
+        if let Some(tab) = self.browser.active_tab_mut() {
+            tab.nav_seq = tab.nav_seq.wrapping_add(1);
+            tab.url.clear();
+            tab.title.clear();
+            tab.custom_title_pinned = false;
+            tab.loading = false;
+            tab.can_go_back = false;
+            tab.can_go_forward = false;
+            tab.inspect_mode = false;
+            tab.page_load_failed = false;
+            tab.last_error_banner = None;
+            tab.snapshot = None;
+            tab.snapshot_dims = None;
+            tab.webview = None;
+        }
+        self.browser.address_editor.update(cx, |ed, cx| {
+            ed.set_value("", window, cx);
+            ed.focus(window, cx);
+        });
+        cx.notify();
+    }
+
     pub fn open_url_in_browser(
         &mut self,
         raw_input: &str,
@@ -532,10 +690,20 @@ impl KarWorkbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let _ = self.open_url_in_browser_checked(raw_input, new_tab, true, window, cx);
+    }
+
+    pub(crate) fn open_url_in_browser_checked(
+        &mut self,
+        raw_input: &str,
+        new_tab: bool,
+        focus_webview: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<u64, String> {
         let workspace = self.effective_workspace_dir();
         let Some(target_url) = normalize_omnibox_input(raw_input, Some(&workspace)) else {
-            self.open_browser_dock_tab(cx);
-            return;
+            return Err(format!("无效或受安全限制的网址：{raw_input}"));
         };
 
         self.open_browser_dock_tab(cx);
@@ -545,13 +713,18 @@ impl KarWorkbench {
             self.browser.tabs.push(BrowserTab::new(id));
             self.browser.active_idx = 0;
         } else if new_tab {
-            let id = self.browser.next_id;
-            self.browser.next_id += 1;
-            self.browser.tabs.push(BrowserTab::new(id));
-            self.browser.active_idx = self.browser.tabs.len() - 1;
+            self.hide_all_browser_webviews();
+            if self.browser.tabs.len() < MAX_BROWSER_TABS {
+                let id = self.browser.next_id;
+                self.browser.next_id += 1;
+                self.browser.tabs.push(BrowserTab::new(id));
+                self.browser.active_idx = self.browser.tabs.len() - 1;
+            }
         }
 
-        self.navigate_active_browser_resolved(target_url, window, cx);
+        self.navigate_active_browser_resolved(target_url, focus_webview, window, cx);
+        window.refresh();
+        Ok(self.browser.active_tab().map_or(1, |t| t.id))
     }
 
     pub fn open_html_in_browser(
@@ -563,7 +736,10 @@ impl KarWorkbench {
         cx: &mut Context<Self>,
     ) {
         self.open_browser_dock_tab(cx);
-        if self.browser.tabs.is_empty() || new_tab {
+        if self.browser.tabs.is_empty()
+            || (new_tab && self.browser.tabs.len() < MAX_BROWSER_TABS)
+        {
+            self.hide_all_browser_webviews();
             let id = self.browser.next_id;
             self.browser.next_id += 1;
             self.browser.tabs.push(BrowserTab::new(id));
@@ -574,12 +750,16 @@ impl KarWorkbench {
             .address_editor
             .update(cx, |ed, cx| ed.set_value(synthetic_url.clone(), window, cx));
         if let Some(tab) = self.browser.active_tab_mut() {
+            tab.nav_seq = tab.nav_seq.wrapping_add(1);
             tab.url = synthetic_url;
             tab.title = title.to_owned();
+            tab.custom_title_pinned = !title.trim().is_empty();
             tab.loading = false;
             tab.inspect_mode = false;
             tab.last_error_banner = None;
             tab.page_load_failed = false;
+            tab.snapshot = None;
+            tab.snapshot_dims = None;
             if let Some(ref wv) = tab.webview {
                 let _ = wv.load_html(&html);
             } else {
@@ -597,14 +777,25 @@ impl KarWorkbench {
     ) {
         let workspace = self.effective_workspace_dir();
         let Some(url) = normalize_omnibox_input(raw_input, Some(&workspace)) else {
+            let loc = self.ui_locale;
+            if !raw_input.trim().is_empty() {
+                self.notify_warning(
+                    loc.pick(
+                        "无法打开该地址：请检查网址格式（已拦截不安全的脚本协议）",
+                        "Invalid or blocked URL scheme",
+                    ),
+                    cx,
+                );
+            }
             return;
         };
-        self.navigate_active_browser_resolved(url, window, cx);
+        self.navigate_active_browser_resolved(url, true, window, cx);
     }
 
     fn navigate_active_browser_resolved(
         &mut self,
         url: String,
+        focus_webview: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -620,10 +811,18 @@ impl KarWorkbench {
             self.browser.active_idx = 0;
         }
 
-        let mut watch_tab_id = None;
+        let composer_focused = self.composer_editor.read(cx).focus.is_focused(window);
+        let suppressed = self.browser.webview_suppressed;
+        let mut watch_info = None;
         if let Some(tab) = self.browser.active_tab_mut() {
-            watch_tab_id = Some(tab.id);
+            tab.nav_seq = tab.nav_seq.wrapping_add(1);
+            watch_info = Some((tab.id, tab.nav_seq));
+            if tab.url != url {
+                tab.snapshot = None;
+                tab.snapshot_dims = None;
+            }
             tab.url.clone_from(&url);
+            tab.custom_title_pinned = false;
             tab.pending_html = None;
             tab.loading = true;
             tab.inspect_mode = false;
@@ -634,13 +833,13 @@ impl KarWorkbench {
                     tab.loading = false;
                     tab.page_load_failed = true;
                     tab.last_error_banner = Some(err);
-                } else {
+                } else if focus_webview && !composer_focused && !suppressed {
                     wv.focus();
                 }
             }
         }
-        if let Some(tid) = watch_tab_id {
-            self.spawn_browser_loading_watchdog(tid, window, cx);
+        if let Some((tid, seq)) = watch_info {
+            self.spawn_browser_loading_watchdog(tid, seq, window, cx);
         }
         cx.notify();
     }
@@ -648,24 +847,26 @@ impl KarWorkbench {
     fn spawn_browser_loading_watchdog(
         &self,
         tab_id: u64,
+        expected_seq: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         cx.spawn_in(window, async move |weak, cx| {
-            for delay_ms in [4_000u64, 10_000, 18_000] {
+            for delay_ms in [1_500u64, 4_000, 10_000, 18_000] {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(delay_ms))
                     .await;
                 let mut keep_polling = false;
                 let _ = weak.update_in(cx, |wb, _, cx| {
                     if let Some(tab) = wb.browser.tab_by_id_mut(tab_id)
+                        && tab.nav_seq == expected_seq
                         && tab.loading
                     {
                         if let Some(ref wv) = tab.webview {
+                            tab.can_go_back = wv.can_go_back();
+                            tab.can_go_forward = wv.can_go_forward();
                             if !wv.is_loading() {
                                 tab.loading = false;
-                                tab.can_go_back = wv.can_go_back();
-                                tab.can_go_forward = wv.can_go_forward();
                                 cx.notify();
                             } else {
                                 keep_polling = true;
@@ -682,6 +883,17 @@ impl KarWorkbench {
     }
 
     pub fn new_browser_subtab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.browser.tabs.len() >= MAX_BROWSER_TABS {
+            let loc = self.ui_locale;
+            self.notify_toast(
+                loc.pick(
+                    "已达到内置浏览器最大标签页上限（24 个）",
+                    "Maximum browser tab limit (24) reached",
+                ),
+                cx,
+            );
+            return;
+        }
         self.hide_all_browser_webviews();
         let id = self.browser.next_id;
         self.browser.next_id += 1;
@@ -722,6 +934,9 @@ impl KarWorkbench {
             return;
         };
         if let Some(ref wv) = self.browser.tabs[pos].webview {
+            if wv.is_focused() {
+                wv.focus_parent();
+            }
             wv.set_visible(false);
         }
         self.browser.tabs.remove(pos);
@@ -924,21 +1139,35 @@ impl KarWorkbench {
             timestamp_ms: epoch_ms_now(),
         });
         if let Some(ref wv) = tab.webview {
+            let code_json = serde_json::to_string(expr).unwrap_or_else(|_| "\"\"".into());
             let wrapped = format!(
-                "(function() {{ try {{ const r = ({expr}); return typeof r === 'string' ? r : JSON.stringify(r); }} catch (e) {{ return 'Error: ' + (e && e.message ? e.message : String(e)); }} }})()"
+                "window.__kwrokEval ? window.__kwrokEval({code_json}) : JSON.stringify({{ ok: true, result: eval({code_json}) }})"
             );
             let _ = wv.eval(&wrapped, move |reply| {
-                let level = if reply.contains("\"Error:") || reply.starts_with("Error:") {
-                    ConsoleLevel::Error
+                let outer = serde_json::from_str::<String>(&reply).unwrap_or(reply);
+                let (level, display) = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&outer) {
+                    if v.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+                        let err_msg = v
+                            .get("error")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("Evaluation failed");
+                        (ConsoleLevel::Error, format!("Error: {err_msg}"))
+                    } else if let Some(res) = v.get("result") {
+                        match res {
+                            serde_json::Value::String(s) => (ConsoleLevel::Log, s.clone()),
+                            other => (ConsoleLevel::Log, other.to_string()),
+                        }
+                    } else {
+                        (ConsoleLevel::Log, outer)
+                    }
                 } else {
-                    ConsoleLevel::Log
+                    (ConsoleLevel::Log, outer)
                 };
-                let cleaned = serde_json::from_str::<String>(&reply).unwrap_or(reply);
                 let _ = tx.try_send((
                     tab_id,
                     WebViewEvent::Ipc(BrowserIpcEvent::Console {
                         level,
-                        message: format!("← {cleaned}"),
+                        message: format!("← {display}"),
                         source: "eval".into(),
                         timestamp_ms: epoch_ms_now(),
                     }),
@@ -962,6 +1191,10 @@ impl KarWorkbench {
                     self.browser.record_recent(&url);
                     if let Some(tab) = self.browser.tab_by_id_mut(tab_id) {
                         tab.url.clone_from(&url);
+                        if let Some(ref wv) = tab.webview {
+                            tab.can_go_back = wv.can_go_back();
+                            tab.can_go_forward = wv.can_go_forward();
+                        }
                     }
                     if is_active
                         && !self
@@ -979,7 +1212,16 @@ impl KarWorkbench {
             }
             WebViewEvent::TitleChanged(title) => {
                 if let Some(tab) = self.browser.tab_by_id_mut(tab_id) {
-                    tab.title = title;
+                    if !title.trim().is_empty() {
+                        tab.custom_title_pinned = false;
+                        tab.title = title;
+                    } else if !tab.custom_title_pinned {
+                        tab.title.clear();
+                    }
+                    if let Some(ref wv) = tab.webview {
+                        tab.can_go_back = wv.can_go_back();
+                        tab.can_go_forward = wv.can_go_forward();
+                    }
                 }
             }
             WebViewEvent::LoadStarted(url) => {
@@ -990,6 +1232,10 @@ impl KarWorkbench {
                     tab.last_error_banner = None;
                     if !url.is_empty() && !url.starts_with("about:blank") {
                         tab.url.clone_from(&url);
+                    }
+                    if let Some(ref wv) = tab.webview {
+                        tab.can_go_back = wv.can_go_back();
+                        tab.can_go_forward = wv.can_go_forward();
                     }
                 }
                 if is_active
@@ -1013,7 +1259,7 @@ impl KarWorkbench {
                     tab.loading = false;
                     tab.page_load_failed = false;
                     if !url.is_empty() && !url.starts_with("about:blank") {
-                        tab.url = url;
+                        tab.url.clone_from(&url);
                     }
                     if let Some(ref wv) = tab.webview {
                         tab.can_go_back = wv.can_go_back();
@@ -1022,6 +1268,47 @@ impl KarWorkbench {
                             let _ = tx.try_send((tab_id, SnapshotPurpose::CacheOnly, res));
                         });
                     }
+                }
+                if is_active
+                    && !url.is_empty()
+                    && !url.starts_with("about:blank")
+                    && !self
+                        .browser
+                        .address_editor
+                        .read(cx)
+                        .focus
+                        .is_focused(window)
+                {
+                    self.browser
+                        .address_editor
+                        .update(cx, |ed, cx| ed.set_value(url, window, cx));
+                }
+            }
+            WebViewEvent::HistoryStateChanged {
+                url,
+                can_go_back,
+                can_go_forward,
+            } => {
+                if let Some(tab) = self.browser.tab_by_id_mut(tab_id) {
+                    tab.can_go_back = can_go_back;
+                    tab.can_go_forward = can_go_forward;
+                    if !url.is_empty() && !url.starts_with("about:blank") {
+                        tab.url.clone_from(&url);
+                    }
+                }
+                if is_active
+                    && !url.is_empty()
+                    && !url.starts_with("about:blank")
+                    && !self
+                        .browser
+                        .address_editor
+                        .read(cx)
+                        .focus
+                        .is_focused(window)
+                {
+                    self.browser
+                        .address_editor
+                        .update(cx, |ed, cx| ed.set_value(url, window, cx));
                 }
             }
             WebViewEvent::LoadFailed { url, code, message } => {
@@ -1038,6 +1325,9 @@ impl KarWorkbench {
                     tab.page_load_failed = true;
                     tab.last_error_banner = Some(friendly.clone());
                     if let Some(ref wv) = tab.webview {
+                        if wv.is_focused() {
+                            wv.focus_parent();
+                        }
                         wv.set_visible(false);
                     }
                     tab.last_visible = false;
@@ -1050,8 +1340,62 @@ impl KarWorkbench {
                 }
             }
             WebViewEvent::NewWindowRequested(url) => {
-                if !url.is_empty() {
-                    self.open_url_in_browser(&url, true, window, cx);
+                if !url.is_empty() && !url.starts_with("about:blank") {
+                    if let Ok(new_id) =
+                        self.open_url_in_browser_checked(&url, true, false, window, cx)
+                        && let Some(t) = self.browser.tab_by_id_mut(new_id)
+                    {
+                        t.opened_by_script = true;
+                    }
+                }
+            }
+            WebViewEvent::CloseRequested => {
+                if self.browser.tabs.len() > 1 {
+                    self.close_browser_subtab(tab_id, window, cx);
+                } else if is_active {
+                    self.reset_active_browser_to_home(window, cx);
+                }
+            }
+            WebViewEvent::DownloadStarted { url: _, file_name } => {
+                if let Some(tab) = self.browser.tab_by_id_mut(tab_id) {
+                    if let Some(ref wv) = tab.webview
+                        && !wv.is_loading()
+                    {
+                        tab.loading = false;
+                    }
+                }
+                let msg = match self.ui_locale {
+                    crate::ui_primitives::UiLocale::Zh => format!("正在下载：{file_name}"),
+                    crate::ui_primitives::UiLocale::En => format!("Downloading {file_name}…"),
+                };
+                self.notify_toast(msg, cx);
+            }
+            WebViewEvent::DownloadCompleted {
+                url: _,
+                path,
+                success,
+            } => {
+                let loc = self.ui_locale;
+                if success {
+                    let label = path
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("文件");
+                    let msg = match loc {
+                        crate::ui_primitives::UiLocale::Zh => {
+                            format!("下载完成：{label}（已保存至「下载」文件夹）")
+                        }
+                        crate::ui_primitives::UiLocale::En => {
+                            format!("Saved {label} to Downloads")
+                        }
+                    };
+                    self.notify_toast(msg, cx);
+                } else {
+                    self.notify_warning(
+                        loc.pick("文件下载中断或失败", "Download failed"),
+                        cx,
+                    );
                 }
             }
             WebViewEvent::Ipc(ipc) => match ipc {
@@ -1059,23 +1403,33 @@ impl KarWorkbench {
                     url,
                     title,
                     ready_state,
-                    can_go_back,
-                    can_go_forward,
+                    can_go_back: _,
+                    can_go_forward: _,
                 } => {
+                    let snap_tx = self.browser.snapshot_tx.clone();
                     if let Some(tab) = self.browser.tab_by_id_mut(tab_id) {
                         if !url.is_empty() && !url.starts_with("about:blank") {
                             tab.url.clone_from(&url);
                         }
                         if !title.is_empty() {
+                            tab.custom_title_pinned = false;
                             tab.title = title;
                         }
-                        if matches!(ready_state.as_str(), "interactive" | "complete") {
+                        let dom_ready = matches!(ready_state.as_str(), "interactive" | "complete");
+                        if dom_ready {
                             tab.loading = false;
                             tab.page_load_failed = false;
                         }
+                        let need_warm_snap = dom_ready && tab.snapshot.is_none();
                         if let Some(ref wv) = tab.webview {
-                            tab.can_go_back = wv.can_go_back() || can_go_back;
-                            tab.can_go_forward = wv.can_go_forward() || can_go_forward;
+                            tab.can_go_back = wv.can_go_back();
+                            tab.can_go_forward = wv.can_go_forward();
+                            if need_warm_snap {
+                                wv.capture_snapshot_png(move |res| {
+                                    let _ =
+                                        snap_tx.try_send((tab_id, SnapshotPurpose::CacheOnly, res));
+                                });
+                            }
                         }
                     }
                     if is_active
@@ -1111,6 +1465,15 @@ impl KarWorkbench {
                 BrowserIpcEvent::InspectCancelled => {
                     if let Some(tab) = self.browser.tab_by_id_mut(tab_id) {
                         tab.inspect_mode = false;
+                    }
+                }
+                BrowserIpcEvent::CloseRequested => {
+                    let script_opened = self
+                        .browser
+                        .tab_by_id_mut(tab_id)
+                        .is_some_and(|t| t.opened_by_script);
+                    if script_opened && self.browser.tabs.len() > 1 {
+                        self.close_browser_subtab(tab_id, window, cx);
                     }
                 }
                 BrowserIpcEvent::ElementPicked {
@@ -1576,45 +1939,31 @@ impl KarWorkbench {
             .items_center()
             .gap(px(4.))
             .child(
-                icon_button_sm("browser-back", ProIcon::ArrowLeft, loc.pick("后退", "Back"), s)
+                icon_button_sm("browser-back", ProIcon::ArrowLeft, loc.pick("后退 (⌘[)", "Back (⌘[)"), s)
                     .disabled(!can_back)
-                    .on_press(cx, |wb, _, cx| {
-                        if let Some(tab) = wb.browser.active_tab()
-                            && let Some(ref wv) = tab.webview
-                        {
-                            let _ = wv.go_back();
-                        }
-                        cx.notify();
-                    }),
+                    .on_press(cx, |wb, win, cx| wb.browser_go_back(win, cx)),
             )
             .child(
                 icon_button_sm(
                     "browser-forward",
                     ProIcon::ArrowRight,
-                    loc.pick("前进", "Forward"),
+                    loc.pick("前进 (⌘])", "Forward (⌘])"),
                     s,
                 )
                 .disabled(!can_fwd)
-                .on_press(cx, |wb, _, cx| {
-                    if let Some(tab) = wb.browser.active_tab()
-                        && let Some(ref wv) = tab.webview
-                    {
-                        let _ = wv.go_forward();
-                    }
-                    cx.notify();
-                }),
+                .on_press(cx, |wb, win, cx| wb.browser_go_forward(win, cx)),
             )
             .child(if active_loading {
                 Tactile::ghost("browser-loading-spin", s)
                     .size(px(CTRL_SM_H))
                     .justify_center()
-                    .tip(loc.pick("正在加载页面…", "Loading page…"))
+                    .tip(loc.pick("正在加载页面（点击停止）", "Loading page (click to stop)"))
                     .child(spinner(13., s.pro.accent_info, window, cx))
                     .on_press(cx, |wb, _, cx| {
                         if let Some(tab) = wb.browser.active_tab_mut() {
                             tab.loading = false;
                             if let Some(ref wv) = tab.webview {
-                                let _ = wv.eval_fire_and_forget("window.stop && window.stop();");
+                                wv.stop_loading();
                             }
                         }
                         cx.notify();
@@ -1624,29 +1973,11 @@ impl KarWorkbench {
                 icon_button_sm(
                     "browser-reload",
                     ProIcon::Refresh,
-                    loc.pick("刷新页面", "Reload"),
+                    loc.pick("刷新页面 (⌘R)", "Reload (⌘R)"),
                     s,
                 )
                 .disabled(!has_live_page)
-                .on_press(cx, |wb, win, cx| {
-                    let mut retry_url = None;
-                    if let Some(tab) = wb.browser.active_tab_mut() {
-                        if tab.page_load_failed || tab.webview.is_none() {
-                            retry_url = Some(tab.url.clone());
-                        } else if let Some(ref wv) = tab.webview {
-                            tab.loading = true;
-                            tab.page_load_failed = false;
-                            tab.last_error_banner = None;
-                            let _ = wv.reload();
-                        }
-                    }
-                    if let Some(url) = retry_url {
-                        wb.navigate_active_browser_resolved(url, win, cx);
-                    } else if let Some(tid) = wb.browser.active_tab().map(|t| t.id) {
-                        wb.spawn_browser_loading_watchdog(tid, win, cx);
-                        cx.notify();
-                    }
-                })
+                .on_press(cx, |wb, win, cx| wb.reload_active_browser(win, cx))
                 .into_any_element()
             })
             .when(has_live_page, |bar| {
@@ -1657,24 +1988,25 @@ impl KarWorkbench {
                         loc.pick("返回起始页", "Browser start page"),
                         s,
                     )
-                    .on_press(cx, |wb, win, cx| {
-                        wb.hide_all_browser_webviews();
-                        if let Some(tab) = wb.browser.active_tab_mut() {
-                            tab.url.clear();
-                            tab.title.clear();
-                            tab.loading = false;
-                            tab.inspect_mode = false;
-                            tab.page_load_failed = false;
-                            tab.last_error_banner = None;
-                        }
-                        wb.browser
-                            .address_editor
-                            .update(cx, |ed, cx| ed.set_value("", win, cx));
-                        cx.notify();
-                    }),
+                    .on_press(cx, |wb, win, cx| wb.reset_active_browser_to_home(win, cx)),
                 )
             })
             .child(omnibox)
+            .when(has_live_page && (zoom - 1.0).abs() > 0.01, |bar| {
+                bar.child(
+                    Tactile::soft("browser-zoom-reset", s)
+                        .h(px(22.))
+                        .px(px(6.))
+                        .radius(R_PILL)
+                        .font_features(tnum_features())
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(s.pro.accent_info)
+                        .tip(loc.pick("点击重置页面缩放至 100% (⌘0)", "Reset page zoom to 100% (⌘0)"))
+                        .child(format!("{}%", (zoom * 100.0).round() as i32))
+                        .on_press(cx, |wb, _, cx| wb.adjust_browser_zoom(None, cx)),
+                )
+            })
             .child(inspect_btn)
             .child(shot_btn)
             .child(viewport_btn)
@@ -1834,7 +2166,12 @@ impl KarWorkbench {
                                         s,
                                     )
                                     .on_press(cx, move |wb, win, cx| {
-                                        wb.navigate_active_browser_resolved(retry_url.clone(), win, cx);
+                                        wb.navigate_active_browser_resolved(
+                                            retry_url.clone(),
+                                            true,
+                                            win,
+                                            cx,
+                                        );
                                     }),
                                 )
                                 .child(
@@ -1844,18 +2181,7 @@ impl KarWorkbench {
                                         s,
                                     )
                                     .on_press(cx, |wb, win, cx| {
-                                        wb.hide_all_browser_webviews();
-                                        if let Some(tab) = wb.browser.active_tab_mut() {
-                                            tab.url.clear();
-                                            tab.title.clear();
-                                            tab.loading = false;
-                                            tab.page_load_failed = false;
-                                            tab.last_error_banner = None;
-                                        }
-                                        wb.browser
-                                            .address_editor
-                                            .update(cx, |ed, cx| ed.set_value("", win, cx));
-                                        cx.notify();
+                                        wb.reset_active_browser_to_home(win, cx);
                                     }),
                                 ),
                         ),
@@ -1914,9 +2240,12 @@ impl KarWorkbench {
                                 let Some(tab) = wb.browser.tab_by_id_mut(active_tab_id) else {
                                     return;
                                 };
-                                if hide_now || tab.url.is_empty() || tab.page_load_failed {
+                                if tab.url.is_empty() || tab.page_load_failed {
                                     if tab.last_visible {
                                         if let Some(ref wv) = tab.webview {
+                                            if wv.is_focused() {
+                                                wv.focus_parent();
+                                            }
                                             wv.set_visible(false);
                                         }
                                         tab.last_visible = false;
@@ -1925,6 +2254,7 @@ impl KarWorkbench {
                                 }
                                 if tab.webview.is_none() {
                                     let tid = tab.id;
+                                    let show_initially = !hide_now;
                                     let init = WebViewInit {
                                         initial_url: tab
                                             .pending_html
@@ -1932,7 +2262,7 @@ impl KarWorkbench {
                                             .then(|| tab.url.clone()),
                                         initial_html: tab.pending_html.take(),
                                         bounds: rect,
-                                        visible: true,
+                                        visible: show_initially,
                                         on_event: Arc::new(move |ev| {
                                             let _ = tx.try_send((tid, ev));
                                         }),
@@ -1943,7 +2273,7 @@ impl KarWorkbench {
                                                 wv.set_zoom(zoom_level);
                                             }
                                             tab.last_bounds = rect;
-                                            tab.last_visible = true;
+                                            tab.last_visible = show_initially;
                                             tab.webview = Some(wv);
                                         }
                                         Err(err) => {
@@ -1962,7 +2292,15 @@ impl KarWorkbench {
                                         wv.set_bounds(rect);
                                         tab.last_bounds = rect;
                                     }
-                                    if !tab.last_visible {
+                                    if hide_now {
+                                        if tab.last_visible {
+                                            if wv.is_focused() {
+                                                wv.focus_parent();
+                                            }
+                                            wv.set_visible(false);
+                                            tab.last_visible = false;
+                                        }
+                                    } else if !tab.last_visible {
                                         wv.set_visible(true);
                                         tab.last_visible = true;
                                     }

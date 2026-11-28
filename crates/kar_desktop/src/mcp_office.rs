@@ -1277,6 +1277,20 @@ impl KarWorkbench {
         }
     }
 
+    fn spawn_mcp_call_timeout_guard(call: &OfficeMcpCall, timeout_secs: u64, cx: &mut Context<Self>) {
+        let guard_call = call.clone();
+        let tool_name = call.tool.clone();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor()
+                .timer(Duration::from_secs(timeout_secs))
+                .await;
+            guard_call.respond(Err(format!(
+                "`{tool_name}` 等待网页响应超时（标签页可能已关闭或脚本阻塞）"
+            )));
+        })
+        .detach();
+    }
+
     fn try_dispatch_browser_mcp_call(
         &mut self,
         call: &OfficeMcpCall,
@@ -1299,21 +1313,40 @@ impl KarWorkbench {
                     .get("new_tab")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                self.open_url_in_browser(raw_url, new_tab, window, cx);
+                let target_tab_id =
+                    match self.open_url_in_browser_checked(raw_url, new_tab, false, window, cx) {
+                        Ok(id) => id,
+                        Err(err) => {
+                            call.respond(Err(err));
+                            return true;
+                        }
+                    };
                 window.refresh();
-                let target_tab_id = self.browser.active_tab().map(|t| t.id).unwrap_or(1);
+                let expected_seq = self
+                    .browser
+                    .tab_by_id_mut(target_tab_id)
+                    .map_or(0, |t| t.nav_seq);
                 let win_handle = window.window_handle();
                 let call_clone = call.clone();
                 cx.spawn_in(window, async move |weak, cx| {
-                    for step in 0..45u32 {
+                    for step in 0..95u32 {
                         cx.background_executor()
-                            .timer(Duration::from_millis(80))
+                            .timer(Duration::from_millis(60))
                             .await;
                         let mut ready_payload: Option<String> = None;
                         let mut needs_draw = false;
                         let alive = weak.update_in(cx, |wb, _, _| {
                             if let Some(tab) = wb.browser.tab_by_id_mut(target_tab_id) {
-                                if tab.webview.is_none() {
+                                if tab.nav_seq != expected_seq {
+                                    ready_payload = serde_json::to_string_pretty(&json!({
+                                        "status": "superseded",
+                                        "tab_id": tab.id,
+                                        "url": tab.url,
+                                        "title": tab.title,
+                                        "loading": tab.loading,
+                                    }))
+                                    .ok();
+                                } else if tab.webview.is_none() && !tab.page_load_failed {
                                     needs_draw = true;
                                 } else if !tab.loading && (step >= 2 || tab.page_load_failed) {
                                     ready_payload = serde_json::to_string_pretty(&json!({
@@ -1324,10 +1357,14 @@ impl KarWorkbench {
                                         "loading": tab.loading,
                                         "page_load_failed": tab.page_load_failed,
                                         "load_error": tab.last_error_banner,
+                                        "can_go_back": tab.can_go_back,
+                                        "can_go_forward": tab.can_go_forward,
                                         "error_count": tab.error_count,
                                     }))
                                     .ok();
                                 }
+                            } else {
+                                ready_payload = None;
                             }
                         });
                         if alive.is_err() {
@@ -1348,11 +1385,13 @@ impl KarWorkbench {
                     let _ = weak.update_in(cx, |wb, _, _| {
                         let out = if let Some(tab) = wb.browser.tab_by_id_mut(target_tab_id) {
                             serde_json::to_string_pretty(&json!({
-                                "status": "opened",
+                                "status": if tab.page_load_failed { "load_failed" } else { "opened" },
                                 "tab_id": tab.id,
                                 "url": tab.url,
                                 "title": tab.title,
                                 "loading": tab.loading,
+                                "page_load_failed": tab.page_load_failed,
+                                "load_error": tab.last_error_banner,
                                 "error_count": tab.error_count,
                             }))
                             .map_err(|e| e.to_string())
@@ -1380,6 +1419,10 @@ impl KarWorkbench {
                             "url": t.url,
                             "title": t.display_title(zh),
                             "loading": t.loading,
+                            "page_load_failed": t.page_load_failed,
+                            "can_go_back": t.can_go_back,
+                            "can_go_forward": t.can_go_forward,
+                            "zoom": t.zoom,
                             "viewport": t.viewport.label_en(),
                             "error_count": t.error_count,
                             "warn_count": t.warn_count,
@@ -1412,8 +1455,9 @@ impl KarWorkbench {
                     ));
                     return true;
                 };
+                Self::spawn_mcp_call_timeout_guard(call, 8, cx);
                 let script = format!(
-                    "JSON.stringify(window.__kwrokSnapshotDom ? window.__kwrokSnapshotDom({max_items}) : {{ url: location.href, title: document.title, readyState: document.readyState, bodyText: document.body ? document.body.innerText : '' }})"
+                    "window.__kwrokSnapshotDomJson ? window.__kwrokSnapshotDomJson({max_items}) : JSON.stringify({{ url: location.href, title: document.title, readyState: document.readyState, bodyText: document.body ? document.body.innerText : '' }})"
                 );
                 let call_clone = call.clone();
                 if let Err(err) = wv.eval(&script, move |raw| {
@@ -1428,6 +1472,21 @@ impl KarWorkbench {
                     call.respond(Err("缺少 `action` 参数".into()));
                     return true;
                 };
+                if action == "reload" {
+                    self.reload_active_browser(window, cx);
+                    call.respond(Ok(json!({ "ok": true, "action": "reload" }).to_string()));
+                    return true;
+                }
+                if action == "back" {
+                    self.browser_go_back(window, cx);
+                    call.respond(Ok(json!({ "ok": true, "action": "back" }).to_string()));
+                    return true;
+                }
+                if action == "forward" {
+                    self.browser_go_forward(window, cx);
+                    call.respond(Ok(json!({ "ok": true, "action": "forward" }).to_string()));
+                    return true;
+                }
                 let Some(tab) = self.browser.active_tab() else {
                     call.respond(Err("内置浏览器当前没有打开任何标签页".into()));
                     return true;
@@ -1438,6 +1497,7 @@ impl KarWorkbench {
                     ));
                     return true;
                 };
+                Self::spawn_mcp_call_timeout_guard(call, 8, cx);
                 let cmd_json = json!({
                     "action": action,
                     "selector": args.get("selector").and_then(Value::as_str),
@@ -1448,7 +1508,7 @@ impl KarWorkbench {
                     "dy": args.get("dy").and_then(Value::as_f64),
                 });
                 let script = format!(
-                    "JSON.stringify(window.__kwrokAct ? window.__kwrokAct({cmd_json}) : {{ ok: false, error: 'Bridge not initialized' }})"
+                    "window.__kwrokActJson ? window.__kwrokActJson({cmd_json}) : JSON.stringify({{ ok: false, error: 'Bridge not initialized' }})"
                 );
                 let call_clone = call.clone();
                 if let Err(err) = wv.eval(&script, move |raw| {
@@ -1478,8 +1538,10 @@ impl KarWorkbench {
                     ));
                     return true;
                 };
+                Self::spawn_mcp_call_timeout_guard(call, 8, cx);
+                let code_json = serde_json::to_string(expr).unwrap_or_else(|_| "\"\"".into());
                 let script = format!(
-                    "(function() {{ try {{ const r = ({expr}); return JSON.stringify({{ ok: true, result: r, url: location.href, title: document.title }}); }} catch (e) {{ return JSON.stringify({{ ok: false, error: String(e && e.stack ? e.stack : e) }}); }} }})()"
+                    "window.__kwrokEval ? window.__kwrokEval({code_json}) : JSON.stringify({{ ok: true, result: eval({code_json}), url: location.href, title: document.title }})"
                 );
                 let call_clone = call.clone();
                 if let Err(err) = wv.eval(&script, move |raw| {
@@ -1548,6 +1610,7 @@ impl KarWorkbench {
                     ));
                     return true;
                 };
+                Self::spawn_mcp_call_timeout_guard(call, 8, cx);
                 let tab_id = tab.id;
                 let url = tab.url.clone();
                 let snap_tx = self.browser.snapshot_tx.clone();

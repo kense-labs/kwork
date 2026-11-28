@@ -17,6 +17,11 @@ path = "tests/browser_live.rs"
 harness = false
 
 [[test]]
+name = "browser_adversarial"
+path = "tests/browser_adversarial.rs"
+harness = false
+
+[[test]]
 name = "office_wps_live"
 path = "tests/office_wps_live.rs"
 harness = false

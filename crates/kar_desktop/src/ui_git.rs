@@ -1311,6 +1311,11 @@ impl KarWorkbench {
         };
 
         let file_to_pin = rel_path.clone();
+        let is_web_previewable = rel_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "html" | "htm" | "svg"));
+        let preview_rel_arg = rel_path.display().to_string();
         let loc = self.ui_locale;
         let pin_label = loc.pick("引用到对话", "Add to chat");
         let copy = copy_text_button(
@@ -1370,6 +1375,19 @@ impl KarWorkbench {
                             ))),
                     )),
             )
+            .when(is_web_previewable, |bar| {
+                bar.child(
+                    crate::ui_motion::soft_button_sm(
+                        "code-preview-in-browser",
+                        loc.pick("浏览器预览", "Preview"),
+                        s,
+                    )
+                    .child(pro_icon(ProIcon::Globe, 12., s.pro.accent_info))
+                    .on_press(cx, move |wb, win, cx| {
+                        wb.open_url_in_browser(&preview_rel_arg, false, win, cx);
+                    }),
+                )
+            })
             .child(copy)
             .child(
                 Tactile::ghost("code-pin-to-chat", s)

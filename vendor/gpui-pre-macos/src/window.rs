@@ -2677,9 +2677,6 @@ extern "C" fn handle_key_equivalent(
                             }
                             return Bool::NO;
                         }
-                        if matches!(ks.key.as_str(), "=" | "+" | "-" | "0") {
-                            return Bool::NO;
-                        }
                     }
                 }
             }

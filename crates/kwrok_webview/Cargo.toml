@@ -21,5 +21,5 @@ wry = { version = "0.57.1", default-features = false, features = ["os-webview", 
 block2 = "0.6"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSBitmapImageRep", "NSGraphics", "NSImage", "NSImageRep", "NSResponder", "NSView", "NSWindow"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSData", "NSDictionary", "NSError", "NSGeometry", "NSObject", "NSString", "NSURL", "NSURLRequest", "NSURLResponse"] }
-objc2-web-kit = { version = "0.3", default-features = false, features = ["WKDownload", "WKFrameInfo", "WKNavigation", "WKNavigationAction", "WKNavigationDelegate", "WKNavigationResponse", "WKSnapshotConfiguration", "WKWebView", "block2", "objc2-app-kit"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSData", "NSDictionary", "NSError", "NSGeometry", "NSJSONSerialization", "NSKeyValueCoding", "NSObject", "NSString", "NSURL", "NSURLRequest", "NSURLResponse", "NSValue"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["WKDownload", "WKDownloadDelegate", "WKFrameInfo", "WKNavigation", "WKNavigationAction", "WKNavigationDelegate", "WKNavigationResponse", "WKOpenPanelParameters", "WKPreferences", "WKSecurityOrigin", "WKSnapshotConfiguration", "WKUIDelegate", "WKWebView", "WKWebViewConfiguration", "WKWindowFeatures", "block2", "objc2-app-kit"] }

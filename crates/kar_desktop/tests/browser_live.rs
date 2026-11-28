@@ -172,26 +172,39 @@ fn run_macos_e2e() {
         let wb_for_occlusion = entity;
         cx.spawn(async move |cx| {
             let res = done_rx.recv().await.unwrap_or_else(|e| Err(e.to_string()));
-            let final_res = res.and_then(|()| {
+            let final_res = if let Err(e) = res {
+                Err(e)
+            } else {
                 // Verify Zero Z-Order Bleed: opening the Command Palette immediately hides the
                 // child WKWebView while keeping its Retina PNG backing snapshot cached!
-                let mut check = Ok(());
                 let _ = window.update(cx, |_, win, cx| {
                     wb_for_occlusion.update(cx, |wb, cx| {
                         wb.toggle_command_palette(win, cx);
                     });
                     win.refresh();
                     win.draw(cx).clear(cx);
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(60))
+                    .await;
+                let mut check = Ok(());
+                let _ = window.update(cx, |_, _, cx| {
                     let wb = wb_for_occlusion.read(cx);
                     let tab = wb.browser.active_tab().expect("active browser tab");
                     if tab.last_visible {
-                        check = Err("WKWebView remained visible while Command Palette modal was open".into());
+                        check = Err(
+                            "WKWebView remained visible while Command Palette modal was open"
+                                .into(),
+                        );
                     } else if tab.snapshot.is_none() {
-                        check = Err("Retina PNG snapshot was not cached underneath Command Palette modal".into());
+                        check = Err(
+                            "Retina PNG snapshot was not cached underneath Command Palette modal"
+                                .into(),
+                        );
                     }
                 });
                 check
-            });
+            };
 
             let _ = bridge_tx.send(KarCommand::Shutdown).await;
             cx.background_executor()

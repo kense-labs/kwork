@@ -5807,22 +5807,75 @@ impl KarWorkbench {
                     && self.right_surface == RightPaneSurface::Browser
                     && self.layout_mode != WorkspaceLayoutMode::ChatFocus =>
                 {
-                    self.browser
-                        .address_editor
-                        .update(cx, |ed, cx| ed.focus(window, cx));
+                    self.focus_browser_address_bar(window, cx);
                     true
                 }
                 "r" if !shift
                     && self.right_surface == RightPaneSurface::Browser
                     && self.layout_mode != WorkspaceLayoutMode::ChatFocus =>
                 {
-                    if let Some(tab) = self.browser.active_tab_mut()
-                        && let Some(ref wv) = tab.webview
+                    self.reload_active_browser(window, cx);
+                    true
+                }
+                "[" if !shift
+                    && self.right_surface == RightPaneSurface::Browser
+                    && self.layout_mode != WorkspaceLayoutMode::ChatFocus =>
+                {
+                    self.browser_go_back(window, cx);
+                    true
+                }
+                "]" if !shift
+                    && self.right_surface == RightPaneSurface::Browser
+                    && self.layout_mode != WorkspaceLayoutMode::ChatFocus =>
+                {
+                    self.browser_go_forward(window, cx);
+                    true
+                }
+                "=" | "+"
+                    if self.right_surface == RightPaneSurface::Browser
+                        && self.layout_mode != WorkspaceLayoutMode::ChatFocus =>
+                {
+                    self.adjust_browser_zoom(Some(0.15), cx);
+                    true
+                }
+                "-" if !shift
+                    && self.right_surface == RightPaneSurface::Browser
+                    && self.layout_mode != WorkspaceLayoutMode::ChatFocus =>
+                {
+                    self.adjust_browser_zoom(Some(-0.15), cx);
+                    true
+                }
+                "0" if !shift
+                    && self.right_surface == RightPaneSurface::Browser
+                    && self.layout_mode != WorkspaceLayoutMode::ChatFocus =>
+                {
+                    self.adjust_browser_zoom(None, cx);
+                    true
+                }
+                "t" if !shift
+                    && self.right_surface == RightPaneSurface::Browser
+                    && self.layout_mode != WorkspaceLayoutMode::ChatFocus =>
+                {
+                    self.new_browser_subtab(window, cx);
+                    true
+                }
+                "w" if !shift
+                    && self.right_surface == RightPaneSurface::Browser
+                    && self.layout_mode != WorkspaceLayoutMode::ChatFocus =>
+                {
+                    if self.browser.tabs.len() > 1 {
+                        if let Some(tid) = self.browser.active_tab().map(|t| t.id) {
+                            self.close_browser_subtab(tid, window, cx);
+                        }
+                    } else if self
+                        .browser
+                        .active_tab()
+                        .is_some_and(|t| !t.url.is_empty())
                     {
-                        tab.loading = true;
-                        let _ = wv.reload();
+                        self.reset_active_browser_to_home(window, cx);
+                    } else {
+                        self.close_surface(&RightPaneSurface::Browser, cx);
                     }
-                    cx.notify();
                     true
                 }
                 "e" if shift => {
@@ -6960,7 +7013,7 @@ impl KarWorkbench {
     pub(crate) fn close_surface(&mut self, surface: &RightPaneSurface, cx: &mut Context<Self>) {
         match surface {
             RightPaneSurface::Browser => {
-                self.hide_all_browser_webviews();
+                self.teardown_browser_on_dock_close();
                 self.browser_tab_open = false;
             }
             RightPaneSurface::GitWorkbench => self.git_tab_open = false,
