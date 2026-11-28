@@ -4,6 +4,7 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -39,6 +40,7 @@ const SVG_CROSSHAIR_PICKER: &str = r#"<circle cx="12" cy="12" r="7.5" stroke="cu
 const SVG_CAMERA_SHOT: &str = r#"<path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.38a1.5 1.5 0 0 0 1.25-.67l.74-1.11A1.5 1.5 0 0 1 11.12 3.5h1.76a1.5 1.5 0 0 1 1.25.67l.74 1.11a1.5 1.5 0 0 0 1.25.67h1.38A2.5 2.5 0 0 1 20 8.5v8A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-8Z" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12.2" r="3.2" stroke="currentColor" stroke-width="1.8"/>"#;
 const SVG_DEVICE_MOBILE: &str = r#"<rect x="6.5" y="2.5" width="11" height="19" rx="2.4" stroke="currentColor" stroke-width="1.8"/><path d="M10.5 18.5h3" stroke="currentColor" stroke-linecap="round" stroke-width="1.8"/>"#;
 const SVG_DEVICE_TABLET: &str = r#"<rect x="4.5" y="2.5" width="15" height="19" rx="2.4" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="18.5" r="0.9" fill="currentColor"/>"#;
+const SVG_DEVICE_RESPONSIVE: &str = r#"<rect x="2.5" y="4" width="15.5" height="11.5" rx="1.8" stroke="currentColor" stroke-width="1.7"/><path d="M7.5 19h5.5M10.25 15.5V19" stroke="currentColor" stroke-linecap="round" stroke-width="1.7"/><rect x="15.5" y="9" width="6" height="10.5" rx="1.3" fill="none" stroke="currentColor" stroke-width="1.6"/>"#;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BrowserViewportPreset {
@@ -103,7 +105,7 @@ pub struct BrowserTab {
     pub console: VecDeque<BrowserConsoleItem>,
     pub error_count: usize,
     pub warn_count: usize,
-    pub webview: Option<BrowserWebView>,
+    pub webview: Option<Rc<BrowserWebView>>,
     pub pending_html: Option<String>,
     pub last_bounds: LogicalRect,
     pub last_visible: bool,
@@ -463,12 +465,7 @@ impl KarWorkbench {
     pub(crate) fn hide_all_browser_webviews(&mut self) {
         for tab in &mut self.browser.tabs {
             if let Some(ref wv) = tab.webview {
-                if wv.is_focused() {
-                    wv.focus_parent();
-                }
-                if tab.last_visible {
-                    wv.set_visible(false);
-                }
+                wv.set_visible(false);
             }
             tab.last_visible = false;
         }
@@ -510,13 +507,13 @@ impl KarWorkbench {
         window: &mut Window,
     ) {
         if occluded && !self.browser.was_occluded {
-            // Refresh the active tab's PNG backing frame right as an overlay opens.
+            // Capture a fast non-blocking downscaled backing frame right as an overlay opens.
             if let Some(tab) = self.browser.active_tab()
                 && let Some(ref wv) = tab.webview
             {
                 let tab_id = tab.id;
                 let tx = self.browser.snapshot_tx.clone();
-                wv.capture_snapshot_png(move |res| {
+                wv.capture_snapshot_png_fast_backing(move |res| {
                     let _ = tx.try_send((tab_id, SnapshotPurpose::CacheOnly, res));
                 });
             }
@@ -538,11 +535,10 @@ impl KarWorkbench {
         for tab in &mut self.browser.tabs {
             let should_show =
                 Some(tab.id) == active_id && !tab.url.is_empty() && !tab.page_load_failed;
-            if !should_show && tab.last_visible {
-                if let Some(ref wv) = tab.webview {
-                    if wv.is_focused() {
-                        wv.focus_parent();
-                    }
+            if !should_show {
+                if let Some(ref wv) = tab.webview
+                    && (tab.last_visible || wv.is_visible())
+                {
                     wv.set_visible(false);
                 }
                 tab.last_visible = false;
@@ -1264,7 +1260,7 @@ impl KarWorkbench {
                     if let Some(ref wv) = tab.webview {
                         tab.can_go_back = wv.can_go_back();
                         tab.can_go_forward = wv.can_go_forward();
-                        wv.capture_snapshot_png(move |res| {
+                        wv.capture_snapshot_png_fast_backing(move |res| {
                             let _ = tx.try_send((tab_id, SnapshotPurpose::CacheOnly, res));
                         });
                     }
@@ -1425,7 +1421,7 @@ impl KarWorkbench {
                             tab.can_go_back = wv.can_go_back();
                             tab.can_go_forward = wv.can_go_forward();
                             if need_warm_snap {
-                                wv.capture_snapshot_png(move |res| {
+                                wv.capture_snapshot_png_fast_backing(move |res| {
                                     let _ =
                                         snap_tx.try_send((tab_id, SnapshotPurpose::CacheOnly, res));
                                 });
@@ -1858,7 +1854,7 @@ impl KarWorkbench {
 
         let viewport_icon = match viewport {
             BrowserViewportPreset::Responsive => {
-                pro_icon(ProIcon::Expand, 13., s.muted)
+                pro_symbol("0 0 24 24", SVG_DEVICE_RESPONSIVE, 14., s.muted)
             }
             BrowserViewportPreset::Mobile => {
                 pro_symbol("0 0 24 24", SVG_DEVICE_MOBILE, 14., s.pro.accent_info)
@@ -1869,7 +1865,7 @@ impl KarWorkbench {
         };
         let viewport_tip = format!(
             "{} ({})",
-            loc.pick("切换响应式视口尺寸", "Cycle device viewport"),
+            loc.pick("切换手机/平板模拟视口尺寸", "Cycle responsive device viewport"),
             if zh {
                 viewport.label_zh()
             } else {
@@ -2009,6 +2005,29 @@ impl KarWorkbench {
             })
             .child(inspect_btn)
             .child(shot_btn)
+            .when(viewport != BrowserViewportPreset::Responsive, |bar| {
+                bar.child(
+                    Tactile::soft("browser-viewport-reset-100", s)
+                        .h(px(22.))
+                        .px(px(6.5))
+                        .radius(R_PILL)
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(s.pro.accent_info)
+                        .tip(loc.pick("点击恢复 100% 铺满视口", "Reset to 100% full-width viewport"))
+                        .child(if zh {
+                            format!("{} ×", viewport.label_zh())
+                        } else {
+                            format!("{} ×", viewport.label_en())
+                        })
+                        .on_press(cx, |wb, _, cx| {
+                            if let Some(tab) = wb.browser.active_tab_mut() {
+                                tab.viewport = BrowserViewportPreset::Responsive;
+                            }
+                            cx.notify();
+                        }),
+                )
+            })
             .child(viewport_btn)
             .child(console_btn)
             .when(!compact_toolbar && has_live_page, |bar| {
@@ -2192,7 +2211,12 @@ impl KarWorkbench {
             let suppressed = self.browser.webview_suppressed;
             let constrained = viewport.constrained_size();
             let zoom_level = zoom;
+            let existing_wv = self.browser.tabs[active_idx].webview.clone();
 
+            // CRITICAL: Both the occluded snapshot backing (`img`) and the geometry probe (`canvas`)
+            // MUST be `.absolute().inset_0()` inside `.relative()`, and `img` MUST only mount when
+            // `suppressed == true`! Mounting two non-absolute `.size_full()` children inside a GPUI
+            // flex-row `div()` would split the container 50% / 50% side-by-side!
             let webview_slot = div()
                 .relative()
                 .map(|d| {
@@ -2210,105 +2234,107 @@ impl KarWorkbench {
                         d.size_full().bg(s.card)
                     }
                 })
-                .when_some(cached_snapshot, |d, snap| {
-                    d.child(
-                        img(snap)
-                            .size_full()
-                            .object_fit(ObjectFit::Cover),
-                    )
+                .when(suppressed, |d| {
+                    d.when_some(cached_snapshot, |d, snap| {
+                        d.child(
+                            img(snap)
+                                .absolute()
+                                .inset_0()
+                                .size_full()
+                                .object_fit(ObjectFit::Fill),
+                        )
+                    })
                 })
                 .child(
-                    canvas(
-                        |_, _, _| (),
-                        move |bounds, _, win, cx| {
-                            let x = f32::from(bounds.origin.x);
-                            let y = f32::from(bounds.origin.y);
-                            let w = f32::from(bounds.size.width);
-                            let h = f32::from(bounds.size.height);
-                            if w < 4.0 || h < 4.0 {
-                                return;
-                            }
-                            let rect = LogicalRect {
-                                x,
-                                y,
-                                width: w,
-                                height: h,
-                            };
-                            let _ = bench.update(cx, |wb, cx| {
-                                let tx = wb.browser.event_tx.clone();
-                                let hide_now = wb.browser.webview_suppressed || suppressed;
-                                let Some(tab) = wb.browser.tab_by_id_mut(active_tab_id) else {
-                                    return;
-                                };
-                                if tab.url.is_empty() || tab.page_load_failed {
-                                    if tab.last_visible {
-                                        if let Some(ref wv) = tab.webview {
-                                            if wv.is_focused() {
-                                                wv.focus_parent();
-                                            }
-                                            wv.set_visible(false);
-                                        }
-                                        tab.last_visible = false;
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .child(
+                            canvas(
+                                |_, _, _| (),
+                                move |bounds, _, win, cx| {
+                                    let x = f32::from(bounds.origin.x);
+                                    let y = f32::from(bounds.origin.y);
+                                    let w = f32::from(bounds.size.width);
+                                    let h = f32::from(bounds.size.height);
+                                    if w < 4.0 || h < 4.0 {
+                                        return;
                                     }
-                                    return;
-                                }
-                                if tab.webview.is_none() {
-                                    let tid = tab.id;
-                                    let show_initially = !hide_now;
-                                    let init = WebViewInit {
-                                        initial_url: tab
-                                            .pending_html
-                                            .is_none()
-                                            .then(|| tab.url.clone()),
-                                        initial_html: tab.pending_html.take(),
-                                        bounds: rect,
-                                        visible: show_initially,
-                                        on_event: Arc::new(move |ev| {
-                                            let _ = tx.try_send((tid, ev));
-                                        }),
+                                    let rect = LogicalRect {
+                                        x,
+                                        y,
+                                        width: w,
+                                        height: h,
                                     };
-                                    match BrowserWebView::build(win, init) {
-                                        Ok(wv) => {
-                                            if (zoom_level - 1.0).abs() > 0.01 {
-                                                wv.set_zoom(zoom_level);
+                                    // Fast path (99.99% of frames, including live window stretching & divider drag):
+                                    // update `WKWebView` directly in ~15ns without re-borrowing `KarWorkbench`!
+                                    if let Some(ref wv) = existing_wv {
+                                        wv.sync_bounds_and_visibility(rect, !suppressed);
+                                        let _ = bench.update(cx, |wb, _| {
+                                            let hide_now = wb.browser.webview_suppressed || suppressed;
+                                            if let Some(tab) = wb.browser.tab_by_id_mut(active_tab_id) {
+                                                if tab.url.is_empty() || tab.page_load_failed || hide_now {
+                                                    if hide_now {
+                                                        wv.set_visible(false);
+                                                    }
+                                                    tab.last_visible = false;
+                                                } else {
+                                                    tab.last_bounds = rect;
+                                                    tab.last_visible = true;
+                                                }
                                             }
-                                            tab.last_bounds = rect;
-                                            tab.last_visible = show_initially;
-                                            tab.webview = Some(wv);
-                                        }
-                                        Err(err) => {
-                                            tab.loading = false;
-                                            tab.page_load_failed = true;
-                                            tab.last_error_banner = Some(err);
-                                            cx.notify();
-                                        }
+                                        });
+                                        return;
                                     }
-                                } else if let Some(ref wv) = tab.webview {
-                                    let moved = (tab.last_bounds.x - rect.x).abs() > 0.5
-                                        || (tab.last_bounds.y - rect.y).abs() > 0.5
-                                        || (tab.last_bounds.width - rect.width).abs() > 0.5
-                                        || (tab.last_bounds.height - rect.height).abs() > 0.5;
-                                    if moved {
-                                        wv.set_bounds(rect);
-                                        tab.last_bounds = rect;
-                                    }
-                                    if hide_now {
-                                        if tab.last_visible {
-                                            if wv.is_focused() {
-                                                wv.focus_parent();
-                                            }
-                                            wv.set_visible(false);
+                                    let _ = bench.update(cx, |wb, cx| {
+                                        let tx = wb.browser.event_tx.clone();
+                                        let hide_now = wb.browser.webview_suppressed || suppressed;
+                                        let Some(tab) = wb.browser.tab_by_id_mut(active_tab_id) else {
+                                            return;
+                                        };
+                                        if tab.url.is_empty() || tab.page_load_failed {
                                             tab.last_visible = false;
+                                            return;
                                         }
-                                    } else if !tab.last_visible {
-                                        wv.set_visible(true);
-                                        tab.last_visible = true;
-                                    }
-                                }
-                            });
-                        },
-                    )
-                    .size_full(),
+                                        if tab.webview.is_none() {
+                                            let tid = tab.id;
+                                            let show_initially = !hide_now;
+                                            let init = WebViewInit {
+                                                initial_url: tab
+                                                    .pending_html
+                                                    .is_none()
+                                                    .then(|| tab.url.clone()),
+                                                initial_html: tab.pending_html.take(),
+                                                bounds: rect,
+                                                visible: show_initially,
+                                                on_event: Arc::new(move |ev| {
+                                                    let _ = tx.try_send((tid, ev));
+                                                }),
+                                            };
+                                            match BrowserWebView::build(win, init) {
+                                                Ok(wv) => {
+                                                    if (zoom_level - 1.0).abs() > 0.01 {
+                                                        wv.set_zoom(zoom_level);
+                                                    }
+                                                    wv.sync_bounds_and_visibility(rect, show_initially);
+                                                    tab.last_bounds = rect;
+                                                    tab.last_visible = show_initially;
+                                                    tab.webview = Some(Rc::new(wv));
+                                                }
+                                                Err(err) => {
+                                                    tab.loading = false;
+                                                    tab.page_load_failed = true;
+                                                    tab.last_error_banner = Some(err);
+                                                    cx.notify();
+                                                }
+                                            }
+                                        }
+                                    });
+                                },
+                            )
+                            .size_full(),
+                        ),
                 );
 
             if constrained.is_some() {

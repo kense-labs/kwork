@@ -1482,11 +1482,61 @@ mod native {
         }
 
         pub fn set_visible(&self, visible: bool) {
-            let _ = self.inner.set_visible(visible);
+            #[cfg(target_os = "macos")]
+            {
+                macos_delegates::safe_set_visible(&self.inner, visible);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = self.inner.set_visible(visible);
+            }
+        }
+
+        pub fn is_visible(&self) -> bool {
+            #[cfg(target_os = "macos")]
+            {
+                macos_delegates::is_webview_visible(&self.inner)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                false
+            }
+        }
+
+        pub fn native_bounds(&self) -> Option<LogicalRect> {
+            #[cfg(target_os = "macos")]
+            {
+                macos_delegates::read_native_bounds(&self.inner)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                None
+            }
+        }
+
+        /// Self-healing single-pass geometry & visibility sync against live AppKit `WKWebView` state.
+        pub fn sync_bounds_and_visibility(&self, rect: LogicalRect, visible: bool) {
+            #[cfg(target_os = "macos")]
+            {
+                macos_delegates::sync_bounds_and_visibility(&self.inner, rect, visible);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = self.inner.set_bounds(to_wry_rect(rect));
+                let _ = self.inner.set_visible(visible);
+            }
         }
 
         pub fn set_zoom(&self, factor: f64) {
-            let _ = self.inner.zoom(factor.clamp(0.25, 3.0));
+            let clamped = factor.clamp(0.25, 3.0);
+            #[cfg(target_os = "macos")]
+            {
+                macos_delegates::safe_set_zoom(&self.inner, clamped);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = self.inner.zoom(clamped);
+            }
         }
 
         pub fn is_focused(&self) -> bool {
@@ -1583,7 +1633,24 @@ mod native {
         {
             #[cfg(target_os = "macos")]
             {
-                capture_macos_wkwebview_png(&self.inner, callback);
+                capture_macos_wkwebview_png(&self.inner, None, true, callback);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                callback(Err(
+                    "Native WebView snapshot capture is currently supported on macOS".into(),
+                ));
+            }
+        }
+
+        /// Fast, downscaled non-blocking compositor snapshot for modal/overlay backing (`< 4ms`).
+        pub fn capture_snapshot_png_fast_backing<F>(&self, callback: F)
+        where
+            F: FnOnce(Result<CapturedSnapshot, String>) + Send + 'static,
+        {
+            #[cfg(target_os = "macos")]
+            {
+                capture_macos_wkwebview_png(&self.inner, Some(720.0), false, callback);
             }
             #[cfg(not(target_os = "macos"))]
             {
@@ -1632,7 +1699,7 @@ mod native {
             runtime::{AnyObject, Bool, NSObject, ProtocolObject},
             sel,
         };
-        use objc2_app_kit::NSView;
+        use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
         use objc2_foundation::{
             MainThreadMarker, NSArray, NSData, NSError, NSHTTPURLResponse, NSJSONSerialization,
             NSJSONWritingOptions, NSNumber, NSObjectNSKeyValueCoding, NSObjectProtocol, NSPoint,
@@ -2188,6 +2255,9 @@ mod native {
         ) -> Retained<KwrokNavDelegateProxy> {
             let wk = webview.webview();
             let mtm = MainThreadMarker::new().expect("WKWebView must be created on the main thread");
+            // Disable AppKit automatic subview resizing (`ViewMinYMargin` set by `wry`) so GPUI owns
+            // 100% deterministic pixel-exact positioning across live window stretching & zoom.
+            wk.setAutoresizingMask(NSAutoresizingMaskOptions::empty());
             unsafe {
                 // Allow local `file://` bundles (e.g. `dist/index.html` with `<script type="module">` or
                 // `fetch('./data.json')`) to read sibling assets inside the directory granted to
@@ -2270,23 +2340,95 @@ mod native {
             Ok(())
         }
 
+        fn target_ns_rect(parent: &NSView, rect: LogicalRect) -> NSRect {
+            let x = f64::from(rect.x);
+            let y = f64::from(rect.y);
+            let w = f64::from(rect.width.max(1.0));
+            let h = f64::from(rect.height.max(1.0));
+            let origin_y = if parent.isFlipped() {
+                y
+            } else {
+                parent.bounds().size.height - y - h
+            };
+            NSRect::new(NSPoint::new(x, origin_y), NSSize::new(w, h))
+        }
+
         pub fn safe_set_bounds(webview: &WebView, rect: LogicalRect) {
             let wk = webview.webview();
             let Some(parent) = (unsafe { wk.superview() }) else {
                 return;
             };
-            let x = f64::from(rect.x);
-            let y = f64::from(rect.y);
-            let w = f64::from(rect.width.max(1.0));
-            let h = f64::from(rect.height.max(1.0));
-            let is_flipped = parent.isFlipped();
-            let origin_y = if is_flipped {
-                y
+            let target = target_ns_rect(&parent, rect);
+            wk.setFrame(target);
+        }
+
+        pub fn safe_set_visible(webview: &WebView, visible: bool) {
+            let wk = webview.webview();
+            if !visible && is_webview_focused(webview) {
+                let _ = webview.focus_parent();
+            }
+            wk.setHidden(!visible);
+        }
+
+        pub fn is_webview_visible(webview: &WebView) -> bool {
+            !webview.webview().isHidden()
+        }
+
+        pub fn read_native_bounds(webview: &WebView) -> Option<LogicalRect> {
+            let wk = webview.webview();
+            let parent = unsafe { wk.superview() }?;
+            let f = wk.frame();
+            let y = if parent.isFlipped() {
+                f.origin.y
             } else {
-                parent.frame().size.height - y - h
+                parent.bounds().size.height - f.origin.y - f.size.height
             };
-            let frame = NSRect::new(NSPoint::new(x, origin_y), NSSize::new(w, h));
-            wk.setFrame(frame);
+            Some(LogicalRect {
+                x: f.origin.x as f32,
+                y: y as f32,
+                width: f.size.width as f32,
+                height: f.size.height as f32,
+            })
+        }
+
+        pub fn sync_bounds_and_visibility(webview: &WebView, rect: LogicalRect, visible: bool) {
+            let wk = webview.webview();
+            if !visible {
+                if !wk.isHidden() {
+                    if is_webview_focused(webview) {
+                        let _ = webview.focus_parent();
+                    }
+                    wk.setHidden(true);
+                }
+                return;
+            }
+            let Some(parent) = (unsafe { wk.superview() }) else {
+                return;
+            };
+            let target = target_ns_rect(&parent, rect);
+            let was_hidden = wk.isHidden();
+            let cur = wk.frame();
+            let frame_changed = (cur.origin.x - target.origin.x).abs() > 0.05
+                || (cur.origin.y - target.origin.y).abs() > 0.05
+                || (cur.size.width - target.size.width).abs() > 0.05
+                || (cur.size.height - target.size.height).abs() > 0.05;
+            if was_hidden {
+                wk.setHidden(false);
+                wk.setFrame(target);
+                wk.layoutSubtreeIfNeeded();
+            } else if frame_changed {
+                wk.setFrame(target);
+            }
+        }
+
+        pub fn safe_set_zoom(webview: &WebView, factor: f64) {
+            let wk = webview.webview();
+            unsafe {
+                wk.setPageZoom(factor);
+                if (factor - 1.0).abs() < 0.01 {
+                    wk.setMagnification(1.0);
+                }
+            }
         }
 
         pub fn is_webview_focused(webview: &WebView) -> bool {
@@ -2389,16 +2531,30 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    fn capture_macos_wkwebview_png<F>(webview: &WebView, callback: F)
-    where
+    fn capture_macos_wkwebview_png<F>(
+        webview: &WebView,
+        max_width_pts: Option<f64>,
+        after_updates: bool,
+        callback: F,
+    ) where
         F: FnOnce(Result<CapturedSnapshot, String>) + Send + 'static,
     {
         use block2::RcBlock;
         use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
-        use objc2_foundation::{NSDictionary, NSError};
+        use objc2_foundation::{MainThreadMarker, NSDictionary, NSError, NSNumber};
+        use objc2_web_kit::WKSnapshotConfiguration;
         use wry::WebViewExtMacOS;
 
         let wk = webview.webview();
+        let cfg = MainThreadMarker::new().map(|mtm| unsafe {
+            let c = WKSnapshotConfiguration::new(mtm);
+            c.setAfterScreenUpdates(after_updates);
+            if let Some(w) = max_width_pts {
+                let num = NSNumber::numberWithDouble(w);
+                c.setSnapshotWidth(Some(&num));
+            }
+            c
+        });
         let slot = std::sync::Mutex::new(Some(callback));
         let block = RcBlock::new(move |image: *mut NSImage, error: *mut NSError| {
             let Some(done) = slot.lock().ok().and_then(|mut g| g.take()) else {
@@ -2442,7 +2598,7 @@ mod native {
         });
 
         unsafe {
-            wk.takeSnapshotWithConfiguration_completionHandler(None, &block);
+            wk.takeSnapshotWithConfiguration_completionHandler(cfg.as_deref(), &block);
         }
     }
 }
@@ -2514,6 +2670,13 @@ mod native {
 
         pub fn set_bounds(&self, _rect: LogicalRect) {}
         pub fn set_visible(&self, _visible: bool) {}
+        pub fn is_visible(&self) -> bool {
+            false
+        }
+        pub fn native_bounds(&self) -> Option<LogicalRect> {
+            None
+        }
+        pub fn sync_bounds_and_visibility(&self, _rect: LogicalRect, _visible: bool) {}
         pub fn set_zoom(&self, _factor: f64) {}
         pub fn is_focused(&self) -> bool {
             false
@@ -2540,6 +2703,14 @@ mod native {
         }
         pub fn set_inspect_mode(&self, _active: bool) {}
         pub fn capture_snapshot_png<F>(&self, callback: F)
+        where
+            F: FnOnce(Result<CapturedSnapshot, String>) + Send + 'static,
+        {
+            callback(Err(
+                "System WebView snapshot is unavailable on this platform".into(),
+            ));
+        }
+        pub fn capture_snapshot_png_fast_backing<F>(&self, callback: F)
         where
             F: FnOnce(Result<CapturedSnapshot, String>) + Send + 'static,
         {

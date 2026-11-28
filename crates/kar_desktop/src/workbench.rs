@@ -7358,13 +7358,12 @@ impl Render for KarWorkbench {
         let single_dock = compact && show_doc;
         let browser_mounted = show_doc
             && self.right_surface == RightPaneSurface::Browser
-            && (single_dock || dock_reveal > 0.85);
+            && (single_dock || dock_reveal > 0.96);
         let browser_occluded = overlay_open
             || drawer_active
             || self.command_palette_open
             || self.open_menu.is_some()
             || self.any_dialog_open(cx)
-            || self.pane_drag.is_some()
             || kantor_ui::overlay::menu_shield(window).is_some();
         self.sync_browser_webview_visibility(browser_mounted, browser_occluded, window);
         if in_conversation_stage && !single_dock && !drawer_active && !overlay_open

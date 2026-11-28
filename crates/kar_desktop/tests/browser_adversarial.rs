@@ -485,6 +485,48 @@ fn verify_ui_focus_zoom_subtabs_and_teardown(
         }
     }
 
+    // 3b. Regression Torture for Live Window Stretching / Shrinking + Snapshot-Cached 100% Fill!
+    // Even after `tab.snapshot` is populated (from LoadFinished / Command Palette occlusion),
+    // stretching & shrinking the window across 8 sizes must NEVER split the slot 50%/50% or leave
+    // WKWebView misaligned from the bottom-right corner of the window!
+    wb_ent.update(cx, |wb, cx| {
+        wb.toggle_command_palette(win, cx);
+    });
+    win.refresh();
+    win.draw(cx).clear(cx);
+    wb_ent.update(cx, |wb, cx| {
+        wb.toggle_command_palette(win, cx);
+    });
+    for &(target_w, target_h) in &[
+        (1480.0f32, 920.0f32),
+        (960.0, 620.0),
+        (1600.0, 980.0),
+        (1080.0, 700.0),
+        (1340.0, 840.0),
+        (860.0, 580.0),
+        (1240.0, 800.0),
+    ] {
+        win.resize(size(px(target_w), px(target_h)));
+        win.refresh();
+        win.draw(cx).clear(cx);
+        let actual_vp = win.viewport_size();
+        let vp_w = f32::from(actual_vp.width);
+        let vp_h = f32::from(actual_vp.height);
+        let wb = wb_ent.read(cx);
+        let tab = wb.browser.active_tab().ok_or("missing active tab during resize")?;
+        let wv = tab.webview.as_ref().ok_or("missing webview during resize")?;
+        let nb = wv
+            .native_bounds()
+            .ok_or("native_bounds returned None during resize")?;
+        let right_edge_gap = (vp_w - (nb.x + nb.width)).abs();
+        let bottom_edge_gap = (vp_h - (nb.y + nb.height)).abs();
+        if right_edge_gap > 2.0 || bottom_edge_gap > 2.0 || nb.width < vp_w * 0.36 {
+            return Err(format!(
+                "Browser WebView failed to stay 100% full-bleed after window resize to ({vp_w}x{vp_h}): native_bounds={nb:?}, right_gap={right_edge_gap}, bottom_gap={bottom_edge_gap}"
+            ));
+        }
+    }
+
     // 4. Rapid Subtab Stress: try creating 35 subtabs -> must cap cleanly at MAX_BROWSER_TABS (24)
     wb_ent.update(cx, |wb, cx| {
         for i in 0..35 {
