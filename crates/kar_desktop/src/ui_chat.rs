@@ -820,11 +820,9 @@ impl KarWorkbench {
                                     ))
                                     .child(pro_icon(ProIcon::Globe, 13., s.pro.accent_info))
                                     .child(format!("localhost:{port}"))
-                                    .on_press(cx, move |_, _, _| {
+                                    .on_press(cx, move |this, win, cx| {
                                         let url = format!("http://localhost:{port}");
-                                        let _ = std::process::Command::new("open")
-                                            .arg(&url)
-                                            .spawn();
+                                        this.open_url_in_browser(&url, false, win, cx);
                                     }),
                             )
                         },
@@ -2920,7 +2918,7 @@ impl KarWorkbench {
         s: &StudioPalette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let doc = if target.is_code() {
+        let doc = if target.is_code() || target.is_web() {
             target.doc_name.clone()
         } else {
             clean_display_doc_name(&target.doc_name)
@@ -2937,6 +2935,17 @@ impl KarWorkbench {
                 .items_center()
                 .justify_center()
                 .child(pro_icon(ProIcon::Code, 11., s.pro.purple))
+                .into_any_element()
+        } else if target.is_web() {
+            div()
+                .size(px(18.))
+                .flex_none()
+                .rounded(px(4.))
+                .bg(s.pro.accent_soft)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(pro_icon(ProIcon::Globe, 11., s.pro.accent_info))
                 .into_any_element()
         } else {
             render_office_chip(target.kind, s).into_any_element()
@@ -3012,6 +3021,10 @@ impl KarWorkbench {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let has_doc = self.active_office_tab.is_some();
+        let has_live_browser = self
+            .browser
+            .active_tab()
+            .is_some_and(|t| !t.url.is_empty());
         let loc = self.ui_locale;
         let mut rows: Vec<AnyElement> = vec![
             menu_icon_item(
@@ -3023,6 +3036,24 @@ impl KarWorkbench {
             .disabled(!has_doc)
             .on_press(cx, |this, window, cx| {
                 this.bind_active_selection_to_chat(window, cx)
+            })
+            .into_any_element(),
+            menu_icon_item(
+                "cmp-add-web-inspect",
+                ProIcon::Globe,
+                if has_live_browser {
+                    loc.pick("点选网页元素", "Pick web element")
+                } else {
+                    loc.pick("打开内置浏览器", "Open built-in browser")
+                },
+                s,
+            )
+            .on_press(cx, move |this, _, cx| {
+                this.open_menu = None;
+                this.open_browser_dock_tab(cx);
+                if has_live_browser {
+                    this.toggle_browser_inspect_mode(cx);
+                }
             })
             .into_any_element(),
             menu_item(
@@ -3889,7 +3920,7 @@ impl KarWorkbench {
         s: &StudioPalette,
         cx: &mut Context<Self>,
     ) -> Tactile {
-        let doc = if target.is_code() {
+        let doc = if target.is_code() || target.is_web() {
             target.doc_name.clone()
         } else {
             clean_display_doc_name(&target.doc_name)
@@ -3905,6 +3936,17 @@ impl KarWorkbench {
                 .items_center()
                 .justify_center()
                 .child(pro_icon(ProIcon::Code, 11., s.pro.purple))
+                .into_any_element()
+        } else if target.is_web() {
+            div()
+                .size(px(18.))
+                .flex_none()
+                .rounded(px(4.))
+                .bg(s.pro.accent_soft)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(pro_icon(ProIcon::Globe, 11., s.pro.accent_info))
                 .into_any_element()
         } else {
             render_office_chip(target.kind, s).into_any_element()
@@ -4812,7 +4854,7 @@ impl KarWorkbench {
         text: &str,
         streaming: bool,
         s: &StudioPalette,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Div {
         div()
             .w_full()
@@ -4827,6 +4869,7 @@ impl KarWorkbench {
                 streaming,
                 muted: s.muted,
                 copy_label: self.ui_locale.pick("复制代码", "Copy code"),
+                workbench: cx.weak_entity(),
             })
     }
 
@@ -4848,13 +4891,22 @@ impl KarWorkbench {
     ) -> Div {
         let default_open = active || text.chars().count() <= 360;
         let open = self.part_is_open(key, default_open);
-        let body = div()
-            .text_size(s.font_size(FS_CONTROL))
-            .line_height(s.line_height(LH_UI))
-            .text_color(s.muted)
-            .child(text.to_owned())
-            .into_any_element();
-        let estimate = 28. + (text.chars().count() as f32 / 46.).ceil() * LH_UI;
+        let body = reply_stream::ReasoningText {
+            turn_id: key.0,
+            step_ix: key.1,
+            source: SharedString::from(text.to_owned()),
+            active,
+            font_size: s.font_size(FS_CONTROL),
+            line_height: s.line_height(LH_UI),
+            color: s.muted,
+        }
+        .into_any_element();
+        let visual_lines: f32 = text
+            .split('\n')
+            .map(|line| ((line.chars().count().max(1) as f32) / 40.).ceil())
+            .sum::<f32>()
+            .max(1.);
+        let estimate = 32. + visual_lines * (LH_UI + 2.);
         div()
             .w_full()
             .min_w_0()
@@ -5059,18 +5111,28 @@ impl KarWorkbench {
             let name = path.display().to_string();
             let office = OfficeKind::for_path(&path);
             let full = workspace.join(&path);
+            let can_open_local = !matches!(
+                self.access_mode,
+                ChatAccessMode::HttpReadOnly { .. } | ChatAccessMode::RemoteController { .. }
+            ) && full.is_file();
             let verb_localized = match verb {
                 "新增" => loc.pick("新增", "Added"),
                 "删除" => loc.pick("删除", "Deleted"),
                 _ => loc.pick("修改", "Modified"),
             };
 
+            let leading_icon = match office {
+                Some(kind) => crate::ui_primitives::render_office_chip(kind, s).into_any_element(),
+                None => render_file_diff_icon(16., s.muted).into_any_element(),
+            };
+
             let row_btn = Tactile::ghost(SharedString::from(format!("file-{turn}-{ix}")), s)
-                .w_full()
+                .flex_1()
+                .min_w_0()
                 .h(px(36.))
                 .px(px(8.))
                 .gap(px(10.))
-                .child(render_file_diff_icon(16., s.muted))
+                .child(leading_icon)
                 .child(
                     div()
                         .flex_1()
@@ -5080,6 +5142,14 @@ impl KarWorkbench {
                         .text_color(s.ink)
                         .child(name.clone()),
                 )
+                .when(office.is_some() && can_open_local, |btn| {
+                    btn.child(
+                        div()
+                            .text_size(s.font_size(FS_META))
+                            .text_color(s.pro.accent_info)
+                            .child(loc.pick("打开阅读", "Open")),
+                    )
+                })
                 .child(
                     div()
                         .text_size(s.font_size(FS_META))
@@ -5087,6 +5157,49 @@ impl KarWorkbench {
                         .child(verb_localized),
                 );
 
+            // Office & PDF documents always open directly in Kwrok's built-in Kantor Office editor
+            // on click so generated articles/reports/sheets are immediately readable!
+            if office.is_some() && can_open_local {
+                let open_full = full.clone();
+                let open_btn = row_btn
+                    .aria(format!("在内置文档中打开 {name}"))
+                    .tip(loc.pick("在右侧内置文档编辑器中打开阅读与编辑", "Open in built-in Office editor"))
+                    .on_press(cx, move |this, window, cx| {
+                        this.open_office_file_tab(open_full.clone(), false, None, window, cx);
+                    });
+                let mut line_row = div().w_full().flex().items_center().gap(px(4.)).child(open_btn);
+                if reviewable && let Some(chat) = self.current_chat_id() {
+                    let key = crate::turn_review::ReviewKey {
+                        chat,
+                        turn,
+                        index,
+                        path,
+                    };
+                    let active = self.turn_review.as_ref().is_some_and(|r| r.key == key);
+                    line_row = line_row.child(
+                        Tactile::ghost(SharedString::from(format!("file-diff-{turn}-{ix}")), s)
+                            .h(px(28.))
+                            .px(px(8.))
+                            .lit(active)
+                            .text_size(s.font_size(FS_META))
+                            .text_color(s.muted)
+                            .tip(loc.pick("查看本轮大纲与文本变更", "View text summary"))
+                            .child(loc.pick("大纲", "Diff"))
+                            .on_press(cx, move |this, win, cx| {
+                                if this.turn_review.as_ref().is_some_and(|r| r.key == key) {
+                                    this.close_file_review(win, cx);
+                                } else {
+                                    this.open_checkpoint_review(key.clone());
+                                }
+                                cx.notify();
+                            }),
+                    );
+                }
+                rows_col = rows_col.child(line_row);
+                continue;
+            }
+
+            let row_btn = row_btn.w_full();
             let row_btn = if reviewable && let Some(chat) = self.current_chat_id() {
                 let key = crate::turn_review::ReviewKey {
                     chat,
@@ -5106,11 +5219,7 @@ impl KarWorkbench {
                         }
                         cx.notify();
                     })
-            } else if !matches!(
-                self.access_mode,
-                ChatAccessMode::HttpReadOnly { .. } | ChatAccessMode::RemoteController { .. }
-            ) && full.is_file()
-            {
+            } else if can_open_local {
                 row_btn.on_press(cx, move |this, window, cx| {
                     if office.is_some() {
                         this.open_office_file_tab(full.clone(), false, None, window, cx);
@@ -5196,6 +5305,14 @@ impl KarWorkbench {
             crate::ui_primitives::UiLocale::Zh => format!("第 {} 轮差异", key.index + 1),
             crate::ui_primitives::UiLocale::En => format!("Turn {} diff", key.index + 1),
         };
+        let office_full = OfficeKind::for_path(&key.path)
+            .map(|_| self.effective_workspace_dir().join(&key.path))
+            .filter(|p| {
+                !matches!(
+                    self.access_mode,
+                    ChatAccessMode::HttpReadOnly { .. } | ChatAccessMode::RemoteController { .. }
+                ) && p.is_file()
+            });
         let mut panel = div()
             .w_full()
             .min_w_0()
@@ -5227,6 +5344,18 @@ impl KarWorkbench {
                             .text_color(s.ink)
                             .child(name.clone()),
                     )
+                    .when_some(office_full, |hdr, full_path| {
+                        hdr.child(
+                            soft_button_sm(
+                                "open-review-office-doc",
+                                loc.pick("在内置文档中打开", "Open in Office"),
+                                s,
+                            )
+                            .on_press(cx, move |this, win, cx| {
+                                this.open_office_file_tab(full_path.clone(), false, None, win, cx);
+                            }),
+                        )
+                    })
                     .child(div().text_size(s.font_size(FS_META)).text_color(s.muted).child(label))
                     .child(
                         icon_button(

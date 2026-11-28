@@ -151,13 +151,32 @@ pub(crate) async fn run(
             return Ok(());
         }
         Action::Prepare(id) => {
+            if !crate::node_runtime::has_npm_in_path(&augmented_path_os()) {
+                let _ = events
+                    .send(KarBridgeEvent::ToastMessage {
+                        text: format!("正在准备运行环境并安装插件 {id}…"),
+                        warning: false,
+                    })
+                    .await;
+                let _ = tokio::task::spawn_blocking(|| {
+                    crate::node_runtime::ensure_node_and_npm(&augmented_path_os())
+                })
+                .await;
+            }
             engine
                 .request(
                     Method::POST,
                     "/acp-registry/prepare",
                     Some(json!({"agent_id":id})),
                 )
-                .await?;
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", crate::node_runtime::humanize_agent_error(&e.to_string())))?;
+            let _ = events
+                .send(KarBridgeEvent::ToastMessage {
+                    text: format!("{id} 已准备就绪"),
+                    warning: false,
+                })
+                .await;
         }
         Action::Register(agent) => {
             let path = program(&agent.command)?;

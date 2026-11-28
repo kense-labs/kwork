@@ -1,0 +1,25 @@
+[package]
+name = "kwrok_webview"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "System WebView host, DOM inspector bridge, and Retina snapshot capture for Kwrok"
+
+[lints]
+
+[dependencies]
+raw-window-handle = "0.6"
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = "2"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+wry = { version = "0.57.1", default-features = false, features = ["os-webview", "devtools"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSBitmapImageRep", "NSGraphics", "NSImage", "NSImageRep", "NSResponder", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSData", "NSDictionary", "NSError", "NSGeometry", "NSObject", "NSString"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["WKSnapshotConfiguration", "WKWebView", "block2"] }

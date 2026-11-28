@@ -1,10 +1,14 @@
 //! Live Model Context Protocol (`kar::serve_mcp_tools`) bridge connecting Kar CLI agents
-//! directly to open Kantor Office (`DocsView`, `SheetsView`, `SlidesView`) tabs in the window.
+//! directly to open Kantor Office (`DocsView`, `SheetsView`, `SlidesView`) tabs, KUI Briefs,
+//! and Kwrok's built-in System WebView Browser (`WKWebView` / `WebView2`).
 
+use std::io::{BufRead, Read, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use docs_engine::{Position as DocPos, Selection as DocSel, agent::NewParagraph};
+use base64::Engine as _;
+use docs_engine::{Position as DocPos, Selection as DocSel};
 use gpui::*;
 use kar::host_tools::{HostTool, HostToolContent, HostToolResult, ServedMcpTools};
 use serde_json::{Map, Value, json};
@@ -14,17 +18,37 @@ use tokio::sync::oneshot;
 use crate::{
     kar_bridge::KarBridgeEvent,
     office_host::{OfficeEditorView, OfficeTab, clean_doc_para_text},
+    ui_browser::SnapshotPurpose,
     ui_primitives::clean_display_doc_name,
-    workbench::KarWorkbench,
+    workbench::{KarWorkbench, RightPaneSurface},
 };
 
 const MCP_INSTRUCTIONS: &str = "\
-Kwrok hosts live Kantor Office editors (`Word .docx`, `Excel .xlsx`, `PPT .pptx`) AND native KUI Interactive Briefs beside this chat. \
-Use `office_list_tabs` and `office_get_selection` to inspect open documents and their monotonic `revision`, \
-`office_read_*` / `office_edit_*` / `office_write_excel` (passing optional `operation_id` and `expected_revision` for safe revision-fenced co-editing), \
-and `kar_write_brief` / `kar_read_brief` to render pure-GPUI KUI interactive charts, Sankey flows, rolling KPIs, and review forms directly in the chat.";
+Kwrok hosts live WPS-grade Kantor Office editors (`Word .docx`, `Excel .xlsx`, `PPT .pptx`, `PDF .pdf`), native KUI Interactive Briefs, AND a live built-in System WebView Browser right beside this conversation.\n\
+\n\
+IMPORTANT DOCUMENT AUTHORING WORKFLOW:\n\
+1. PROACTIVELY USE BUILT-IN OFFICE: Whenever the user asks to write, draft, compose, or polish an article, essay, report, notice, contract, Word document, spreadsheet, or presentation — even if no file is open yet — ALWAYS call `office_create_document` first (or `office_open_document` for an existing local file) to open it live in Kwrok's side-by-side Office canvas instead of dumping long walls of text into chat or running ad-hoc scripts.\n\
+2. WPS-GRADE TYPOGRAPHY: When authoring Word documents with `office_edit_word` / `office_format_word` / `office_page_setup` / `office_edit_word_table`:\n\
+   - Set proper hierarchy (`Title` centered + bold, `Heading1`–`Heading3` with `keep_next: true`), Chinese fonts (`黑体`/`宋体`/`仿宋`/`楷体`/`PingFang SC`) & sizes (`二号`/`三号`/`小四` or `size_pt`), body `first_line_indent_chars: 2` (2em first-line indent for Chinese prose), comfortable `line_spacing` (`1.5`–`1.6` or `line_spacing_exact_pt: 28` for `official_zh`), structured tables (`border_style: \"three_line\"` or `\"grid\"` with `header_row: true`), and page setup / page numbers.\n\
+3. VISUAL & LIFECYCLE CLOSURE: After writing or formatting a document, call `office_render_preview` to visually inspect the rendered page PNG (verifying centered title, indentation, table borders, and zero `layout_warnings` such as orphaned headings), then call `office_save_tab` (passing `path` if `NEEDS_SAVE_AS` is returned) so the file is cleanly saved on disk, and reply in chat with a concise summary.\n\
+4. KUI & BROWSER: Use `kar_write_brief` / `kar_read_brief` for interactive KUI Brief cards, and `browser_open` / `browser_status` / `browser_snapshot` / `browser_act` / `browser_eval` / `browser_console` / `browser_screenshot` for live web pages and local dev servers.";
 
-type McpReplyTx = oneshot::Sender<Result<String, String>>;
+#[derive(Clone, Debug)]
+pub struct McpToolOutput {
+    pub text: String,
+    pub image_png_base64: Option<String>,
+}
+
+impl From<String> for McpToolOutput {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            image_png_base64: None,
+        }
+    }
+}
+
+type McpReplyTx = oneshot::Sender<Result<McpToolOutput, String>>;
 
 #[derive(Clone)]
 pub struct OfficeMcpCall {
@@ -43,7 +67,11 @@ impl std::fmt::Debug for OfficeMcpCall {
 }
 
 impl OfficeMcpCall {
-    pub fn respond(self, result: Result<String, String>) {
+    pub fn respond(&self, result: Result<String, String>) {
+        self.respond_output(result.map(McpToolOutput::from));
+    }
+
+    pub fn respond_output(&self, result: Result<McpToolOutput, String>) {
         if let Ok(mut guard) = self.reply.lock()
             && let Some(tx) = guard.take()
         {
@@ -88,18 +116,27 @@ fn make_tool(
                 }
                 tokio::select! {
                     _ = cancel.cancelled() => Err("操作已取消".into()),
-                    res = tokio::time::timeout(Duration::from_secs(10), reply_rx) => {
+                    res = tokio::time::timeout(Duration::from_secs(30), reply_rx) => {
                         match res {
-                            Ok(Ok(Ok(text))) => Ok(HostToolResult {
-                                content: vec![HostToolContent::Text { text }],
-                                is_error: false,
-                            }),
+                            Ok(Ok(Ok(out))) => {
+                                let mut content = vec![HostToolContent::Text { text: out.text }];
+                                if let Some(data) = out.image_png_base64 {
+                                    content.push(HostToolContent::Image {
+                                        data,
+                                        mime_type: "image/png".into(),
+                                    });
+                                }
+                                Ok(HostToolResult {
+                                    content,
+                                    is_error: false,
+                                })
+                            }
                             Ok(Ok(Err(err))) => Ok(HostToolResult {
                                 content: vec![HostToolContent::Text { text: err }],
                                 is_error: true,
                             }),
-                            Ok(Err(_)) => Err("桌面文档窗口当前未打开".into()),
-                            Err(_) => Err("等待桌面文档响应超时".into()),
+                            Ok(Err(_)) => Err("桌面工作台窗口当前未打开".into()),
+                            Err(_) => Err("等待桌面工作台响应超时".into()),
                         }
                     }
                 }
@@ -115,8 +152,44 @@ pub(crate) const OFFICE_SERVER_NAME: &str = "kantor";
 pub(crate) fn office_tool_specs() -> Vec<(&'static str, &'static str, Value)> {
     vec![
         (
+            "office_create_document",
+            "Create a new Word (.docx), Excel (.xlsx), or PowerPoint (.pptx) document, bind its file path on disk (default `<workspace>/<title>.<ext>`), apply an optional typography preset (`clean_article`, `official_zh`, `academic`, `modern_business`), and open it live in Kwrok's built-in Office pane.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["word", "excel", "ppt"],
+                        "description": "Document format to create (`word` -> .docx, `excel` -> .xlsx, `ppt` -> .pptx; default `word`)."
+                    },
+                    "title": { "type": "string", "description": "Document title (used as default filename stem and inserted as centered Title in Word when provided)." },
+                    "path": { "type": "string", "description": "Optional relative (to workspace) or absolute save path. When omitted, defaults to `<workspace>/<title>.<ext>`." },
+                    "preset": {
+                        "type": "string",
+                        "enum": ["clean_article", "official_zh", "academic", "modern_business"],
+                        "description": "Typography & page-setup preset for Word (`official_zh` = GB/T 9704 official document, `academic` = thesis/paper, `modern_business` = business report, `clean_article` = polished essay/article)."
+                    },
+                    "untitled": { "type": "boolean", "description": "Set true only to open an unsaved scratch tab without writing an initial file to disk (default false)." },
+                    "overwrite": { "type": "boolean", "description": "Overwrite `path` if a file already exists there (default false)." }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "office_open_document",
+            "Open an existing local Word (.docx/.doc/.rtf/.odt), Excel (.xlsx/.xls/.ods/.csv), PowerPoint (.pptx/.ppt/.odp), or PDF (.pdf) file into Kwrok's built-in Office pane.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Workspace-relative or absolute path to the document." }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+        ),
+        (
             "office_list_tabs",
-            "List open Word (.docx), Excel (.xlsx), and PowerPoint (.pptx) tabs in the Kwrok Office pane.",
+            "List open Word (.docx), Excel (.xlsx), PowerPoint (.pptx), and PDF (.pdf) tabs in the Kwrok Office pane.",
             json!({
                 "type": "object",
                 "properties": {},
@@ -133,31 +206,172 @@ pub(crate) fn office_tool_specs() -> Vec<(&'static str, &'static str, Value)> {
             }),
         ),
         (
+            "office_inspect_document",
+            "Deeply inspect an open Word, Excel, PowerPoint, or PDF tab: returns exact page count, paper & margin setup (cm), headers & footers, heading outline, all tables with cell previews, inline/floating pictures & textboxes, footnotes/endnotes, comments, and layout warnings.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "tab_id": { "type": "integer", "description": "Optional tab_id from `office_list_tabs`; defaults to active tab." }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        (
             "office_read_word",
-            "Read paragraphs (1-based index, style, text) from an open Word (.docx) tab.",
+            "Read paragraphs (1-based index, effective style, alignment, font, size_pt, first-line indent, line spacing, list/table membership, and text) from an open Word (.docx) tab.",
             json!({
                 "type": "object",
                 "properties": {
                     "tab_id": { "type": "integer", "description": "Optional tab_id from office_list_tabs; defaults to active Word tab." },
                     "start_paragraph": { "type": "integer", "description": "1-based starting paragraph (default 1)." },
-                    "limit": { "type": "integer", "description": "Max paragraphs to return (default 40)." }
+                    "limit": { "type": "integer", "description": "Max paragraphs to return (default 60, max 200)." }
                 },
                 "additionalProperties": false
             }),
         ),
         (
             "office_edit_word",
-            "Replace a 1-based paragraph's text or insert new paragraphs in an open Word (.docx) tab as one undoable step.",
+            "Author or edit paragraphs in an open Word (.docx) tab as one undoable step. Supports replacing a paragraph, replacing the whole document (`replace_all: true`), deleting a range, find-and-replace, or inserting rich styled paragraphs (headings, centered titles, Chinese fonts/sizes like `黑体`/`宋体` + `二号`/`三号`/`小四`, `first_line_indent_chars: 2`, line spacing, bullet/numbered lists, inline `**bold**` markdown or `runs`).",
             json!({
                 "type": "object",
                 "properties": {
                     "tab_id": { "type": "integer", "description": "Optional tab_id; defaults to active Word tab." },
                     "operation_id": { "type": "string", "description": "Optional UUID for idempotent replay protection." },
-                    "expected_revision": { "type": "integer", "description": "Optional revision fence from `office_list_tabs` / `office_read_word`; prevents overwriting concurrent human edits." },
+                    "expected_revision": { "type": "integer", "description": "Optional revision fence from `office_list_tabs` / `office_read_word`." },
                     "paragraph": { "type": "integer", "description": "1-based paragraph index to replace." },
                     "text": { "type": "string", "description": "Replacement text when `paragraph` is set." },
-                    "insert_after": { "type": "integer", "description": "0 to insert at top, or 1-based paragraph index after which to insert `paragraphs`." },
-                    "paragraphs": { "type": "array", "items": { "type": "string" }, "description": "New paragraphs to insert when `insert_after` is provided." }
+                    "replace_all": { "type": "boolean", "description": "When true with `paragraphs`, replaces the entire document body cleanly with the rich `paragraphs` array in one undo step." },
+                    "insert_after": { "type": "integer", "description": "0 to insert at top, or 1-based paragraph index after which to insert `paragraphs` (omit to append at end)." },
+                    "paragraphs": {
+                        "type": "array",
+                        "description": "Array of plain strings OR rich paragraph objects `{ text, style (Title|Subtitle|Heading1..Heading6|Quote|Normal|标题|一级标题..), align (left|center|right|justify), font, ascii_font, size_pt, size_zh (初号..小五), bold, italic, underline, color (#RRGGBB), highlight, first_line_indent_chars (e.g. 2), line_spacing (e.g. 1.5), line_spacing_exact_pt, space_before_pt, space_after_pt, list (bullet|number), level, keep_next, page_break_before, markdown (bool), runs: [{ text, bold, italic, underline, color, font, size_pt }] }`.",
+                        "items": {}
+                    },
+                    "delete_range": {
+                        "type": "object",
+                        "description": "Delete body paragraphs `{ start_paragraph: 1-based, count: integer }`.",
+                        "properties": {
+                            "start_paragraph": { "type": "integer" },
+                            "count": { "type": "integer" }
+                        },
+                        "required": ["start_paragraph", "count"]
+                    },
+                    "find_replace": {
+                        "type": "object",
+                        "description": "Global find-and-replace across the document.",
+                        "properties": {
+                            "find": { "type": "string" },
+                            "replace": { "type": "string" },
+                            "match_case": { "type": "boolean" },
+                            "whole_word": { "type": "boolean" }
+                        },
+                        "required": ["find", "replace"]
+                    }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "office_format_word",
+            "Format existing paragraphs (`start_paragraph..=end_paragraph`) or apply a document-wide typography preset (`clean_article`, `official_zh`, `academic`, `modern_business`) in an open Word (.docx) tab.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "tab_id": { "type": "integer", "description": "Optional tab_id; defaults to active Word tab." },
+                    "preset": {
+                        "type": "string",
+                        "enum": ["clean_article", "official_zh", "academic", "modern_business"],
+                        "description": "Apply a complete document typography preset across all headings & body paragraphs."
+                    },
+                    "start_paragraph": { "type": "integer", "description": "1-based start paragraph index." },
+                    "end_paragraph": { "type": "integer", "description": "1-based inclusive end paragraph index (defaults to `start_paragraph`)." },
+                    "style": { "type": "string", "description": "Paragraph style (`Title`, `Subtitle`, `Heading1`..`Heading6`, `Quote`, `Normal`, or Chinese aliases `标题`, `一级标题`..)." },
+                    "align": { "type": "string", "enum": ["left", "center", "right", "justify"] },
+                    "font": { "type": "string", "description": "Font family (e.g. `宋体`, `黑体`, `楷体`, `仿宋`, `微软雅黑`, `PingFang SC`, `Times New Roman`)." },
+                    "ascii_font": { "type": "string", "description": "Optional Western/ASCII font paired with East Asian `font` (e.g. `Times New Roman`)." },
+                    "size_pt": { "type": "number", "description": "Font size in points (e.g. 22, 16, 14, 12, 10.5)." },
+                    "size_zh": { "type": "string", "description": "Chinese font size name (`初号`, `小初`, `一号`, `小一`, `二号`, `小二`, `三号`, `小三`, `四号`, `小四`, `五号`, `小五`)." },
+                    "bold": { "type": "boolean" },
+                    "italic": { "type": "boolean" },
+                    "underline": { "type": "boolean" },
+                    "color": { "type": "string", "description": "Hex text color `#RRGGBB`." },
+                    "highlight": { "type": "string", "description": "Highlight color (`yellow`, `green`, `cyan`, `magenta`, `blue`, `red`, `lightGray`)." },
+                    "first_line_indent_chars": { "type": "number", "description": "First-line indent in characters (e.g. `2` for standard Chinese 2em indent, `0` to clear)." },
+                    "first_line_indent_cm": { "type": "number" },
+                    "left_indent_cm": { "type": "number" },
+                    "right_indent_cm": { "type": "number" },
+                    "line_spacing": { "type": "number", "description": "Line spacing multiple (e.g. `1.5`)." },
+                    "line_spacing_exact_pt": { "type": "number", "description": "Exact line spacing in points (e.g. `28` for GB/T 9704 official docs)." },
+                    "space_before_pt": { "type": "number" },
+                    "space_after_pt": { "type": "number" },
+                    "list": { "type": "string", "enum": ["bullet", "number"] },
+                    "keep_next": { "type": "boolean", "description": "Keep heading on the same page as the following paragraph." },
+                    "page_break_before": { "type": "boolean" }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "office_page_setup",
+            "Configure paper size (`A4`, `Letter`, `A5`), orientation (`portrait`, `landscape`), margins in cm or preset (`normal`, `narrow`, `official_zh` GB/T 9704), headers, footers, and automatic page numbers on an open Word (.docx) tab.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "tab_id": { "type": "integer" },
+                    "paper": { "type": "string", "enum": ["A4", "Letter", "Legal", "A5", "F4"] },
+                    "orientation": { "type": "string", "enum": ["portrait", "landscape"] },
+                    "margin_preset": { "type": "string", "enum": ["normal", "narrow", "moderate", "wide", "official_zh"] },
+                    "top_cm": { "type": "number" },
+                    "bottom_cm": { "type": "number" },
+                    "left_cm": { "type": "number" },
+                    "right_cm": { "type": "number" },
+                    "header_text": { "type": "string" },
+                    "header_align": { "type": "string", "enum": ["left", "center", "right"] },
+                    "footer_text": { "type": "string" },
+                    "footer_align": { "type": "string", "enum": ["left", "center", "right"] },
+                    "page_numbers": { "type": "boolean", "description": "Insert dynamic page numbers into the footer." },
+                    "different_first_page": { "type": "boolean" }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "office_edit_word_table",
+            "Insert, populate, style (`grid` or academic `three_line` 三线表, repeating header row, shading, column widths), merge cells, or add/delete rows & columns in a Word (.docx) table.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "tab_id": { "type": "integer" },
+                    "action": {
+                        "type": "string",
+                        "enum": ["insert", "set_cells", "style_table", "merge_cells", "add_row", "delete_row", "add_column", "delete_column", "delete_table"],
+                        "description": "Table operation (default `insert`)."
+                    },
+                    "insert_after": { "type": "integer", "description": "For `insert`: 1-based paragraph index after which to place the table (omit to append at end)." },
+                    "rows": { "type": "integer" },
+                    "cols": { "type": "integer" },
+                    "cells": {
+                        "type": "array",
+                        "description": "For `insert`: 2D array of cell strings `[[\"维度\", \"数值\"], [\"A\", \"100\"]]`.",
+                        "items": { "type": "array", "items": { "type": "string" } }
+                    },
+                    "table_id": { "type": "integer", "description": "Target `table_id` from `office_inspect_document` (defaults to first/active table)." },
+                    "header_row": { "type": "boolean", "description": "Format row 1 as bold repeating header row (default true)." },
+                    "header_fill_hex": { "type": "string", "description": "Optional header background hex e.g. `#F1F5F9`." },
+                    "border_style": { "type": "string", "enum": ["grid", "three_line", "none"], "description": "`grid` (full thin borders), `three_line` (WPS academic/official 三线表), or `none`." },
+                    "align": { "type": "string", "enum": ["left", "center", "right"] },
+                    "col_widths_cm": { "type": "array", "items": { "type": "number" } },
+                    "edits": {
+                        "type": "array",
+                        "description": "For `set_cells`: `[{ row: 1-based, col: 1-based, text, bold?, align?, color?, fill_hex? }]`.",
+                        "items": { "type": "object" }
+                    },
+                    "row": { "type": "integer", "description": "1-based target row for `add_row` / `delete_row`." },
+                    "col": { "type": "integer", "description": "1-based target column for `add_column` / `delete_column`." },
+                    "start_row": { "type": "integer" },
+                    "start_col": { "type": "integer" },
+                    "end_row": { "type": "integer" },
+                    "end_col": { "type": "integer" }
                 },
                 "additionalProperties": false
             }),
@@ -238,11 +452,27 @@ pub(crate) fn office_tool_specs() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "office_save_tab",
-            "Save an open Word, Excel, or PowerPoint tab to disk.",
+            "Save an open Word, Excel, or PowerPoint tab to disk. Supports saving in place, Save-As to a new `path` (binding that path to the open tab), or `prompt_user: true` to open Kwrok's native Save-As dialog. Returns structured `NEEDS_SAVE_AS` + `suggested_path` when an untitled tab has no path yet.",
             json!({
                 "type": "object",
                 "properties": {
-                    "tab_id": { "type": "integer", "description": "Optional tab_id; defaults to active tab." }
+                    "tab_id": { "type": "integer", "description": "Optional tab_id; defaults to active tab." },
+                    "path": { "type": "string", "description": "Optional workspace-relative or absolute path for Save-As (required when saving an untitled document unless `prompt_user: true`)." },
+                    "overwrite": { "type": "boolean", "description": "Whether to overwrite if `path` already exists (default true)." },
+                    "prompt_user": { "type": "boolean", "description": "Open Kwrok's native macOS Save-As file dialog for the user." }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "office_render_preview",
+            "Render a 1-based page/slide of an open Word (.docx), Excel (.xlsx), PowerPoint (.pptx), or PDF (.pdf) tab into a high-DPI PNG image for visual typography & pagination verification. Returns both multimodal PNG image content and layout diagnostics (`page_count`, `layout_warnings` for orphaned headings or 1-line trailing pages).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "tab_id": { "type": "integer", "description": "Optional tab_id; defaults to active Office/PDF tab." },
+                    "page": { "type": "integer", "description": "1-based page or slide number to preview (default 1)." },
+                    "dpi": { "type": "integer", "description": "Render resolution in DPI (72..=216, default 144)." }
                 },
                 "additionalProperties": false
             }),
@@ -280,6 +510,95 @@ pub(crate) fn office_tool_specs() -> Vec<(&'static str, &'static str, Value)> {
                 "additionalProperties": false
             }),
         ),
+        (
+            "browser_open",
+            "Open or navigate Kwrok's built-in system WebView browser to a URL, `:port` shorthand (e.g. `:5173`), or workspace HTML file.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "Target URL (`http://localhost:5173`), `:port` shorthand (`:3000`), or workspace HTML path." },
+                    "new_tab": { "type": "boolean", "description": "Open in a new browser sub-tab instead of navigating the active tab (default false)." }
+                },
+                "required": ["url"],
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "browser_status",
+            "Inspect open tabs, active URL/title, loading state, viewport preset, and console error counts in Kwrok's built-in browser.",
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "browser_snapshot",
+            "Read a structured DOM snapshot (headings, visible interactive links/buttons/inputs with CSS selectors & bounding boxes, and body text) from the active built-in browser tab.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "max_items": { "type": "integer", "description": "Maximum interactive DOM elements to include (default 80)." }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "browser_act",
+            "Interact with an element or scroll in the active built-in browser tab (`click`, `fill`, `select`, `press`, `hover`, `scroll`). Works with React/Vue controlled inputs.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["click", "fill", "select", "press", "hover", "scroll"],
+                        "description": "Interaction kind."
+                    },
+                    "selector": { "type": "string", "description": "CSS selector of the target element (from `browser_snapshot`)." },
+                    "text": { "type": "string", "description": "Fallback visible button/link text when `selector` is omitted." },
+                    "value": { "type": "string", "description": "Input/select value for `fill` or `select`." },
+                    "key": { "type": "string", "description": "Keyboard key name for `press` (e.g. `Enter`, `Escape`)." },
+                    "dx": { "type": "number", "description": "Horizontal scroll delta in px for `scroll`." },
+                    "dy": { "type": "number", "description": "Vertical scroll delta in px for `scroll` (default 400)." }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "browser_eval",
+            "Evaluate a JavaScript expression inside the active built-in browser tab and return its JSON-serialized result.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "expression": { "type": "string", "description": "JavaScript expression to evaluate in the page context." }
+                },
+                "required": ["expression"],
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "browser_console",
+            "Read captured console logs, uncaught JS exceptions, unhandled Promise rejections, and failed fetch calls from the active built-in browser tab.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "errors_only": { "type": "boolean", "description": "Only return warnings and errors (default false)." },
+                    "clear": { "type": "boolean", "description": "Clear the console buffer after reading (default false)." },
+                    "limit": { "type": "integer", "description": "Maximum log entries to return (default 50)." }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "browser_screenshot",
+            "Capture a Retina PNG screenshot of the active built-in browser tab for visual UI inspection (returns both multimodal PNG image content and the saved file path).",
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        ),
     ]
 }
 
@@ -295,14 +614,26 @@ pub async fn start_office_mcp_server(
 }
 
 impl KarWorkbench {
-    pub(crate) fn handle_office_mcp_call(
+    pub fn handle_office_mcp_call(
         &mut self,
         call: OfficeMcpCall,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.try_dispatch_browser_mcp_call(&call, window, cx) {
+            cx.notify();
+            return;
+        }
         let name = call.tool.clone();
         let args = call.args.clone();
+        if name == "office_render_preview" {
+            let out = self
+                .resolve_mcp_tab(&args, None)
+                .and_then(|tab| self.exec_render_preview(&tab, &args, window, cx));
+            call.respond_output(out);
+            cx.notify();
+            return;
+        }
         let result = self.execute_office_mcp_tool(&name, &args, window, cx);
         call.respond(result);
         cx.notify();
@@ -350,6 +681,24 @@ impl KarWorkbench {
         cx: &mut Context<Self>,
     ) -> Result<String, String> {
         match name {
+            "office_create_document" => self.exec_create_document(args, window, cx),
+            "office_open_document" => self.exec_open_document(args, window, cx),
+            "office_inspect_document" => {
+                let tab = self.resolve_mcp_tab(args, None)?;
+                self.exec_inspect_document(&tab, cx)
+            }
+            "office_format_word" => {
+                let tab = self.resolve_mcp_tab(args, Some(crate::types::OfficeKind::Word))?;
+                self.exec_format_word(&tab, args, window, cx)
+            }
+            "office_page_setup" => {
+                let tab = self.resolve_mcp_tab(args, Some(crate::types::OfficeKind::Word))?;
+                self.exec_page_setup(&tab, args, window, cx)
+            }
+            "office_edit_word_table" => {
+                let tab = self.resolve_mcp_tab(args, Some(crate::types::OfficeKind::Word))?;
+                self.exec_edit_word_table(&tab, args, window, cx)
+            }
             "office_list_tabs" => {
                 let mut items: Vec<Value> = Vec::with_capacity(self.office_tabs.len());
                 for (idx, t) in self.office_tabs.iter().enumerate() {
@@ -361,6 +710,7 @@ impl KarWorkbench {
                         "kind": t.kind.short_tag(),
                         "revision": rev,
                         "path": t.path(cx).map(|p| p.display().to_string()),
+                        "needs_save_as": t.needs_save_as(cx),
                         "is_active": self.active_office_tab == Some(idx),
                         "is_dirty": t.is_dirty(cx),
                         "is_sample": t.is_demo,
@@ -387,31 +737,22 @@ impl KarWorkbench {
                 let limit = args
                     .get("limit")
                     .and_then(Value::as_u64)
-                    .unwrap_or(40)
+                    .unwrap_or(60)
                     .clamp(1, 200) as usize;
                 let payload = e.read(cx).agent_read(|doc, _| {
                     let total = doc.len();
                     let start_0 = (start_1 - 1).min(total);
                     let end_0 = (start_0 + limit).min(total);
                     let paras: Vec<Value> = (start_0..end_0)
-                        .map(|idx| {
-                            let style = doc
-                                .paragraph(idx)
-                                .props
-                                .style
-                                .as_deref()
-                                .map_or_else(|| "Normal".to_owned(), |s| doc.styles.display_name(s));
-                            json!({
-                                "paragraph": idx + 1,
-                                "style": style,
-                                "text": clean_doc_para_text(doc, idx),
-                            })
-                        })
+                        .map(|idx| crate::wps_office::format_word_paragraph_entry(doc, idx))
                         .collect();
                     json!({
                         "tab_id": tab.id,
                         "document": clean_display_doc_name(&tab.doc_name(cx)),
+                        "path": doc.path().map(|p| p.display().to_string()),
+                        "needs_save_as": doc.needs_save_as(),
                         "total_paragraphs": total,
+                        "available_styles": doc.paragraph_style_names(),
                         "paragraphs": paras,
                     })
                 });
@@ -426,6 +767,95 @@ impl KarWorkbench {
                     .and_then(|s| uuid::Uuid::parse_str(s).ok());
                 let exp_rev = args.get("expected_revision").and_then(Value::as_u64);
                 let now_ms = crate::remote_link::now_epoch_ms();
+
+                if let Some(del) = args.get("delete_range").and_then(Value::as_object) {
+                    let start_1 = del
+                        .get("start_paragraph")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| "缺少 `start_paragraph`".to_owned())?
+                        .max(1) as usize;
+                    let count = del
+                        .get("count")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| "缺少 `count`".to_owned())?
+                        .max(1) as usize;
+                    let OfficeEditorView::Word(ref e) = tab.view else {
+                        return Err("不是 Word 文档".into());
+                    };
+                    e.update(cx, |v, cx| {
+                        v.agent_edit("智能体删除段落", window, cx, |doc, sel| {
+                            doc.delete_paragraphs(start_1 - 1, count, sel)
+                                .map_err(anyhow::Error::msg)?;
+                            Ok(((), doc.clamp_selection(sel)))
+                        })
+                    })
+                    .map_err(|e| e.to_string())?;
+                    return Ok(json!({
+                        "status": "deleted",
+                        "tab_id": tab.id,
+                        "start_paragraph": start_1,
+                        "deleted_count": count,
+                    })
+                    .to_string());
+                }
+
+                if let Some(fr) = args.get("find_replace").and_then(Value::as_object) {
+                    let find = fr
+                        .get("find")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| "`find` 不能为空".to_owned())?
+                        .to_owned();
+                    let replace = fr
+                        .get("replace")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    let match_case = fr
+                        .get("match_case")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let whole_word = fr
+                        .get("whole_word")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let OfficeEditorView::Word(ref e) = tab.view else {
+                        return Err("不是 Word 文档".into());
+                    };
+                    let replaced_count = e
+                        .update(cx, |v, cx| {
+                            v.agent_edit("智能体查找替换", window, cx, |doc, sel| {
+                                let opts = kantor_core::find::FindOptions {
+                                    match_case,
+                                    whole_word,
+                                };
+                                let ranges: Vec<_> = doc
+                                    .paragraphs()
+                                    .iter()
+                                    .enumerate()
+                                    .flat_map(|(i, p)| {
+                                        kantor_core::find::find_all(&p.text, &find, opts)
+                                            .into_iter()
+                                            .map(move |r| (i, r))
+                                    })
+                                    .collect();
+                                if ranges.is_empty() {
+                                    return Ok((0usize, sel));
+                                }
+                                let n = ranges.len();
+                                let after = doc.replace_ranges(&ranges, &replace, sel);
+                                Ok((n, after))
+                            })
+                        })
+                        .map_err(|e| e.to_string())?;
+                    return Ok(json!({
+                        "status": "replaced",
+                        "tab_id": tab.id,
+                        "matches_replaced": replaced_count,
+                    })
+                    .to_string());
+                }
+
                 if let Some(para_1) = args.get("paragraph").and_then(Value::as_u64) {
                     let text = args
                         .get("text")
@@ -493,53 +923,58 @@ impl KarWorkbench {
                     }
                 }
                 if let Some(paras_arr) = args.get("paragraphs").and_then(Value::as_array) {
-                    let after_raw = args.get("insert_after").and_then(Value::as_u64).unwrap_or(0);
-                    let items: Vec<NewParagraph> = paras_arr
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(|s| NewParagraph {
-                            text: s.to_owned(),
-                            style: None,
-                            list: None,
-                            level: 0,
-                        })
-                        .collect();
-                    if items.is_empty() {
+                    if paras_arr.is_empty() {
                         return Err("`paragraphs` 不能为空".into());
                     }
+                    let replace_all = args
+                        .get("replace_all")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let after_arg = args.get("insert_after").and_then(Value::as_u64);
                     let OfficeEditorView::Word(ref e) = tab.view else {
                         return Err("不是 Word 文档".into());
                     };
-                    let count = items.len();
-                    e.update(cx, |v, cx| {
-                        v.agent_edit("智能体插入段落", window, cx, |doc, sel| {
-                            let after = if after_raw == 0 {
-                                None
-                            } else {
-                                Some(((after_raw - 1) as usize).min(doc.len().saturating_sub(1)))
-                            };
-                            let r = doc
-                                .insert_paragraphs(after, &items, sel)
-                                .map_err(anyhow::Error::msg)?;
-                            let end = doc.paragraph(r.end - 1).text.len();
-                            Ok((
-                                (),
-                                DocSel {
-                                    anchor: DocPos::new(r.start, 0),
-                                    head: DocPos::new(r.end - 1, end),
-                                },
-                            ))
+                    let range = e
+                        .update(cx, |v, cx| {
+                            v.agent_edit("智能体写入排版段落", window, cx, |doc, sel| {
+                                let mut rich_items = Vec::with_capacity(paras_arr.len());
+                                for item in paras_arr {
+                                    rich_items.push(
+                                        crate::wps_office::build_rich_paragraph(doc, item)
+                                            .map_err(anyhow::Error::msg)?,
+                                    );
+                                }
+                                let after = match after_arg {
+                                    Some(0) => None,
+                                    Some(p1) => {
+                                        Some(((p1 - 1) as usize).min(doc.len().saturating_sub(1)))
+                                    }
+                                    None => Some(doc.len().saturating_sub(1)),
+                                };
+                                let r = doc
+                                    .insert_rich_paragraphs(after, replace_all, &rich_items, sel)
+                                    .map_err(anyhow::Error::msg)?;
+                                let end = doc.paragraph(r.end - 1).text.len();
+                                Ok((
+                                    r.clone(),
+                                    DocSel {
+                                        anchor: DocPos::new(r.start, 0),
+                                        head: DocPos::new(r.end - 1, end),
+                                    },
+                                ))
+                            })
                         })
-                    })
-                    .map_err(|e| e.to_string())?;
+                        .map_err(|e| e.to_string())?;
                     return Ok(json!({
-                        "status": "inserted",
+                        "status": if replace_all { "replaced_all" } else { "inserted" },
                         "tab_id": tab.id,
-                        "inserted_count": count,
+                        "start_paragraph": range.start + 1,
+                        "end_paragraph": range.end,
+                        "inserted_count": range.len(),
                     })
                     .to_string());
                 }
-                Err("请提供 (`paragraph` + `text`) 或 (`insert_after` + `paragraphs`)".into())
+                Err("请提供 (`paragraph` + `text`)、(`paragraphs` 数组)、`delete_range` 或 `find_replace`".into())
             }
             "office_read_excel" => {
                 let tab = self.resolve_mcp_tab(args, Some(crate::types::OfficeKind::Excel))?;
@@ -787,8 +1222,7 @@ impl KarWorkbench {
             }
             "office_save_tab" => {
                 let tab = self.resolve_mcp_tab(args, None)?;
-                let saved = tab.save_in_place(window, cx).map_err(|e| e.to_string())?;
-                Ok(json!({ "status": "saved", "tab_id": tab.id, "detail": saved }).to_string())
+                self.exec_save_tab_upgraded(&tab, args, window, cx)
             }
             "kar_write_brief" => {
                 let (id, exp_rev, title, summary, badge, blocks) =
@@ -841,5 +1275,473 @@ impl KarWorkbench {
             }
             other => Err(format!("未知工具: {other}")),
         }
+    }
+
+    fn try_dispatch_browser_mcp_call(
+        &mut self,
+        call: &OfficeMcpCall,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let args = &call.args;
+        match call.tool.as_str() {
+            "browser_open" => {
+                let Some(raw_url) = args
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                else {
+                    call.respond(Err("缺少非空的 `url` 参数".into()));
+                    return true;
+                };
+                let new_tab = args
+                    .get("new_tab")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                self.open_url_in_browser(raw_url, new_tab, window, cx);
+                window.refresh();
+                let target_tab_id = self.browser.active_tab().map(|t| t.id).unwrap_or(1);
+                let win_handle = window.window_handle();
+                let call_clone = call.clone();
+                cx.spawn_in(window, async move |weak, cx| {
+                    for step in 0..45u32 {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(80))
+                            .await;
+                        let mut ready_payload: Option<String> = None;
+                        let mut needs_draw = false;
+                        let alive = weak.update_in(cx, |wb, _, _| {
+                            if let Some(tab) = wb.browser.tab_by_id_mut(target_tab_id) {
+                                if tab.webview.is_none() {
+                                    needs_draw = true;
+                                } else if !tab.loading && step >= 2 {
+                                    ready_payload = serde_json::to_string_pretty(&json!({
+                                        "status": "opened",
+                                        "tab_id": tab.id,
+                                        "url": tab.url,
+                                        "title": tab.title,
+                                        "loading": tab.loading,
+                                        "error_count": tab.error_count,
+                                    }))
+                                    .ok();
+                                }
+                            }
+                        });
+                        if alive.is_err() {
+                            call_clone.respond(Err("桌面窗口已关闭".into()));
+                            return;
+                        }
+                        if needs_draw {
+                            let _ = win_handle.update(cx, |_, win, cx| {
+                                win.refresh();
+                                win.draw(cx).clear(cx);
+                            });
+                        }
+                        if let Some(payload) = ready_payload {
+                            call_clone.respond(Ok(payload));
+                            return;
+                        }
+                    }
+                    let _ = weak.update_in(cx, |wb, _, _| {
+                        let out = if let Some(tab) = wb.browser.tab_by_id_mut(target_tab_id) {
+                            serde_json::to_string_pretty(&json!({
+                                "status": "opened",
+                                "tab_id": tab.id,
+                                "url": tab.url,
+                                "title": tab.title,
+                                "loading": tab.loading,
+                                "error_count": tab.error_count,
+                            }))
+                            .map_err(|e| e.to_string())
+                        } else {
+                            Err("浏览器标签页已关闭".into())
+                        };
+                        call_clone.respond(out);
+                    });
+                })
+                .detach();
+                true
+            }
+            "browser_status" => {
+                let zh = self.ui_locale == crate::ui_primitives::UiLocale::Zh;
+                let active_id = self.browser.active_tab().map(|t| t.id);
+                let tabs: Vec<Value> = self
+                    .browser
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, t)| {
+                        json!({
+                            "tab_id": t.id,
+                            "is_active": idx == self.browser.active_idx,
+                            "url": t.url,
+                            "title": t.display_title(zh),
+                            "loading": t.loading,
+                            "viewport": t.viewport.label_en(),
+                            "error_count": t.error_count,
+                            "warn_count": t.warn_count,
+                            "webview_mounted": t.webview.is_some(),
+                        })
+                    })
+                    .collect();
+                let payload = json!({
+                    "browser_pane_open": self.browser_tab_open && self.right_surface == RightPaneSurface::Browser,
+                    "active_tab_id": active_id,
+                    "detected_dev_ports": self.detected_dev_ports,
+                    "tabs": tabs,
+                });
+                call.respond(serde_json::to_string_pretty(&payload).map_err(|e| e.to_string()));
+                true
+            }
+            "browser_snapshot" => {
+                let max_items = args
+                    .get("max_items")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(80)
+                    .clamp(1, 250);
+                let Some(tab) = self.browser.active_tab() else {
+                    call.respond(Err("内置浏览器当前没有打开任何标签页".into()));
+                    return true;
+                };
+                let Some(ref wv) = tab.webview else {
+                    call.respond(Err(
+                        "当前浏览器标签尚未加载网页，请先调用 `browser_open` 打开页面".into(),
+                    ));
+                    return true;
+                };
+                let script = format!(
+                    "JSON.stringify(window.__kwrokSnapshotDom ? window.__kwrokSnapshotDom({max_items}) : {{ url: location.href, title: document.title, readyState: document.readyState, bodyText: document.body ? document.body.innerText : '' }})"
+                );
+                let call_clone = call.clone();
+                if let Err(err) = wv.eval(&script, move |raw| {
+                    call_clone.respond(Ok(format_webkit_json_reply(&raw)));
+                }) {
+                    call.respond(Err(err));
+                }
+                true
+            }
+            "browser_act" => {
+                let Some(action) = args.get("action").and_then(Value::as_str) else {
+                    call.respond(Err("缺少 `action` 参数".into()));
+                    return true;
+                };
+                let Some(tab) = self.browser.active_tab() else {
+                    call.respond(Err("内置浏览器当前没有打开任何标签页".into()));
+                    return true;
+                };
+                let Some(ref wv) = tab.webview else {
+                    call.respond(Err(
+                        "当前浏览器标签尚未加载网页，请先调用 `browser_open` 打开页面".into(),
+                    ));
+                    return true;
+                };
+                let cmd_json = json!({
+                    "action": action,
+                    "selector": args.get("selector").and_then(Value::as_str),
+                    "text": args.get("text").and_then(Value::as_str),
+                    "value": args.get("value").and_then(Value::as_str),
+                    "key": args.get("key").and_then(Value::as_str),
+                    "dx": args.get("dx").and_then(Value::as_f64),
+                    "dy": args.get("dy").and_then(Value::as_f64),
+                });
+                let script = format!(
+                    "JSON.stringify(window.__kwrokAct ? window.__kwrokAct({cmd_json}) : {{ ok: false, error: 'Bridge not initialized' }})"
+                );
+                let call_clone = call.clone();
+                if let Err(err) = wv.eval(&script, move |raw| {
+                    call_clone.respond(Ok(format_webkit_json_reply(&raw)));
+                }) {
+                    call.respond(Err(err));
+                }
+                true
+            }
+            "browser_eval" => {
+                let Some(expr) = args
+                    .get("expression")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                else {
+                    call.respond(Err("缺少非空的 `expression` 参数".into()));
+                    return true;
+                };
+                let Some(tab) = self.browser.active_tab() else {
+                    call.respond(Err("内置浏览器当前没有打开任何标签页".into()));
+                    return true;
+                };
+                let Some(ref wv) = tab.webview else {
+                    call.respond(Err(
+                        "当前浏览器标签尚未加载网页，请先调用 `browser_open` 打开页面".into(),
+                    ));
+                    return true;
+                };
+                let script = format!(
+                    "(function() {{ try {{ const r = ({expr}); return JSON.stringify({{ ok: true, result: r, url: location.href, title: document.title }}); }} catch (e) {{ return JSON.stringify({{ ok: false, error: String(e && e.stack ? e.stack : e) }}); }} }})()"
+                );
+                let call_clone = call.clone();
+                if let Err(err) = wv.eval(&script, move |raw| {
+                    call_clone.respond(Ok(format_webkit_json_reply(&raw)));
+                }) {
+                    call.respond(Err(err));
+                }
+                true
+            }
+            "browser_console" => {
+                let errors_only = args
+                    .get("errors_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let clear = args.get("clear").and_then(Value::as_bool).unwrap_or(false);
+                let limit = args
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(50)
+                    .clamp(1, 200) as usize;
+                let Some(tab) = self.browser.active_tab_mut() else {
+                    call.respond(Err("内置浏览器当前没有打开任何标签页".into()));
+                    return true;
+                };
+                let messages: Vec<Value> = tab
+                    .console
+                    .iter()
+                    .filter(|c| !errors_only || c.level.is_error() || c.level.is_warn())
+                    .rev()
+                    .take(limit)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .map(|c| {
+                        json!({
+                            "level": c.level.label(),
+                            "message": c.message,
+                            "source": c.source,
+                            "timestamp_ms": c.timestamp_ms,
+                        })
+                    })
+                    .collect();
+                let payload = json!({
+                    "tab_id": tab.id,
+                    "url": tab.url,
+                    "error_count": tab.error_count,
+                    "warn_count": tab.warn_count,
+                    "messages": messages,
+                });
+                if clear {
+                    tab.console.clear();
+                    tab.error_count = 0;
+                    tab.warn_count = 0;
+                }
+                call.respond(serde_json::to_string_pretty(&payload).map_err(|e| e.to_string()));
+                true
+            }
+            "browser_screenshot" => {
+                let Some(tab) = self.browser.active_tab() else {
+                    call.respond(Err("内置浏览器当前没有打开任何标签页".into()));
+                    return true;
+                };
+                let Some(ref wv) = tab.webview else {
+                    call.respond(Err(
+                        "当前浏览器标签尚未加载网页，请先调用 `browser_open` 打开页面".into(),
+                    ));
+                    return true;
+                };
+                let tab_id = tab.id;
+                let url = tab.url.clone();
+                let snap_tx = self.browser.snapshot_tx.clone();
+                let call_clone = call.clone();
+                wv.capture_snapshot_png(move |res| match res {
+                    Ok(captured) => {
+                        let _ = snap_tx.try_send((
+                            tab_id,
+                            SnapshotPurpose::CacheOnly,
+                            Ok(captured.clone()),
+                        ));
+                        let dir = std::env::temp_dir().join("kwrok-browser-captures");
+                        let _ = std::fs::create_dir_all(&dir);
+                        let saved_path = dir.join(format!(
+                            "mcp-browser-{}-{}.png",
+                            tab_id,
+                            crate::remote_link::now_epoch_ms()
+                        ));
+                        let saved_str = std::fs::write(&saved_path, &captured.png_bytes)
+                            .ok()
+                            .map(|()| saved_path.display().to_string());
+                        let b64 = base64::engine::general_purpose::STANDARD
+                            .encode(&captured.png_bytes);
+                        let text = serde_json::to_string_pretty(&json!({
+                            "status": "captured",
+                            "tab_id": tab_id,
+                            "url": url,
+                            "width": captured.width,
+                            "height": captured.height,
+                            "saved_path": saved_str,
+                        }))
+                        .unwrap_or_default();
+                        call_clone.respond_output(Ok(McpToolOutput {
+                            text,
+                            image_png_base64: Some(b64),
+                        }));
+                    }
+                    Err(err) => call_clone.respond(Err(err)),
+                });
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Unwrap the outer JSON string returned by `WKWebView`/`WebView2` `evaluateJavaScript` when the
+/// script returns `JSON.stringify(...)`, and format the inner JSON cleanly.
+pub(crate) fn format_webkit_json_reply(raw: &str) -> String {
+    let candidate = serde_json::from_str::<String>(raw).unwrap_or_else(|_| raw.to_owned());
+    if let Ok(val) = serde_json::from_str::<Value>(&candidate) {
+        serde_json::to_string_pretty(&val).unwrap_or(candidate)
+    } else {
+        candidate
+    }
+}
+
+/// Locate the executable capable of running `--mcp-stdio-bridge` (`Kwrok` or `kar-desktop`) so
+/// stdio-only ACP runtimes (including Kwrok's built-in harness) can connect to `ServedMcpTools`.
+pub fn resolve_stdio_bridge_exe() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let stem = exe.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+    if matches!(stem, "Kwrok" | "kar-desktop") {
+        return Some(exe);
+    }
+    let bin_name = if cfg!(windows) {
+        "kar-desktop.exe"
+    } else {
+        "kar-desktop"
+    };
+    for ancestor in exe.ancestors().skip(1).take(6) {
+        let candidate = ancestor.join(bin_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Lightweight stdio-to-HTTP JSON-RPC bridge invoked via `kar-desktop --mcp-stdio-bridge`.
+/// Forwards MCP messages between `stdin`/`stdout` and `KAR_MCP_HTTP_URL` (`KAR_MCP_AUTH`).
+pub fn run_stdio_bridge() -> ! {
+    let Ok(url) = std::env::var("KAR_MCP_HTTP_URL") else {
+        eprintln!("kar-desktop --mcp-stdio-bridge: missing KAR_MCP_HTTP_URL");
+        std::process::exit(2);
+    };
+    let auth = std::env::var("KAR_MCP_AUTH").unwrap_or_default();
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        std::process::exit(2);
+    };
+    let Ok(client) = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(30))
+        .build()
+    else {
+        std::process::exit(2);
+    };
+
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut reader = stdin.lock();
+    let mut writer = stdout.lock();
+    let mut session_id: Option<String> = None;
+
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Err(_) => break,
+            Ok(_) => {}
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let (payload, content_length_framed) =
+            if let Some(rest) = trimmed
+                .strip_prefix("Content-Length:")
+                .or_else(|| trimmed.strip_prefix("content-length:"))
+                && let Ok(len) = rest.trim().parse::<usize>()
+            {
+                loop {
+                    let mut hdr = String::new();
+                    if reader.read_line(&mut hdr).unwrap_or(0) == 0 || hdr.trim().is_empty() {
+                        break;
+                    }
+                }
+                let mut buf = vec![0u8; len];
+                if reader.read_exact(&mut buf).is_err() {
+                    break;
+                }
+                (buf, true)
+            } else {
+                (trimmed.as_bytes().to_vec(), false)
+            };
+
+        let reply_bytes = rt.block_on(async {
+            let mut req = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .body(payload);
+            if !auth.is_empty() {
+                req = req.header("Authorization", &auth);
+            }
+            if let Some(ref sid) = session_id {
+                req = req.header("mcp-session-id", sid);
+            }
+            let resp = req.send().await.ok()?;
+            if let Some(sid) = resp
+                .headers()
+                .get("mcp-session-id")
+                .and_then(|v| v.to_str().ok())
+            {
+                session_id = Some(sid.to_owned());
+            }
+            if resp.status() == reqwest::StatusCode::ACCEPTED {
+                return None;
+            }
+            let bytes = resp.bytes().await.ok()?;
+            if bytes.is_empty() {
+                return None;
+            }
+            let single_line = serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .and_then(|v| serde_json::to_vec(&v).ok())
+                .unwrap_or_else(|| bytes.to_vec());
+            Some(single_line)
+        });
+
+        if let Some(out) = reply_bytes {
+            if content_length_framed {
+                let _ = write!(writer, "Content-Length: {}\r\n\r\n", out.len());
+                let _ = writer.write_all(&out);
+            } else {
+                let _ = writer.write_all(&out);
+                let _ = writer.write_all(b"\n");
+            }
+            let _ = writer.flush();
+        }
+    }
+    std::process::exit(0);
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::format_webkit_json_reply;
+
+    #[test]
+    fn unwraps_webkit_double_encoded_json_string() {
+        let raw = r#""{\"ok\":true,\"title\":\"Hello\"}""#;
+        let formatted = format_webkit_json_reply(raw);
+        assert!(formatted.contains("\"ok\": true"));
+        assert!(formatted.contains("\"title\": \"Hello\""));
     }
 }

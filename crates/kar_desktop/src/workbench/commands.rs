@@ -272,6 +272,17 @@ const LOCAL: &[LocalEntry] = &[
         &[],
     ),
     LocalEntry::new(
+        LocalSlash::Browser,
+        "/browser",
+        ("内置浏览器", "Browser preview"),
+        (
+            "打开内置系统浏览器预览网页或点选元素",
+            "Open the built-in browser to preview pages and pick elements",
+        ),
+        ProIcon::Globe,
+        &["/browse", "/preview"],
+    ),
+    LocalEntry::new(
         LocalSlash::Files,
         "/files",
         ("工作区文件", "Workspace files"),
@@ -678,6 +689,19 @@ impl KarWorkbench {
             }
             Some(Command::PlanMode) => {
                 self.enter_planning(args(text, "/plan").unwrap_or_default(), true, window, cx);
+                true
+            }
+            Some(Command::Local(LocalSlash::Browser)) => {
+                let target = text[token.len()..].trim().to_owned();
+                self.slash.close();
+                self.composer_editor
+                    .update(cx, |ed, cx| ed.set_value("", window, cx));
+                if target.is_empty() {
+                    self.open_browser_dock_tab(cx);
+                } else {
+                    self.open_url_in_browser(&target, false, window, cx);
+                }
+                cx.notify();
                 true
             }
             Some(cmd @ Command::Local(_)) => {

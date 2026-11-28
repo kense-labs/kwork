@@ -16,6 +16,7 @@ pub mod forge_devices_voice;
 pub mod kar_bridge;
 mod kremote;
 pub mod mcp_office;
+pub(crate) mod node_runtime;
 mod onboarding_audio;
 pub mod office_host;
 pub mod prefs;
@@ -29,6 +30,7 @@ pub mod types;
 pub mod turn_review;
 pub mod ui_agents;
 pub mod ui_brief;
+pub mod ui_browser;
 pub mod ui_chat;
 pub mod ui_files_gallery;
 pub mod ui_git;
@@ -49,6 +51,7 @@ pub mod ui_skills_mcp;
 pub mod ui_terminal;
 pub mod ui_usage;
 pub mod workbench;
+pub mod wps_office;
 
 use std::path::PathBuf;
 

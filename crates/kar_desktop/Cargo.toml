@@ -11,6 +11,16 @@ default-run = "kar-desktop"
 name = "kar-desktop"
 path = "src/main.rs"
 
+[[test]]
+name = "browser_live"
+path = "tests/browser_live.rs"
+harness = false
+
+[[test]]
+name = "office_wps_live"
+path = "tests/office_wps_live.rs"
+harness = false
+
 [dependencies]
 anyhow.workspace = true
 async-channel = "2"
@@ -19,6 +29,7 @@ base64.workspace = true
 cpal = "0.16"
 chrono = { workspace = true, features = ["clock"] }
 docs_engine.workspace = true
+docs_pdf.workspace = true
 docs_ui.workspace = true
 env_logger.workspace = true
 fast2s.workspace = true
@@ -34,6 +45,7 @@ kantor_core.workspace = true
 kantor_theme.workspace = true
 kantor_ui.workspace = true
 kui.workspace = true
+kwrok_webview.workspace = true
 log.workspace = true
 markdown = "1.0"
 notify = "8"
@@ -45,8 +57,10 @@ serde.workspace = true
 serde_json.workspace = true
 shell-words = "1.1"
 sheets_engine.workspace = true
+sheets_pdf.workspace = true
 sheets_ui.workspace = true
 slides_engine.workspace = true
+slides_pdf.workspace = true
 slides_ui.workspace = true
 tar = { version = "0.4", default-features = false }
 tempfile.workspace = true

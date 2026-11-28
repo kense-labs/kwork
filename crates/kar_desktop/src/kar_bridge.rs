@@ -674,27 +674,52 @@ impl KarBridgeHandle {
 /// Build an augmented `PATH` so GUI-launched macOS bundles discover Homebrew, Cargo, and `~/.local/bin` CLIs
 /// without needing `unsafe { std::env::set_var(...) }`.
 pub(crate) fn augmented_path_os() -> OsString {
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect())
-        .unwrap_or_default();
-    let mut extra = vec![
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut push_unique = |candidate: PathBuf| {
+        if !dirs.iter().any(|existing| existing == &candidate) {
+            dirs.push(candidate);
+        }
+    };
+    if let Some(home) = std::env::home_dir() {
+        for candidate in crate::node_runtime::extra_user_bin_dirs(&home) {
+            push_unique(candidate);
+        }
+    }
+    for candidate in [
         PathBuf::from("/opt/homebrew/bin"),
         PathBuf::from("/opt/homebrew/sbin"),
         PathBuf::from("/usr/local/bin"),
         PathBuf::from("/usr/bin"),
         PathBuf::from("/bin"),
-    ];
-    if let Some(home) = std::env::home_dir() {
-        extra.insert(0, home.join(".local/bin"));
-        extra.insert(1, home.join(".cargo/bin"));
-        extra.insert(2, home.join(".bun/bin"));
+    ] {
+        push_unique(candidate);
     }
-    for candidate in extra {
-        if !dirs.iter().any(|existing| existing == &candidate) {
-            dirs.push(candidate);
+    if let Some(existing) = std::env::var_os("PATH") {
+        for candidate in std::env::split_paths(&existing) {
+            push_unique(candidate);
         }
     }
-    std::env::join_paths(dirs).unwrap_or_else(|_| OsString::from("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"))
+    std::env::join_paths(dirs)
+        .unwrap_or_else(|_| OsString::from("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"))
+}
+
+pub(crate) fn desktop_installation_options(
+    cwd: Option<PathBuf>,
+    for_npm_install: bool,
+    use_npm_mirror: bool,
+) -> InstallationOptions {
+    let mut opts = InstallationOptions {
+        cwd,
+        ..Default::default()
+    };
+    opts.env
+        .insert(OsString::from("PATH"), Some(augmented_path_os()));
+    if for_npm_install {
+        for (k, v) in crate::node_runtime::build_npm_env_overrides(use_npm_mirror) {
+            opts.env.insert(k, v);
+        }
+    }
+    opts
 }
 
 fn configure_runtime_path(runtime_id: &str, opts: &mut SessionOptions) {
@@ -1166,14 +1191,42 @@ impl WorkerState {
         }
     }
 
-    fn attach_office_mcp(&self, runtime_id: &str, opts: &mut SessionOptions) {
+    fn office_mcp_entry_for(&self, runtime_id: &str) -> Option<(String, kar::McpServer)> {
+        let mcp = self.mcp_office.as_ref()?;
+        if crate::aster::is_aster(runtime_id) {
+            let exe = crate::mcp_office::resolve_stdio_bridge_exe()?;
+            let (url, auth) = match &mcp.server {
+                kar::McpServer::HostedHttp { url, headers }
+                | kar::McpServer::Http { url, headers } => (
+                    url.clone(),
+                    headers.get("Authorization").cloned().unwrap_or_default(),
+                ),
+                kar::McpServer::Stdio { .. } => return Some(mcp.entry()),
+            };
+            let mut env = BTreeMap::new();
+            env.insert("KAR_MCP_HTTP_URL".into(), url);
+            if !auth.is_empty() {
+                env.insert("KAR_MCP_AUTH".into(), auth);
+            }
+            return Some((
+                crate::mcp_office::OFFICE_SERVER_NAME.to_owned(),
+                kar::McpServer::Stdio {
+                    command: exe.to_string_lossy().into_owned(),
+                    args: vec!["--mcp-stdio-bridge".into()],
+                    env,
+                },
+            ));
+        }
         let supported = self
             .mcp_supported_runtimes
             .get(runtime_id)
             .copied()
             .unwrap_or_else(|| default_runtime_mcp_support(runtime_id));
-        if supported && let Some(ref mcp) = self.mcp_office {
-            let (name, srv) = mcp.entry();
+        supported.then(|| mcp.entry())
+    }
+
+    fn attach_office_mcp(&self, runtime_id: &str, opts: &mut SessionOptions) {
+        if let Some((name, srv)) = self.office_mcp_entry_for(runtime_id) {
             opts.mcp_servers.insert(name, srv);
         }
     }
@@ -3221,16 +3274,7 @@ async fn worker_loop(
                     continue;
                 }
 
-                let mcp_entry = if state
-                    .mcp_supported_runtimes
-                    .get(&rt_id)
-                    .copied()
-                    .unwrap_or_else(|| default_runtime_mcp_support(&rt_id))
-                {
-                    state.mcp_office.as_ref().map(ServedMcpTools::entry)
-                } else {
-                    None
-                };
+                let mcp_entry = state.office_mcp_entry_for(&rt_id);
                 let rt_for_path = rt_id.clone();
                 let sugg_source = state.prompt_suggestions.source(chat_id);
 
@@ -3788,16 +3832,7 @@ async fn worker_loop(
                     .ok()
                     .map(|h| h.chat.runtime)
                     .unwrap_or_default();
-                let mcp_entry = if state
-                    .mcp_supported_runtimes
-                    .get(&rt_id)
-                    .copied()
-                    .unwrap_or_else(|| default_runtime_mcp_support(&rt_id))
-                {
-                    state.mcp_office.as_ref().map(ServedMcpTools::entry)
-                } else {
-                    None
-                };
+                let mcp_entry = state.office_mcp_entry_for(&rt_id);
                 let mcp_fallback = mcp_entry.clone();
                 let rt_for_fork = rt_id.clone();
                 let rt_for_fallback = rt_id.clone();
@@ -4172,11 +4207,56 @@ async fn worker_loop(
                 let evt_tx = state.evt_tx.clone();
                 let cmd_tx = state.cmd_tx.clone();
                 tokio::spawn(async move {
-                    match rt
-                        .install_with(line.as_deref(), Duration::from_secs(180))
-                        .await
-                    {
-                        Ok(_) => {
+                    let uses_npm = matches!(
+                        rt.install_plan_for(line.as_deref()),
+                        Ok(kar::InstallPlan::Npm { .. })
+                    );
+                    if uses_npm && !crate::node_runtime::has_npm_in_path(&augmented_path_os()) {
+                        let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                            text: format!("正在准备 Node.js 运行环境以安装 {name}，请稍候…"),
+                            warning: false,
+                        });
+                        let provisioned = tokio::task::spawn_blocking(|| {
+                            crate::node_runtime::ensure_node_and_npm(&augmented_path_os())
+                        })
+                        .await;
+                        match provisioned {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(err)) => {
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                    text: format!("{name} 安装失败：{err}"),
+                                    warning: true,
+                                });
+                                return;
+                            }
+                            Err(err) => {
+                                let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                    text: format!("{name} 环境准备中断：{err}"),
+                                    warning: true,
+                                });
+                                return;
+                            }
+                        }
+                    }
+
+                    let opts = desktop_installation_options(None, uses_npm, false);
+                    let mut receipt = rt
+                        .install_receipt(line.as_deref(), Duration::from_secs(240), &opts)
+                        .await;
+                    if uses_npm && matches!(receipt, Ok(kar::InstallResult::Failed { .. })) {
+                        let mirror_opts = desktop_installation_options(None, true, true);
+                        receipt = rt
+                            .install_receipt(
+                                line.as_deref(),
+                                Duration::from_secs(240),
+                                &mirror_opts,
+                            )
+                            .await;
+                    }
+
+                    match receipt {
+                        Ok(kar::InstallResult::Installed { .. })
+                        | Ok(kar::InstallResult::AlreadyInstalled { .. }) => {
                             kar::clear_installation_cache();
                             let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
                                 text: format!("{name} 安装完成，正在刷新状态…"),
@@ -4184,9 +4264,31 @@ async fn worker_loop(
                             });
                             let _ = cmd_tx.send(KarCommand::ProbeProvidersOnly).await;
                         }
-                        Err(err) => {
+                        Ok(kar::InstallResult::Unsupported(refusal)) => {
+                            let friendly = crate::node_runtime::humanize_agent_error(&refusal.detail);
                             let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
-                                text: format!("{name} 安装失败：{err}"),
+                                text: format!("{name} 安装失败：{friendly}"),
+                                warning: true,
+                            });
+                        }
+                        Ok(kar::InstallResult::Failed { output, .. }) => {
+                            let last_line = output
+                                .lines()
+                                .rev()
+                                .map(str::trim)
+                                .find(|l| !l.is_empty())
+                                .unwrap_or("未检测到安装后的可执行程序");
+                            let friendly = crate::node_runtime::humanize_agent_error(last_line);
+                            let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                text: format!("{name} 安装失败：{friendly}"),
+                                warning: true,
+                            });
+                        }
+                        Err(err) => {
+                            let friendly =
+                                crate::node_runtime::humanize_agent_error(&err.to_string());
+                            let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
+                                text: format!("{name} 安装失败：{friendly}"),
                                 warning: true,
                             });
                         }
@@ -5056,8 +5158,7 @@ async fn worker_loop(
                     continue;
                 }
                 let evt_tx = state.evt_tx.clone();
-                let office_available = state.mcp_office.is_some() && state.mcp_supported_runtimes.get(&runtime_id)
-                    .copied().unwrap_or_else(|| default_runtime_mcp_support(&runtime_id));
+                let office_available = state.office_mcp_entry_for(&runtime_id).is_some();
                 let probe = tokio::spawn(async move {
                     let mut seeded = crate::studio_hub::seed_local_workspace_inventory(&workspace, &runtime_id);
                     if office_available {
@@ -5277,33 +5378,38 @@ async fn worker_loop(
                     state.emit(KarBridgeEvent::LoginStarted { attempt, runtime_id: runtime_id.clone() });
                 }
                 tokio::spawn(async move {
+                    let install_opts = desktop_installation_options(None, false, false);
                     if let Some(key) = api_key.map(|k| k.trim().to_owned()).filter(|k| !k.is_empty()) {
-                        let target_sub = sub_provider.unwrap_or_else(|| "openai".into());
+                        let default_sub = match runtime_id.as_str() {
+                            "qwen" => "dashscope",
+                            "dsh" => "deepseek",
+                            _ => "openai",
+                        };
+                        let target_sub = sub_provider
+                            .filter(|s| !s.trim().is_empty())
+                            .unwrap_or_else(|| default_sub.into());
+                        let auth_opts = kar::providers::ProviderAuthOptions {
+                            installation: install_opts.clone(),
+                            ..Default::default()
+                        };
                         let res: Result<(), String> = match runtime_id.as_str() {
-                            "opencode" => match rt
-                                .opencode_provider_auth(kar::providers::ProviderAuthOptions::default())
-                                .await
-                            {
+                            "dsh" => crate::node_runtime::save_dsh_api_key(&key)
+                                .map_err(|e| e.to_string()),
+                            "opencode" => match rt.opencode_provider_auth(auth_opts).await {
                                 Ok(auth) => auth
                                     .set_api_key(&target_sub, &key)
                                     .await
                                     .map_err(|e| e.to_string()),
                                 Err(e) => Err(e.to_string()),
                             },
-                            "pi" => match rt
-                                .pi_provider_auth(kar::providers::ProviderAuthOptions::default())
-                                .await
-                            {
+                            "pi" => match rt.pi_provider_auth(auth_opts).await {
                                 Ok(auth) => auth
                                     .set_api_key(&target_sub, &key)
                                     .await
                                     .map_err(|e| e.to_string()),
                                 Err(e) => Err(e.to_string()),
                             },
-                            "qwen" => match rt
-                                .qwen_provider_auth(kar::providers::ProviderAuthOptions::default())
-                                .await
-                            {
+                            "qwen" => match rt.qwen_provider_auth(auth_opts).await {
                                 Ok(auth) => auth
                                     .connect(&kar::providers::QwenConnect {
                                         provider_id: target_sub,
@@ -5326,8 +5432,9 @@ async fn worker_loop(
                                 let _ = cmd_tx.send(KarCommand::ProviderAccountChanged { runtime: runtime_id.clone() }).await;
                             }
                             Err(err) => {
+                                let friendly = crate::node_runtime::humanize_agent_error(&err);
                                 let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
-                                    text: format!("{name} 密钥保存未通过：{err}"),
+                                    text: format!("{name} 密钥保存未通过：{friendly}"),
                                     warning: true,
                                 });
                             }
@@ -5345,7 +5452,10 @@ async fn worker_loop(
                         return;
                     }
 
-                    let mut opts = kar::account::LoginOptions::default();
+                    let mut opts = kar::account::LoginOptions {
+                        installation: install_opts,
+                        ..Default::default()
+                    };
                     opts.open_browser = Some(false);
                     let evt_for_cb = evt_tx.clone();
                     let mut on_event = move |ev: kar::account::LoginEvent| -> kar::Result<()> {
@@ -5398,8 +5508,12 @@ async fn worker_loop(
                         Ok(other) => {
                             let detail = match other {
                                 kar::account::LoginResult::Cancelled => "已取消登录".into(),
-                                kar::account::LoginResult::Failed { detail, .. } => detail,
-                                kar::account::LoginResult::Unsupported { detail, .. } => detail,
+                                kar::account::LoginResult::Failed { detail, .. } => {
+                                    crate::node_runtime::humanize_agent_error(&detail)
+                                }
+                                kar::account::LoginResult::Unsupported { detail, .. } => {
+                                    crate::node_runtime::humanize_agent_error(&detail)
+                                }
                                 kar::account::LoginResult::LoggedIn { .. } => String::new(),
                             };
                             let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
@@ -5408,8 +5522,10 @@ async fn worker_loop(
                             });
                         }
                         Err(err) => {
+                            let friendly =
+                                crate::node_runtime::humanize_agent_error(&err.to_string());
                             let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
-                                text: format!("{name} 登录失败：{err}"),
+                                text: format!("{name} 登录失败：{friendly}"),
                                 warning: true,
                             });
                         }
@@ -5431,7 +5547,10 @@ async fn worker_loop(
                         });
                         return;
                     }
-                    let opts = kar::account::LogoutOptions::default();
+                    let opts = kar::account::LogoutOptions {
+                        installation: desktop_installation_options(None, false, false),
+                        ..Default::default()
+                    };
                     match rt.logout(&opts).await {
                         Ok(kar::account::LogoutResult::LoggedOut) => {
                             let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
@@ -5460,20 +5579,28 @@ async fn worker_loop(
                 runtime_id,
                 apply_upgrade,
             } => {
-                let Ok(rt) = kar::runtime(&runtime_id) else {
+                let Ok(mut rt) = kar::runtime(&runtime_id) else {
                     continue;
                 };
                 let evt_tx = state.evt_tx.clone();
                 let cmd_tx = state.cmd_tx.clone();
                 let name = runtime_display_name(&runtime_id);
                 tokio::spawn(async move {
+                    let install_opts = desktop_installation_options(None, true, false);
+                    if let Ok(InstallationSnapshot::Available {
+                        command: Some(cmd),
+                        ..
+                    }) = rt.probe_installation(&install_opts).await
+                    {
+                        rt.program = cmd;
+                    }
                     if apply_upgrade {
                         let _ = evt_tx.send_blocking(KarBridgeEvent::ToastMessage {
                             text: format!("正在升级 {name}，请稍候…"),
                             warning: false,
                         });
                         match rt
-                            .upgrade_receipt(Duration::from_secs(180), &InstallationOptions::default())
+                            .upgrade_receipt(Duration::from_secs(180), &install_opts)
                             .await
                         {
                             Ok(kar::UpgradeResult::Upgraded { from, to, .. }) => {

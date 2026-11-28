@@ -2635,6 +2635,56 @@ extern "C" fn handle_key_equivalent(
     _: Sel,
     native_event: *mut AnyObject,
 ) -> Bool {
+    // When an embedded child NSView (such as a WKWebView) holds firstResponder,
+    // route standard Edit/Zoom key equivalents directly through NSApp's responder chain
+    // so Copy/Paste/Cut/Select All/Undo/Redo work inside child webviews without an AppKit Edit menu.
+    unsafe {
+        let window: *mut AnyObject = msg_send![this, window];
+        if !window.is_null() {
+            let responder: *mut AnyObject = msg_send![window, firstResponder];
+            let self_ptr: *const AnyObject = this;
+            if !responder.is_null()
+                && (responder as *const AnyObject) != self_ptr
+                && responder != window
+            {
+                let window_state = get_window_state(this);
+                let window_height = window_state.as_ref().lock().content_size().height;
+                if let Some(PlatformInput::KeyDown(ev)) =
+                    platform_input_from_native(native_event, Some(window_height))
+                {
+                    let ks = &ev.keystroke;
+                    if ks.modifiers.platform && !ks.modifiers.control && !ks.modifiers.alt {
+                        let edit_sel = match (ks.key.as_str(), ks.modifiers.shift) {
+                            ("c", false) => Some(sel!(copy:)),
+                            ("v", false) => Some(sel!(paste:)),
+                            ("x", false) => Some(sel!(cut:)),
+                            ("a", false) => Some(sel!(selectAll:)),
+                            ("z", false) => Some(sel!(undo:)),
+                            ("z", true) => Some(sel!(redo:)),
+                            _ => None,
+                        };
+                        if let Some(action) = edit_sel {
+                            let app: *mut AnyObject =
+                                msg_send![class!(NSApplication), sharedApplication];
+                            let sent: Bool = msg_send![
+                                app,
+                                sendAction: action,
+                                to: ptr::null_mut::<AnyObject>(),
+                                from: ptr::null_mut::<AnyObject>()
+                            ];
+                            if sent.as_bool() {
+                                return Bool::YES;
+                            }
+                            return Bool::NO;
+                        }
+                        if matches!(ks.key.as_str(), "=" | "+" | "-" | "0") {
+                            return Bool::NO;
+                        }
+                    }
+                }
+            }
+        }
+    }
     handle_key_event(this, native_event, true)
 }
 
@@ -2959,6 +3009,14 @@ extern "C" fn handle_view_event(this: &AnyObject, _: Sel, native_event: *mut Any
             PlatformInput::MouseDown(_) => {
                 drop(lock);
                 unsafe {
+                    let window: *mut AnyObject = msg_send![this, window];
+                    if !window.is_null() {
+                        let responder: *mut AnyObject = msg_send![window, firstResponder];
+                        let self_ptr: *const AnyObject = this;
+                        if (responder as *const AnyObject) != self_ptr {
+                            let _: Bool = msg_send![window, makeFirstResponder: this];
+                        }
+                    }
                     let input_context: *mut AnyObject = msg_send![this, inputContext];
                     if !input_context.is_null() {
                         let _: Bool = msg_send![input_context, handleEvent: native_event];

@@ -106,7 +106,7 @@ pub(crate) fn seed() -> ProviderStatusInfo {
         protocol: "acp".into(),
         availability,
         auth: ProviderAuthState::NotChecked,
-        mcp_office_supported: false,
+        mcp_office_supported: crate::mcp_office::resolve_stdio_bridge_exe().is_some(),
         steering_supported: false,
         goals_supported: false,
         can_install: release().is_some(),

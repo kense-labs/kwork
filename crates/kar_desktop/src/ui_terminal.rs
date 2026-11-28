@@ -286,8 +286,8 @@ impl KarWorkbench {
                             format!("localhost:{port} ↗"),
                             s,
                         )
-                        .on_press(cx, move |_, _, _| {
-                            let _ = std::process::Command::new("open").arg(&url).status();
+                        .on_press(cx, move |wb, win, cx| {
+                            wb.open_url_in_browser(&url, false, win, cx);
                         })
                     })),
             )

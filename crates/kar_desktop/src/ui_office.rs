@@ -49,14 +49,16 @@ impl KarWorkbench {
             is_office_surface && active_tab.as_ref().is_some_and(|t| t.is_dirty(cx));
         let wide_canvas = self.layout_mode == WorkspaceLayoutMode::CanvasWide;
 
-        // ── Unified Right-Dock Strip (`变更` · `文件` · `终端` + Open Docs/Code) ──
+        // ── Unified Right-Dock Strip (`浏览器` · `变更` · `文件` · `终端` + Open Docs/Code) ──
         let loc = self.ui_locale;
         let mut tabs = Vec::new();
+        let browser_sel = self.right_surface == RightPaneSurface::Browser;
         let git_sel = self.right_surface == RightPaneSurface::GitWorkbench;
         let files_sel = self.right_surface == RightPaneSurface::Files;
         let term_sel = self.right_surface == RightPaneSurface::Terminal;
         let tab_count = self.office_tabs.len()
             + self.code_tab_order.len()
+            + usize::from(self.browser_tab_open)
             + usize::from(self.git_tab_open)
             + usize::from(self.files_tab_open)
             + usize::from(self.terminal_tab_open);
@@ -67,6 +69,14 @@ impl KarWorkbench {
             _ => 96.,
         };
         for (surface, is_open, selected, label, glyph, key) in [
+            (
+                RightPaneSurface::Browser,
+                self.browser_tab_open,
+                browser_sel,
+                loc.pick("浏览器", "Browser"),
+                ProIcon::Globe,
+                "dock-browser",
+            ),
             (
                 RightPaneSurface::GitWorkbench,
                 self.git_tab_open,
@@ -310,6 +320,7 @@ impl KarWorkbench {
             );
 
         let body = match self.right_surface.clone() {
+            RightPaneSurface::Browser => self.render_browser_dock_body(pane_w, &s, window, cx),
             RightPaneSurface::GitWorkbench => self.render_git_workbench_body(pane_w, &s, window, cx),
             RightPaneSurface::Files => self.render_files_dock_body(&s, cx),
             RightPaneSurface::Terminal => self.render_terminal_dock_body(&s, window, cx),
@@ -637,6 +648,11 @@ impl KarWorkbench {
     fn surface_choices(&self, s: &StudioPalette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let loc = self.ui_locale;
         let mut rows: Vec<AnyElement> = [
+            (
+                RightPaneSurface::Browser,
+                ProIcon::Globe,
+                loc.pick("浏览器", "Browser"),
+            ),
             (
                 RightPaneSurface::Terminal,
                 ProIcon::Terminal,

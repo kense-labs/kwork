@@ -31,7 +31,28 @@ use crate::{
 const AGENT_TILE: f32 = 28.;
 
 pub(crate) fn accepts_provider_key(id: &str) -> bool {
-    matches!(id, "opencode" | "pi" | "qwen")
+    matches!(id, "opencode" | "pi" | "qwen" | "dsh")
+}
+
+fn provider_key_targets(id: &str) -> &'static [(&'static str, &'static str, &'static str)] {
+    match id {
+        "dsh" => &[("deepseek", "DeepSeek", "DeepSeek API Key (sk-...)")],
+        "qwen" => &[
+            ("dashscope", "通义千问", "DashScope API Key (sk-...)"),
+            ("deepseek", "DeepSeek", "DeepSeek API Key (sk-...)"),
+            ("openai", "OpenAI", "OpenAI API Key (sk-...)"),
+            ("anthropic", "Anthropic", "Anthropic API Key (sk-ant-...)"),
+            ("gemini", "Gemini", "Google Gemini API Key"),
+        ],
+        "opencode" | "pi" => &[
+            ("deepseek", "DeepSeek", "DeepSeek API Key (sk-...)"),
+            ("openai", "OpenAI", "OpenAI API Key (sk-...)"),
+            ("anthropic", "Anthropic", "Anthropic API Key (sk-ant-...)"),
+            ("openrouter", "OpenRouter", "OpenRouter API Key (sk-or-...)"),
+            ("google", "Gemini", "Google Gemini API Key"),
+        ],
+        _ => &[("openai", "OpenAI", "API Key")],
+    }
 }
 
 impl crate::ui_primitives::UiLocale {
@@ -118,10 +139,7 @@ impl KarWorkbench {
                             s,
                         )
                         .on_press(cx, |_, _, cx| {
-                            if let Some(path) = crate::aster::config_path() {
-                                if let Some(parent) = path.parent() {
-                                    let _ = std::fs::create_dir_all(parent);
-                                }
+                            if let Some(path) = crate::node_runtime::ensure_builtin_config_template() {
                                 cx.reveal_path(&path);
                             }
                         }),
@@ -972,29 +990,29 @@ impl KarWorkbench {
                 ))
             })
             .when(crate::aster::config_path().is_some(), |d| {
+                let inline_cfg = self.render_builtin_model_config_form(s, window, cx);
                 let btn = soft_button(
                     "settings-builtin-model-config",
-                    loc.pick("打开配置文件", "Open config"),
+                    loc.pick("定位配置文件", "Reveal file"),
                     s,
                 )
                 .on_press(cx, |_, _, cx| {
-                    if let Some(path) = crate::aster::config_path() {
-                        if let Some(parent) = path.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
+                    if let Some(path) = crate::node_runtime::ensure_builtin_config_template() {
                         cx.reveal_path(&path);
                     }
                 });
-                d.child(settings_divider(s)).child(settings_row_item(
-                    loc.pick("内置模型配置", "Model configuration"),
-                    loc.pick(
-                        "管理默认内置运行环境的模型服务地址与密钥。",
-                        "Configure model providers and API keys for the built-in runtime.",
-                    ),
-                    btn.into_any_element(),
-                    stacked,
-                    s,
-                ))
+                d.child(settings_divider(s))
+                    .child(settings_row_item(
+                        loc.pick("内置模型配置", "Model configuration"),
+                        loc.pick(
+                            "管理默认内置运行环境的模型服务地址与密钥。",
+                            "Configure model providers and API keys for the built-in runtime.",
+                        ),
+                        btn.into_any_element(),
+                        stacked,
+                        s,
+                    ))
+                    .child(inline_cfg)
             });
 
         let acp_name_inp = window.use_keyed_state("acp-custom-name", cx, |win, cx| {
@@ -1136,6 +1154,115 @@ impl KarWorkbench {
             )
     }
 
+    fn render_builtin_model_config_form(
+        &self,
+        s: &StudioPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        use kui::components::password_field::PasswordField;
+
+        let loc = self.ui_locale;
+        let presets: &[(&str, &str, &str, &str)] = &[
+            ("deepseek", "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
+            (
+                "dashscope",
+                "通义千问",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "qwen-plus",
+            ),
+            ("openai", "OpenAI", "https://api.openai.com/v1", "gpt-4o"),
+            ("kimi", "Kimi", "https://api.moonshot.cn/v1", "kimi-k2-0905-preview"),
+        ];
+        let slug_state = window.use_keyed_state("builtin-cfg-slug", cx, |_, _| "deepseek".to_owned());
+        let url_inp = window.use_keyed_state("builtin-cfg-url", cx, |win, cx| {
+            let mut i = Input::new("builtin-base-url", "API Base URL", win, cx)
+                .with_placeholder("https://api.deepseek.com/v1", cx);
+            i.set_value("https://api.deepseek.com/v1", win, cx);
+            i
+        });
+        let model_inp = window.use_keyed_state("builtin-cfg-model", cx, |win, cx| {
+            let mut i = Input::new("builtin-model-id", loc.pick("默认模型", "Model ID"), win, cx)
+                .with_placeholder("deepseek-chat", cx);
+            i.set_value("deepseek-chat", win, cx);
+            i
+        });
+        let key_inp = window.use_keyed_state("builtin-cfg-key", cx, |win, cx| {
+            PasswordField::new("builtin-api-key", "API Key (sk-...)", win, cx)
+        });
+
+        let active_slug = slug_state.read(cx).clone();
+        let mut preset_row = div().flex().flex_wrap().items_center().gap(px(6.));
+        for &(slug, label, base_url, default_model) in presets {
+            let slug_st = slug_state.clone();
+            let u_st = url_inp.clone();
+            let m_st = model_inp.clone();
+            let lit = active_slug == slug;
+            preset_row = preset_row.child(
+                Tactile::soft(SharedString::from(format!("builtin-preset-{slug}")), s)
+                    .h(px(26.))
+                    .px(px(9.))
+                    .radius(R_SM)
+                    .lit(lit)
+                    .text_size(s.font_size(FS_META))
+                    .child(label)
+                    .on_press(cx, move |_, win, cx| {
+                        slug_st.update(cx, |v, _| *v = slug.to_owned());
+                        u_st.update(cx, |i, cx| i.set_value(base_url, win, cx));
+                        m_st.update(cx, |i, cx| i.set_value(default_model, win, cx));
+                        cx.notify();
+                    }),
+            );
+        }
+
+        let slug_for_save = slug_state.clone();
+        let url_for_save = url_inp.clone();
+        let model_for_save = model_inp.clone();
+        let key_for_save = key_inp.clone();
+
+        div()
+            .px(px(14.))
+            .pb(px(14.))
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(preset_row)
+            .child(div().w_full().child(url_inp))
+            .child(div().w_full().child(model_inp))
+            .child(div().w_full().child(key_inp))
+            .child(
+                div().flex().justify_end().child(
+                    soft_button_sm(
+                        "save-builtin-model-cfg",
+                        loc.pick("保存默认模型服务", "Save provider"),
+                        s,
+                    )
+                    .on_press(cx, move |wb, win, cx| {
+                        let slug = slug_for_save.read(cx).clone();
+                        let base_url = url_for_save.read(cx).value(cx).trim().to_owned();
+                        let model_id = model_for_save.read(cx).value(cx).trim().to_owned();
+                        let api_key = key_for_save.read(cx).value(cx).trim().to_owned();
+                        match crate::node_runtime::save_builtin_model_config(
+                            &slug, &base_url, &api_key, &model_id,
+                        ) {
+                            Ok(_) => {
+                                key_for_save.update(cx, |i, cx| i.set_value("", win, cx));
+                                wb.notify_toast(
+                                    loc.pick(
+                                        "默认运行环境模型配置已保存并生效",
+                                        "Default model configuration saved",
+                                    ),
+                                    cx,
+                                );
+                                wb.bridge.send(KarCommand::ProbeProvidersOnly);
+                            }
+                            Err(err) => wb.notify_warning(format!("{err}"), cx),
+                        }
+                    }),
+                ),
+            )
+    }
+
     pub(crate) fn provider_key_form(
         &self,
         id: &str,
@@ -1146,9 +1273,13 @@ impl KarWorkbench {
         use kui::components::password_field::PasswordField;
 
         let loc = self.ui_locale;
-        let open = window.use_keyed_state(SharedString::from(format!("agent-key-open-{id}")), cx, |_, _| {
-            false
-        });
+        let targets = provider_key_targets(id);
+        let default_target = targets.first().map(|t| t.0).unwrap_or("openai");
+        let open = window.use_keyed_state(
+            SharedString::from(format!("agent-key-open-{id}")),
+            cx,
+            |_, _| false,
+        );
         if !*open.read(cx) {
             return div().child(
                 soft_button_sm(
@@ -1163,62 +1294,104 @@ impl KarWorkbench {
                 }),
             );
         }
+        let target_state = window.use_keyed_state(
+            SharedString::from(format!("agent-key-sub-{id}")),
+            cx,
+            |_, _| default_target.to_owned(),
+        );
+        let chosen_sub = target_state.read(cx).clone();
+        let placeholder = targets
+            .iter()
+            .find(|t| t.0 == chosen_sub)
+            .map(|t| t.2)
+            .unwrap_or("API Key");
         let input = window.use_keyed_state(
-            SharedString::from(format!("agent-key-input-{id}")),
+            SharedString::from(format!("agent-key-input-{id}-{chosen_sub}")),
             cx,
             |win, cx| {
                 PasswordField::new(
-                    SharedString::from(format!("agent-api-key-{id}")),
-                    "OpenAI API Key",
+                    SharedString::from(format!("agent-api-key-{id}-{chosen_sub}")),
+                    placeholder,
                     win,
                     cx,
                 )
             },
         );
+        let mut sub_strip = div().flex().flex_wrap().items_center().gap(px(5.));
+        if targets.len() > 1 {
+            for &(sub_id, label, _) in targets {
+                let st = target_state.clone();
+                let lit = chosen_sub == sub_id;
+                sub_strip = sub_strip.child(
+                    Tactile::soft(
+                        SharedString::from(format!("agent-sub-{id}-{sub_id}")),
+                        s,
+                    )
+                    .h(px(24.))
+                    .px(px(8.))
+                    .radius(R_SM)
+                    .lit(lit)
+                    .text_size(s.font_size(FS_META))
+                    .child(label)
+                    .on_press(cx, move |_, _, cx| {
+                        st.update(cx, |v, _| *v = sub_id.to_owned());
+                        cx.notify();
+                    }),
+                );
+            }
+        }
         let clear = input.clone();
         let close = open.clone();
         let save = input.clone();
+        let sub_for_save = chosen_sub;
         let runtime_id = id.to_owned();
-        div().min_w_0().flex().flex_col().gap(px(6.)).child(input).child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(
-                    soft_button_sm(
-                        SharedString::from(format!("agent-save-key-{id}")),
-                        loc.pick("保存密钥", "Save key"),
-                        s,
+        div()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .when(targets.len() > 1, |d| d.child(sub_strip))
+            .child(input)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(
+                        soft_button_sm(
+                            SharedString::from(format!("agent-save-key-{id}")),
+                            loc.pick("保存密钥", "Save key"),
+                            s,
+                        )
+                        .on_press(cx, move |wb, win, cx| {
+                            let key = save.read(cx).value(cx).trim();
+                            if key.is_empty() {
+                                save.read(cx).editor().focus_handle(cx).focus(win, cx);
+                                return;
+                            }
+                            wb.bridge.send(KarCommand::LoginProvider {
+                                runtime_id: runtime_id.clone(),
+                                sub_provider: Some(sub_for_save.clone()),
+                                api_key: Some(key.to_owned()),
+                            });
+                            save.update(cx, |v, cx| v.set_value("", win, cx));
+                            open.update(cx, |v, _| *v = false);
+                            cx.notify();
+                        }),
                     )
-                    .on_press(cx, move |wb, win, cx| {
-                        let key = save.read(cx).value(cx).trim();
-                        if key.is_empty() {
-                            save.read(cx).editor().focus_handle(cx).focus(win, cx);
-                            return;
-                        }
-                        wb.bridge.send(KarCommand::LoginProvider {
-                            runtime_id: runtime_id.clone(),
-                            sub_provider: Some("openai".into()),
-                            api_key: Some(key.to_owned()),
-                        });
-                        save.update(cx, |v, cx| v.set_value("", win, cx));
-                        open.update(cx, |v, _| *v = false);
-                        cx.notify();
-                    }),
-                )
-                .child(
-                    text_button_sm(
-                        SharedString::from(format!("agent-cancel-key-{id}")),
-                        loc.pick("取消", "Cancel"),
-                        s,
-                    )
-                    .on_press(cx, move |_, win, cx| {
-                        clear.update(cx, |v, cx| v.set_value("", win, cx));
-                        close.update(cx, |v, _| *v = false);
-                        cx.notify();
-                    }),
-                ),
-        )
+                    .child(
+                        text_button_sm(
+                            SharedString::from(format!("agent-cancel-key-{id}")),
+                            loc.pick("取消", "Cancel"),
+                            s,
+                        )
+                        .on_press(cx, move |_, win, cx| {
+                            clear.update(cx, |v, cx| v.set_value("", win, cx));
+                            close.update(cx, |v, _| *v = false);
+                            cx.notify();
+                        }),
+                    ),
+            )
     }
 }
 

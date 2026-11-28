@@ -929,6 +929,14 @@ pub const KEYBINDING_COMMANDS: &[KeybindingDef] = &[
         label_en: "Open Office & PDF gallery",
         default_chord: "cmd+shift+o",
     },
+    KeybindingDef {
+        id: "view.open_browser",
+        category_zh: "面板与布局",
+        category_en: "Panels & Layout",
+        label_zh: "打开内置浏览器与实时预览",
+        label_en: "Open built-in browser & preview",
+        default_chord: "cmd+shift+b",
+    },
     // 代码、Git 与办公文档 (Code, Git & Office)
     KeybindingDef {
         id: "view.open_git",

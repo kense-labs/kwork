@@ -48,6 +48,8 @@ OPTIONS:
   --open-git-graph             Open the native Git BranchGraph view in the right dock
   --expand-git-diff            Expand the first modified file's inline PatchReview diff in the Git dock
   --open-files-tab             Open the Workspace File Tree in the right dock
+  --open-browser               Open the Built-in System WebView Browser in the right dock
+  --browser-url <URL>          Open <URL> inside Kwrok's Built-in Browser on launch
   --open-terminal-tab          Open the Integrated Workspace Terminal in the right dock
   --run-terminal <CMD>         Run an initial command inside the Integrated Workspace Terminal
   --enable-worktree-mode       Pre-toggle new chat isolation mode to Git Worktree
@@ -90,6 +92,10 @@ struct CliOptions {
     open_provider_health: bool,
     open_settings_tab: Option<SettingsTab>,
     open_files_tab: bool,
+    browser_mobile: bool,
+    browser_console: bool,
+    browser_inspect: bool,
+    browser_pin_element: bool,
     expand_git_diff: bool,
     enable_worktree_mode: bool,
     open_runtime_popover: bool,
@@ -132,6 +138,10 @@ fn parse_cli() -> CliOptions {
     let mut open_provider_health = false;
     let mut open_settings_tab = None;
     let mut open_files_tab = false;
+    let mut browser_mobile = false;
+    let mut browser_console = false;
+    let mut browser_inspect = false;
+    let mut browser_pin_element = false;
     let mut expand_git_diff = false;
     let mut enable_worktree_mode = false;
     let mut open_runtime_popover = false;
@@ -215,6 +225,29 @@ fn parse_cli() -> CliOptions {
             }
             "--open-files-tab" => {
                 open_files_tab = true;
+            }
+            "--open-browser" => {
+                wb.open_browser_tab = true;
+            }
+            "--browser-url" => {
+                wb.open_browser_tab = true;
+                wb.initial_browser_url = args.next();
+            }
+            "--browser-mobile" => {
+                wb.open_browser_tab = true;
+                browser_mobile = true;
+            }
+            "--browser-console" => {
+                wb.open_browser_tab = true;
+                browser_console = true;
+            }
+            "--browser-inspect" => {
+                wb.open_browser_tab = true;
+                browser_inspect = true;
+            }
+            "--browser-pin-element" => {
+                wb.open_browser_tab = true;
+                browser_pin_element = true;
             }
             "--open-terminal-tab" => {
                 wb.open_terminal_tab = true;
@@ -413,6 +446,10 @@ fn parse_cli() -> CliOptions {
         open_provider_health,
         open_settings_tab,
         open_files_tab,
+        browser_mobile,
+        browser_console,
+        browser_inspect,
+        browser_pin_element,
         expand_git_diff,
         enable_worktree_mode,
         open_runtime_popover,
@@ -427,6 +464,9 @@ fn parse_cli() -> CliOptions {
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "--mcp-stdio-bridge") {
+        kar_desktop::mcp_office::run_stdio_bridge();
+    }
     kar_desktop::hardware::use_bundled_speech_engine();
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("warn,kar_desktop=info"),
@@ -464,6 +504,7 @@ fn main() {
             if interactive { cx.activate(true); }
             schedule_screenshot(
                 window,
+                None,
                 None,
                 opts.screenshot_out,
                 opts.screenshot_delay_ms,
@@ -510,6 +551,10 @@ fn main() {
         let open_prov = opts.open_provider_health;
         let open_set_tab = opts.open_settings_tab;
         let open_files = opts.open_files_tab;
+        let br_mobile = opts.browser_mobile;
+        let br_console = opts.browser_console;
+        let br_inspect = opts.browser_inspect;
+        let br_pin = opts.browser_pin_element;
         let exp_git_diff = opts.expand_git_diff;
         let enable_wt = opts.enable_worktree_mode;
         let open_rt_pop = opts.open_runtime_popover;
@@ -530,6 +575,10 @@ fn main() {
             || open_prov
             || open_set_tab.is_some()
             || open_files
+            || br_mobile
+            || br_console
+            || br_inspect
+            || br_pin
             || exp_git_diff
             || enable_wt
             || open_rt_pop
@@ -539,7 +588,7 @@ fn main() {
             || wide_doc
         {
             let win_handle = window;
-            let wb_entity = entity;
+            let wb_entity = entity.clone();
             let step_delay_ms = (opts.screenshot_delay_ms.saturating_sub(700)).clamp(850, 2400);
             cx.spawn(async move |cx| {
                 cx.background_executor()
@@ -630,6 +679,47 @@ fn main() {
                         if let Some(rev) = target_brief_rev {
                             wb.select_brief_revision(rev, cx);
                         }
+                        if br_mobile {
+                            if let Some(tab) = wb.browser.active_tab_mut() {
+                                tab.viewport = kar_desktop::ui_browser::BrowserViewportPreset::Mobile;
+                            }
+                            cx.notify();
+                        }
+                        if br_console {
+                            wb.browser.console_open = true;
+                            cx.notify();
+                        }
+                        if br_inspect {
+                            wb.toggle_browser_inspect_mode(cx);
+                        }
+                        if br_pin {
+                            let url = wb
+                                .browser
+                                .active_tab()
+                                .map_or_else(String::new, |t| t.url.clone());
+                            let title = wb
+                                .browser
+                                .active_tab()
+                                .map_or_else(String::new, |t| t.title.clone());
+                            wb.pinned_target = Some(kar_desktop::types::SelectionTarget {
+                                tab_id: 1,
+                                file_path: None,
+                                doc_name: kar_desktop::ui_browser::compact_url_display(&url),
+                                kind: kar_desktop::types::OfficeKind::Word,
+                                base_revision: None,
+                                locator: kar_desktop::types::SelectionLocator::WebElement {
+                                    url,
+                                    page_title: title,
+                                    selector: "button#cta-deploy".into(),
+                                    tag_name: "button#cta-deploy.primary-cta".into(),
+                                    bounds_summary: "x=24, y=218, w=164px, h=40px".into(),
+                                    computed_styles: "display: inline-flex; background: rgb(37, 99, 235); radius: 10px".into(),
+                                    html_snippet: "<button id=\"cta-deploy\" class=\"primary-cta\">立即发布 v0.1.0</button>".into(),
+                                },
+                                excerpt: "立即发布 v0.1.0".into(),
+                            });
+                            cx.notify();
+                        }
                     });
                 });
             })
@@ -638,6 +728,7 @@ fn main() {
 
         schedule_screenshot(
             window,
+            Some(entity),
             Some(bridge_tx),
             opts.screenshot_out,
             opts.screenshot_delay_ms,
@@ -648,6 +739,7 @@ fn main() {
 
 fn schedule_screenshot(
     window: AnyWindowHandle,
+    workbench: Option<Entity<KarWorkbench>>,
     shutdown_tx: Option<async_channel::Sender<KarCommand>>,
     screenshot_out: Option<PathBuf>,
     delay_ms: u64,
@@ -656,17 +748,20 @@ fn schedule_screenshot(
     #[cfg(target_os = "macos")]
     if let Some(out) = screenshot_out {
         cx.spawn(async move |cx| {
-            let settle_ms = 480u64.min(delay_ms / 2);
+            let settle_ms = 520u64.min(delay_ms / 2);
             let warmup_ms = delay_ms.saturating_sub(settle_ms);
             cx.background_executor()
                 .timer(Duration::from_millis(warmup_ms))
                 .await;
-            // Warm up one offscreen Metal pass so async SVG glyphs populate the atlas and
-            // analytic springs (`Slide`, `pro_presence`, `pro_pill_indicator`) settle cleanly
-            // even when the window is occluded behind another macOS app.
+            // Warm up one offscreen Metal pass so async SVG glyphs populate the atlas,
+            // analytic springs (`Slide`, `pro_presence`, `pro_pill_indicator`) settle cleanly,
+            // and any live WKWebView captures a fresh Retina PNG snapshot at its settled bounds.
             let _ = window.update(cx, |_, window, cx| {
                 window.refresh();
                 window.draw(cx).clear(cx);
+                if let Some(ref wb) = workbench {
+                    wb.read(cx).refresh_active_browser_snapshot();
+                }
                 let _ = window.render_to_image();
             });
             cx.background_executor()
@@ -700,5 +795,5 @@ fn schedule_screenshot(
         .detach();
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = (window, shutdown_tx, screenshot_out, delay_ms, cx);
+    let _ = (window, workbench, shutdown_tx, screenshot_out, delay_ms, cx);
 }

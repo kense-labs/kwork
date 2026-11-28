@@ -129,6 +129,7 @@ pub enum WorkspaceLayoutMode {
 pub enum RightPaneSurface {
     #[default]
     Office,
+    Browser,
     GitWorkbench,
     Files,
     Terminal,
@@ -406,6 +407,8 @@ pub struct WorkbenchConfig {
     pub open_git_graph: bool,
     pub open_tasks_inbox: bool,
     pub open_office_gallery: bool,
+    pub open_browser_tab: bool,
+    pub initial_browser_url: Option<String>,
 }
 
 impl Default for WorkbenchConfig {
@@ -460,6 +463,8 @@ impl Default for WorkbenchConfig {
             open_git_graph: false,
             open_tasks_inbox: false,
             open_office_gallery: false,
+            open_browser_tab: false,
+            initial_browser_url: None,
         }
     }
 }
@@ -661,6 +666,8 @@ pub struct KarWorkbench {
     pub project_registry: ProjectRegistry,
     pub new_chat_use_worktree: bool,
     pub right_surface: RightPaneSurface,
+    pub browser_tab_open: bool,
+    pub browser: crate::ui_browser::BrowserHost,
     pub git_tab_open: bool,
     pub(crate) files_tab_open: bool,
     pub(crate) terminal_tab_open: bool,
@@ -772,6 +779,7 @@ impl KarWorkbench {
         config.resume_last_chat &= config.subscribe_http.is_none()
             && !config.start_demo_chat && !config.start_brief_demo && !config.start_coedit_demo
             && !config.open_tasks_inbox && !config.open_office_gallery
+            && !config.open_browser_tab && config.initial_browser_url.is_none()
             && config.open_files.is_empty() && config.initial_terminal_cmd.is_none();
 
         let loaded_prefs = crate::prefs::DesktopPreferences::load(&config.chat_dir);
@@ -809,6 +817,8 @@ impl KarWorkbench {
 
         let initial_layout = if !config.open_files.is_empty()
             || config.start_coedit_demo
+            || config.open_browser_tab
+            || config.initial_browser_url.is_some()
             || config.open_git_tab
             || config.sidebar_repo_files
             || config.open_terminal_tab
@@ -1439,7 +1449,11 @@ impl KarWorkbench {
         } else {
             Vec::new()
         };
-        let initial_right_surface = if config.open_terminal_tab {
+        let browser = crate::ui_browser::BrowserHost::new(window, cx);
+        let initial_browser_open = config.open_browser_tab || config.initial_browser_url.is_some();
+        let initial_right_surface = if initial_browser_open {
+            RightPaneSurface::Browser
+        } else if config.open_terminal_tab {
             RightPaneSurface::Terminal
         } else if config.sidebar_repo_files {
             RightPaneSurface::Files
@@ -1636,6 +1650,8 @@ impl KarWorkbench {
             project_registry,
             new_chat_use_worktree,
             right_surface: initial_right_surface,
+            browser_tab_open: initial_browser_open,
+            browser,
             git_tab_open: config.open_git_tab,
             files_tab_open: config.sidebar_repo_files,
             terminal_tab_open: config.open_terminal_tab,
@@ -1765,6 +1781,12 @@ impl KarWorkbench {
             this.open_office_file_tab(path.clone(), false, None, window, cx);
         }
 
+        if let Some(url) = this.config.initial_browser_url.take() {
+            this.open_url_in_browser(&url, false, window, cx);
+        } else if config.open_browser_tab && this.detected_dev_ports.is_empty() {
+            this.detected_dev_ports = crate::forge_devices_voice::probe_local_dev_ports(&[]);
+        }
+
         if let Some(url) = &config.subscribe_http {
             this.bridge
                 .send(KarCommand::ConnectHttpFeed { url: url.clone() });
@@ -1876,7 +1898,7 @@ impl KarWorkbench {
         }
     }
 
-    fn ensure_split_visible(&mut self, window: &Window, cx: &mut Context<Self>) {
+    pub(crate) fn ensure_split_visible(&mut self, window: &Window, cx: &mut Context<Self>) {
         if self.layout_mode == WorkspaceLayoutMode::ChatFocus {
             if self.sidebar_open
                 && f32::from(window.viewport_size().width) < AUTO_COLLAPSE_RAIL_WIDTH
@@ -2205,7 +2227,7 @@ impl KarWorkbench {
             )
     }
 
-    fn dismiss_compact_sidebar(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn dismiss_compact_sidebar(&mut self, cx: &mut Context<Self>) {
         if self.previous_window_width < COMPACT_WORKSPACE_WIDTH && self.sidebar_open {
             self.set_sidebar_open(false, cx);
         }
@@ -2477,6 +2499,7 @@ impl KarWorkbench {
             "remote_pair" => self.open_settings(SettingsTab::Remote, cx),
             "schedules" => self.open_settings(SettingsTab::Schedules, cx),
             "git_workbench" => self.open_git_workbench_tab(cx),
+            "browser_dock" => self.open_browser_dock_tab(cx),
             "files_dock" => self.open_files_dock_tab(cx),
             "terminal_dock" => self.open_terminal_dock_tab(cx),
             "skills_mcp" => self.open_settings(SettingsTab::SkillsMcp, cx),
@@ -3008,6 +3031,9 @@ impl KarWorkbench {
                         .turns
                         .last()
                         .is_some_and(|t| t.status == TurnStatus::Failed);
+                    if !failed {
+                        self.auto_reveal_turn_office_documents(window, cx);
+                    }
                     if failed
                         && self.prefs.system_notifications != crate::prefs::NotificationLevel::Off
                     {
@@ -4677,6 +4703,65 @@ impl KarWorkbench {
             .as_ref() == Some(&path)
     }
 
+    /// When an AI turn creates or updates an Office / PDF document in the workspace,
+    /// automatically open it in Kwrok's right-hand Office canvas (or reload a clean open tab).
+    pub(crate) fn auto_reveal_turn_office_documents(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(
+            self.access_mode,
+            ChatAccessMode::HttpReadOnly { .. } | ChatAccessMode::RemoteController { .. }
+        ) {
+            return;
+        }
+        let Some(last_turn) = self.projected.turns.last() else {
+            return;
+        };
+        let Some(cp) = last_turn.checkpoint.as_ref() else {
+            return;
+        };
+        let workspace = self.effective_workspace_dir();
+        let mut target_paths: Vec<PathBuf> = Vec::new();
+        for change in &cp.files {
+            if matches!(
+                change.kind,
+                kar::chat::ChangeKind::Added | kar::chat::ChangeKind::Modified
+            ) && OfficeKind::for_path(&change.path).is_some()
+            {
+                let full = workspace.join(&change.path);
+                if full.is_file() {
+                    target_paths.push(full);
+                }
+            }
+        }
+        for full in target_paths {
+            let canonical = full.canonicalize().unwrap_or_else(|_| full.clone());
+            if let Some(idx) = self.office_tabs.iter().position(|t| {
+                !t.is_demo
+                    && t.path(cx)
+                        .map(|p| p.canonicalize().unwrap_or(p) == canonical)
+                        .unwrap_or(false)
+            }) {
+                // If the tab has no unsaved local edits, reload from disk in case a shell tool modified it.
+                if !self.office_tabs[idx].is_dirty(cx) {
+                    let id = self.office_tabs[idx].id;
+                    if let Ok(reloaded) = OfficeTab::open_file(id, canonical, false, None, window, cx)
+                    {
+                        self.office_tabs[idx] = reloaded;
+                    }
+                }
+                self.main_stage_view = MainStageView::Conversation;
+                self.ensure_split_visible(window, cx);
+                self.right_surface = RightPaneSurface::Office;
+                self.active_office_tab = Some(idx);
+            } else {
+                self.open_office_file_tab(canonical, false, None, window, cx);
+            }
+        }
+    }
+
     pub fn open_office_file_tab(
         &mut self,
         path: PathBuf,
@@ -5003,6 +5088,10 @@ impl KarWorkbench {
             self.open_workspace_code_tab(rel_path.clone(), cx);
             return;
         }
+        if let SelectionLocator::WebElement { url, selector, .. } = &target.locator {
+            self.highlight_selector_in_browser(url, selector, window, cx);
+            return;
+        }
         let find_tab = |this: &Self, cx: &App| {
             this.office_tabs.iter().position(|tab| tab.matches_target(target, cx))
         };
@@ -5079,6 +5168,9 @@ impl KarWorkbench {
             SelectionLocator::CodeLines { start_line, .. } => {
                 (sel.excerpt.clone(), format!("{start_line}"))
             }
+            SelectionLocator::WebElement { selector, .. } => {
+                (sel.excerpt.clone(), selector.clone())
+            }
         };
         self.quick_edit_primary
             .update(cx, |inp, cx| inp.set_value(content, window, cx));
@@ -5154,6 +5246,7 @@ impl KarWorkbench {
                 Ok(format!("已跳转至 PDF 第 {} 页", page + 1))
             }
             SelectionLocator::CodeLines { .. } => Ok("代码文件请在聊天或终端中修改".into()),
+            SelectionLocator::WebElement { .. } => Ok("网页元素请在对话中直接描述修改要求".into()),
         };
 
         match outcome {
@@ -5606,6 +5699,7 @@ impl KarWorkbench {
                     self.main_stage_view = MainStageView::OfficeGallery;
                     cx.notify();
                 }
+                "view.open_browser" => self.open_browser_dock_tab(cx),
                 "view.open_git" => self.open_git_workbench_tab(cx),
                 "view.open_prs" => {
                     self.git_sub_mode = GitSubMode::PullRequests;
@@ -5691,6 +5785,32 @@ impl KarWorkbench {
                 }
                 "g" if shift => {
                     self.open_git_workbench_tab(cx);
+                    true
+                }
+                "b" if shift => {
+                    self.open_browser_dock_tab(cx);
+                    true
+                }
+                "l" if !shift
+                    && self.right_surface == RightPaneSurface::Browser
+                    && self.layout_mode != WorkspaceLayoutMode::ChatFocus =>
+                {
+                    self.browser
+                        .address_editor
+                        .update(cx, |ed, cx| ed.focus(window, cx));
+                    true
+                }
+                "r" if !shift
+                    && self.right_surface == RightPaneSurface::Browser
+                    && self.layout_mode != WorkspaceLayoutMode::ChatFocus =>
+                {
+                    if let Some(tab) = self.browser.active_tab_mut()
+                        && let Some(ref wv) = tab.webview
+                    {
+                        tab.loading = true;
+                        let _ = wv.reload();
+                    }
+                    cx.notify();
                     true
                 }
                 "e" if shift => {
@@ -6817,6 +6937,7 @@ impl KarWorkbench {
 
     pub(crate) fn open_surface(&mut self, surface: &RightPaneSurface, cx: &mut Context<Self>) {
         match surface {
+            RightPaneSurface::Browser => self.open_browser_dock_tab(cx),
             RightPaneSurface::GitWorkbench => self.open_git_workbench_tab(cx),
             RightPaneSurface::Files => self.open_files_dock_tab(cx),
             RightPaneSurface::Terminal => self.open_terminal_dock_tab(cx),
@@ -6826,6 +6947,10 @@ impl KarWorkbench {
 
     pub(crate) fn close_surface(&mut self, surface: &RightPaneSurface, cx: &mut Context<Self>) {
         match surface {
+            RightPaneSurface::Browser => {
+                self.hide_all_browser_webviews();
+                self.browser_tab_open = false;
+            }
             RightPaneSurface::GitWorkbench => self.git_tab_open = false,
             RightPaneSurface::Files => self.files_tab_open = false,
             RightPaneSurface::Terminal => self.terminal_tab_open = false,
@@ -6838,7 +6963,9 @@ impl KarWorkbench {
     }
 
     fn remaining_dock_surface(&self) -> RightPaneSurface {
-        if self.git_tab_open {
+        if self.browser_tab_open {
+            RightPaneSurface::Browser
+        } else if self.git_tab_open {
             RightPaneSurface::GitWorkbench
         } else if self.files_tab_open {
             RightPaneSurface::Files
@@ -7070,6 +7197,7 @@ impl KarWorkbench {
 impl Render for KarWorkbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(screen) = self.onboarding_view(window, cx) {
+            self.hide_all_browser_webviews();
             return screen;
         }
         let overlay_open = self.settings_open || self.handoff_sheet_open || self.side_question_open;
@@ -7163,6 +7291,17 @@ impl Render for KarWorkbench {
             && (self.layout_mode != WorkspaceLayoutMode::ChatFocus
                 || (!compact && dock_reveal > 0.001));
         let single_dock = compact && show_doc;
+        let browser_mounted = show_doc
+            && self.right_surface == RightPaneSurface::Browser
+            && dock_reveal > 0.96;
+        let browser_occluded = overlay_open
+            || drawer_active
+            || self.command_palette_open
+            || self.open_menu.is_some()
+            || self.any_dialog_open(cx)
+            || self.pane_drag.is_some()
+            || kantor_ui::overlay::menu_shield(window).is_some();
+        self.sync_browser_webview_visibility(browser_mounted, browser_occluded);
         if in_conversation_stage && !single_dock && !drawer_active && !overlay_open
             && !self.command_palette_open && !self.any_dialog_open(cx)
         {
@@ -7599,6 +7738,15 @@ const PALETTE_ITEMS: &[PaletteItem] = &[
         shortcut: "",
         icon: ProIcon::Memory,
         keywords: "context window capacity bands compact 上下文 词元 压缩",
+    },
+    PaletteItem {
+        id: "browser_dock",
+        label: "打开内置浏览器与实时预览",
+        label_en: "Open built-in browser & preview",
+        section: "工作区侧栏",
+        shortcut: "⇧⌘B",
+        icon: ProIcon::Globe,
+        keywords: "browser webview localhost preview inspect dom console 浏览器 网页 预览 点选 控制台",
     },
     PaletteItem {
         id: "git_workbench",

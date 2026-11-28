@@ -116,6 +116,18 @@ impl SheetsView {
         self.refuse_while_editing()
     }
 
+    /// Render the live workbook to PDF bytes in memory for visual page preview.
+    pub fn agent_export_pdf(&mut self, cx: &mut Context<Self>) -> anyhow::Result<(Vec<u8>, usize)> {
+        self.refuse_while_editing()?;
+        self.table.update(cx, |table, _| {
+            let book = &mut table.delegate_mut().book;
+            let opts = sheets_pdf::Options::default()
+                .now()
+                .with_path(book.source_path());
+            sheets_pdf::export(book, &opts)
+        })
+    }
+
     fn refuse_while_editing(&self) -> anyhow::Result<()> {
         if self.busy.is_some() {
             bail!("this workbook is still opening or recalculating; try again in a moment");

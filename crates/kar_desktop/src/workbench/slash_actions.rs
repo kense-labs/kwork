@@ -18,6 +18,7 @@ pub(super) enum LocalSlash {
     Handoff,
     SideQuestion,
     Attach,
+    Browser,
     Files,
     Diff,
     Terminal,
@@ -129,7 +130,7 @@ impl KarWorkbench {
                 self.supports_side_question() && !self.side_question_pending
             }
             Stop => (writer || remote) && self.turn_in_progress(),
-            Attach | Files | Terminal | Skills => local,
+            Attach | Browser | Files | Terminal | Skills => local,
             Diff => {
                 local
                     && self.git_snapshot.is_repo
@@ -225,6 +226,7 @@ impl KarWorkbench {
             Handoff => self.toggle_handoff_sheet(cx),
             SideQuestion => self.toggle_side_question_sheet(cx),
             Attach => self.pick_attachments(window, cx),
+            Browser => self.open_browser_dock_tab(cx),
             Files => self.open_files_dock_tab(cx),
             Diff => self.open_git_workbench_tab(cx),
             Terminal => self.open_terminal_dock_tab(cx),

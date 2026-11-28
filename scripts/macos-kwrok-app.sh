@@ -29,7 +29,7 @@ mkdir -p "$app/Contents/Resources/Licenses/AgentArtwork"
 install -m644 "$root/assets/icons/agents/SOURCES.md" "$root/assets/icons/agents/LICENSE-ACP" "$app/Contents/Resources/Licenses/AgentArtwork/"
 "$root/scripts/macos-dictation.sh" "$app"
 "$root/scripts/macos-aster.sh" "$app"
-python3 "$root/scripts/third-party-licenses.py" "$app/Contents/Resources/Licenses/THIRD_PARTY_LICENSES.txt" kar_desktop kwrok_dictation
+python3 "$root/scripts/third-party-licenses.py" "$app/Contents/Resources/Licenses/THIRD_PARTY_LICENSES.txt" kar_desktop kwrok_dictation kwrok_webview
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

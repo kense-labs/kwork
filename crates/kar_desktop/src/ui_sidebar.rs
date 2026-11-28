@@ -254,6 +254,7 @@ impl KarWorkbench {
             );
 
         let git_selected = in_conv && docs_shown && self.right_surface == RightPaneSurface::GitWorkbench;
+        let browser_selected = in_conv && docs_shown && self.right_surface == RightPaneSurface::Browser;
         let show_chat_selection = in_conv && !on_start_screen && !git_selected && !self.settings_open;
         let nav_sensor = pro_selection_sensor();
         let left_inset = macos_traffic_pad(window);
@@ -895,7 +896,7 @@ impl KarWorkbench {
                     "side-new-thread-btn",
                     ProIcon::Plus,
                     loc.pick("新建对话", "New chat"),
-                    on_start_screen && !git_selected && !self.settings_open,
+                    on_start_screen && !git_selected && !browser_selected && !self.settings_open,
                 )
                 .on_press(cx, |this, win, cx| {
                     if let Some(root) = this.prefs.active_project_filter.clone() {
@@ -931,6 +932,18 @@ impl KarWorkbench {
                     self.main_stage_view == MainStageView::OfficeGallery,
                 )
                 .on_press(cx, |this, _, cx| this.open_office_gallery_stage(cx)),
+            )
+            .child(
+                nav_row(
+                    "side-nav-browser",
+                    ProIcon::Globe,
+                    loc.pick("浏览器", "Browser"),
+                    browser_selected && !self.settings_open,
+                )
+                .when(!self.detected_dev_ports.is_empty(), |row| {
+                    row.child(status_dot(s.pro.green))
+                })
+                .on_press(cx, |this, _, cx| this.open_browser_dock_tab(cx)),
             )
             .child(
                 nav_row(

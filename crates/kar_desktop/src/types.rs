@@ -16,17 +16,19 @@ const SELECTION_ENVELOPE_HEAD: &str = "请针对以下 Office 文档选区";
 const SELECTION_ENVELOPE_MARK: &str = "用户修改要求：\n";
 /// Opening line of the machine prompt that wraps a user request aimed at a source code selection.
 const CODE_SELECTION_HEAD: &str = "请针对以下工作区源码文件";
-/// Marker after which the user's own words begin inside a source code prompt.
+/// Opening line of the machine prompt that wraps a user request aimed at a live browser element or console error.
+const WEB_SELECTION_HEAD: &str = "请针对以下内置浏览器网页元素或控制台信息";
+/// Marker after which the user's own words begin inside a source code / web prompt.
 const CODE_SELECTION_MARK: &str = "用户要求：\n";
 
-/// What the person actually typed, without the Office/code selection prompt wrapped around it.
+/// What the person actually typed, without the Office/code/web selection prompt wrapped around it.
 pub fn strip_selection_envelope(text: &str) -> &str {
     if text.starts_with(SELECTION_ENVELOPE_HEAD)
         && let Some(pos) = text.find(SELECTION_ENVELOPE_MARK)
     {
         return text[pos + SELECTION_ENVELOPE_MARK.len()..].trim();
     }
-    if text.starts_with(CODE_SELECTION_HEAD)
+    if (text.starts_with(CODE_SELECTION_HEAD) || text.starts_with(WEB_SELECTION_HEAD))
         && let Some(pos) = text.find(CODE_SELECTION_MARK)
     {
         return text[pos + CODE_SELECTION_MARK.len()..].trim();
@@ -285,6 +287,25 @@ pub(crate) fn office_mcp_summary(raw_name: &str, input: Option<&serde_json::Valu
             }
         }
         "kar_read_brief" | "read_brief" => Some("读取简报历史版本".into()),
+        "browser_open" => {
+            if let Some(u) = args.and_then(|m| m.get("url")).and_then(|v| v.as_str()) {
+                Some(format!("内置浏览器打开 · {u}"))
+            } else {
+                Some("打开内置浏览器预览".into())
+            }
+        }
+        "browser_status" => Some("查看内置浏览器状态".into()),
+        "browser_snapshot" => Some("读取内置浏览器页面 DOM 快照".into()),
+        "browser_act" => {
+            if let Some(act) = args.and_then(|m| m.get("action")).and_then(|v| v.as_str()) {
+                Some(format!("操作内置浏览器页面 · {act}"))
+            } else {
+                Some("操作内置浏览器元素".into())
+            }
+        }
+        "browser_eval" => Some("在内置浏览器执行 JS".into()),
+        "browser_console" => Some("读取内置浏览器控制台日志".into()),
+        "browser_screenshot" => Some("截取内置浏览器高清画面".into()),
         _ => None,
     }
 }
@@ -500,6 +521,18 @@ pub enum SelectionLocator {
         end_line: usize,
         total_lines: usize,
     },
+    WebElement {
+        url: String,
+        page_title: String,
+        selector: String,
+        tag_name: String,
+        #[serde(default)]
+        bounds_summary: String,
+        #[serde(default)]
+        computed_styles: String,
+        #[serde(default)]
+        html_snippet: String,
+    },
 }
 
 impl SelectionLocator {
@@ -556,12 +589,25 @@ impl SelectionLocator {
                     format!("L{start_line}–{end_line}")
                 }
             }
+            Self::WebElement {
+                tag_name,
+                selector,
+                ..
+            } => {
+                if tag_name == "console.error" {
+                    "Console 报错".into()
+                } else if !tag_name.is_empty() {
+                    format!("<{tag_name}>")
+                } else {
+                    selector.clone()
+                }
+            }
         }
     }
 }
 
-/// Captures a concrete Office document or workspace code selection so Chat turns permanently remember
-/// which file & paragraph/cell/slide-object/line-range a user request targeted, even across tab switches.
+/// Captures a concrete Office document, workspace code, or live web element selection so Chat turns permanently remember
+/// which file/page & paragraph/cell/slide-object/line-range/DOM-selector a user request targeted, even across tab switches.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SelectionTarget {
     pub tab_id: u64,
@@ -586,6 +632,10 @@ impl SelectionTarget {
         matches!(self.locator, SelectionLocator::CodeLines { .. })
     }
 
+    pub fn is_web(&self) -> bool {
+        matches!(self.locator, SelectionLocator::WebElement { .. })
+    }
+
     pub fn short_badge(&self) -> String {
         format!("{} · {}", self.doc_name, self.locator.target_label())
     }
@@ -594,6 +644,13 @@ impl SelectionTarget {
         if let SelectionLocator::CodeLines { language, .. } = &self.locator {
             return format!(
                 "[CODE:{language}] {} · {}",
+                self.doc_name,
+                self.locator.target_label()
+            );
+        }
+        if self.is_web() {
+            return format!(
+                "[WEB] {} · {}",
                 self.doc_name,
                 self.locator.target_label()
             );
@@ -631,6 +688,40 @@ impl SelectionTarget {
                 },
             );
         }
+        if let SelectionLocator::WebElement {
+            url,
+            page_title,
+            selector,
+            tag_name,
+            bounds_summary,
+            computed_styles,
+            html_snippet,
+        } = &self.locator
+        {
+            let mut msg = format!(
+                "{WEB_SELECTION_HEAD}给出修改方案或直接修改对应前端源码（如果连接了 `kantor` MCP 工具，也可调用 `browser_snapshot` / `browser_eval` / `browser_screenshot` 实时调试与截图验收）：\n\
+                 - 页面地址: {}\n\
+                 - 页面标题: {}\n\
+                 - 目标元素: <{tag_name}> (`{selector}`)\n",
+                if url.is_empty() { &self.doc_name } else { url },
+                if page_title.is_empty() { "(无标题)" } else { page_title },
+            );
+            if !bounds_summary.is_empty() {
+                msg.push_str(&format!("- 布局尺寸: {bounds_summary}\n"));
+            }
+            if !computed_styles.is_empty() {
+                msg.push_str(&format!("- 计算样式: {computed_styles}\n"));
+            }
+            if !self.excerpt.is_empty() {
+                msg.push_str(&format!("- 可见文本摘要: {}\n", self.excerpt));
+            }
+            if !html_snippet.is_empty() {
+                let fence = if tag_name == "console.error" { "text" } else { "html" };
+                msg.push_str(&format!("- 节点/日志快照:\n```{fence}\n{html_snippet}\n```\n"));
+            }
+            msg.push_str(&format!("\n{CODE_SELECTION_MARK}{instruction}"));
+            return msg;
+        }
         let extra = match &self.locator {
             SelectionLocator::WordParagraph { style, .. } => format!("段落样式: {style}"),
             SelectionLocator::ExcelRange {
@@ -655,6 +746,7 @@ impl SelectionTarget {
                 total_pages,
             } => format!("PDF 页码: 第 {} 页（共 {} 页）", page_index + 1, total_pages),
             SelectionLocator::CodeLines { language, .. } => format!("语言: {language}"),
+            SelectionLocator::WebElement { selector, .. } => format!("选择器: `{selector}`"),
         };
         format!(
             "请针对以下 Office 文档选区给出修改方案或执行修改（如果连接了 `kantor` MCP 工具，可直接读取或更新画布中的文档标签 #{tab_id}）：\n\
@@ -1401,5 +1493,43 @@ mod tests {
         let diag = missing.diagnostic_reason().unwrap_or_default();
         assert!(!diag.to_ascii_lowercase().contains("aster"), "{diag}");
         assert!(missing.fix_command().is_none());
+    }
+
+    #[test]
+    fn web_element_selection_composes_and_strips_cleanly() {
+        let target = SelectionTarget {
+            tab_id: 1,
+            file_path: None,
+            doc_name: "localhost:5173".into(),
+            kind: OfficeKind::Word,
+            base_revision: None,
+            locator: SelectionLocator::WebElement {
+                url: "http://localhost:5173/dashboard".into(),
+                page_title: "PulseCloud".into(),
+                selector: "button#cta-deploy".into(),
+                tag_name: "button#cta-deploy".into(),
+                bounds_summary: "x=24, y=18, w=160px, h=40px".into(),
+                computed_styles: "background: rgb(37, 99, 235)".into(),
+                html_snippet: "<button id=\"cta-deploy\">Deploy</button>".into(),
+            },
+            excerpt: "Deploy".into(),
+        };
+        assert!(target.is_web());
+        assert!(!target.is_code());
+        assert_eq!(target.detail_line(), "[WEB] localhost:5173 · <button#cta-deploy>");
+        let wrapped = target.compose_prompt("把按钮改成圆角胶囊样式");
+        assert!(wrapped.contains("http://localhost:5173/dashboard"));
+        assert!(wrapped.contains("button#cta-deploy"));
+        assert!(wrapped.contains("rgb(37, 99, 235)"));
+        assert_eq!(strip_selection_envelope(&wrapped), "把按钮改成圆角胶囊样式");
+
+        assert_eq!(
+            office_mcp_summary("mcp__kantor__browser_open", Some(&serde_json::json!({"url": ":5173"}))),
+            Some("内置浏览器打开 · :5173".into())
+        );
+        assert_eq!(
+            office_mcp_summary("browser_screenshot", None),
+            Some("截取内置浏览器高清画面".into())
+        );
     }
 }
